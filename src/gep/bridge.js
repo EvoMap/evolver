@@ -57,11 +57,10 @@ function renderSessionsSpawnCall({ task, agentId, label, cleanup }) {
   const l = String(label || 'gep_bridge');
   const c = cleanup ? String(cleanup) : 'delete';
 
-  // Render in the same style as existing recovery snippet in index.js.
-  // Use JSON.stringify for task string to ensure escaping is valid.
-  return `sessions_spawn({\n  task: ${JSON.stringify(t)},\n  agentId: ${JSON.stringify(a)},\n  cleanup: ${JSON.stringify(
-    c
-  )},\n  label: ${JSON.stringify(l)}\n})`;
+  // Output valid JSON so wrappers can parse with JSON.parse (not regex).
+  // The wrapper uses lastIndexOf('sessions_spawn(') + JSON.parse to extract the task.
+  const payload = JSON.stringify({ task: t, agentId: a, cleanup: c, label: l });
+  return `sessions_spawn(${payload})`;
 }
 
 module.exports = {

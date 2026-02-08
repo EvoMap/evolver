@@ -7,14 +7,16 @@ try {
   // dotenv may be missing; proceed gracefully
 }
 
-const DOC_TOKEN = 'NwV1dKCLyoPdIvx3biRcKS1Jnwg'; // The new doc
+const DOC_TOKEN = process.env.FEISHU_EVOLVER_DOC_TOKEN || '';
 const LOG_FILE = path.join(REPO_ROOT, 'memory', 'mad_dog_evolution.log');
 const TOKEN_FILE = path.join(REPO_ROOT, 'memory', 'feishu_token.json');
 
 async function exportEvolutionHistory() {
+    if (!DOC_TOKEN) return console.error("Error: FEISHU_EVOLVER_DOC_TOKEN env var not set");
+
     let token;
     try { token = JSON.parse(fs.readFileSync(TOKEN_FILE)).token; } catch(e) {}
-    if (!token) return console.error("No token");
+    if (!token) return console.error("Error: No Feishu access token in " + TOKEN_FILE);
 
     let logContent = '';
     try { logContent = fs.readFileSync(LOG_FILE, 'utf8'); } catch(e) { return console.error("No log file"); }
