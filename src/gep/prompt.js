@@ -1,3 +1,5 @@
+const { captureEnvFingerprint } = require('./envFingerprint');
+
 function buildGepPrompt({
   nowIso,
   context,
@@ -14,9 +16,10 @@ function buildGepPrompt({
   const parentValue = parentEventId ? `"${parentEventId}"` : 'null';
   const selectedGeneId = selectedGene && selectedGene.id ? selectedGene.id : null;
   const capsuleIds = (capsuleCandidates || []).map(c => c && c.id).filter(Boolean);
+  const envFingerprint = captureEnvFingerprint();
 
   const basePrompt = `
-GEP — GENOME EVOLUTION PROTOCOL (STANDARD EXECUTION) [${nowIso}]
+GEP — GENOME EVOLUTION PROTOCOL (v1.9.1 STRICT) [${nowIso}]
 
 You are not a chat assistant.
 You are not a free agent.
@@ -189,6 +192,9 @@ Follow these steps in order:
 - "optimize": Improve performance, reduce code, harden error handling.
 - "innovate": Create a NEW capability, tool, or skill. This is the highest-value intent.
 - If no urgent repair signals exist, default to "innovate".
+- If signals contain "force_innovation_after_repair_loop" or "evolution_stagnation_detected",
+  you MUST use "innovate" intent. These signals mean the system is stuck in a repair loop.
+- If signals contain "repair_loop_detected", do NOT choose "repair" intent.
 
 3 Selection
 - Prefer existing Genes first, then Capsules.
@@ -344,6 +350,9 @@ ${capabilityCandidatesPreview || '(none)'}
 
 Context [External Candidates] (A2A staged; do not execute directly):
 ${externalCandidatesPreview || '(none)'}
+
+Context [Env Fingerprint]:
+${JSON.stringify(envFingerprint, null, 2)}
 
 Context [Execution]:
 ${context}

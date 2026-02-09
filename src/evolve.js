@@ -585,6 +585,7 @@ async function run() {
     todayLog,
     memorySnippet,
     userSnippet,
+    recentEvents,
   });
 
   const recentErrorMatches = recentMasterLog.match(/\[ERROR|Error:|Exception:|FAIL|Failed|"isError":true/gi) || [];
@@ -900,6 +901,20 @@ async function run() {
     ? 'Review mode: before significant edits, pause and ask the user for confirmation.'
     : 'Review mode: disabled.';
 
+  // Build recent evolution history summary for context injection
+  const recentHistorySummary = (() => {
+    if (!recentEvents || recentEvents.length === 0) return '(no prior evolution events)';
+    const last8 = recentEvents.slice(-8);
+    const lines = last8.map((evt, idx) => {
+      const sigs = Array.isArray(evt.signals) ? evt.signals.slice(0, 3).join(', ') : '?';
+      const gene = Array.isArray(evt.genes_used) && evt.genes_used.length ? evt.genes_used[0] : 'none';
+      const outcome = evt.outcome && evt.outcome.status ? evt.outcome.status : '?';
+      const ts = evt.meta && evt.meta.at ? evt.meta.at : (evt.id || '');
+      return `  ${idx + 1}. [${evt.intent || '?'}] signals=[${sigs}] gene=${gene} outcome=${outcome} @${ts}`;
+    });
+    return lines.join('\n');
+  })();
+
   const context = `
 Runtime state:
 - System health: ${healthReport}
@@ -913,6 +928,10 @@ Notes:
 - ${reviewNote}
 - ${reportingDirective}
 - ${syncDirective}
+
+Recent Evolution History (last 8 cycles -- DO NOT repeat the same intent+signal+gene):
+${recentHistorySummary}
+IMPORTANT: If you see 3+ consecutive "repair" cycles with the same gene, you MUST switch to "innovate" intent.
 
 External candidates (A2A receive zone; staged only, never execute directly):
 ${externalCandidatesPreview}

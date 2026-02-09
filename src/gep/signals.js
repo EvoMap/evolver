@@ -8,6 +8,9 @@ var OPPORTUNITY_SIGNALS = [
   'external_opportunity',
   'recurring_error',
   'unsupported_input_type',
+  'evolution_stagnation_detected',
+  'repair_loop_detected',
+  'force_innovation_after_repair_loop',
 ];
 
 function hasOpportunitySignal(signals) {
@@ -18,7 +21,59 @@ function hasOpportunitySignal(signals) {
   return false;
 }
 
-function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, userSnippet }) {
+// Build a de-duplication set from recent evolution events.
+// Returns an object: { suppressedSignals: Set<string>, recentIntents: string[], consecutiveRepairCount: number }
+function analyzeRecentHistory(recentEvents) {
+  if (!Array.isArray(recentEvents) || recentEvents.length === 0) {
+    return { suppressedSignals: new Set(), recentIntents: [], consecutiveRepairCount: 0 };
+  }
+  // Take only the last 10 events
+  var recent = recentEvents.slice(-10);
+
+  // Count consecutive same-intent runs at the tail
+  var consecutiveRepairCount = 0;
+  for (var i = recent.length - 1; i >= 0; i--) {
+    if (recent[i].intent === 'repair') {
+      consecutiveRepairCount++;
+    } else {
+      break;
+    }
+  }
+
+  // Count signal frequency in last 8 events: signal -> count
+  var signalFreq = {};
+  var geneFreq = {};
+  var tail = recent.slice(-8);
+  for (var j = 0; j < tail.length; j++) {
+    var evt = tail[j];
+    var sigs = Array.isArray(evt.signals) ? evt.signals : [];
+    for (var k = 0; k < sigs.length; k++) {
+      var s = String(sigs[k]);
+      // Normalize: ignore errsig details for frequency counting
+      var key = s.startsWith('errsig:') ? 'errsig' : s.startsWith('recurring_errsig') ? 'recurring_errsig' : s;
+      signalFreq[key] = (signalFreq[key] || 0) + 1;
+    }
+    var genes = Array.isArray(evt.genes_used) ? evt.genes_used : [];
+    for (var g = 0; g < genes.length; g++) {
+      geneFreq[String(genes[g])] = (geneFreq[String(genes[g])] || 0) + 1;
+    }
+  }
+
+  // Suppress signals that appeared in 3+ of the last 8 events (they are being over-processed)
+  var suppressedSignals = new Set();
+  var entries = Object.entries(signalFreq);
+  for (var ei = 0; ei < entries.length; ei++) {
+    if (entries[ei][1] >= 3) {
+      suppressedSignals.add(entries[ei][0]);
+    }
+  }
+
+  var recentIntents = recent.map(function(e) { return e.intent || 'unknown'; });
+
+  return { suppressedSignals: suppressedSignals, recentIntents: recentIntents, consecutiveRepairCount: consecutiveRepairCount, signalFreq: signalFreq, geneFreq: geneFreq };
+}
+
+function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, userSnippet, recentEvents }) {
   var signals = [];
   var corpus = [
     String(recentSessionTranscript || ''),
@@ -27,6 +82,9 @@ function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, user
     String(userSnippet || ''),
   ].join('\n');
   var lower = corpus.toLowerCase();
+
+  // Analyze recent evolution history for de-duplication
+  var history = analyzeRecentHistory(recentEvents || []);
 
   // --- Defensive signals (errors, missing resources) ---
 
@@ -125,6 +183,36 @@ function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, user
     signals = actionable;
   }
 
+  // --- De-duplication: suppress signals that have been over-processed ---
+  if (history.suppressedSignals.size > 0) {
+    var beforeDedup = signals.length;
+    signals = signals.filter(function (s) {
+      // Normalize signal key for comparison
+      var key = s.startsWith('errsig:') ? 'errsig' : s.startsWith('recurring_errsig') ? 'recurring_errsig' : s;
+      return !history.suppressedSignals.has(key);
+    });
+    if (beforeDedup > 0 && signals.length === 0) {
+      // All signals were suppressed = system is stable but stuck in a loop
+      // Force innovation
+      signals.push('evolution_stagnation_detected');
+      signals.push('stable_success_plateau');
+    }
+  }
+
+  // --- Force innovation after 3+ consecutive repairs ---
+  if (history.consecutiveRepairCount >= 3) {
+    // Remove repair-only signals (log_error, errsig) and inject innovation signals
+    signals = signals.filter(function (s) {
+      return s !== 'log_error' && !s.startsWith('errsig:') && !s.startsWith('recurring_errsig');
+    });
+    if (signals.length === 0) {
+      signals.push('repair_loop_detected');
+      signals.push('stable_success_plateau');
+    }
+    // Append a directive signal that the prompt can pick up
+    signals.push('force_innovation_after_repair_loop');
+  }
+
   // If no signals at all, add a default innovation signal
   if (signals.length === 0) {
     signals.push('stable_success_plateau');
@@ -133,4 +221,4 @@ function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, user
   return Array.from(new Set(signals));
 }
 
-module.exports = { extractSignals, hasOpportunitySignal, OPPORTUNITY_SIGNALS };
+module.exports = { extractSignals, hasOpportunitySignal, analyzeRecentHistory, OPPORTUNITY_SIGNALS };

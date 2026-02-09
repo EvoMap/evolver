@@ -35,6 +35,38 @@ function parseMs(v, fallback) {
   return fallback;
 }
 
+// Singleton Guard - prevent multiple evolver daemon instances
+function acquireLock() {
+  const lockFile = path.join(__dirname, 'evolver.pid');
+  try {
+    if (fs.existsSync(lockFile)) {
+      const pid = parseInt(fs.readFileSync(lockFile, 'utf8').trim(), 10);
+      try {
+        process.kill(pid, 0); // Check if process exists
+        console.log(`[Singleton] Evolver loop already running (PID ${pid}). Exiting.`);
+        return false;
+      } catch (e) {
+        console.log(`[Singleton] Stale lock found (PID ${pid}). Taking over.`);
+      }
+    }
+    fs.writeFileSync(lockFile, String(process.pid));
+    return true;
+  } catch (err) {
+    console.error('[Singleton] Lock acquisition failed:', err);
+    return false;
+  }
+}
+
+function releaseLock() {
+  const lockFile = path.join(__dirname, 'evolver.pid');
+  try {
+    if (fs.existsSync(lockFile)) {
+       const pid = parseInt(fs.readFileSync(lockFile, 'utf8').trim(), 10);
+       if (pid === process.pid) fs.unlinkSync(lockFile);
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -45,6 +77,11 @@ async function main() {
     
     if (isLoop) {
         // Internal daemon loop (no wrapper required).
+        if (!acquireLock()) process.exit(0);
+        process.on('exit', releaseLock);
+        process.on('SIGINT', () => { releaseLock(); process.exit(); });
+        process.on('SIGTERM', () => { releaseLock(); process.exit(); });
+
         process.env.EVOLVE_LOOP = 'true';
         process.env.EVOLVE_BRIDGE = 'false';
         console.log('Loop mode enabled (internal daemon).');
@@ -101,6 +138,7 @@ async function main() {
             const memMb = process.memoryUsage().rss / 1024 / 1024;
             if (cycleCount >= maxCyclesPerProcess || memMb > maxRssMb) {
               console.log(`[Daemon] Restarting self (cycles=${cycleCount}, rssMb=${memMb.toFixed(0)})`);
+              releaseLock(); // Release before spawning to allow child to acquire
               const child = spawn(process.execPath, [__filename, ...args], {
                 detached: true,
                 stdio: 'ignore',
