@@ -4,7 +4,7 @@ const { execSync } = require('child_process');
 const { loadGenes, upsertGene, appendEventJsonl, appendCapsule, upsertCapsule, getLastEventId } = require('./assetStore');
 const { computeSignalKey, memoryGraphPath } = require('./memoryGraph');
 const { computeCapsuleSuccessStreak, isBlastRadiusSafe } = require('./a2a');
-const { getRepoRoot, getMemoryDir } = require('./paths');
+const { getRepoRoot, getMemoryDir, getEvolutionDir } = require('./paths');
 const { extractSignals } = require('./signals');
 const { selectGene } = require('./selector');
 const { isValidMutation, normalizeMutation, isHighRiskMutationAllowed, isHighRiskPersonality } = require('./mutation');
@@ -168,13 +168,13 @@ function checkConstraints({ gene, blast }) {
 
 function readStateForSolidify() {
   const memoryDir = getMemoryDir();
-  const statePath = path.join(memoryDir, 'evolution_solidify_state.json');
+  const statePath = path.join(getEvolutionDir(), 'evolution_solidify_state.json');
   return readJsonIfExists(statePath, { last_run: null });
 }
 
 function writeStateForSolidify(state) {
   const memoryDir = getMemoryDir();
-  const statePath = path.join(memoryDir, 'evolution_solidify_state.json');
+  const statePath = path.join(getEvolutionDir(), 'evolution_solidify_state.json');
   try {
     if (!fs.existsSync(memoryDir)) fs.mkdirSync(memoryDir, { recursive: true });
   } catch {}

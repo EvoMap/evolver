@@ -77,13 +77,14 @@ function extractErrorSignatureFromSignals(signals) {
 }
 
 function memoryGraphPath() {
-  const memoryDir = getMemoryDir();
-  return process.env.MEMORY_GRAPH_PATH || path.join(memoryDir, 'memory_graph.jsonl');
+  const { getEvolutionDir } = require('./paths');
+  const evoDir = getEvolutionDir();
+  return process.env.MEMORY_GRAPH_PATH || path.join(evoDir, 'memory_graph.jsonl');
 }
 
 function memoryGraphStatePath() {
   const memoryDir = getMemoryDir();
-  return path.join(memoryDir, 'memory_graph_state.json');
+  return path.join(evoDir, 'memory_graph_state.json');
 }
 
 function appendJsonl(filePath, obj) {

@@ -40,7 +40,7 @@ function writeJsonAtomic(filePath, obj) {
 
 function personalityFilePath() {
   const memoryDir = getMemoryDir();
-  return path.join(memoryDir, 'personality_state.json');
+  const { getEvolutionDir } = require('./paths'); return path.join(getEvolutionDir(), 'personality_state.json');
 }
 
 function defaultPersonalityState() {

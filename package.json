@@ -1,6 +1,6 @@
 {
   "name": "evolver",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "A self-evolution engine for AI agents. Features automated log analysis and protocol-constrained evolution with auditable assets.",
   "main": "index.js",
   "keywords": [

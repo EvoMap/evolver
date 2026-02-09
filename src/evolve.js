@@ -28,6 +28,7 @@ const { readStateForSolidify, writeStateForSolidify } = require('./gep/solidify'
 const { buildMutation, isHighRiskMutationAllowed } = require('./gep/mutation');
 const { selectPersonalityForRun } = require('./gep/personality');
 const { clip, writePromptArtifact, renderSessionsSpawnCall } = require('./gep/bridge');
+const { getEvolutionDir } = require('./gep/paths');
 
 const REPO_ROOT = getRepoRoot();
 
@@ -304,7 +305,7 @@ function getMutationDirective(logContent) {
 `;
 }
 
-const STATE_FILE = path.join(MEMORY_DIR, 'evolution_state.json');
+const STATE_FILE = path.join(getEvolutionDir(), 'evolution_state.json');
 // Fix: Look for MEMORY.md in root first, then memory dir to support both layouts
 const ROOT_MEMORY = path.join(REPO_ROOT, 'MEMORY.md');
 const DIR_MEMORY = path.join(MEMORY_DIR, 'MEMORY.md');
@@ -982,7 +983,7 @@ ${mutationDirective}
     let artifact = null;
     try {
       artifact = writePromptArtifact({
-        memoryDir: MEMORY_DIR,
+        memoryDir: getEvolutionDir(),
         cycleId,
         runId,
         prompt,
