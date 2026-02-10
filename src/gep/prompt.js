@@ -295,6 +295,14 @@ VII. Evolution Philosophy
    - Example: if GIF images crash the LLM, add a GIF-to-PNG converter or filter GIFs before sending.
    The system should NEVER crash repeatedly on the same error. Fix it once, forever.
 
+6. KNOWN ISSUES (DO NOT ATTEMPT TO FIX -- already handled externally)
+   The following errors appear in logs but have been fixed or are managed outside the evolver:
+   - "230001: invalid message content" -- Feishu messaging API content limit. Fixed in feishu-post/send.js (truncation + sanitization).
+   - "HTTP 400" from feishu_doc_append/feishu_doc_write -- Block validation edge cases. Fixed in feishu-doc/input_guard.js.
+   - "gateway timeout after 630000ms" -- Transient gateway slowness, auto-fallback to embedded mode.
+   - "ENOENT" / "spawn openclaw" -- PATH resolution issue, fixed in wrapper with explicit binary search.
+   If you see these errors in logs, SKIP THEM. Focus on NEW errors or genuinely unresolved issues.
+
 ━━━━━━━━━━━━━━━━━━━━━━
 VIII. A2A Evolution Exchange (Optional)
 ━━━━━━━━━━━━━━━━━━━━━━
