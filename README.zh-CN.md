@@ -13,9 +13,13 @@
 - **自动日志分析**：自动扫描 `.jsonl` 会话日志，寻找错误模式。
 - **自我修复**：检测运行时崩溃并编写修复补丁。
 - **GEP 协议**：标准化进化流程与可复用资产，支持可审计与可共享。
-- **突变协议与人格进化（GEP v1.4）**：每次进化必须显式声明 Mutation，并维护可进化的 PersonalityState（小步突变 + 自然选择收敛）。
-- **动态集成**：自动检测并使用本地工具（如 `git-sync` 或 `feishu-card`），如果不存在则回退到通用模式，零依赖运行。
-- **持续循环模式**：持续运行的自我修复循环。
+- **突变协议与人格进化**：每次进化必须显式声明 Mutation，并维护可进化的 PersonalityState。
+- **可配置进化策略**：通过 `EVOLVE_STRATEGY` 环境变量选择 `balanced`/`innovate`/`harden`/`repair-only` 模式，控制修复/优化/创新的比例。
+- **信号去重**：自动检测修复循环，防止反复修同一个问题。
+- **运维模块** (`src/ops/`)：6 个可移植的运维工具（生命周期管理、技能健康监控、磁盘清理、Git 自修复等），零平台依赖。
+- **源码保护**：防止自治代理覆写核心进化引擎源码。
+- **动态集成**：自动检测并使用本地工具，如果不存在则回退到通用模式。
+- **持续循环模式**：持续运行的自我进化循环。
 
 ## 使用方法
 
@@ -34,6 +38,28 @@ node index.js --review
 无限循环运行。适合作为后台服务。
 ```bash
 node index.js --loop
+```
+
+### 指定进化策略
+```bash
+EVOLVE_STRATEGY=innovate node index.js --loop   # 最大化创新
+EVOLVE_STRATEGY=harden node index.js --loop     # 聚焦稳定性
+EVOLVE_STRATEGY=repair-only node index.js --loop # 紧急修复模式
+```
+
+| 策略 | 创新 | 优化 | 修复 | 适用场景 |
+| :--- | :--- | :--- | :--- | :--- |
+| `balanced`（默认） | 50% | 30% | 20% | 日常运行，稳步成长 |
+| `innovate` | 80% | 15% | 5% | 系统稳定，快速出新功能 |
+| `harden` | 20% | 40% | 40% | 大改动后，聚焦稳固 |
+| `repair-only` | 0% | 20% | 80% | 紧急状态，全力修复 |
+
+### 运维管理（生命周期）
+```bash
+node src/ops/lifecycle.js start    # 后台启动进化循环
+node src/ops/lifecycle.js stop     # 优雅停止（SIGTERM -> SIGKILL）
+node src/ops/lifecycle.js status   # 查看运行状态
+node src/ops/lifecycle.js check    # 健康检查 + 停滞自动重启
 ```
 
 ## 典型使用场景
@@ -65,8 +91,11 @@ node index.js --loop
 
 | 环境变量 | 描述 | 默认值 |
 | :--- | :--- | :--- |
-| `EVOLVE_REPORT_TOOL` |用于报告结果的工具名称（例如 `feishu-card`） | `message` |
+| `EVOLVE_STRATEGY` | 进化策略预设 | `balanced` |
+| `EVOLVE_REPORT_TOOL` | 用于报告结果的工具名称 | `message` |
 | `MEMORY_DIR` | 记忆文件路径 | `./memory` |
+| `OPENCLAW_WORKSPACE` | 工作区根路径 | 自动检测 |
+| `EVOLVER_LOOP_SCRIPT` | 循环启动脚本路径 | 自动检测 wrapper 或 core |
 
 ## Public 发布
 
@@ -104,6 +133,35 @@ MAJOR.MINOR.PATCH
 • PATCH（修订/补丁）：向后兼容的问题修复
 
 ## 更新日志
+
+### v1.10.0
+- **运维模块** (`src/ops/`)：从环境相关的 wrapper 中提取 6 个可移植模块：
+  - `lifecycle.js` -- 进程启停/重启/状态/健康检查
+  - `skills_monitor.js` -- 技能健康审计 + 自动修复（npm install、SKILL.md 生成）
+  - `cleanup.js` -- GEP 产物磁盘清理
+  - `trigger.js` -- 唤醒信号机制
+  - `commentary.js` -- 人格化周期评论
+  - `self_repair.js` -- Git 紧急修复（终止 rebase、清理过期锁文件）
+- **可配置进化策略** (`EVOLVE_STRATEGY` 环境变量)：
+  - 4 个预设：`balanced`（默认 50/30/20）、`innovate`（80/15/5）、`harden`（20/40/40）、`repair-only`（0/20/80）
+  - 策略感知的信号过滤，各预设有独立的修复循环阈值
+  - 向后兼容：`FORCE_INNOVATION=true` 等价于 `innovate`
+- **信号去重**：当最近 8 轮中修复占比 >= 50% 时强制创新（阈值随策略变化）
+- **工具使用分析**：检测日志中的高频工具使用模式（由 Hand Agent 自动进化产出）
+- **源码保护**（GEP Section IX）：核心 .js 文件列为不可修改，防止 Hand Agent 覆写
+- **禁止创新区**（GEP Section X）：防止创建重复的循环管理器、看门狗、技能监控器
+- **已知问题清单**（GEP Section VII.6）：告知 LLM 跳过已修复的错误
+- **鲁棒性提升**：MemoryGraph 故障时 `process.exit(2)` 改为 `throw Error()`（循环不再因瞬态错误崩溃）
+- **Gene 限制放宽**：repair max_files 12->20，innovate max_files 8->25
+- `paths.js` 新增 `getWorkspaceRoot()`、`getSkillsDir()`、`getLogsDir()`
+
+### v1.9.2
+- 中间版本，包含策略预设和源码保护机制。
+
+### v1.9.1
+- 信号去重（修复比率检查）
+- 单例锁（PID 锁文件）
+- GEP 提示词中注入环境指纹
 
 ### v1.4.4
 - 增加 validation 命令安全检查：Gene validation 命令执行前通过前缀白名单（node/npm/npx）和 shell 操作符拦截进行门控。
