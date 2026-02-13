@@ -618,6 +618,11 @@ async function run() {
     }
   }
 
+  // Reset per-cycle env flags to prevent state leaking between cycles.
+  // In --loop mode, process.env persists across cycles. The circuit breaker
+  // below will re-set FORCE_INNOVATION if the condition still holds.
+  delete process.env.FORCE_INNOVATION;
+
   const startTime = Date.now();
   console.log('Scanning session logs...');
 

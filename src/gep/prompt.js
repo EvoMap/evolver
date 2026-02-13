@@ -264,6 +264,26 @@ SKILL OVERLAP PREVENTION:
 - Creating duplicate/overlapping skills wastes evolution cycles and increases maintenance burden.
 - Violation = mark outcome as FAILED with reason "skill_overlap".
 
+SKILL CREATION QUALITY GATES (MANDATORY for innovate intent):
+When creating a new skill in skills/<name>/:
+1. MINIMUM FILES: Every new skill MUST contain at least:
+   - index.js or main entry file with working code
+   - SKILL.md with usage documentation
+   - package.json with name and version
+   Creating an empty directory or directory with only SKILL.md = FAILED outcome.
+2. EXPORT VERIFICATION: Every exported function must be importable.
+   Run: node -e "const s = require('./skills/<name>'); console.log(Object.keys(s))"
+   If this fails, the skill is broken. Fix before solidify.
+3. NO HARDCODED SECRETS: Never embed API keys, tokens, or secrets directly in code.
+   Use process.env or .env file references instead.
+   Patterns to NEVER use: hardcoded App ID, App Secret, Bearer tokens, API keys.
+   Violation = FAILED with reason "hardcoded_secret".
+4. FUNCTIONAL TEST: Before solidify, verify the skill's core function works:
+   node -e "require('./skills/<name>').main ? require('./skills/<name>').main() : console.log('ok')"
+5. ATOMIC CREATION: Create ALL files in a single cycle. Do not create a directory in one
+   cycle and fill it in the next -- this leads to empty directories if the second cycle fails.
+
+
 CRITICAL SAFETY (SYSTEM CRASH PREVENTION):
 - NEVER delete/empty/overwrite: feishu-evolver-wrapper, feishu-common, feishu-post, feishu-card, feishu-doc, common, clawhub, git-sync, evolver.
 - NEVER delete root files: MEMORY.md, SOUL.md, IDENTITY.md, AGENTS.md, USER.md, HEARTBEAT.md, RECENT_EVENTS.md, TOOLS.md, openclaw.json, .env, package.json.

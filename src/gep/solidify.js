@@ -255,7 +255,7 @@ function isForbiddenPath(relPath, forbiddenPaths) {
   return false;
 }
 
-function checkConstraints({ gene, blast, blastRadiusEstimate }) {
+function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
   const violations = [];
   const warnings = [];
   let blastSeverity = null;
@@ -304,6 +304,31 @@ function checkConstraints({ gene, blast, blastRadiusEstimate }) {
         violations.push(`critical_path_modified_without_repair_intent: ${norm}`);
       }
     }
+  }
+
+  // --- New skill directory completeness check ---
+  // Detect when an innovation cycle creates a skill directory with too few files.
+  // This catches the "empty directory" problem where AI creates skills/<name>/ but
+  // fails to write any code into it. A real skill needs at least index.js + SKILL.md.
+  if (repoRoot) {
+    var newSkillDirs = new Set();
+    var changedList = blast.all_changed_files || blast.changed_files || [];
+    for (var sci = 0; sci < changedList.length; sci++) {
+      var scNorm = normalizeRelPath(changedList[sci]);
+      var scMatch = scNorm.match(/^skills\/([^\/]+)\//);
+      if (scMatch && !isCriticalProtectedPath(scNorm)) {
+        newSkillDirs.add(scMatch[1]);
+      }
+    }
+    newSkillDirs.forEach(function (skillName) {
+      var skillDir = path.join(repoRoot, 'skills', skillName);
+      try {
+        var entries = fs.readdirSync(skillDir).filter(function (e) { return !e.startsWith('.'); });
+        if (entries.length < 2) {
+          warnings.push('incomplete_skill: skills/' + skillName + '/ has only ' + entries.length + ' file(s). New skills should have at least index.js + SKILL.md.');
+        }
+      } catch (e) { /* dir might not exist yet */ }
+    });
   }
 
   return { ok: violations.length === 0, violations, warnings, blastSeverity };
@@ -597,7 +622,36 @@ function rollbackNewUntrackedFiles({ repoRoot, baselineUntracked }) {
   if (skipped.length > 0) {
     console.log(`[Rollback] Skipped ${skipped.length} critical protected file(s): ${skipped.slice(0, 5).join(', ')}`);
   }
-  return { deleted, skipped };
+  // Clean up empty directories left after file deletion.
+  // This prevents "ghost skill directories" where mkdir succeeded but
+  // file creation failed/was rolled back. Without this, empty dirs like
+  // skills/anima/, skills/oblivion/ etc. accumulate after failed innovations.
+  var dirsToCheck = new Set();
+  for (var di = 0; di < deleted.length; di++) {
+    var dir = path.dirname(deleted[di]);
+    while (dir && dir !== '.' && dir !== '/') {
+      dirsToCheck.add(dir);
+      dir = path.dirname(dir);
+    }
+  }
+  // Sort deepest first to ensure children are removed before parents
+  var sortedDirs = Array.from(dirsToCheck).sort(function (a, b) { return b.length - a.length; });
+  var removedDirs = [];
+  for (var si = 0; si < sortedDirs.length; si++) {
+    var dirAbs = path.join(repoRoot, sortedDirs[si]);
+    try {
+      var entries = fs.readdirSync(dirAbs);
+      if (entries.length === 0) {
+        fs.rmdirSync(dirAbs);
+        removedDirs.push(sortedDirs[si]);
+      }
+    } catch (e) { /* ignore -- dir may already be gone */ }
+  }
+  if (removedDirs.length > 0) {
+    console.log('[Rollback] Removed ' + removedDirs.length + ' empty director' + (removedDirs.length === 1 ? 'y' : 'ies') + ': ' + removedDirs.slice(0, 5).join(', '));
+  }
+
+  return { deleted, skipped, removedDirs: removedDirs };
 }
 
 function inferCategoryFromSignals(signals) {
@@ -714,7 +768,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
     baselineUntracked: lastRun && Array.isArray(lastRun.baseline_untracked) ? lastRun.baseline_untracked : [],
   });
   const blastRadiusEstimate = lastRun && lastRun.blast_radius_estimate ? lastRun.blast_radius_estimate : null;
-  const constraintCheck = checkConstraints({ gene: geneUsed, blast, blastRadiusEstimate });
+  const constraintCheck = checkConstraints({ gene: geneUsed, blast, blastRadiusEstimate, repoRoot });
 
   // Log blast radius diagnostics when severity is elevated.
   if (constraintCheck.blastSeverity &&
