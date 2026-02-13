@@ -81,7 +81,36 @@ function analyzeRecentHistory(recentEvents) {
     }
   }
 
-  return { suppressedSignals: suppressedSignals, recentIntents: recentIntents, consecutiveRepairCount: consecutiveRepairCount, emptyCycleCount: emptyCycleCount, signalFreq: signalFreq, geneFreq: geneFreq };
+  // Count consecutive failures at the tail of recent events.
+  // This tells the evolver "you have been failing N times in a row -- slow down."
+  var consecutiveFailureCount = 0;
+  for (var cf = recent.length - 1; cf >= 0; cf--) {
+    var outcome = recent[cf].outcome;
+    if (outcome && outcome.status === 'failed') {
+      consecutiveFailureCount++;
+    } else {
+      break;
+    }
+  }
+
+  // Count total failures in last 8 events (failure ratio).
+  var recentFailureCount = 0;
+  for (var rf = 0; rf < tail.length; rf++) {
+    var rfOut = tail[rf].outcome;
+    if (rfOut && rfOut.status === 'failed') recentFailureCount++;
+  }
+
+  return {
+    suppressedSignals: suppressedSignals,
+    recentIntents: recentIntents,
+    consecutiveRepairCount: consecutiveRepairCount,
+    emptyCycleCount: emptyCycleCount,
+    consecutiveFailureCount: consecutiveFailureCount,
+    recentFailureCount: recentFailureCount,
+    recentFailureRatio: tail.length > 0 ? recentFailureCount / tail.length : 0,
+    signalFreq: signalFreq,
+    geneFreq: geneFreq,
+  };
 }
 
 function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, userSnippet, recentEvents }) {
@@ -261,6 +290,36 @@ function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, user
     });
     if (!signals.includes('empty_cycle_loop_detected')) signals.push('empty_cycle_loop_detected');
     if (!signals.includes('stable_success_plateau')) signals.push('stable_success_plateau');
+  }
+
+  // --- Failure streak awareness ---
+  // When the evolver has failed many consecutive cycles, inject a signal
+  // telling the LLM to be more conservative and avoid repeating the same approach.
+  if (history.consecutiveFailureCount >= 3) {
+    signals.push('consecutive_failure_streak_' + history.consecutiveFailureCount);
+    // After 5+ consecutive failures, force a strategy change (don't keep trying the same thing)
+    if (history.consecutiveFailureCount >= 5) {
+      signals.push('failure_loop_detected');
+      // Strip the dominant gene's signals to force a different gene selection
+      var topGene = null;
+      var topGeneCount = 0;
+      var gfEntries = Object.entries(history.geneFreq);
+      for (var gfi = 0; gfi < gfEntries.length; gfi++) {
+        if (gfEntries[gfi][1] > topGeneCount) {
+          topGeneCount = gfEntries[gfi][1];
+          topGene = gfEntries[gfi][0];
+        }
+      }
+      if (topGene) {
+        signals.push('ban_gene:' + topGene);
+      }
+    }
+  }
+
+  // High failure ratio in recent history (>= 75% failed in last 8 cycles)
+  if (history.recentFailureRatio >= 0.75) {
+    signals.push('high_failure_ratio');
+    signals.push('force_innovation_after_repair_loop');
   }
 
   // If no signals at all, add a default innovation signal

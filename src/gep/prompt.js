@@ -281,12 +281,23 @@ CRITICAL SAFETY (SYSTEM CRASH PREVENTION):
 - Violation of these rules triggers automatic rollback and marks the cycle as FAILED.
 
 COMMON FAILURE PATTERNS (AVOID THESE):
+- Blast radius exceeded: max_files or max_lines over gene limit = FAILED. Split into multiple cycles.
 - Omitted Mutation object (Must be first).
 - Merged objects into one JSON (Must be 5 separate blocks).
 - Hallucinated "type": "Logic" (Only Mutation, PersonalityState, EvolutionEvent, Gene, Capsule).
 - "id": "mut_undefined" (Must generate a timestamp or UUID).
 - Missing "trigger_signals" in Mutation.
 - Gene validation steps must be runnable commands (e.g. node -e "...")
+
+FAILURE STREAK AWARENESS:
+- If you see signals like "consecutive_failure_streak_N" or "failure_loop_detected", it means
+  the last N cycles ALL FAILED. You MUST change your approach:
+  1. Do NOT repeat the same gene or strategy that kept failing.
+  2. Pick a SIMPLER, more conservative fix (fewer files, smaller changes).
+  3. If "ban_gene:<id>" is present, do NOT use that gene -- pick a different one.
+  4. Consider skipping the problematic repair entirely and doing a safe innovate cycle instead.
+  5. If the error is unfixable by evolver (e.g., external service down, API quota), output a
+     FAILED EvolutionEvent with score 0.1 and move on. Do NOT keep retrying the same fix.
 
 Final Directive: Every cycle must leave the system measurably better.
 

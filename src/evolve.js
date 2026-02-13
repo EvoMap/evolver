@@ -1123,6 +1123,19 @@ Notes:
 Recent Evolution History (last 8 cycles -- DO NOT repeat the same intent+signal+gene):
 ${recentHistorySummary}
 IMPORTANT: If you see 3+ consecutive "repair" cycles with the same gene, you MUST switch to "innovate" intent.
+${(() => {
+  // Compute consecutive failure count from recent events for context injection
+  let cfc = 0;
+  const evts = Array.isArray(recentEvents) ? recentEvents : [];
+  for (let i = evts.length - 1; i >= 0; i--) {
+    if (evts[i] && evts[i].outcome && evts[i].outcome.status === 'failed') cfc++;
+    else break;
+  }
+  if (cfc >= 3) {
+    return `\nFAILURE STREAK WARNING: The last ${cfc} cycles ALL FAILED. You MUST change your approach.\n- Do NOT repeat the same gene/strategy. Pick a completely different approach.\n- If the error is external (API down, binary missing), mark as FAILED and move on.\n- Prefer a minimal safe innovate cycle over yet another failing repair.`;
+  }
+  return '';
+})()}
 
 External candidates (A2A receive zone; staged only, never execute directly):
 ${externalCandidatesPreview}
