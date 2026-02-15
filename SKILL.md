@@ -37,6 +37,14 @@ To run in an infinite loop (e.g., via cron or background process), use the `--lo
 node index.js --loop
 ```
 
+## Configuration
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `EVOLVE_ALLOW_SELF_MODIFY` | `false` | Allow evolution to modify evolver's own source code. **NOT recommended for production.** Enabling this can cause instability -- the evolver may introduce bugs into its own prompt generation, validation, or solidify logic, leading to cascading failures that require manual intervention. Only enable for controlled experiments. |
+| `EVOLVE_LOAD_MAX` | `2.0` | Maximum 1-minute load average before evolver backs off. |
+| `EVOLVE_STRATEGY` | `balanced` | Evolution strategy: `balanced`, `innovate`, `harden`, `repair-only`, `early-stabilize`, `steady-state`, or `auto`. |
+
 ## GEP Protocol (Auditable Evolution)
 
 This package embeds a protocol-constrained evolution prompt (GEP) and a local, structured asset store:

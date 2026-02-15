@@ -312,7 +312,8 @@ CONSTRAINTS:
 - No \`exec\` for messaging (use feishu-post/card).
 - \`exec\` usage: Only for background tasks. LOG IT. Optimize usage to avoid high token burn.
 - New skills -> \`skills/<name>/\`.
-- Modify \`skills/evolver/\` only with rigor > 0.8.
+- NEVER modify \`skills/evolver/\` or \`skills/feishu-evolver-wrapper/\`. These are managed through the human-reviewed release pipeline.
+  Self-modification causes instability and is blocked by solidify. To enable (NOT recommended): set EVOLVE_ALLOW_SELF_MODIFY=true.
 
 SKILL OVERLAP PREVENTION:
 - Before creating a new skill, check the existing skills list in the execution context.

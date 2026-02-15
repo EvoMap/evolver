@@ -296,14 +296,21 @@ function checkConstraints({ gene, blast, blastRadiusEstimate, repoRoot }) {
     if (isForbiddenPath(f, forbidden)) violations.push(`forbidden_path touched: ${f}`);
   }
 
-  // --- Critical protection: block ALL modifications to critical paths ---
-  // These paths (evolver, wrapper, feishu-common, etc.) must only be changed
-  // through the human-reviewed release pipeline, never by evolution cycles.
-  // No intent exception -- repair/optimize/innovate all blocked equally.
+  // --- Critical protection: block modifications to critical paths ---
+  // By default, evolution CANNOT modify evolver, wrapper, or other core skills.
+  // This prevents the "evolver modifies itself and introduces bugs" problem.
+  // To opt in to self-modification (NOT recommended for production):
+  //   set EVOLVE_ALLOW_SELF_MODIFY=true in environment.
+  var allowSelfModify = String(process.env.EVOLVE_ALLOW_SELF_MODIFY || '').toLowerCase() === 'true';
   for (const f of blast.all_changed_files || blast.changed_files || []) {
     if (isCriticalProtectedPath(f)) {
-      const norm = normalizeRelPath(f);
-      violations.push(`critical_path_modified: ${norm}`);
+      var norm = normalizeRelPath(f);
+      if (allowSelfModify && norm.startsWith('skills/evolver/') && gene && gene.category === 'repair') {
+        // Self-modify opt-in: allow repair-only changes to evolver when explicitly enabled
+        warnings.push('self_modify_evolver_repair: ' + norm + ' (EVOLVE_ALLOW_SELF_MODIFY=true)');
+      } else {
+        violations.push('critical_path_modified: ' + norm);
+      }
     }
   }
 
