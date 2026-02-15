@@ -637,6 +637,23 @@ async function run() {
   // Reset per-cycle env flags to prevent state leaking between cycles.
   // In --loop mode, process.env persists across cycles. The circuit breaker
   // below will re-set FORCE_INNOVATION if the condition still holds.
+  // CWD Recovery: If the working directory was deleted during a previous cycle
+  // (e.g., by git reset/restore or directory removal), process.cwd() throws
+  // ENOENT and ALL subsequent operations fail. Recover by chdir to REPO_ROOT.
+  try {
+    process.cwd();
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      console.warn('[Evolver] CWD lost (ENOENT). Recovering to REPO_ROOT: ' + REPO_ROOT);
+      try { process.chdir(REPO_ROOT); } catch (e2) {
+        console.error('[Evolver] CWD recovery failed: ' + (e2 && e2.message ? e2.message : e2));
+        throw e;
+      }
+    } else {
+      throw e;
+    }
+  }
+
   delete process.env.FORCE_INNOVATION;
 
   const startTime = Date.now();
