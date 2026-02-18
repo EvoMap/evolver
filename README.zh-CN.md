@@ -257,6 +257,7 @@ MAJOR.MINOR.PATCH
 - [onthebigtree](https://github.com/onthebigtree) -- 启发了 evomap 进化网络的诞生。
 - [lichunr](https://github.com/lichunr) -- 提供了数千美金 Token 供算力网络免费使用。
 - [shinjiyu](https://github.com/shinjiyu) -- 为 evolver 和 evomap 提交了大量 bug report。
+- [upbit](https://github.com/upbit) -- 在 evolver 和 evomap 技术的普及中起到了至关重要的作用。
 - 其余贡献者扩充中。
 
 ## 许可证
