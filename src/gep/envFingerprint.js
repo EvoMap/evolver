@@ -37,6 +37,7 @@ function captureEnvFingerprint() {
 function envFingerprintKey(fp) {
   if (!fp || typeof fp !== 'object') return 'unknown';
   const parts = [
+    fp.device_id || '',
     fp.node_version || '',
     fp.platform || '',
     fp.arch || '',

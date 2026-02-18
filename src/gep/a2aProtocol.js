@@ -34,7 +34,10 @@ function generateMessageId() {
 function getNodeId() {
   if (process.env.A2A_NODE_ID) return String(process.env.A2A_NODE_ID);
   const deviceId = getDeviceId();
-  const raw = deviceId + '|' + (process.env.AGENT_NAME || 'default');
+  const agentName = process.env.AGENT_NAME || 'default';
+  // Include cwd so multiple evolver instances in different directories
+  // on the same machine get distinct nodeIds without manual config.
+  const raw = deviceId + '|' + agentName + '|' + process.cwd();
   return 'node_' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 12);
 }
 
