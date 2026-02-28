@@ -30,8 +30,8 @@
         ]
       },
       "validation": [
-        "node -e \"require('./src/evolve'); require('./src/gep/solidify'); console.log('ok')\"",
-        "node -e \"require('./src/gep/selector'); require('./src/gep/memoryGraph'); console.log('ok')\""
+        "node scripts/validate-modules.js ./src/evolve ./src/gep/solidify",
+        "node scripts/validate-modules.js ./src/gep/selector ./src/gep/memoryGraph"
       ]
     },
     {
@@ -64,7 +64,7 @@
         ]
       },
       "validation": [
-        "node -e \"require('./src/evolve'); require('./src/gep/prompt'); console.log('ok')\""
+        "node scripts/validate-modules.js ./src/evolve ./src/gep/prompt"
       ]
     },
     {
@@ -96,12 +96,11 @@
         "max_files": 25,
         "forbidden_paths": [
           ".git",
-          "node_modules",
-          "assets/gep/events.jsonl"
+          "node_modules"
         ]
       },
       "validation": [
-        "node -e \"require('./src/evolve'); require('./src/gep/solidify'); console.log('ok')\""
+        "node scripts/validate-modules.js ./src/evolve ./src/gep/solidify"
       ]
     }
   ]

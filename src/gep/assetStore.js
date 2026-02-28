@@ -30,8 +30,8 @@ function writeJsonAtomic(filePath, obj) {
 // runValidations() executes with cwd=repoRoot, so require('./src/...')
 // resolves correctly without embedding machine-specific absolute paths.
 function buildValidationCmd(relModules) {
-  const checks = relModules.map(m => `require('./${m}')`);
-  return `node -e "${checks.join('; ')}; console.log('ok')"`;
+  const paths = relModules.map(m => `./${m}`);
+  return `node scripts/validate-modules.js ${paths.join(' ')}`;
 }
 
 function getDefaultGenes() {
