@@ -92,7 +92,8 @@ async function main() {
         process.env.EVOLVE_BRIDGE = 'false';
         console.log('Loop mode enabled (internal daemon).');
 
-        const solidifyStatePath = path.join(__dirname, 'memory', 'evolution_solidify_state.json');
+        const { getEvolutionDir } = require('./src/gep/paths');
+        const solidifyStatePath = path.join(getEvolutionDir(), 'evolution_solidify_state.json');
 
         const minSleepMs = parseMs(process.env.EVOLVER_MIN_SLEEP_MS, 2000);
         const maxSleepMs = parseMs(process.env.EVOLVER_MAX_SLEEP_MS, 300000);

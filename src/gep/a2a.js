@@ -28,8 +28,8 @@ function getBlastRadiusLimits() {
 
 function isBlastRadiusSafe(blastRadius) {
   var lim = getBlastRadiusLimits();
-  var files = blastRadius && Number.isFinite(Number(blastRadius.files)) ? Number(blastRadius.files) : 0;
-  var lines = blastRadius && Number.isFinite(Number(blastRadius.lines)) ? Number(blastRadius.lines) : 0;
+  var files = blastRadius && Number.isFinite(Number(blastRadius.files)) ? Math.max(0, Number(blastRadius.files)) : 0;
+  var lines = blastRadius && Number.isFinite(Number(blastRadius.lines)) ? Math.max(0, Number(blastRadius.lines)) : 0;
   return files <= lim.maxFiles && lines <= lim.maxLines;
 }
 

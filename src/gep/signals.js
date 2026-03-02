@@ -282,14 +282,14 @@ function extractSignals({ recentSessionTranscript, todayLog, memorySnippet, user
 
   // --- Tool Usage Analytics ---
   var toolUsage = {};
-  var toolMatches = corpus.match(/\[TOOL:\s*(\w+)\]/g) || [];
+  var toolMatches = corpus.match(/\[TOOL:\s*([\w-]+)\]/g) || [];
   
   // Extract exec commands to identify benign loops (like watchdog checks)
   var execCommands = corpus.match(/exec: (node\s+[\w\/\.-]+\.js\s+ensure)/g) || [];
   var benignExecCount = execCommands.length;
 
   for (var i = 0; i < toolMatches.length; i++) {
-    var toolName = toolMatches[i].match(/\[TOOL:\s*(\w+)\]/)[1];
+    var toolName = toolMatches[i].match(/\[TOOL:\s*([\w-]+)\]/)[1];
     toolUsage[toolName] = (toolUsage[toolName] || 0) + 1;
   }
   

@@ -82,7 +82,8 @@ async function fetchTasks(opts) {
     }
 
     return result;
-  } catch {
+  } catch (err) {
+    console.warn("[TaskReceiver] fetchTasks failed:", err && err.message ? err.message : err);
     return { tasks: [] };
   }
 }

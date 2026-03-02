@@ -1241,7 +1241,12 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
 
   if (!dryRun && !success && rollbackOnFailure) {
     rollbackTracked(repoRoot);
-    rollbackNewUntrackedFiles({ repoRoot, baselineUntracked: lastRun && lastRun.baseline_untracked ? lastRun.baseline_untracked : [] });
+    // Only clean up new untracked files when a valid baseline exists.
+    // Without a baseline, we cannot distinguish pre-existing untracked files
+    // from AI-generated ones, so deleting would be destructive.
+    if (lastRun && Array.isArray(lastRun.baseline_untracked)) {
+      rollbackNewUntrackedFiles({ repoRoot, baselineUntracked: lastRun.baseline_untracked });
+    }
   }
 
   // Apply epigenetic marks to the gene based on outcome and environment
