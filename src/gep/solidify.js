@@ -957,8 +957,32 @@ function readRecentSessionInputs() {
   return { recentSessionTranscript, todayLog: todayLogContent, memorySnippet, userSnippet };
 }
 
+function isGitRepo(dir) {
+  try {
+    execSync('git rev-parse --git-dir', {
+      cwd: dir, encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } = {}) {
   const repoRoot = getRepoRoot();
+
+  if (!isGitRepo(repoRoot)) {
+    console.error('[Solidify] FATAL: Not a git repository (' + repoRoot + ').');
+    console.error('[Solidify] Solidify requires git for rollback, diff capture, and blast radius.');
+    console.error('[Solidify] Run "git init && git add -A && git commit -m init" first.');
+    return {
+      ok: false,
+      status: 'failed',
+      failure_reason: 'not_a_git_repository',
+      event: null,
+    };
+  }
   const state = readStateForSolidify();
   const lastRun = state && state.last_run ? state.last_run : null;
   const genes = loadGenes();
@@ -1452,6 +1476,7 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
 
 module.exports = {
   solidify,
+  isGitRepo,
   readStateForSolidify,
   writeStateForSolidify,
   isValidationCommandAllowed,

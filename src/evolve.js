@@ -744,6 +744,19 @@ async function run() {
 
   delete process.env.FORCE_INNOVATION;
 
+  // SAFEGUARD: Git repository check.
+  // Solidify, rollback, and blast radius all depend on git. Without a git repo
+  // these operations silently produce empty results, leading to data loss.
+  try {
+    execSync('git rev-parse --git-dir', { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+  } catch (_) {
+    console.error('[Evolver] FATAL: Not a git repository (' + REPO_ROOT + ').');
+    console.error('[Evolver] Evolver requires git for rollback, blast radius calculation, and solidify.');
+    console.error('[Evolver] Run "git init && git add -A && git commit -m init" in your project root, then try again.');
+    process.exitCode = 1;
+    return;
+  }
+
   var dormantHypothesis = readDormantHypothesis();
   if (dormantHypothesis) {
     console.log('[DormantHypothesis] Recovered partial state from previous backoff: ' + (dormantHypothesis.backoff_reason || 'unknown'));

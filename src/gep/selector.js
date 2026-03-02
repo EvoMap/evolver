@@ -3,6 +3,7 @@ function matchPatternToSignals(pattern, signals) {
   const p = String(pattern);
   const sig = signals.map(s => String(s));
 
+  // Regex pattern: /body/flags
   const regexLike = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
   if (regexLike) {
     const lastSlash = p.lastIndexOf('/');
@@ -14,6 +15,12 @@ function matchPatternToSignals(pattern, signals) {
     } catch (e) {
       // fallback to substring
     }
+  }
+
+  // Multi-language alias: "en_term|zh_term|ja_term" -- any branch matching = hit
+  if (p.includes('|') && !p.startsWith('/')) {
+    const branches = p.split('|').map(b => b.trim().toLowerCase()).filter(Boolean);
+    return branches.some(needle => sig.some(s => s.toLowerCase().includes(needle)));
   }
 
   const needle = p.toLowerCase();
