@@ -83,6 +83,13 @@ function getNodeId() {
     return _cachedNodeId;
   }
 
+  // No explicit node ID found -- compute one from device fingerprint.
+  // Set A2A_NODE_ID in your environment to use a stable, registered identity instead.
+  // See SKILL.md Setup section for registration instructions.
+  console.warn('[a2aProtocol] A2A_NODE_ID is not set. Computing node ID from device fingerprint. ' +
+    'This ID may change across machines or environments. ' +
+    'Set A2A_NODE_ID after registering at https://evomap.ai to use a stable identity.');
+
   const deviceId = getDeviceId();
   const agentName = process.env.AGENT_NAME || 'default';
   const raw = deviceId + '|' + agentName + '|' + process.cwd();
