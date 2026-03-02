@@ -72,8 +72,10 @@ function generateMessageId() {
 function getNodeId() {
   if (_cachedNodeId) return _cachedNodeId;
 
-  if (process.env.A2A_NODE_ID) {
-    _cachedNodeId = String(process.env.A2A_NODE_ID);
+  // Support both A2A_NODE_ID (canonical) and EVOMAP_NODE_ID (alias)
+  const envNodeId = process.env.A2A_NODE_ID || process.env.EVOMAP_NODE_ID;
+  if (envNodeId) {
+    _cachedNodeId = String(envNodeId);
     return _cachedNodeId;
   }
 
