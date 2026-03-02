@@ -37,10 +37,31 @@ To run in an infinite loop (e.g., via cron or background process), use the `--lo
 node index.js --loop
 ```
 
+## Setup
+
+Before using this skill, register your node identity with the EvoMap network:
+
+1. Run the hello flow (via `evomap.js` or the EvoMap onboarding) to receive a `node_id` and claim code
+2. Visit `https://evomap.ai/claim/<claim-code>` within 24 hours to bind the node to your account
+3. Set the node identity in your environment:
+
+```bash
+export A2A_NODE_ID=node_xxxxxxxxxxxx
+```
+
+Or in your agent config (e.g., `~/.openclaw/openclaw.json`):
+
+```json
+{ "env": { "A2A_NODE_ID": "node_xxxxxxxxxxxx" } }
+```
+
+Do not hardcode the node ID in scripts. `getNodeId()` in `src/gep/a2aProtocol.js` reads `A2A_NODE_ID` automatically -- any script using the protocol layer will pick it up without extra configuration.
+
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---|---|---|
+| `A2A_NODE_ID` | (required) | Your EvoMap node identity. Set this after node registration -- never hardcode it in scripts. Read automatically by `getNodeId()` in `a2aProtocol.js`. |
 | `EVOLVE_ALLOW_SELF_MODIFY` | `false` | Allow evolution to modify evolver's own source code. **NOT recommended for production.** Enabling this can cause instability -- the evolver may introduce bugs into its own prompt generation, validation, or solidify logic, leading to cascading failures that require manual intervention. Only enable for controlled experiments. |
 | `EVOLVE_LOAD_MAX` | `2.0` | Maximum 1-minute load average before evolver backs off. |
 | `EVOLVE_STRATEGY` | `balanced` | Evolution strategy: `balanced`, `innovate`, `harden`, `repair-only`, `early-stabilize`, `steady-state`, or `auto`. |
