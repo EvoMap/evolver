@@ -3,8 +3,9 @@
 // Flow: extractSignals() -> hubSearch(signals) -> if hit: reuse; if miss: normal evolve
 // Two modes: direct (skip local reasoning) | reference (inject into prompt as strong hint)
 //
-// Uses POST /a2a/fetch with signals field (protocol-native) instead of GET /a2a/assets/search.
-// This returns full payload (content, diff, strategy) in a single round-trip.
+// Two-phase search-then-fetch to minimize credit cost:
+//   Phase 1: POST /a2a/fetch with signals + search_only=true (free, metadata only)
+//   Phase 2: POST /a2a/fetch with asset_ids=[selected] (pays for 1 asset only)
 
 const { getNodeId, buildFetch } = require('./a2aProtocol');
 const { logAssetCall } = require('./assetCallLog');
@@ -71,8 +72,12 @@ function pickBestMatch(results, threshold) {
 
 /**
  * Search the hub for reusable assets matching the given signals.
- * Uses POST /a2a/fetch with signals (protocol-native, returns full payload).
- * Falls back to GET /a2a/assets/search if fetch fails.
+ *
+ * Two-phase flow to minimize credit cost:
+ *   Phase 1: search_only=true -> get candidate metadata (free, no credit cost)
+ *   Phase 2: asset_ids=[best_match] -> fetch full payload for the selected asset only
+ *
+ * Falls back to single-call fetch (old behavior) if search_only is not supported.
  * Returns { hit: true, match, score, mode } or { hit: false }.
  */
 async function hubSearch(signals, opts) {
@@ -88,7 +93,8 @@ async function hubSearch(signals, opts) {
   const timeout = (opts && Number.isFinite(opts.timeoutMs)) ? opts.timeoutMs : 8000;
 
   try {
-    const fetchMsg = buildFetch({ signals: signalList });
+    // Phase 1: search_only to get candidate metadata (free)
+    const searchMsg = buildFetch({ signals: signalList, searchOnly: true });
     const endpoint = hubUrl + '/a2a/fetch';
 
     const controller = new AbortController();
@@ -101,7 +107,7 @@ async function hubSearch(signals, opts) {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify(fetchMsg),
+      body: JSON.stringify(searchMsg),
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -112,7 +118,7 @@ async function hubSearch(signals, opts) {
         action: 'hub_search_miss',
         signals: signalList,
         reason: `hub_http_${res.status}`,
-        via: 'fetch_with_signals',
+        via: 'search_then_fetch',
       });
       return { hit: false, reason: `hub_http_${res.status}` };
     }
@@ -128,7 +134,7 @@ async function hubSearch(signals, opts) {
         action: 'hub_search_miss',
         signals: signalList,
         reason: 'no_results',
-        via: 'fetch_with_signals',
+        via: 'search_then_fetch',
       });
       return { hit: false, reason: 'no_results' };
     }
@@ -141,12 +147,42 @@ async function hubSearch(signals, opts) {
         signals: signalList,
         reason: 'below_threshold',
         extra: { candidates: results.length, threshold },
-        via: 'fetch_with_signals',
+        via: 'search_then_fetch',
       });
       return { hit: false, reason: 'below_threshold', candidates: results.length };
     }
 
-    console.log(`[HubSearch] Hit via fetch+signals: ${pick.match.asset_id || 'unknown'} (score=${pick.score}, mode=${pick.mode})`);
+    // Phase 2: fetch full payload for the selected asset only (pays for 1 asset)
+    const selectedAssetId = pick.match.asset_id;
+    if (selectedAssetId) {
+      try {
+        const fetchMsg = buildFetch({ assetIds: [selectedAssetId] });
+        const controller2 = new AbortController();
+        const timer2 = setTimeout(() => controller2.abort(TIMEOUT_REASON), timeout);
+
+        const res2 = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(fetchMsg),
+          signal: controller2.signal,
+        });
+        clearTimeout(timer2);
+
+        if (res2.ok) {
+          const data2 = await res2.json();
+          const fullResults = (data2 && data2.payload && Array.isArray(data2.payload.results))
+            ? data2.payload.results
+            : [];
+          if (fullResults.length > 0) {
+            pick.match = { ...pick.match, ...fullResults[0] };
+          }
+        }
+      } catch (fetchErr) {
+        console.log(`[HubSearch] Phase 2 fetch failed (non-fatal): ${fetchErr.message}`);
+      }
+    }
+
+    console.log(`[HubSearch] Hit via search+fetch: ${pick.match.asset_id || 'unknown'} (score=${pick.score}, mode=${pick.mode})`);
 
     logAssetCall({
       run_id: (opts && opts.run_id) || null,
@@ -158,7 +194,7 @@ async function hubSearch(signals, opts) {
       score: pick.score,
       mode: pick.mode,
       signals: signalList,
-      via: 'fetch_with_signals',
+      via: 'search_then_fetch',
     });
 
     return {
@@ -180,7 +216,7 @@ async function hubSearch(signals, opts) {
       signals: signalList,
       reason,
       extra: { error: err.message },
-      via: 'fetch_with_signals',
+      via: 'search_then_fetch',
     });
     return { hit: false, reason, error: err.message };
   }

@@ -208,6 +208,12 @@ function buildFetch(opts) {
   if (Array.isArray(o.signals) && o.signals.length > 0) {
     fetchPayload.signals = o.signals;
   }
+  if (o.searchOnly === true) {
+    fetchPayload.search_only = true;
+  }
+  if (Array.isArray(o.assetIds) && o.assetIds.length > 0) {
+    fetchPayload.asset_ids = o.assetIds;
+  }
   return buildMessage({
     messageType: 'fetch',
     senderId: o.nodeId,
