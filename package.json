@@ -1,6 +1,6 @@
 {
   "name": "evolver",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "description": "A GEP-powered self-evolution engine for AI agents. Features automated log analysis and Genome Evolution Protocol (GEP) for auditable, reusable evolution assets.",
   "main": "index.js",
   "keywords": [
