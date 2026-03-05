@@ -140,6 +140,12 @@ bash -lc 'node index.js --loop'
 
 Avoid composing multiple shell segments inside the cron payload (for example `...; echo EXIT:$?`) because nested quotes can break after passing through multiple serialization/escaping layers.
 
+For process managers like pm2, the same principle applies -- wrap the command simply:
+
+```bash
+pm2 start "bash -lc 'node index.js --loop'" --name evolver --cron-restart="0 */6 * * *"
+```
+
 ## Public Release
 
 This repository is the public distribution.
