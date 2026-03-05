@@ -363,6 +363,58 @@ function taskToSignals(task) {
   return signals;
 }
 
+// ---------------------------------------------------------------------------
+// Worker Pool task operations (POST /a2a/work/*)
+// These use a separate API from bounty tasks and return assignment objects.
+// ---------------------------------------------------------------------------
+
+async function claimWorkerTask(taskId) {
+  const nodeId = getNodeId();
+  if (!nodeId || !taskId) return null;
+
+  try {
+    const url = `${HUB_URL.replace(/\/+$/, '')}/a2a/work/claim`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId, node_id: nodeId }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function completeWorkerTask(assignmentId, resultAssetId) {
+  const nodeId = getNodeId();
+  if (!nodeId || !assignmentId || !resultAssetId) return false;
+
+  try {
+    const url = `${HUB_URL.replace(/\/+$/, '')}/a2a/work/complete`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignment_id: assignmentId, node_id: nodeId, result_asset_id: resultAssetId }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   fetchTasks,
   selectBestTask,
@@ -371,4 +423,6 @@ module.exports = {
   claimTask,
   completeTask,
   taskToSignals,
+  claimWorkerTask,
+  completeWorkerTask,
 };

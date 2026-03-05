@@ -393,6 +393,7 @@ var _heartbeatStartedAt = null;
 var _heartbeatConsecutiveFailures = 0;
 var _heartbeatTotalSent = 0;
 var _heartbeatTotalFailed = 0;
+var _latestAvailableWork = [];
 
 function getHubUrl() {
   return process.env.A2A_HUB_URL || process.env.EVOMAP_HUB_URL || '';
@@ -424,13 +425,24 @@ function sendHeartbeat() {
 
   var endpoint = hubUrl.replace(/\/+$/, '') + '/a2a/heartbeat';
   var nodeId = getNodeId();
-  var body = JSON.stringify({
+  var bodyObj = {
     node_id: nodeId,
     sender_id: nodeId,
     version: PROTOCOL_VERSION,
     uptime_ms: _heartbeatStartedAt ? Date.now() - _heartbeatStartedAt : 0,
     timestamp: new Date().toISOString(),
-  });
+  };
+
+  if (process.env.WORKER_ENABLED === '1') {
+    var domains = (process.env.WORKER_DOMAINS || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    bodyObj.meta = {
+      worker_enabled: true,
+      worker_domains: domains,
+      max_load: Math.max(1, Number(process.env.WORKER_MAX_LOAD) || 5),
+    };
+  }
+
+  var body = JSON.stringify(bodyObj);
 
   _heartbeatTotalSent++;
 
@@ -454,6 +466,9 @@ function sendHeartbeat() {
           return { ok: helloResult.ok, response: data, reregistered: helloResult.ok };
         });
       }
+      if (Array.isArray(data.available_work)) {
+        _latestAvailableWork = data.available_work;
+      }
       _heartbeatConsecutiveFailures = 0;
       return { ok: true, response: data };
     })
@@ -469,6 +484,16 @@ function sendHeartbeat() {
       }
       return { ok: false, error: err.message };
     });
+}
+
+function getLatestAvailableWork() {
+  return _latestAvailableWork;
+}
+
+function consumeAvailableWork() {
+  var work = _latestAvailableWork;
+  _latestAvailableWork = [];
+  return work;
 }
 
 function startHeartbeat(intervalMs) {
@@ -571,4 +596,6 @@ module.exports = {
   startHeartbeat,
   stopHeartbeat,
   getHeartbeatStats,
+  getLatestAvailableWork,
+  consumeAvailableWork,
 };

@@ -1519,28 +1519,56 @@ function solidify({ intent, summary, dryRun = false, rollbackOnFailure = true } 
   if (!dryRun && success && lastRun && lastRun.active_task_id) {
     const resultAssetId = capsule && capsule.asset_id ? capsule.asset_id : (capsule && capsule.id ? capsule.id : null);
     if (resultAssetId) {
-      try {
-        const { completeTask } = require('./taskReceiver');
-        const taskId = String(lastRun.active_task_id);
-        console.log(`[TaskComplete] Completing task "${lastRun.active_task_title || taskId}" with asset ${resultAssetId}`);
-        const completed = completeTask(taskId, resultAssetId);
-        if (completed && typeof completed.then === 'function') {
-          completed
-            .then(function (ok) {
-              if (ok) {
-                console.log('[TaskComplete] Task completed successfully on Hub.');
-              } else {
-                console.log('[TaskComplete] Hub rejected task completion (non-fatal).');
-              }
-            })
-            .catch(function (err) {
-              console.log('[TaskComplete] Failed (non-fatal): ' + (err && err.message ? err.message : err));
-            });
+      const workerAssignmentId = lastRun.worker_assignment_id || null;
+      if (workerAssignmentId) {
+        // Worker Pool path: complete via /a2a/work/complete
+        try {
+          const { completeWorkerTask } = require('./taskReceiver');
+          console.log(`[WorkerComplete] Completing worker assignment "${workerAssignmentId}" with asset ${resultAssetId}`);
+          const completed = completeWorkerTask(workerAssignmentId, resultAssetId);
+          if (completed && typeof completed.then === 'function') {
+            completed
+              .then(function (ok) {
+                if (ok) {
+                  console.log('[WorkerComplete] Worker task completed successfully on Hub.');
+                } else {
+                  console.log('[WorkerComplete] Hub rejected worker completion (non-fatal).');
+                }
+              })
+              .catch(function (err) {
+                console.log('[WorkerComplete] Failed (non-fatal): ' + (err && err.message ? err.message : err));
+              });
+          }
+          taskCompleteResult = { attempted: true, task_id: lastRun.active_task_id, assignment_id: workerAssignmentId, asset_id: resultAssetId, worker: true };
+        } catch (e) {
+          console.log('[WorkerComplete] Error (non-fatal): ' + e.message);
+          taskCompleteResult = { attempted: false, reason: e.message, worker: true };
         }
-        taskCompleteResult = { attempted: true, task_id: taskId, asset_id: resultAssetId };
-      } catch (e) {
-        console.log('[TaskComplete] Error (non-fatal): ' + e.message);
-        taskCompleteResult = { attempted: false, reason: e.message };
+      } else {
+        // Bounty task path: complete via /a2a/task/complete
+        try {
+          const { completeTask } = require('./taskReceiver');
+          const taskId = String(lastRun.active_task_id);
+          console.log(`[TaskComplete] Completing task "${lastRun.active_task_title || taskId}" with asset ${resultAssetId}`);
+          const completed = completeTask(taskId, resultAssetId);
+          if (completed && typeof completed.then === 'function') {
+            completed
+              .then(function (ok) {
+                if (ok) {
+                  console.log('[TaskComplete] Task completed successfully on Hub.');
+                } else {
+                  console.log('[TaskComplete] Hub rejected task completion (non-fatal).');
+                }
+              })
+              .catch(function (err) {
+                console.log('[TaskComplete] Failed (non-fatal): ' + (err && err.message ? err.message : err));
+              });
+          }
+          taskCompleteResult = { attempted: true, task_id: taskId, asset_id: resultAssetId };
+        } catch (e) {
+          console.log('[TaskComplete] Error (non-fatal): ' + e.message);
+          taskCompleteResult = { attempted: false, reason: e.message };
+        }
       }
     }
   }

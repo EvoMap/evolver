@@ -30,7 +30,7 @@ const {
   memoryGraphPath,
 } = memoryAdapter;
 const { readStateForSolidify, writeStateForSolidify } = require('./gep/solidify');
-const { fetchTasks, selectBestTask, claimTask, taskToSignals } = require('./gep/taskReceiver');
+const { fetchTasks, selectBestTask, claimTask, taskToSignals, claimWorkerTask } = require('./gep/taskReceiver');
 const { generateQuestions } = require('./gep/questionGenerator');
 const { buildMutation, isHighRiskMutationAllowed } = require('./gep/mutation');
 const { selectPersonalityForRun } = require('./gep/personality');
@@ -1060,6 +1060,36 @@ async function run() {
     console.log(`[TaskReceiver] Fetch/claim failed (non-fatal): ${e.message}`);
   }
 
+  // --- Worker Pool: claim tasks from heartbeat available_work ---
+  if (!activeTask && process.env.WORKER_ENABLED === '1') {
+    try {
+      const { consumeAvailableWork } = require('./gep/a2aProtocol');
+      const workerTasks = consumeAvailableWork();
+      if (workerTasks.length > 0) {
+        let taskMemoryEvents = [];
+        try {
+          const { tryReadMemoryGraphEvents } = require('./gep/memoryGraph');
+          taskMemoryEvents = tryReadMemoryGraphEvents(1000);
+        } catch {}
+        const best = selectBestTask(workerTasks, taskMemoryEvents);
+        if (best) {
+          const assignment = await claimWorkerTask(best.id || best.task_id);
+          if (assignment) {
+            activeTask = best;
+            activeTask._worker_assignment_id = assignment.id || assignment.assignment_id || null;
+            const taskSignals = taskToSignals(best);
+            for (const sig of taskSignals) {
+              if (!signals.includes(sig)) signals.unshift(sig);
+            }
+            console.log(`[WorkerPool] Claimed worker task: "${best.title || best.id}" assignment=${activeTask._worker_assignment_id} (${taskSignals.length} signals injected)`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`[WorkerPool] Claim failed (non-fatal): ${e.message}`);
+    }
+  }
+
   const recentErrorMatches = recentMasterLog.match(/\[ERROR|Error:|Exception:|FAIL|Failed|"isError":true/gi) || [];
   const recentErrorCount = recentErrorMatches.length;
 
@@ -1421,6 +1451,7 @@ async function run() {
         blast_radius_estimate: blastRadiusEstimate,
         active_task_id: activeTask ? (activeTask.id || activeTask.task_id || null) : null,
         active_task_title: activeTask ? (activeTask.title || null) : null,
+        worker_assignment_id: activeTask ? (activeTask._worker_assignment_id || null) : null,
         applied_lessons: hubLessons.map(function(l) { return l.lesson_id; }).filter(Boolean),
         hub_lessons: hubLessons,
       };
