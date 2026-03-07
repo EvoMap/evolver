@@ -18,7 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getGepAssetsDir } = require('./paths');
+const { getGepAssetsDir, getLogsDir } = require('./paths');
 const { computeAssetId } = require('./contentHash');
 const { captureEnvFingerprint } = require('./envFingerprint');
 const os = require('os');
@@ -547,6 +547,10 @@ function sendHeartbeat() {
         _latestAvailableWork = data.available_work;
       }
       _heartbeatConsecutiveFailures = 0;
+      try {
+        var now = new Date();
+        fs.utimesSync(path.join(getLogsDir(), 'evolver_loop.log'), now, now);
+      } catch (e) {}
       return { ok: true, response: data };
     })
     .catch(function (err) {
