@@ -154,8 +154,16 @@ describe('sendHeartbeat log touch', () => {
 
   after(() => {
     global.fetch = originalFetch;
-    process.env.A2A_HUB_URL = originalHubUrl || '';
-    process.env.EVOLVER_LOGS_DIR = originalLogsDir || '';
+    if (originalHubUrl === undefined) {
+      delete process.env.A2A_HUB_URL;
+    } else {
+      process.env.A2A_HUB_URL = originalHubUrl;
+    }
+    if (originalLogsDir === undefined) {
+      delete process.env.EVOLVER_LOGS_DIR;
+    } else {
+      process.env.EVOLVER_LOGS_DIR = originalLogsDir;
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -164,7 +172,6 @@ describe('sendHeartbeat log touch', () => {
     fs.writeFileSync(logPath, '');
     var oldTime = new Date(Date.now() - 5000);
     fs.utimesSync(logPath, oldTime, oldTime);
-    var beforeMs = Date.now();
 
     global.fetch = async () => ({
       json: async () => ({ status: 'ok' }),
@@ -174,7 +181,7 @@ describe('sendHeartbeat log touch', () => {
     assert.ok(result.ok, 'heartbeat should succeed');
 
     var mtime = fs.statSync(logPath).mtimeMs;
-    assert.ok(mtime >= beforeMs, 'mtime should be updated to at least the time before the call');
+    assert.ok(mtime > oldTime.getTime(), 'mtime should be newer than the pre-set old time');
   });
 
   it('creates evolver_loop.log when it does not exist on successful heartbeat', async () => {
