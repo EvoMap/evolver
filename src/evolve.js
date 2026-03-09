@@ -30,7 +30,7 @@ const {
   memoryGraphPath,
 } = memoryAdapter;
 const { readStateForSolidify, writeStateForSolidify } = require('./gep/solidify');
-const { fetchTasks, selectBestTask, claimTask, taskToSignals, claimWorkerTask } = require('./gep/taskReceiver');
+const { fetchTasks, selectBestTask, claimTask, taskToSignals, claimWorkerTask, estimateCommitmentDeadline } = require('./gep/taskReceiver');
 const { generateQuestions } = require('./gep/questionGenerator');
 const { buildMutation, isHighRiskMutationAllowed } = require('./gep/mutation');
 const { selectPersonalityForRun } = require('./gep/personality');
@@ -1045,7 +1045,15 @@ async function run() {
       const best = selectBestTask(hubTasks, taskMemoryEvents);
       if (best) {
         const alreadyClaimed = best.status === 'claimed';
-        const claimed = alreadyClaimed || await claimTask(best.id || best.task_id);
+        let claimed = alreadyClaimed;
+        if (!alreadyClaimed) {
+          const commitDeadline = estimateCommitmentDeadline(best);
+          claimed = await claimTask(best.id || best.task_id, commitDeadline ? { commitment_deadline: commitDeadline } : undefined);
+          if (claimed && commitDeadline) {
+            best._commitment_deadline = commitDeadline;
+            console.log(`[Commitment] Deadline set: ${commitDeadline}`);
+          }
+        }
         if (claimed) {
           activeTask = best;
           const taskSignals = taskToSignals(best);
@@ -1059,6 +1067,25 @@ async function run() {
   } catch (e) {
     console.log(`[TaskReceiver] Fetch/claim failed (non-fatal): ${e.message}`);
   }
+
+  // --- Commitment: check for overdue tasks from heartbeat ---
+  // If Hub reported overdue tasks, prioritize resuming them by injecting their
+  // signals at the front. This does not change activeTask selection (the overdue
+  // task should already be claimed/active from a previous cycle).
+  try {
+    const { consumeOverdueTasks } = require('./gep/a2aProtocol');
+    const overdueTasks = consumeOverdueTasks();
+    if (overdueTasks.length > 0) {
+      for (const ot of overdueTasks) {
+        const otId = ot.task_id || ot.id;
+        if (activeTask && (activeTask.id === otId || activeTask.task_id === otId)) {
+          console.warn(`[Commitment] Active task "${activeTask.title || otId}" is OVERDUE -- prioritizing completion.`);
+          signals.unshift('overdue_task', 'urgent');
+          break;
+        }
+      }
+    }
+  } catch {}
 
   // --- Worker Pool: select task from heartbeat available_work (deferred claim) ---
   // Only remember the best task and inject its signals; actual claim+complete
@@ -1452,6 +1479,7 @@ async function run() {
         active_task_title: activeTask ? (activeTask.title || null) : null,
         worker_assignment_id: activeTask ? (activeTask._worker_assignment_id || null) : null,
         worker_pending: activeTask ? (activeTask._worker_pending || false) : false,
+        commitment_deadline: activeTask ? (activeTask._commitment_deadline || null) : null,
         applied_lessons: hubLessons.map(function(l) { return l.lesson_id; }).filter(Boolean),
         hub_lessons: hubLessons,
       };

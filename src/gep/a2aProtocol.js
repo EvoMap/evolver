@@ -397,6 +397,8 @@ var _heartbeatConsecutiveFailures = 0;
 var _heartbeatTotalSent = 0;
 var _heartbeatTotalFailed = 0;
 var _latestAvailableWork = [];
+var _latestOverdueTasks = [];
+var _pendingCommitmentUpdates = [];
 var _cachedHubNodeSecret = null;
 var _heartbeatIntervalMs = 0;
 var _heartbeatRunning = false;
@@ -498,13 +500,17 @@ function sendHeartbeat() {
     timestamp: new Date().toISOString(),
   };
 
+  if (!bodyObj.meta) bodyObj.meta = {};
+
   if (process.env.WORKER_ENABLED === '1') {
     var domains = (process.env.WORKER_DOMAINS || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-    bodyObj.meta = {
-      worker_enabled: true,
-      worker_domains: domains,
-      max_load: Math.max(1, Number(process.env.WORKER_MAX_LOAD) || 5),
-    };
+    bodyObj.meta.worker_enabled = true;
+    bodyObj.meta.worker_domains = domains;
+    bodyObj.meta.max_load = Math.max(1, Number(process.env.WORKER_MAX_LOAD) || 5);
+  }
+
+  if (_pendingCommitmentUpdates.length > 0) {
+    bodyObj.meta.commitment_updates = _pendingCommitmentUpdates.splice(0);
   }
 
   var body = JSON.stringify(bodyObj);
@@ -545,6 +551,10 @@ function sendHeartbeat() {
       }
       if (Array.isArray(data.available_work)) {
         _latestAvailableWork = data.available_work;
+      }
+      if (Array.isArray(data.overdue_tasks) && data.overdue_tasks.length > 0) {
+        _latestOverdueTasks = data.overdue_tasks;
+        console.warn('[Commitment] ' + data.overdue_tasks.length + ' overdue task(s) detected via heartbeat.');
       }
       _heartbeatConsecutiveFailures = 0;
       try {
@@ -593,6 +603,31 @@ function consumeAvailableWork() {
   var work = _latestAvailableWork;
   _latestAvailableWork = [];
   return work;
+}
+
+function getOverdueTasks() {
+  return _latestOverdueTasks;
+}
+
+function consumeOverdueTasks() {
+  var tasks = _latestOverdueTasks;
+  _latestOverdueTasks = [];
+  return tasks;
+}
+
+/**
+ * Queue a commitment deadline update to be sent with the next heartbeat.
+ * @param {string} taskId
+ * @param {string} deadlineIso - ISO-8601 deadline
+ * @param {boolean} [isAssignment] - true if this is a WorkAssignment
+ */
+function queueCommitmentUpdate(taskId, deadlineIso, isAssignment) {
+  if (!taskId || !deadlineIso) return;
+  _pendingCommitmentUpdates.push({
+    task_id: taskId,
+    deadline: deadlineIso,
+    assignment: !!isAssignment,
+  });
 }
 
 function startHeartbeat(intervalMs) {
@@ -689,6 +724,9 @@ module.exports = {
   getHeartbeatStats,
   getLatestAvailableWork,
   consumeAvailableWork,
+  getOverdueTasks,
+  consumeOverdueTasks,
+  queueCommitmentUpdate,
   getHubNodeSecret,
   buildHubHeaders,
 };
