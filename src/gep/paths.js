@@ -6,16 +6,33 @@ function getRepoRoot() {
     return process.env.EVOLVER_REPO_ROOT;
   }
 
-  let dir = path.resolve(__dirname, '..', '..');
+  const ownDir = path.resolve(__dirname, '..', '..');
+
+  // Safety: check evolver's own directory first to prevent operating on a
+  // parent repo that happens to contain .git (which could cause data loss
+  // when git reset --hard runs in the wrong scope).
+  if (fs.existsSync(path.join(ownDir, '.git'))) {
+    return ownDir;
+  }
+
+  let dir = path.dirname(ownDir);
   while (dir !== '/' && dir !== '.') {
-    const gitDir = path.join(dir, '.git');
-    if (fs.existsSync(gitDir)) {
-      return dir;
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      if (process.env.EVOLVER_USE_PARENT_GIT === 'true') {
+        console.warn('[evolver] Using parent git repository at:', dir);
+        return dir;
+      }
+      console.warn(
+        '[evolver] Detected .git in parent directory', dir,
+        '-- ignoring. Set EVOLVER_USE_PARENT_GIT=true to override,',
+        'or EVOLVER_REPO_ROOT to specify the target directory explicitly.'
+      );
+      return ownDir;
     }
     dir = path.dirname(dir);
   }
 
-  return path.resolve(__dirname, '..', '..');
+  return ownDir;
 }
 
 function getWorkspaceRoot() {

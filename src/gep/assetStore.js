@@ -177,11 +177,27 @@ function readRecentCandidates(limit = 20) {
   try {
     const p = candidatesPath();
     if (!fs.existsSync(p)) return [];
-    const raw = fs.readFileSync(p, 'utf8');
-    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-    return lines.slice(Math.max(0, lines.length - limit)).map(l => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
+    const stat = fs.statSync(p);
+    if (stat.size < 1024 * 1024) {
+      const raw = fs.readFileSync(p, 'utf8');
+      const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      return lines.slice(-limit).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    }
+    // Large file (>1MB): only read the tail to avoid OOM.
+    const fd = fs.openSync(p, 'r');
+    try {
+      const chunkSize = Math.min(stat.size, limit * 4096);
+      const buf = Buffer.alloc(chunkSize);
+      fs.readSync(fd, buf, 0, chunkSize, stat.size - chunkSize);
+      const lines = buf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+      return lines.slice(-limit).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch { return []; }
 }
 
@@ -189,11 +205,26 @@ function readRecentExternalCandidates(limit = 50) {
   try {
     const p = externalCandidatesPath();
     if (!fs.existsSync(p)) return [];
-    const raw = fs.readFileSync(p, 'utf8');
-    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-    return lines.slice(Math.max(0, lines.length - limit)).map(l => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
+    const stat = fs.statSync(p);
+    if (stat.size < 1024 * 1024) {
+      const raw = fs.readFileSync(p, 'utf8');
+      const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      return lines.slice(-limit).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    }
+    const fd = fs.openSync(p, 'r');
+    try {
+      const chunkSize = Math.min(stat.size, limit * 4096);
+      const buf = Buffer.alloc(chunkSize);
+      fs.readSync(fd, buf, 0, chunkSize, stat.size - chunkSize);
+      const lines = buf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+      return lines.slice(-limit).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch { return []; }
 }
 
