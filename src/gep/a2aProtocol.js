@@ -518,8 +518,13 @@ function sendHeartbeat() {
   }
 
   if (!_heartbeatFpSent) {
-    try { meta.env_fingerprint = captureEnvFingerprint(); } catch {}
-    _heartbeatFpSent = true;
+    try {
+      var fp = captureEnvFingerprint();
+      if (fp && fp.evolver_version) {
+        meta.env_fingerprint = fp;
+        _heartbeatFpSent = true;
+      }
+    } catch {}
   }
 
   if (Object.keys(meta).length > 0) {
