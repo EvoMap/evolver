@@ -4,6 +4,8 @@ memory/
 workspace/
 assets/gep/candidates.jsonl
 assets/gep/external_candidates.jsonl
+assets/gep/failed_capsules.json
+assets/gep/genes.jsonl
 dist-public/
 
 # Docker / vibe testing
