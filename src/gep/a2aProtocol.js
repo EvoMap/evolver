@@ -469,12 +469,14 @@ function sendHelloToHub() {
 }
 
 function getHubNodeSecret() {
+  if (process.env.A2A_NODE_SECRET) return process.env.A2A_NODE_SECRET;
   if (_cachedHubNodeSecret) return _cachedHubNodeSecret;
   var persisted = _loadPersistedNodeSecret();
   if (persisted) {
     _cachedHubNodeSecret = persisted;
     return persisted;
   }
+  if (process.env.A2A_HUB_TOKEN) return process.env.A2A_HUB_TOKEN;
   return null;
 }
 
