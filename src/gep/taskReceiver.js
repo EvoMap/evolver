@@ -8,6 +8,7 @@
 
 const { getNodeId, buildHubHeaders } = require('./a2aProtocol');
 const { resolveHubUrl } = require('../config');
+const { createTask } = require('./schemas/task');
 
 function buildAuthHeaders() {
   return buildHubHeaders();
@@ -72,7 +73,9 @@ async function fetchTasks(opts) {
 
     const data = await res.json();
     const respPayload = data.payload || data;
-    const tasks = Array.isArray(respPayload.tasks) ? respPayload.tasks : [];
+    const tasks = Array.isArray(respPayload.tasks)
+      ? respPayload.tasks.map(function(t) { return createTask(t); })
+      : [];
     const result = { tasks };
 
     if (respPayload.questions_created) {

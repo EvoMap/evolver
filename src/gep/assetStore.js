@@ -2,6 +2,20 @@ const fs = require('fs');
 const path = require('path');
 const { getGepAssetsDir } = require('./paths');
 const { computeAssetId, SCHEMA_VERSION } = require('./contentHash');
+const { validateGene } = require('./schemas/gene');
+const { validateCapsule } = require('./schemas/capsule');
+
+// Run validateGene/validateCapsule before persisting. Warn-only -- never throw
+// because losing a write hurts more than persisting a slightly-malformed
+// record. The hub has its own validation gate when the asset is published.
+// See issue #30 (H1) for context.
+function _validateAssetWarn(label, validatorFn, obj) {
+  try {
+    validatorFn(obj);
+  } catch (e) {
+    console.warn('[AssetStore] ' + label + ' schema validation warning: ' + (e && e.message || e));
+  }
+}
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -273,14 +287,60 @@ function getLastEventId() {
   }
 }
 
+// Soft cap on how much of events.jsonl we materialize into memory in one read.
+// On long-running daemons the file accumulates thousands of large JSON objects
+// (validation reports, blast radius, etc) and the previous full-read could
+// allocate dozens of MB per call -- and computeCapsuleSuccessStreak invokes
+// this on every successful solidify. Above the threshold we tail-read a chunk
+// from EOF and discard the partial leading line, mirroring readRecentCandidates.
+// All current callers only look at the recent window
+// (signals.js -> slice(-80), guards.js -> slice(-threshold),
+//  a2a.computeCapsuleSuccessStreak -> backwards scan), so dropping older
+// records is acceptable for correctness. Tunable via EVOLVER_EVENTS_FULL_READ_MAX_BYTES.
+const EVENTS_FULL_READ_MAX_BYTES_DEFAULT = 2 * 1024 * 1024;
+const EVENTS_TAIL_READ_BYTES_DEFAULT = 2 * 1024 * 1024;
+
+function _eventsFullReadMaxBytes() {
+  const v = parseInt(String(process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES || ''), 10);
+  return Number.isFinite(v) && v > 0 ? v : EVENTS_FULL_READ_MAX_BYTES_DEFAULT;
+}
+
+function _eventsTailReadBytes() {
+  const v = parseInt(String(process.env.EVOLVER_EVENTS_TAIL_READ_BYTES || ''), 10);
+  return Number.isFinite(v) && v > 0 ? v : EVENTS_TAIL_READ_BYTES_DEFAULT;
+}
+
 function readAllEvents() {
   try {
     const p = eventsPath();
     if (!fs.existsSync(p)) return [];
-    const raw = fs.readFileSync(p, 'utf8');
-    return raw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
+    const stat = fs.statSync(p);
+    const fullReadCap = _eventsFullReadMaxBytes();
+    if (stat.size <= fullReadCap) {
+      const raw = fs.readFileSync(p, 'utf8');
+      return raw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    }
+    // Large file: tail-read to avoid OOM. Drop the first line ONLY when the
+    // chunk does not cover the whole file (readPos > 0), because in that case
+    // it can be cut mid-JSON. When chunkSize === stat.size the read starts at
+    // 0 and the first line is the actual start-of-file -- discarding it would
+    // silently lose a complete event. Bugbot caught this on PR #31.
+    const chunkSize = Math.min(stat.size, _eventsTailReadBytes());
+    const readPos = stat.size - chunkSize;
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(chunkSize);
+      fs.readSync(fd, buf, 0, chunkSize, readPos);
+      const lines = buf.toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+      const intact = readPos > 0 && lines.length > 1 ? lines.slice(1) : lines;
+      return intact.map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch (e) {
     console.warn('[AssetStore] Failed to read events.jsonl:', e && e.message || e);
     return [];
@@ -376,6 +436,7 @@ function ensureSchemaFields(obj) {
 }
 
 function upsertGene(geneObj) {
+  _validateAssetWarn('Gene', validateGene, geneObj);
   ensureSchemaFields(geneObj);
   ensureGenesSeeded();
   return withFileLock(genesPath(), () => {
@@ -388,6 +449,7 @@ function upsertGene(geneObj) {
 }
 
 function appendCapsule(capsuleObj) {
+  _validateAssetWarn('Capsule', validateCapsule, capsuleObj);
   ensureSchemaFields(capsuleObj);
   return withFileLock(capsulesPath(), () => {
     const current = readJsonIfExists(capsulesPath(), getDefaultCapsules());
@@ -399,6 +461,7 @@ function appendCapsule(capsuleObj) {
 
 function upsertCapsule(capsuleObj) {
   if (!capsuleObj || capsuleObj.type !== 'Capsule' || !capsuleObj.id) return;
+  _validateAssetWarn('Capsule', validateCapsule, capsuleObj);
   ensureSchemaFields(capsuleObj);
   return withFileLock(capsulesPath(), () => {
     const current = readJsonIfExists(capsulesPath(), getDefaultCapsules());

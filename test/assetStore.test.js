@@ -208,6 +208,173 @@ describe('readAllEvents', () => {
     assert.equal(events[0].id, 'evt_1');
     assert.equal(events[1].id, 'evt_2');
   });
+
+  // Regression for issue #30 (H6): readAllEvents previously read the whole
+  // events.jsonl into memory unconditionally. On long-running daemons the
+  // file accumulates dozens of MB, causing heap spikes per
+  // computeCapsuleSuccessStreak call. Now bounded by
+  // EVOLVER_EVENTS_FULL_READ_MAX_BYTES with a tail-read fallback.
+  it('handles oversized file via tail-read and recovers recent events', () => {
+    const { eventsPath, readAllEvents } = freshRequire();
+    const p = eventsPath();
+    // Pick a cap small enough to force tail-read but a tail chunk large enough
+    // to start mid-file (readPos > 0), exercising the partial-line discard path.
+    process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES = '512';
+    try {
+      const padding = JSON.stringify({ type: 'EvolutionEvent', id: 'pad', data: 'x'.repeat(200) }) + '\n';
+      const padCount = 30;
+      let content = '';
+      for (let i = 0; i < padCount; i++) content += padding;
+      content += JSON.stringify({ type: 'EvolutionEvent', id: 'recent_1', intent: 'repair' }) + '\n';
+      content += JSON.stringify({ type: 'EvolutionEvent', id: 'recent_2', intent: 'optimize' }) + '\n';
+      fs.writeFileSync(p, content, 'utf8');
+      // > 2MB tail chunk default ensures readPos = stat.size - chunkSize stays
+      // at 0 here; the inner branch is exercised by the next test below.
+      assert.ok(fs.statSync(p).size > 512, 'fixture must exceed cap');
+
+      const events = readAllEvents();
+      const ids = events.map(e => e && e.id).filter(Boolean);
+      assert.ok(ids.includes('recent_1'), 'tail read should surface recent_1');
+      assert.ok(ids.includes('recent_2'), 'tail read should surface recent_2');
+    } finally {
+      delete process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES;
+    }
+  });
+
+  // True mid-file tail read: readPos > 0, first chunk line MUST be discarded
+  // because it is almost certainly a partial JSON record. We force this with
+  // a tail size smaller than the file, leaving prefix bytes outside the chunk.
+  it('discards a partial first line only when readPos > 0 (true mid-file tail)', () => {
+    const { eventsPath, readAllEvents } = freshRequire();
+    const p = eventsPath();
+    process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES = '256';
+    process.env.EVOLVER_EVENTS_TAIL_READ_BYTES = '512';
+    try {
+      const longLineBody = 'x'.repeat(400);
+      const events = [
+        { type: 'EvolutionEvent', id: 'event_a', body: longLineBody },
+        { type: 'EvolutionEvent', id: 'event_b' },
+        { type: 'EvolutionEvent', id: 'event_c' },
+      ];
+      fs.writeFileSync(p, events.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+      const stat = fs.statSync(p);
+      assert.ok(stat.size > 512, 'file must exceed tail-read chunk for readPos > 0');
+
+      const recovered = readAllEvents();
+      const ids = recovered.map(e => e && e.id).filter(Boolean);
+      // event_a sits in the dropped-prefix region; event_b / event_c survive.
+      assert.ok(!ids.includes('event_a'), 'partial first line must be discarded');
+      assert.ok(ids.includes('event_b'), 'second event must survive');
+      assert.ok(ids.includes('event_c'), 'last event must survive');
+    } finally {
+      delete process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES;
+      delete process.env.EVOLVER_EVENTS_TAIL_READ_BYTES;
+    }
+  });
+
+  // Regression for Bugbot finding on PR #31: when the tail chunk covers the
+  // whole file (readPos === 0), the first line is NOT partial -- it is the
+  // start of the file -- and must NOT be discarded. The earlier version
+  // unconditionally dropped lines[0], silently losing a complete event.
+  it('does not drop the first event when tail chunk starts at offset 0', () => {
+    const { eventsPath, readAllEvents } = freshRequire();
+    const p = eventsPath();
+    // cap < file size triggers tail path; default tail chunk (2MB) > file size
+    // makes readPos === 0, so no partial line should be dropped.
+    process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES = '128';
+    try {
+      const lines = [
+        JSON.stringify({ type: 'EvolutionEvent', id: 'first_event', intent: 'repair' }),
+        JSON.stringify({ type: 'EvolutionEvent', id: 'middle_event', intent: 'optimize' }),
+        JSON.stringify({ type: 'EvolutionEvent', id: 'last_event', intent: 'innovate' }),
+      ];
+      fs.writeFileSync(p, lines.join('\n') + '\n', 'utf8');
+      const stat = fs.statSync(p);
+      assert.ok(stat.size > 128, 'fixture must exceed cap');
+      assert.ok(stat.size < 2 * 1024 * 1024, 'fixture must fit in a single tail chunk');
+
+      const events = readAllEvents();
+      const ids = events.map(e => e && e.id).filter(Boolean);
+      assert.equal(events.length, 3, 'all 3 events recovered, first must not be dropped');
+      assert.deepEqual(ids, ['first_event', 'middle_event', 'last_event']);
+    } finally {
+      delete process.env.EVOLVER_EVENTS_FULL_READ_MAX_BYTES;
+    }
+  });
+});
+
+describe('upsertCapsule / upsertGene validation (issue #30 H1)', () => {
+  beforeEach(setupTempEnv);
+  afterEach(teardownTempEnv);
+
+  it('persists a well-formed Capsule without warning', () => {
+    const { upsertCapsule, loadCapsules } = freshRequire();
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => { warnings.push(a.join(' ')); };
+    try {
+      upsertCapsule({
+        type: 'Capsule',
+        id: 'cap_ok',
+        outcome: { status: 'success', score: 0.9 },
+        trigger: ['log_error'],
+        execution_trace: [{ step: 'run', ok: true }],
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.filter(w => w.includes('schema validation warning')).length, 0);
+    const loaded = loadCapsules();
+    assert.ok(loaded.find(c => c.id === 'cap_ok'), 'capsule should be persisted');
+  });
+
+  it('emits a warning but still persists a malformed Capsule (warn-only contract)', () => {
+    const { upsertCapsule, loadCapsules } = freshRequire();
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => { warnings.push(a.join(' ')); };
+    try {
+      upsertCapsule({
+        type: 'Capsule',
+        id: 'cap_bad',
+        outcome: { status: 'unknown_status', score: 0.5 },
+        trigger: ['log_error'],
+        execution_trace: [],
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.ok(
+      warnings.some(w => w.includes('Capsule schema validation warning')),
+      'should warn about invalid outcome.status',
+    );
+    const loaded = loadCapsules();
+    assert.ok(loaded.find(c => c.id === 'cap_bad'), 'persistence must not be blocked by validator');
+  });
+
+  it('emits a warning but still persists a malformed Gene', () => {
+    const { upsertGene, loadGenes } = freshRequire();
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => { warnings.push(a.join(' ')); };
+    try {
+      upsertGene({
+        type: 'Gene',
+        id: 'gene_bad_category',
+        category: 'not_a_category',
+        signals_match: ['log_error'],
+        strategy: ['fix'],
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.ok(
+      warnings.some(w => w.includes('Gene schema validation warning')),
+      'should warn about invalid category',
+    );
+    const loaded = loadGenes();
+    assert.ok(loaded.find(g => g.id === 'gene_bad_category'), 'persistence must not be blocked by validator');
+  });
 });
 
 describe('getLastEventId', () => {
