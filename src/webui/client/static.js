@@ -89,7 +89,7 @@ function getIndexHtml() {
       <div class="grid-bottom">
         <div class="panel">
           <h2>Hub A2A Stream</h2>
-          <p class="muted small" style="margin:-8px 0 12px 0">Asset calls (asset_call_log.jsonl) + ATP proofs/orders from local proxy.</p>
+          <p class="muted small" style="margin:-8px 0 12px 0">Asset calls and ATP proofs/orders exchanged with the Hub.</p>
           <div id="hub-stream">Loading...</div>
         </div>
         <div class="panel">
@@ -185,13 +185,13 @@ function pillList(items, kind) {
 // ---- Overview ----
 
 function renderStatus(status) {
+  const lastRun = status.lastRun || {};
   $('status').innerHTML = kv([
     ['Mode', status.mode],
-    ['Proxy', status.proxy?.running ? status.proxy.url : 'not running'],
-    ['Evolution dir', status.paths?.evolutionDir],
-    ['GEP assets', status.paths?.gepAssetsDir],
-    ['Skills dir', status.paths?.skillsDir],
+    ['Proxy', status.proxy?.running ? 'running' : 'not running'],
     ['Heartbeat', status.heartbeat?.phase || 'idle'],
+    ['Last run', lastRun.run_id || '-'],
+    ['Last activity', formatTime(lastRun.finished_at || lastRun.created_at)],
   ]);
 }
 
@@ -282,7 +282,7 @@ function renderLatestRun(runs) {
 
 function renderSkills(skills) {
   if (!skills.exists || !skills.items.length) {
-    $('skills').innerHTML = '<p class="muted">No local skills directory at <code>' + esc(skills.path) + '</code>.</p>';
+    $('skills').innerHTML = '<p class="muted">No local skills installed yet.</p>';
     return;
   }
   $('skills').innerHTML = '<ul class="skill-list">' + skills.items.map((skill) =>
@@ -592,7 +592,7 @@ function renderAgentStream(mailbox, sessions, dms) {
   }));
 
   if (!items.length) {
-    $('agent-stream').innerHTML = '<p class="muted">No agent interactions yet. Mailbox is at <code>~/.evomap/mailbox/messages.jsonl</code>.</p>';
+    $('agent-stream').innerHTML = '<p class="muted">No agent interactions yet.</p>';
     return;
   }
   items.sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
@@ -674,7 +674,7 @@ function bucketByDay(items, days) {
 
 function renderProxySnapshots(snapshots) {
   if (!snapshots || !Object.keys(snapshots).length) {
-    $('proxy-snapshots').innerHTML = '<p class="muted">Proxy not running. Start <code>evolver run</code> to enable live snapshots.</p>';
+    $('proxy-snapshots').innerHTML = '<p class="muted snapshot-empty">Proxy not running. Start <code>evolver run</code> to enable live snapshots.</p>';
     return;
   }
   $('proxy-snapshots').innerHTML = Object.entries(snapshots).map(([key, snap]) => {
@@ -740,9 +740,8 @@ function renderPersonality(personality, memoryGraph) {
   }
 
   $('personality-detail').innerHTML = current && Object.keys(current).length
-    ? kv(Object.entries(current).slice(0, 12)) +
-      '<p class="muted small" style="margin-top:12px">Source: ' + esc(personality.path || '-') + '</p>'
-    : '<p class="muted">No personality_state.json found.</p>';
+    ? kv(Object.entries(current).slice(0, 12))
+    : '<p class="muted">No personality data recorded yet.</p>';
 
   renderMemoryGraph(memoryGraph);
 }
@@ -1015,6 +1014,7 @@ tr:last-child td { border-bottom: none; }
 .stream-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .stream-title { font-weight: 500; word-break: break-all; }
 .snapshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.snapshot-grid .snapshot-empty { grid-column: 1 / -1; margin: 0; white-space: nowrap; }
 .snapshot-card { padding: 12px; background: color-mix(in srgb, var(--panel-bg) 96%, var(--text-main) 4%); border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.85rem; }
 `;
 }
