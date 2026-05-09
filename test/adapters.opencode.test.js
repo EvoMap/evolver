@@ -193,6 +193,127 @@ describe('opencode adapter: uninstall', () => {
   });
 });
 
+describe('opencode adapter: verify (issue #531)', () => {
+  it('reports ok=true for a fresh install with all checks green', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, true, JSON.stringify(report, null, 2));
+      assert.equal(report.checks.length, 5);
+      for (const c of report.checks) {
+        assert.equal(c.ok, true, `check ${c.id} should pass: ${c.detail}`);
+      }
+      assert.match(report.note, /Plugin is installed and loadable/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports ok=false when no install has happened', () => {
+    const tmp = makeTmpDir();
+    try {
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      const failed = report.checks.filter((c) => !c.ok).map((c) => c.id);
+      assert.ok(failed.includes('plugin_file_present'), 'should fail file-present check');
+      assert.ok(failed.includes('plugin_loadable'), 'should fail loadable check');
+      assert.match(report.note, /Re-run/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports ok=false when plugin file is corrupted', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+
+      // Corrupt the plugin file.
+      const pluginPath = path.join(tmp, '.opencode', 'plugins', 'evolver.js');
+      fs.writeFileSync(pluginPath, 'this is not valid javascript {{{', 'utf8');
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      const loadable = report.checks.find((c) => c.id === 'plugin_loadable');
+      assert.equal(loadable.ok, false);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports ok=false when one hook script is missing', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+
+      fs.unlinkSync(path.join(tmp, '.opencode', 'hooks', 'evolver-signal-detect.js'));
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      const scripts = report.checks.find((c) => c.id === 'hook_scripts_present');
+      assert.equal(scripts.ok, false);
+      assert.match(scripts.detail, /evolver-signal-detect\.js/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports ok=false when AGENTS.md section is missing', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+
+      fs.unlinkSync(path.join(tmp, 'AGENTS.md'));
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      const md = report.checks.find((c) => c.id === 'agents_md_section');
+      assert.equal(md.ok, false);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports unmanaged when the plugin file lacks the marker', () => {
+    const tmp = makeTmpDir();
+    try {
+      const pluginsDir = path.join(tmp, '.opencode', 'plugins');
+      fs.mkdirSync(pluginsDir, { recursive: true });
+      // user-authored plugin: parses, exports a function, but no managed marker
+      fs.writeFileSync(path.join(pluginsDir, 'evolver.js'),
+        'const Evolver = async () => ({});\nmodule.exports = { Evolver };\nmodule.exports.default = Evolver;\n',
+        'utf8',
+      );
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      const managed = report.checks.find((c) => c.id === 'plugin_managed_marker');
+      assert.equal(managed.ok, false);
+      assert.match(managed.detail, /not evolver-managed/);
+    } finally { cleanup(tmp); }
+  });
+});
+
+describe('opencode adapter: install post-message (issue #531)', () => {
+  it('install result includes plugin_path field for downstream consumers', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      const result = opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      assert.equal(typeof result.plugin_path, 'string');
+      assert.match(result.plugin_path, /\.opencode[\\/]+plugins[\\/]+evolver\.js$/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('printVerifyReport is exported as a function', () => {
+    assert.equal(typeof opencodeAdapter.printVerifyReport, 'function');
+  });
+
+  it('verify is exported as a function', () => {
+    assert.equal(typeof opencodeAdapter.verify, 'function');
+  });
+});
+
 describe('opencode adapter: isEvolverManagedPluginFile', () => {
   it('detects files with _evolver_managed marker', () => {
     const tmp = makeTmpDir();

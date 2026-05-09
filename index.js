@@ -1578,12 +1578,43 @@ async function main() {
     }
 
   } else if (command === 'setup-hooks') {
-    const { setupHooks } = require('./src/adapters/hookAdapter');
+    const hookAdapter = require('./src/adapters/hookAdapter');
+    const { setupHooks, resolveConfigRoot, detectPlatform, loadAdapter } = hookAdapter;
 
     const platformFlag = args.find(a => typeof a === 'string' && a.startsWith('--platform='));
     const platform = platformFlag ? platformFlag.slice('--platform='.length) : undefined;
     const force = args.includes('--force');
     const uninstall = args.includes('--uninstall');
+    const verifyOnly = args.includes('--verify');
+
+    if (verifyOnly) {
+      // Read-only verification: do not touch any files, just report whether
+      // the previously-installed hooks/plugin look healthy. Lets users answer
+      // "is the plugin actually loaded?" without grepping opencode logs.
+      try {
+        const platformId = platform || detectPlatform(process.cwd());
+        if (!platformId) {
+          console.error('[setup-hooks] --verify: could not detect platform. Pass --platform=opencode|cursor|claude-code|codex|kiro');
+          process.exit(2);
+        }
+        const adapter = loadAdapter(platformId);
+        if (!adapter || typeof adapter.verify !== 'function') {
+          console.error('[setup-hooks] --verify: platform ' + platformId + ' does not support verification yet.');
+          process.exit(2);
+        }
+        const configRoot = resolveConfigRoot(platformId, process.cwd());
+        const report = adapter.verify({ configRoot });
+        if (typeof adapter.printVerifyReport === 'function') {
+          adapter.printVerifyReport(report);
+        } else {
+          console.log(JSON.stringify(report, null, 2));
+        }
+        process.exit(report.ok ? 0 : 1);
+      } catch (verifyErr) {
+        console.error('[setup-hooks] --verify error:', verifyErr && verifyErr.message || verifyErr);
+        process.exit(1);
+      }
+    }
 
     try {
       const result = await setupHooks({
@@ -1704,6 +1735,7 @@ async function main() {
     - --platform=cursor|claude-code|codex|kiro|opencode  (auto-detect if omitted)
     - --force                              (overwrite existing config)
     - --uninstall                          (remove evolver hooks)
+    - --verify                             (read-only: print install health for the chosen platform)
   - asset-log flags:
     - --run=<run_id>           (filter by run ID)
     - --action=<action>        (filter: hub_search_hit, hub_search_miss, asset_reuse, asset_reference, asset_publish, asset_publish_skip)
