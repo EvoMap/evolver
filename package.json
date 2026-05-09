@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver",
-  "version": "1.80.5",
+  "version": "1.80.6",
   "description": "A GEP-powered self-evolution engine for AI agents. Features automated log analysis and Genome Evolution Protocol (GEP) for auditable, reusable evolution assets.",
   "main": "index.js",
   "bin": {
@@ -28,6 +28,7 @@
     "run": "node index.js run",
     "solidify": "node index.js solidify",
     "review": "node index.js review",
+    "webui": "node index.js webui",
     "a2a:export": "node scripts/a2a_export.js",
     "a2a:ingest": "node scripts/a2a_ingest.js",
     "a2a:promote": "node scripts/a2a_promote.js"

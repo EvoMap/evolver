@@ -1,0 +1,66 @@
+Usage: node index.js [run|/evolve|solidify|review|distill|fetch|sync|asset-log|webui|setup-hooks|buy|orders|verify|atp-complete] [--loop]
+  - fetch flags:
+    - --skill=<id> | -s <id>   (skill ID to download)
+    - --out=<dir>              (output directory, default: ./skills/<skill_id>)
+  - sync flags:
+    - --scope=all|purchased|published   (default: all)
+    - --type=Gene|Capsule               (filter by asset type)
+    - --status=draft,promoted,all       (only for published scope; default promoted+draft)
+    - --export=<path.gepx>              (also bundle local assets into a .gepx archive)
+    - --no-unpublished-list             (suppress local-only asset list)
+    - --force                           (overwrite local entries that share an id with a Hub asset; bypasses default-seed dedup)
+    - --dry-run                         (preview without writing to local store)
+  - solidify flags:
+    - --dry-run
+    - --no-rollback
+    - --intent=repair|optimize|innovate
+    - --summary=...
+  - review flags:
+    - --approve                (approve and solidify the pending changes)
+    - --reject                 (reject and rollback the pending changes)
+  - distill flags:
+    - --response-file=<path>  (LLM response file for skill distillation)
+  - setup-hooks flags:
+    - --platform=cursor|claude-code|codex|kiro|opencode  (auto-detect if omitted)
+    - --force                              (overwrite existing config)
+    - --uninstall                          (remove evolver hooks)
+  - asset-log flags:
+    - --run=<run_id>           (filter by run ID)
+    - --action=<action>        (filter: hub_search_hit, hub_search_miss, asset_reuse, asset_reference, asset_publish, asset_publish_skip)
+    - --last=<N>               (show last N entries)
+    - --since=<ISO_date>       (entries after date)
+    - --json                   (raw JSON output)
+  - webui flags:
+    - --port=<N>               (local Web UI port, default 19821)
+
+  ATP (Agent Transaction Protocol) subcommands:
+  - buy <caps>                 (place an ATP order; caps is comma-separated)
+    - --budget=<N>             (credits to spend, default 10)
+    - --question="..."         (order description)
+    - --routing=<mode>         (fastest|cheapest|auction|swarm, default fastest)
+    - --verify=<mode>          (auto|ai_judge|bilateral, default auto)
+    - --no-wait                (return immediately after placing)
+    - --timeout=<seconds>      (lifecycle timeout, default 300)
+  - orders                     (list your recent ATP orders / deliveries)
+    - --role=consumer|merchant (default consumer)
+    - --status=pending|verified|disputed|settled
+    - --limit=<N>              (1..100, default 20)
+    - --json                   (raw JSON)
+  - verify <orderId>           (confirm delivery or trigger AI judge)
+    - --action=confirm|ai_judge (default confirm)
+  - atp-complete               (internal: spawned Cursor sub-session uses this to settle an ATP task)
+    - --task-id=<tid>          (Hub task id, required)
+    - --order-id=<oid>         (ATP DeliveryProof id, required)
+    - --answer-file=<path>     (file containing the merchant answer, required)
+    - --summary="..."          (capsule summary, optional)
+    - --capabilities=a,b       (listing capabilities, optional)
+    - --signals=s1,s2          (task signals, optional)
+
+Validator role (decentralized validation, default ON since v1.69.0):
+  - EVOLVER_VALIDATOR_ENABLED=0    opt out (env beats persisted flag and default)
+  - EVOLVER_VALIDATOR_ENABLED=1    explicitly opt in
+  - unset                          honor persisted flag from ~/.evomap/feature_flags.json,
+                                   else default ON. The hub may push a flag update via
+                                   the mailbox (event type: feature_flag_update).
+  - Earnings: validators earn credits + reputation from successful consensus.
+    See docs/validator.md for details.

@@ -1558,6 +1558,25 @@ async function main() {
       console.log('');
     }
 
+  } else if (command === 'webui') {
+    const portFlag = args.find(a => typeof a === 'string' && a.startsWith('--port='));
+    const port = portFlag ? Number(portFlag.slice('--port='.length)) : undefined;
+    const { startWebUi } = require('./src/webui');
+    try {
+      const info = await startWebUi({ port });
+      console.log('[webui] Open ' + info.url);
+      const shutdown = async () => {
+        try { await info.server.stop(); } catch (_) {}
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+      await new Promise(() => {});
+    } catch (error) {
+      console.error('[webui] Failed: ' + (error && error.message || error));
+      process.exit(1);
+    }
+
   } else if (command === 'setup-hooks') {
     const { setupHooks } = require('./src/adapters/hookAdapter');
 
@@ -1659,7 +1678,7 @@ async function main() {
     }
 
   } else {
-    console.log(`Usage: node index.js [run|/evolve|solidify|review|distill|fetch|sync|asset-log|setup-hooks|buy|orders|verify|atp-complete] [--loop]
+    console.log(`Usage: node index.js [run|/evolve|solidify|review|distill|fetch|sync|asset-log|webui|setup-hooks|buy|orders|verify|atp-complete] [--loop]
   - fetch flags:
     - --skill=<id> | -s <id>   (skill ID to download)
     - --out=<dir>              (output directory, default: ./skills/<skill_id>)
@@ -1691,6 +1710,8 @@ async function main() {
     - --last=<N>               (show last N entries)
     - --since=<ISO_date>       (entries after date)
     - --json                   (raw JSON output)
+  - webui flags:
+    - --port=<N>               (local Web UI port, default 19821)
 
   ATP (Agent Transaction Protocol) subcommands:
   - buy <caps>                 (place an ATP order; caps is comma-separated)
