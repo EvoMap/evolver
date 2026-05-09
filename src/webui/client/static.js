@@ -20,6 +20,7 @@ function getIndexHtml() {
       <button class="tab active" data-tab="overview">Overview</button>
       <button class="tab" data-tab="pipelines">Pipelines</button>
       <button class="tab" data-tab="assets">Assets</button>
+      <button class="tab" data-tab="interactions">Interactions</button>
       <button class="tab" data-tab="personality">Personality</button>
     </nav>
     <button id="refresh">Refresh</button>
@@ -76,6 +77,30 @@ function getIndexHtml() {
       </div>
       <div class="panel">
         <div id="asset-list">Loading...</div>
+      </div>
+    </section>
+
+    <section data-view="interactions" class="view">
+      <div class="grid-charts">
+        <div class="panel"><h2>Hub A2A by Action</h2><div id="hubActionChart" class="chart-container"></div></div>
+        <div class="panel"><h2>Activity (last 30 days)</h2><div id="activityChart" class="chart-container"></div></div>
+        <div class="panel"><h2>Mailbox by Type</h2><div id="mailboxChart" class="chart-container"></div></div>
+      </div>
+      <div class="grid-bottom">
+        <div class="panel">
+          <h2>Hub A2A Stream</h2>
+          <p class="muted small" style="margin:-8px 0 12px 0">Asset calls (asset_call_log.jsonl) + ATP proofs/orders from local proxy.</p>
+          <div id="hub-stream">Loading...</div>
+        </div>
+        <div class="panel">
+          <h2>Agent Interactions</h2>
+          <p class="muted small" style="margin:-8px 0 12px 0">Mailbox messages, sessions and DMs (read-only, redacted).</p>
+          <div id="agent-stream">Loading...</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Proxy Snapshots</h2>
+        <div id="proxy-snapshots" class="snapshot-grid">Loading...</div>
       </div>
     </section>
 
@@ -502,6 +527,191 @@ async function loadAsset(kind) {
   }
 }
 
+// ---- Interactions (Hub A2A + Agent) ----
+
+function renderHubStream(calls, atpProofs, atpOrders) {
+  const items = [];
+  (calls || []).forEach((c) => items.push({
+    kind: 'asset',
+    time: c.timestamp,
+    action: c.action,
+    title: c.asset_id || '-',
+    meta: 'run ' + (c.run_id || '-') + (c.score != null ? ' · score ' + c.score : ''),
+    detail: c,
+  }));
+  (atpProofs || []).forEach((p) => items.push({
+    kind: 'atp_proof',
+    time: p.created_at || p.timestamp,
+    action: 'atp_' + (p.status || 'proof'),
+    title: p.delivery_id || p.order_id || '-',
+    meta: (p.role || 'consumer') + ' · ' + (p.amount != null ? p.amount + ' credits' : '-'),
+    detail: p,
+  }));
+  (atpOrders || []).forEach((o) => items.push({
+    kind: 'atp_order',
+    time: o.created_at || o.updated_at,
+    action: 'atp_order_' + (o.status || 'pending'),
+    title: o.order_id || o.id || '-',
+    meta: (o.routing || '-') + ' · ' + (o.budget != null ? o.budget + ' credits' : '-'),
+    detail: o,
+  }));
+
+  if (!items.length) {
+    $('hub-stream').innerHTML = '<p class="muted">No Hub interactions recorded yet. Run <code>evolver run</code> or place an ATP order to populate.</p>';
+    return;
+  }
+  items.sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
+  $('hub-stream').innerHTML = '<ul class="stream-list">' + items.slice(0, 60).map(streamItem).join('') + '</ul>';
+}
+
+function renderAgentStream(mailbox, sessions, dms) {
+  const items = [];
+  (mailbox || []).forEach((m) => items.push({
+    kind: 'mailbox',
+    time: m.timestamp,
+    action: 'mb_' + (m.direction || 'msg'),
+    title: m.summary || m.type || '-',
+    meta: (m.type || '-') + ' · ' + (m.status || '-'),
+    detail: m,
+  }));
+  (sessions || []).forEach((s) => items.push({
+    kind: 'session',
+    time: s.created_at || s.updated_at,
+    action: 'session_' + (s.status || 'active'),
+    title: s.session_id || s.id || '-',
+    meta: 'with ' + (s.peer || s.peer_node_id || '-'),
+    detail: s,
+  }));
+  (dms || []).forEach((d) => items.push({
+    kind: 'dm',
+    time: d.created_at,
+    action: 'dm_' + (d.direction || 'msg'),
+    title: d.title || d.message_id || '-',
+    meta: (d.from || '-') + ' → ' + (d.to || '-'),
+    detail: d,
+  }));
+
+  if (!items.length) {
+    $('agent-stream').innerHTML = '<p class="muted">No agent interactions yet. Mailbox is at <code>~/.evomap/mailbox/messages.jsonl</code>.</p>';
+    return;
+  }
+  items.sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
+  $('agent-stream').innerHTML = '<ul class="stream-list">' + items.slice(0, 60).map(streamItem).join('') + '</ul>';
+}
+
+function streamItem(item) {
+  return '<li class="stream-item">' +
+    '<div class="stream-head">' +
+      '<span class="pill ' + esc(item.action) + '">' + esc(item.action) + '</span>' +
+      '<span class="muted small">' + esc(formatTime(item.time)) + '</span>' +
+    '</div>' +
+    '<div class="stream-title">' + esc(item.title) + '</div>' +
+    '<div class="muted small">' + esc(item.meta) + '</div>' +
+    '</li>';
+}
+
+function renderInteractionCharts(calls, atpProofs, mailbox) {
+  const textColor = chartTextColor();
+  const isDark = isDarkMode();
+
+  const actionCounts = {};
+  (calls || []).forEach((c) => { actionCounts[c.action] = (actionCounts[c.action] || 0) + 1; });
+  ensureChart('hubActionChart')?.setOption({
+    tooltip: { trigger: 'item' },
+    series: [{
+      type: 'pie', radius: ['40%', '70%'],
+      itemStyle: { borderRadius: 4, borderColor: isDark ? '#181b1f' : '#fff', borderWidth: 2 },
+      label: { color: textColor, formatter: '{b}: {c}' },
+      data: Object.keys(actionCounts).length
+        ? Object.entries(actionCounts).map(([name, value]) => ({ name, value }))
+        : [{ name: 'no calls', value: 1, itemStyle: { color: '#444' } }],
+    }],
+  });
+
+  const dayBuckets = bucketByDay([...(calls || []), ...(atpProofs || []), ...(mailbox || [])], 30);
+  ensureChart('activityChart')?.setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: '3%', right: '4%', bottom: '8%', containLabel: true },
+    xAxis: { type: 'category', data: dayBuckets.labels, axisLabel: { color: textColor, fontSize: 10 } },
+    yAxis: { type: 'value', axisLabel: { color: textColor }, splitLine: { lineStyle: { color: isDark ? '#2c3235' : '#e4e7eb' } } },
+    series: [{
+      type: 'line', data: dayBuckets.values, smooth: true, areaStyle: { opacity: 0.18, color: '#3274d9' },
+      lineStyle: { color: '#3274d9', width: 2 }, itemStyle: { color: '#3274d9' },
+    }],
+  });
+
+  const typeCounts = {};
+  (mailbox || []).forEach((m) => { typeCounts[m.type || 'unknown'] = (typeCounts[m.type || 'unknown'] || 0) + 1; });
+  ensureChart('mailboxChart')?.setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: '3%', right: '4%', bottom: '5%', containLabel: true },
+    xAxis: { type: 'value', axisLabel: { color: textColor }, splitLine: { lineStyle: { color: isDark ? '#2c3235' : '#e4e7eb' } } },
+    yAxis: { type: 'category', data: Object.keys(typeCounts).length ? Object.keys(typeCounts) : ['no messages'], axisLabel: { color: textColor } },
+    series: [{
+      type: 'bar',
+      data: Object.keys(typeCounts).length ? Object.values(typeCounts) : [0],
+      itemStyle: { color: '#28a745', borderRadius: [0, 4, 4, 0] },
+    }],
+  });
+}
+
+function bucketByDay(items, days) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const labels = [], counts = new Array(days).fill(0);
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    labels.push((d.getMonth()+1) + '/' + d.getDate());
+  }
+  items.forEach((it) => {
+    const t = new Date(it.timestamp || it.time || it.created_at || 0);
+    if (isNaN(t.getTime())) return;
+    t.setHours(0,0,0,0);
+    const diff = Math.round((today - t) / 86400000);
+    if (diff >= 0 && diff < days) counts[days - 1 - diff]++;
+  });
+  return { labels, values: counts };
+}
+
+function renderProxySnapshots(snapshots) {
+  if (!snapshots || !Object.keys(snapshots).length) {
+    $('proxy-snapshots').innerHTML = '<p class="muted">Proxy not running. Start <code>evolver run</code> to enable live snapshots.</p>';
+    return;
+  }
+  $('proxy-snapshots').innerHTML = Object.entries(snapshots).map(([key, snap]) => {
+    const ok = snap?.ok;
+    const dot = '<span class="status-indicator ' + (ok ? 'status-success' : 'status-failed') + '"></span>';
+    const detail = ok && snap.body
+      ? (Array.isArray(snap.body) ? snap.body.length + ' items' : Object.keys(snap.body).length + ' fields')
+      : (snap?.error || 'unavailable');
+    return '<div class="snapshot-card"><div>' + dot + '<strong>' + esc(key) + '</strong></div>' +
+      '<div class="muted small">' + esc(detail) + '</div></div>';
+  }).join('');
+}
+
+async function loadInteractions() {
+  $('hub-stream').innerHTML = '<p class="muted">Loading...</p>';
+  $('agent-stream').innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const [callsResult, interactions] = await Promise.all([
+      api('/webui/assets/calls?limit=500'),
+      api('/webui/interactions?last=200'),
+    ]);
+    const calls = callsResult.data || [];
+    const proofs = interactions.proxySnapshots?.atpProofs?.body?.proofs || interactions.proxySnapshots?.atpProofs?.body || [];
+    const orders = interactions.proxySnapshots?.atpProofs?.body?.orders || [];
+    const sessions = interactions.proxySnapshots?.sessions?.body?.sessions || interactions.proxySnapshots?.sessions?.body || [];
+    const dms = interactions.proxySnapshots?.dms?.body?.dms || interactions.proxySnapshots?.dms?.body || [];
+    const mailbox = interactions.mailbox?.data || [];
+
+    renderHubStream(calls, Array.isArray(proofs) ? proofs : [], Array.isArray(orders) ? orders : []);
+    renderAgentStream(mailbox, Array.isArray(sessions) ? sessions : [], Array.isArray(dms) ? dms : []);
+    renderInteractionCharts(calls, Array.isArray(proofs) ? proofs : [], mailbox);
+    renderProxySnapshots(interactions.proxySnapshots);
+  } catch (err) {
+    $('hub-stream').innerHTML = '<p class="status-failed">Failed: ' + esc(err.message) + '</p>';
+  }
+}
+
 // ---- Personality ----
 
 function renderPersonality(personality, memoryGraph) {
@@ -554,38 +764,53 @@ function renderMemoryGraph(graph) {
     if (!nodes.has(id)) nodes.set(id, { id, name: label || id, symbolSize: 20, itemStyle: { color }, category });
   }
 
-  items.forEach((evt) => {
-    const eventId = 'evt_' + (evt.id || evt.event_id || Math.random().toString(36).slice(2, 8));
-    addNode(eventId, evt.kind || 'event', '#3274d9', 0);
+  const KIND_COLORS = { signal: '#3274d9', hypothesis: '#17a2b8', attempt: '#ffc107', outcome: '#28a745', reflection: '#6f42c1' };
 
-    if (evt.gene) {
-      const geneId = 'g_' + evt.gene;
-      addNode(geneId, evt.gene.replace('gene_gep_', ''), '#28a745', 1);
-      links.push({ source: eventId, target: geneId });
-    }
-    if (Array.isArray(evt.signal || evt.signals)) {
-      (evt.signal || evt.signals || []).slice(0, 3).forEach((sig) => {
-        const id = 's_' + sig;
-        addNode(id, sig, '#ffc107', 2);
-        links.push({ source: id, target: eventId, lineStyle: { type: 'dashed' } });
+  items.forEach((evt) => {
+    try {
+      const eventId = 'evt_' + (evt.id || Math.random().toString(36).slice(2, 8));
+      addNode(eventId, evt.kind || 'event', KIND_COLORS[evt.kind] || '#3274d9', 0);
+
+      const geneId = evt.gene && (evt.gene.id || evt.gene);
+      if (typeof geneId === 'string') {
+        const gNode = 'g_' + geneId;
+        addNode(gNode, geneId.replace('gene_gep_', ''), '#28a745', 1);
+        links.push({ source: eventId, target: gNode });
+      }
+
+      const signals = (evt.signal && Array.isArray(evt.signal.signals)) ? evt.signal.signals
+        : (Array.isArray(evt.signals) ? evt.signals : []);
+      signals.slice(0, 4).forEach((sig) => {
+        const sNode = 's_' + sig;
+        addNode(sNode, sig, '#ffc107', 2);
+        links.push({ source: sNode, target: eventId, lineStyle: { type: 'dashed' } });
       });
-    }
-    if (evt.outcome && evt.outcome.status) {
-      const outId = 'o_' + evt.outcome.status;
-      addNode(outId, evt.outcome.status, evt.outcome.status === 'success' ? '#28a745' : '#dc3545', 3);
-      links.push({ source: eventId, target: outId });
-    }
+
+      const outcomeStatus = evt.outcome && (evt.outcome.status || evt.outcome.predicted_outcome?.status);
+      if (typeof outcomeStatus === 'string') {
+        const oNode = 'o_' + outcomeStatus;
+        addNode(oNode, outcomeStatus, outcomeStatus === 'success' ? '#28a745' : '#dc3545', 3);
+        links.push({ source: eventId, target: oNode });
+      }
+
+      const mutationCategory = evt.mutation && evt.mutation.category;
+      if (typeof mutationCategory === 'string') {
+        const mNode = 'm_' + mutationCategory;
+        addNode(mNode, mutationCategory, '#dc3545', 4);
+        links.push({ source: eventId, target: mNode, lineStyle: { type: 'dotted' } });
+      }
+    } catch (_) { /* skip malformed entry */ }
   });
 
   ensureChart('memory-graph-chart')?.setOption({
     tooltip: {},
-    legend: { data: ['Event', 'Gene', 'Signal', 'Outcome'], top: 0, textStyle: { color: textColor } },
+    legend: { data: ['Event', 'Gene', 'Signal', 'Outcome', 'Mutation'], top: 0, textStyle: { color: textColor } },
     series: [{
       type: 'graph',
       layout: 'force',
       data: Array.from(nodes.values()),
       links,
-      categories: [{ name: 'Event' }, { name: 'Gene' }, { name: 'Signal' }, { name: 'Outcome' }],
+      categories: [{ name: 'Event' }, { name: 'Gene' }, { name: 'Signal' }, { name: 'Outcome' }, { name: 'Mutation' }],
       roam: true,
       label: { show: true, fontSize: 9, color: textColor },
       lineStyle: { color: isDark ? '#3a4045' : '#d8dde2', width: 1, curveness: 0.1 },
@@ -603,6 +828,7 @@ function activateTab(tab) {
   setTimeout(() => Object.values(state.charts).forEach((c) => c.resize && c.resize()), 50);
   if (tab === 'pipelines') loadPipelines();
   if (tab === 'assets') loadAsset(state.currentAsset);
+  if (tab === 'interactions') loadInteractions();
   if (tab === 'personality') loadPersonality();
 }
 
@@ -651,6 +877,7 @@ async function refresh() {
   if (state.currentTab === 'overview') return loadOverview();
   if (state.currentTab === 'pipelines') return loadPipelines();
   if (state.currentTab === 'assets') return loadAsset(state.currentAsset);
+  if (state.currentTab === 'interactions') return loadInteractions();
   if (state.currentTab === 'personality') return loadPersonality();
 }
 
@@ -782,6 +1009,13 @@ tr:last-child td { border-bottom: none; }
 
 .event-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
 .event-list li { padding: 12px; background: color-mix(in srgb, var(--panel-bg) 96%, var(--text-main) 4%); border-radius: 6px; font-size: 0.85rem; display: flex; flex-direction: column; gap: 4px; }
+
+.stream-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; max-height: 540px; overflow-y: auto; }
+.stream-item { padding: 10px 12px; background: color-mix(in srgb, var(--panel-bg) 96%, var(--text-main) 4%); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; font-size: 0.85rem; }
+.stream-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.stream-title { font-weight: 500; word-break: break-all; }
+.snapshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.snapshot-card { padding: 12px; background: color-mix(in srgb, var(--panel-bg) 96%, var(--text-main) 4%); border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.85rem; }
 `;
 }
 
