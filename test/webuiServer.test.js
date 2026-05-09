@@ -48,7 +48,7 @@ describe('WebUiServer', () => {
     const body = JSON.parse(res.body);
     assert.equal(res.status, 200);
     assert.ok(body.safety);
-    assert.ok(body.paths);
+    assert.ok(body.filesPresent);
   });
 
   it('uses structured API errors', async () => {

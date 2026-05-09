@@ -259,7 +259,12 @@ function summaryForPhase(phase, run, events, assetCalls) {
 }
 
 function belongsToRun(entry, runId) {
-  return entry && [entry.run_id, entry.mutation_id, entry.id, entry.cycle_id].map(String).includes(String(runId));
+  if (!entry || runId == null || runId === '') return false;
+  const target = String(runId);
+  return [entry.run_id, entry.mutation_id, entry.id, entry.cycle_id]
+    .filter((value) => value != null && value !== '')
+    .map(String)
+    .includes(target);
 }
 
 function validationRefs(events) {

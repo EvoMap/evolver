@@ -74,7 +74,7 @@ describe('webui observer', () => {
 
     assert.equal(status.mode, 'idle');
     assert.equal(status.safety.safeMode, true);
-    assert.equal(status.paths.filesPresent.events, false);
+    assert.equal(status.filesPresent.events, false);
   });
 
   it('normalizes runs from cycle state, events, and asset calls', () => {

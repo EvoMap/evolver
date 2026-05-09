@@ -15,18 +15,17 @@ function getPersonality() {
   ];
   for (const candidate of candidates) {
     const data = readJsonSafe(candidate, null);
-    if (data) return { path: candidate, ...redactValue(data) };
+    if (data) return { exists: true, ...redactValue(data) };
   }
-  return { path: null, current: null, history: [] };
+  return { exists: false, current: null, history: [] };
 }
 
 function getMemoryGraph(query = {}) {
   const limit = Math.min(Number(query.limit) || 50, 500);
   const graphPath = path.join(getEvolutionDir(), 'memory_graph.jsonl');
-  if (!fs.existsSync(graphPath)) return { path: graphPath, exists: false, items: [] };
+  if (!fs.existsSync(graphPath)) return { exists: false, items: [] };
   const rows = readJsonl(graphPath, { last: limit }).map(redactValue);
   return {
-    path: graphPath,
     exists: true,
     total: countLines(graphPath),
     items: rows.reverse(),

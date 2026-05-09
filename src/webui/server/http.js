@@ -91,11 +91,18 @@ function matchPath(pattern, pathname) {
 
 function tryListen(server, port) {
   return new Promise((resolve, reject) => {
-    server.once('error', (err) => {
+    const onError = (err) => {
+      server.removeListener('listening', onListening);
       if (err.code === 'EADDRINUSE') return resolve(false);
       reject(err);
-    });
-    server.listen(port, '127.0.0.1', () => resolve(true));
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve(true);
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, '127.0.0.1');
   });
 }
 

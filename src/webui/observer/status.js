@@ -17,7 +17,7 @@ function getStatus() {
     lastRun: solidify && solidify.last_run ? solidify.last_run : null,
     evolutionState: evolution,
     proxy,
-    paths: publicPaths(paths),
+    filesPresent: filesPresent(paths),
     safety: getSafetyState(),
   };
 }
@@ -51,21 +51,13 @@ function getProxySettings() {
   }
 }
 
-function publicPaths(paths) {
+function filesPresent(paths) {
   return {
-    repoRoot: paths.repoRoot,
-    workspaceRoot: paths.workspaceRoot,
-    evolutionDir: paths.evolutionDir,
-    gepAssetsDir: paths.gepAssetsDir,
-    skillsDir: paths.skillsDir,
-    agentSessionsDir: paths.agentSessionsDir,
-    filesPresent: {
-      cycleProgress: fs.existsSync(paths.cycleProgressPath),
-      solidifyState: fs.existsSync(paths.solidifyStatePath),
-      events: fs.existsSync(paths.eventsPath),
-      assetCallLog: fs.existsSync(paths.assetCallLogPath),
-      pipelineEvents: fs.existsSync(paths.pipelineEventsPath),
-    },
+    cycleProgress: fs.existsSync(paths.cycleProgressPath),
+    solidifyState: fs.existsSync(paths.solidifyStatePath),
+    events: fs.existsSync(paths.eventsPath),
+    assetCallLog: fs.existsSync(paths.assetCallLogPath),
+    pipelineEvents: fs.existsSync(paths.pipelineEventsPath),
   };
 }
 

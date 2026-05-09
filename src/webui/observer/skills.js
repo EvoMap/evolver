@@ -6,11 +6,11 @@ const { getSkillsDir } = require('../../gep/paths');
 
 function listSkills() {
   const dir = getSkillsDir();
-  if (!fs.existsSync(dir)) return { path: dir, exists: false, items: [] };
+  if (!fs.existsSync(dir)) return { exists: false, items: [] };
 
   const entries = safeReaddir(dir).filter((entry) => entry.isDirectory());
   const items = entries.map((entry) => buildSkillSummary(path.join(dir, entry.name), entry.name));
-  return { path: dir, exists: true, items };
+  return { exists: true, items };
 }
 
 function buildSkillSummary(skillPath, name) {
@@ -29,7 +29,6 @@ function buildSkillSummary(skillPath, name) {
   const fileCount = safeReaddir(skillPath).length;
   return {
     name,
-    path: skillPath,
     description,
     docFile: skillFile ? path.basename(skillFile) : null,
     docBytes: bytes,
