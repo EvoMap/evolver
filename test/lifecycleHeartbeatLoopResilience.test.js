@@ -554,6 +554,9 @@ test('drift detector: healthy node with small gap does NOT poke (no false positi
     lc.stopHeartbeatLoop();
     global.setInterval = realSetInterval;
   }
+});
+
+// --------------------------------------------------------------------------
 // Reauth-backoff hot-loop protection (task #15)
 //
 // HTTP middleware pokes lifecycle on every authenticated request. If the
