@@ -39,6 +39,74 @@ try {
   else process.env.EVOLVER_QUIET_PARENT_GIT = _prevQuiet;
 } catch (e) { /* dotenv is optional */ }
 
+async function runSetupHooksCli(args) {
+  const hookAdapter = require('./src/adapters/hookAdapter');
+  const { setupHooks, resolveConfigRoot, detectPlatform, loadAdapter } = hookAdapter;
+
+  const platformFlag = args.find(a => typeof a === 'string' && a.startsWith('--platform='));
+  const platform = platformFlag ? platformFlag.slice('--platform='.length) : undefined;
+  const force = args.includes('--force');
+  const uninstall = args.includes('--uninstall');
+  const verifyOnly = args.includes('--verify');
+
+  if (verifyOnly) {
+    try {
+      const platformId = platform || detectPlatform(process.cwd());
+      if (!platformId) {
+        console.error('[setup-hooks] --verify: could not detect platform. Pass --platform=opencode|cursor|claude-code|codex|kiro');
+        process.exit(2);
+      }
+      const adapter = loadAdapter(platformId);
+      if (!adapter || typeof adapter.verify !== 'function') {
+        console.error('[setup-hooks] --verify: platform ' + platformId + ' does not support verification yet.');
+        process.exit(2);
+      }
+      const configRoot = resolveConfigRoot(platformId, process.cwd());
+      const report = adapter.verify({ configRoot });
+      if (typeof adapter.printVerifyReport === 'function') {
+        adapter.printVerifyReport(report);
+      } else {
+        console.log(JSON.stringify(report, null, 2));
+      }
+      process.exit(report.ok ? 0 : 1);
+    } catch (verifyErr) {
+      console.error('[setup-hooks] --verify error:', verifyErr && verifyErr.message || verifyErr);
+      process.exit(1);
+    }
+  }
+
+  try {
+    const result = await setupHooks({
+      platform,
+      cwd: process.cwd(),
+      force,
+      uninstall,
+      evolverRoot: __dirname,
+    });
+    if (result && result.ok) {
+      if (!uninstall && result.files) {
+        console.log('\n[setup-hooks] Files created/updated:');
+        for (const f of result.files) {
+          console.log('  ' + f);
+        }
+      }
+      process.exit(0);
+    } else {
+      console.error('[setup-hooks] Failed: ' + (result && result.error || 'unknown'));
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error('[setup-hooks] Error:', error && error.message || error);
+    process.exit(1);
+  }
+}
+
+if (require.main === module && process.argv[2] === 'setup-hooks') {
+  runSetupHooksCli(process.argv.slice(3)).catch(function (err) {
+    console.error('[setup-hooks] Error:', err && err.stack ? err.stack : String(err));
+    process.exitCode = 1;
+  });
+} else {
 const evolve = require('./src/evolve');
 const { solidify } = require('./src/gep/solidify');
 const path = require('path');
@@ -1660,70 +1728,6 @@ async function main() {
       process.exit(1);
     }
 
-  } else if (command === 'setup-hooks') {
-    const hookAdapter = require('./src/adapters/hookAdapter');
-    const { setupHooks, resolveConfigRoot, detectPlatform, loadAdapter } = hookAdapter;
-
-    const platformFlag = args.find(a => typeof a === 'string' && a.startsWith('--platform='));
-    const platform = platformFlag ? platformFlag.slice('--platform='.length) : undefined;
-    const force = args.includes('--force');
-    const uninstall = args.includes('--uninstall');
-    const verifyOnly = args.includes('--verify');
-
-    if (verifyOnly) {
-      // Read-only verification: do not touch any files, just report whether
-      // the previously-installed hooks/plugin look healthy. Lets users answer
-      // "is the plugin actually loaded?" without grepping opencode logs.
-      try {
-        const platformId = platform || detectPlatform(process.cwd());
-        if (!platformId) {
-          console.error('[setup-hooks] --verify: could not detect platform. Pass --platform=opencode|cursor|claude-code|codex|kiro');
-          process.exit(2);
-        }
-        const adapter = loadAdapter(platformId);
-        if (!adapter || typeof adapter.verify !== 'function') {
-          console.error('[setup-hooks] --verify: platform ' + platformId + ' does not support verification yet.');
-          process.exit(2);
-        }
-        const configRoot = resolveConfigRoot(platformId, process.cwd());
-        const report = adapter.verify({ configRoot });
-        if (typeof adapter.printVerifyReport === 'function') {
-          adapter.printVerifyReport(report);
-        } else {
-          console.log(JSON.stringify(report, null, 2));
-        }
-        process.exit(report.ok ? 0 : 1);
-      } catch (verifyErr) {
-        console.error('[setup-hooks] --verify error:', verifyErr && verifyErr.message || verifyErr);
-        process.exit(1);
-      }
-    }
-
-    try {
-      const result = await setupHooks({
-        platform,
-        cwd: process.cwd(),
-        force,
-        uninstall,
-        evolverRoot: __dirname,
-      });
-      if (result && result.ok) {
-        if (!uninstall && result.files) {
-          console.log('\n[setup-hooks] Files created/updated:');
-          for (const f of result.files) {
-            console.log('  ' + f);
-          }
-        }
-        process.exit(0);
-      } else {
-        console.error('[setup-hooks] Failed: ' + (result && result.error || 'unknown'));
-        process.exit(1);
-      }
-    } catch (error) {
-      console.error('[setup-hooks] Error:', error && error.message || error);
-      process.exit(1);
-    }
-
   } else if (command === 'reset-local-secret') {
     // Wipe every local store of node_secret in one shot, so a daemon stuck
     // after a manual web reset (https://evomap.ai/account -> Reset Secret)
@@ -1923,6 +1927,7 @@ if (require.main === module) {
 
 module.exports = {
   main,
+  runSetupHooksCli,
   readJsonSafe,
   rejectPendingRun,
   isPendingSolidify,
@@ -1931,3 +1936,4 @@ module.exports = {
   writeCycleProgressAtomic,
   spawnReplacementProcess,
 };
+}

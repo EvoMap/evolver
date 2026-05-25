@@ -51,6 +51,30 @@ function detectSignals(text) {
   return [...new Set(found)];
 }
 
+function getToolName(input) {
+  const raw = input.tool_name || input.toolName || input.name || input.tool;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw.name === 'string') return raw.name;
+  return '';
+}
+
+function isWriteLikeTool(input) {
+  const name = getToolName(input).toLowerCase();
+  // Older hook payloads did not include a tool name. Keep those compatible
+  // and let the content/path checks below decide whether there is work to do.
+  if (!name) return true;
+  return (
+    name === 'write' ||
+    name === 'edit' ||
+    name === 'multiedit' ||
+    name === 'notebookedit' ||
+    name === 'apply_patch' ||
+    name.includes('write') ||
+    name.includes('edit') ||
+    name.includes('patch')
+  );
+}
+
 function main() {
   let inputData = '';
   let handled = false;
@@ -61,6 +85,10 @@ function main() {
     handled = true;
     try {
       const input = inputData.trim() ? JSON.parse(inputData) : {};
+      if (!isWriteLikeTool(input)) {
+        process.stdout.write(JSON.stringify({}));
+        return;
+      }
       // Claude Code's PostToolUse payload nests tool args under tool_input.
       // Older/raw shapes put them at the top level; support both.
       const ti = input.tool_input || {};

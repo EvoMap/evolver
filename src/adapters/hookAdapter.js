@@ -153,12 +153,11 @@ function assertNotSymlink(p, label) {
 
 function copyHookScripts(destDir, evolverRoot) {
   const scriptsDir = path.join(evolverRoot || __dirname, 'scripts');
-  // _runtimePaths.js is required by the two session-* scripts via
-  // `require('./_runtimePaths')`, which resolves relative to the *destination*
-  // (__dirname after copy). It MUST be copied alongside or both hooks crash
-  // with MODULE_NOT_FOUND at runtime. Caught in PR #94 review.
+  // Helper modules are required by copied hook scripts via relative require()
+  // calls, which resolve against the destination hook directory at runtime.
   const scripts = [
     '_runtimePaths.js',
+    '_memoryFiltering.js',
     'evolver-session-start.js',
     'evolver-signal-detect.js',
     'evolver-session-end.js',
@@ -237,6 +236,7 @@ function removeEvolverHooks(filePath, { markerKey = '_evolver_managed' } = {}) {
 function removeHookScripts(hooksDir) {
   const scripts = [
     '_runtimePaths.js',
+    '_memoryFiltering.js',
     'evolver-session-start.js',
     'evolver-signal-detect.js',
     'evolver-session-end.js',

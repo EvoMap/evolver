@@ -10,6 +10,55 @@ const os = require('os');
 const { findEvolverRoot, findMemoryGraph } = require('./_runtimePaths');
 const { filterRelevantOutcomes } = require('./_memoryFiltering');
 
+function findGitRoot(start) {
+  let dir = path.resolve(start || process.cwd());
+  while (dir !== path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+function resolveWorkspaceRootForReader() {
+  if (process.env.OPENCLAW_WORKSPACE) return process.env.OPENCLAW_WORKSPACE;
+  const repoRoot = process.env.EVOLVER_REPO_ROOT || findGitRoot(process.cwd()) || process.cwd();
+  const workspaceDir = path.join(repoRoot, 'workspace');
+  if (fs.existsSync(workspaceDir)) return workspaceDir;
+  return repoRoot;
+}
+
+function resolveWorkspaceIdForReader() {
+  if (process.env.EVOLVER_WORKSPACE_ID) return String(process.env.EVOLVER_WORKSPACE_ID);
+  const file = path.join(resolveWorkspaceRootForReader(), '.evolver', 'workspace-id');
+  try {
+    const dirStat = fs.lstatSync(path.dirname(file), { throwIfNoEntry: false });
+    if (dirStat && dirStat.isSymbolicLink()) return null;
+    const fileStat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (!fileStat || fileStat.isSymbolicLink() || !fileStat.isFile()) return null;
+    const raw = fs.readFileSync(file, 'utf8').trim();
+    if (raw && /^[a-f0-9]{32,}$/i.test(raw)) return raw;
+  } catch { /* workspace id is best-effort in copied hooks */ }
+  return null;
+}
+
+function filterWorkspaceEntries(entries) {
+  const cwd = process.cwd();
+  const workspaceId = resolveWorkspaceIdForReader();
+
+  return entries.filter(entry => {
+    if (!entry || typeof entry !== 'object') return false;
+    if (workspaceId && entry.workspace_id) {
+      return String(entry.workspace_id) === String(workspaceId);
+    }
+    if (entry.cwd) {
+      return path.resolve(String(entry.cwd)) === path.resolve(cwd);
+    }
+    // Older entries did not carry a workspace tag. Do not inject them from
+    // hooks because copied hooks often share a user-level fallback memory file.
+    return false;
+  });
+}
+
 function readLastN(filePath, n) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -100,8 +149,9 @@ function main() {
     return;
   }
 
-  const entries = readLastN(graphPath, 5);
-  const filtered = filterRelevantOutcomes(entries);
+  const entries = readLastN(graphPath, 20);
+  const scoped = filterWorkspaceEntries(entries);
+  const filtered = filterRelevantOutcomes(scoped);
 
   if (filtered.length === 0) {
     process.stdout.write(JSON.stringify({}));

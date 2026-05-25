@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawnSync } = require('child_process');
 
 const hookAdapter = require('../src/adapters/hookAdapter');
 const cursorAdapter = require('../src/adapters/cursor');
@@ -15,6 +16,25 @@ function makeTmpDir() {
 
 function cleanup(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
+
+function runNode(args, opts = {}) {
+  return spawnSync(process.execPath, args, {
+    cwd: opts.cwd,
+    env: { ...process.env, ...(opts.env || {}) },
+    input: opts.input,
+    encoding: 'utf8',
+    timeout: opts.timeout || 10000,
+  });
+}
+
+function runGit(args, cwd, env) {
+  return spawnSync('git', args, {
+    cwd,
+    env: { ...process.env, ...(env || {}) },
+    encoding: 'utf8',
+    timeout: 10000,
+  });
 }
 
 // -- hookAdapter --
@@ -133,15 +153,15 @@ describe('hookAdapter', () => {
         const destDir = path.join(tmp, 'hooks');
         const evolverRoot = path.resolve(__dirname, '..');
         const copied = hookAdapter.copyHookScripts(destDir, path.join(evolverRoot, 'src', 'adapters'));
-        // 3 hook entry points + _runtimePaths helper required by two of them.
-        assert.equal(copied.length, 4);
+        // 3 hook entry points + helper modules required by copied scripts.
+        assert.equal(copied.length, 5);
         for (const f of copied) {
           assert.ok(fs.existsSync(f));
         }
       } finally { cleanup(tmp); }
     });
 
-    it('includes _runtimePaths.js so copied session hooks can require it (PR #94)', () => {
+    it('includes helper modules so copied session hooks can require them', () => {
       const tmp = makeTmpDir();
       try {
         const destDir = path.join(tmp, 'hooks');
@@ -149,9 +169,11 @@ describe('hookAdapter', () => {
         hookAdapter.copyHookScripts(destDir, path.join(evolverRoot, 'src', 'adapters'));
         assert.ok(fs.existsSync(path.join(destDir, '_runtimePaths.js')),
           '_runtimePaths.js must ship alongside session-start/end or both crash with MODULE_NOT_FOUND');
+        assert.ok(fs.existsSync(path.join(destDir, '_memoryFiltering.js')),
+          '_memoryFiltering.js must ship alongside session-start or it crashes with MODULE_NOT_FOUND');
 
-        // End-to-end: actually run the copied script. If `_runtimePaths.js`
-        // is missing the require() at top of file would fail with
+        // End-to-end: actually run the copied script. If a helper module is
+        // missing the require() at top of file would fail with
         // MODULE_NOT_FOUND and exit non-zero.
         const { spawnSync } = require('child_process');
         const result = spawnSync('node', [path.join(destDir, 'evolver-session-start.js')], {
@@ -170,12 +192,13 @@ describe('hookAdapter', () => {
         const hooksDir = path.join(tmp, 'hooks');
         fs.mkdirSync(hooksDir, { recursive: true });
         fs.writeFileSync(path.join(hooksDir, '_runtimePaths.js'), '');
+        fs.writeFileSync(path.join(hooksDir, '_memoryFiltering.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-session-start.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-signal-detect.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-session-end.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'user-custom.js'), '');
         const removed = hookAdapter.removeHookScripts(hooksDir);
-        assert.equal(removed, 4);
+        assert.equal(removed, 5);
         assert.ok(fs.existsSync(path.join(hooksDir, 'user-custom.js')));
       } finally { cleanup(tmp); }
     });
@@ -891,5 +914,142 @@ describe('codex adapter', () => {
       assert.ok(postCmds.includes('node my-watcher.js'));
       assert.ok(postCmds.some(c => c.includes('evolver-signal-detect')));
     } finally { cleanup(tmp); }
+  });
+});
+
+describe('setup-hooks clean sandbox integration', () => {
+  function initWorkspace(root, name) {
+    const ws = path.join(root, name);
+    fs.mkdirSync(ws, { recursive: true });
+    runGit(['init'], ws);
+    runGit(['config', 'user.email', 'sandbox@example.invalid'], ws);
+    runGit(['config', 'user.name', 'Sandbox'], ws);
+    fs.writeFileSync(path.join(ws, 'README.md'), '# sandbox\n', 'utf8');
+    runGit(['add', 'README.md'], ws);
+    runGit(['commit', '-m', 'init'], ws);
+    return ws;
+  }
+
+  function exercisePlatform(platform) {
+    const root = makeTmpDir();
+    const home = path.join(root, 'home');
+    const ws = initWorkspace(root, `${platform}-workspace`);
+    const repoRoot = path.resolve(__dirname, '..');
+    fs.mkdirSync(home, { recursive: true });
+    const env = {
+      HOME: home,
+      EVOLVER_HOOK_LOG_DIR: path.join(home, '.evolver', 'logs'),
+      EVOLVER_SESSION_STATE_DIR: path.join(home, '.evolver'),
+    };
+
+    try {
+      const install = runNode([path.join(repoRoot, 'index.js'), 'setup-hooks', `--platform=${platform}`], {
+        cwd: ws,
+        env,
+      });
+      assert.equal(install.status, 0, install.stderr);
+      assert.match(install.stdout, /Files created\/updated/);
+
+      const isCodex = platform === 'codex';
+      const configDir = path.join(ws, isCodex ? '.codex' : '.claude');
+      const hookDir = path.join(configDir, 'hooks');
+      const hookFiles = fs.readdirSync(hookDir).sort();
+      assert.deepEqual(hookFiles, [
+        '_memoryFiltering.js',
+        '_runtimePaths.js',
+        'evolver-session-end.js',
+        'evolver-session-start.js',
+        'evolver-signal-detect.js',
+      ]);
+
+      if (isCodex) {
+        const toml = fs.readFileSync(path.join(configDir, 'config.toml'), 'utf8');
+        assert.match(toml, /codex_hooks\s*=\s*true/);
+      }
+
+      const signalScript = path.join(hookDir, 'evolver-signal-detect.js');
+      const readOnly = runNode([signalScript], {
+        cwd: ws,
+        env,
+        input: JSON.stringify({ tool_name: 'Read', tool_input: { content: 'please add feature' } }) + '\n',
+      });
+      assert.equal(readOnly.status, 0, readOnly.stderr);
+      assert.equal(readOnly.stdout.trim(), '{}');
+
+      const signal = runNode([signalScript], {
+        cwd: ws,
+        env,
+        input: JSON.stringify({
+          tool_name: 'Write',
+          tool_input: {
+            file_path: 'src/example.js',
+            content: 'please add feature for timeout handling\n',
+          },
+        }) + '\n',
+      });
+      assert.equal(signal.status, 0, signal.stderr);
+      assert.match(signal.stdout, /perf_bottleneck/);
+      assert.match(signal.stdout, /user_feature_request/);
+
+      const otherWs = initWorkspace(root, `${platform}-other-workspace`);
+      const otherMemoryDir = path.join(home, '.evolver', 'memory', 'evolution');
+      fs.mkdirSync(otherMemoryDir, { recursive: true });
+      fs.appendFileSync(path.join(otherMemoryDir, 'memory_graph.jsonl'), JSON.stringify({
+        timestamp: new Date().toISOString(),
+        gene_id: 'ad_hoc',
+        signals: ['capability_gap'],
+        outcome: { status: 'success', score: 0.9, note: 'other workspace should not leak' },
+        cwd: otherWs,
+        workspace_id: null,
+        source: 'hook:session-end',
+      }) + '\n', 'utf8');
+
+      const workspaceDir = path.join(ws, 'workspace');
+      const workspaceId = '0123456789abcdef0123456789abcdef';
+      fs.mkdirSync(path.join(workspaceDir, '.evolver'), { recursive: true });
+      fs.writeFileSync(path.join(workspaceDir, '.evolver', 'workspace-id'), workspaceId + '\n', 'utf8');
+      fs.appendFileSync(path.join(otherMemoryDir, 'memory_graph.jsonl'), JSON.stringify({
+        timestamp: new Date().toISOString(),
+        gene_id: 'ad_hoc',
+        signals: ['deployment_issue'],
+        outcome: { status: 'success', score: 0.9, note: 'workspace id matched entry' },
+        cwd: path.join(ws, 'not-the-current-cwd'),
+        workspace_id: workspaceId,
+        source: 'hook:session-end',
+      }) + '\n', 'utf8');
+
+      fs.appendFileSync(path.join(ws, 'README.md'), 'please add feature for timeout handling\n', 'utf8');
+      const stop = runNode([path.join(hookDir, 'evolver-session-end.js')], {
+        cwd: ws,
+        env,
+        input: '{}\n',
+        timeout: 12000,
+      });
+      assert.equal(stop.status, 0, stop.stderr);
+
+      const start = runNode([path.join(hookDir, 'evolver-session-start.js')], {
+        cwd: ws,
+        env,
+        input: '{}\n',
+      });
+      assert.equal(start.status, 0, start.stderr);
+      assert.equal(fs.existsSync(path.join(ws, '.evolver', 'workspace-id')), false,
+        'SessionStart must not create workspace-id as a read-side side effect');
+      assert.match(start.stdout, /Evolution Memory/);
+      assert.match(start.stdout, /workspace id matched entry/);
+      assert.match(start.stdout, /perf_bottleneck/);
+      assert.match(start.stdout, /user_feature_request/);
+      assert.doesNotMatch(start.stdout, /other workspace should not leak/);
+    } finally {
+      cleanup(root);
+    }
+  }
+
+  it('installs and runs Claude Code hooks in a clean HOME/workspace', () => {
+    exercisePlatform('claude-code');
+  });
+
+  it('installs and runs Codex hooks in a clean HOME/workspace', () => {
+    exercisePlatform('codex');
   });
 });
