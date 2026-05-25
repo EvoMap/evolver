@@ -545,6 +545,22 @@ async function main() {
           try {
           cycleCount += 1;
 
+          // Heartbeat liveness: prove this node is alive on every evolve cycle,
+          // bypassing accumulated backoff so the hub knows we're back if we've been
+          // stuck. pokeHeartbeat is a noop if the loop hasn't been started or if
+          // we're inside the 60s healthy-node throttle. See evolver#544 and the
+          // related manager.js HTTP middleware wiring at src/proxy/server/http.js
+          // for the proxy-mode equivalent.
+          //
+          // typeof guard: the shipped obfuscated dist of src/gep/a2aProtocol.js
+          // does not yet export pokeHeartbeat (lives in evolver-private-dev
+          // source, will appear after the next build pipeline regen). Until
+          // then this is a noop; after, it's a cheap typeof check.
+          try {
+            const a2aPoke = require('./src/gep/a2aProtocol');
+            if (typeof a2aPoke.pokeHeartbeat === 'function') a2aPoke.pokeHeartbeat();
+          } catch { /* pokeHeartbeat must never throw, but be defensive */ }
+
           // Ralph-loop gating: do not run a new cycle while previous run is pending solidify.
           const st0 = readJsonSafe(solidifyStatePath);
           if (isPendingSolidify(st0)) {
@@ -746,6 +762,13 @@ async function main() {
     } else {
         // Normal Single Run
         try {
+            // Heartbeat liveness: see comment above the loop-mode poke. Single-
+            // run is the canonical user-driven invocation in default mode
+            // (every `node index.js run` is a deliberate user action).
+            try {
+              const a2aPoke = require('./src/gep/a2aProtocol');
+              if (typeof a2aPoke.pokeHeartbeat === 'function') a2aPoke.pokeHeartbeat();
+            } catch { /* pokeHeartbeat must never throw, but be defensive */ }
             await evolve.run();
         } catch (error) {
             console.error('Evolution failed:', error);
