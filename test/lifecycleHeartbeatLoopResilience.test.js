@@ -319,3 +319,118 @@ test('pokeHeartbeat(): failing node bypasses the throttle so recovery is unblock
 
   lc.stopHeartbeatLoop();
 });
+
+// --------------------------------------------------------------------------
+// Wall-clock drift detector (sleep/wake recovery, task #11)
+// --------------------------------------------------------------------------
+
+test('drift detector: wall-clock jump > threshold pokes heartbeat', async () => {
+  // Simulates macOS sleep/wake: Date.now() advances by minutes while the
+  // libuv-driven setInterval (which we fire manually here) sees only a
+  // single tick. The detector must infer suspension and call pokeHeartbeat.
+  const lc = makeManager();
+  // Stub heartbeat so startHeartbeatLoop's initial tick is a no-op and we
+  // can observe pokeHeartbeat() side effects without HTTP.
+  lc.heartbeat = async () => ({ ok: true });
+
+  // Capture the interval callback before starting so we can fire it on demand
+  // with a controlled Date.now() value, instead of waiting 30s for real.
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    assert.ok(driftCallback, 'drift interval must be registered with 30s period');
+
+    // Spy on pokeHeartbeat -- we don't care about its side effects here,
+    // only that the detector invokes it.
+    let pokeCount = 0;
+    const origPoke = lc.pokeHeartbeat.bind(lc);
+    lc.pokeHeartbeat = () => { pokeCount++; return origPoke(); };
+
+    // Simulate a 5-minute wall-clock jump (well above the 90s threshold).
+    const realNow = Date.now;
+    const baseline = realNow();
+    lc._lastDriftCheckAt = baseline;
+    Date.now = () => baseline + 5 * 60_000;
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(pokeCount, 1, 'a >90s jump must trigger exactly one pokeHeartbeat call');
+    // _lastDriftCheckAt must advance so a single jump doesn't keep poking.
+    assert.ok(
+      lc._lastDriftCheckAt >= baseline + 5 * 60_000,
+      '_lastDriftCheckAt must be updated to the observed now',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});
+
+test('drift detector: small gap (<threshold) does NOT poke', async () => {
+  // Sanity check: a normal 30-60s scheduling gap must not be mistaken for
+  // a sleep/wake event. Otherwise the detector would fire continuously and
+  // defeat POKE_THROTTLE_MS / the hub rate limit.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    assert.ok(driftCallback);
+
+    let pokeCount = 0;
+    lc.pokeHeartbeat = () => { pokeCount++; return true; };
+
+    // Simulate a 45s gap -- the realistic max for a normal interval tick
+    // under heavy load. Must NOT trigger.
+    const realNow = Date.now;
+    const baseline = realNow();
+    lc._lastDriftCheckAt = baseline;
+    Date.now = () => baseline + 45_000;
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(pokeCount, 0, 'a <90s gap must NOT trigger pokeHeartbeat');
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});
+
+test('drift detector: stopHeartbeatLoop clears the interval', () => {
+  // Without cleanup, a worker that stops and restarts the loop would
+  // accumulate drift intervals. The unref() also makes leaks invisible
+  // (event loop still exits), so this assertion is the only guard.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  lc.startHeartbeatLoop(30_000);
+  assert.ok(lc._driftInterval, 'startHeartbeatLoop must register a drift interval');
+
+  lc.stopHeartbeatLoop();
+  assert.equal(lc._driftInterval, null, 'stopHeartbeatLoop must null out the drift interval');
+});

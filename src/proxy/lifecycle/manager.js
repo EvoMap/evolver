@@ -27,6 +27,21 @@ const REAUTH_BACKOFF_MAX_MS = 4 * 60 * 60_000;
 // failing nodes (consecutiveFailures > 0 or active reauth backoff) bypass
 // the throttle so recovery isn't blocked.
 const POKE_THROTTLE_MS = 60_000;
+// Wall-clock drift detector tuning. setTimeout is driven by libuv's
+// monotonic clock, which does NOT advance while the host is suspended
+// (macOS sleep, laptop lid close, hypervisor pause, debugger break, App
+// Nap throttling). On wake, a pending 6-minute heartbeat timer that was
+// queued seconds before sleep fires immediately, but the first 1-3 ticks
+// usually fail because WiFi/DNS are still coming up; backoff then
+// escalates to the 30-min cap and the node looks "dead" for up to 30
+// minutes. A separate interval sampling Date.now() (which IS wall-clock,
+// not monotonic) detects the suspension after-the-fact: a gap between
+// samples larger than DRIFT_SLEEP_THRESHOLD_MS could not have happened
+// during normal scheduling and means the process was suspended. We then
+// pokeHeartbeat() to clear accumulated backoff and trigger a fresh check.
+// Standard pattern in cron daemons / Electron / browser extensions.
+const DRIFT_CHECK_MS = 30_000;
+const DRIFT_SLEEP_THRESHOLD_MS = 90_000;
 
 let _cachedFingerprint = null;
 function _getEnvFingerprint() {
@@ -561,6 +576,27 @@ class LifecycleManager {
 
     // Backstop in case tick ever throws synchronously before its own try.
     this._tick().catch(() => {});
+
+    // Wall-clock drift detector. See DRIFT_* constants above for the
+    // rationale. Uses Date.now() (wall-clock) because setTimeout fires on
+    // libuv's monotonic clock and won't tell us the host was suspended.
+    this._lastDriftCheckAt = Date.now();
+    this._driftInterval = setInterval(() => {
+      if (!this._running) return;
+      const now = Date.now();
+      const gap = now - this._lastDriftCheckAt;
+      this._lastDriftCheckAt = now;
+      if (gap > DRIFT_SLEEP_THRESHOLD_MS) {
+        this.logger.warn(
+          `[lifecycle] wall-clock jump detected (+${Math.round(gap / 1000)}s); ` +
+            'likely sleep/wake or process suspension, poking heartbeat',
+        );
+        try { this.pokeHeartbeat(); } catch { /* never let the detector escape */ }
+      }
+    }, DRIFT_CHECK_MS);
+    // Don't keep the event loop alive on behalf of the detector alone --
+    // matches the unref() used on the heartbeat timer above.
+    if (this._driftInterval.unref) this._driftInterval.unref();
   }
 
   stopHeartbeatLoop() {
@@ -568,6 +604,10 @@ class LifecycleManager {
     if (this._heartbeatTimer) {
       clearTimeout(this._heartbeatTimer);
       this._heartbeatTimer = null;
+    }
+    if (this._driftInterval) {
+      clearInterval(this._driftInterval);
+      this._driftInterval = null;
     }
     // Clear the closure so a subsequent pokeHeartbeat() cleanly returns
     // false on its own check, not just via the _running guard. Keeps the
