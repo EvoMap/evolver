@@ -136,6 +136,7 @@ class EvoMapProxy {
     this.server = new ProxyHttpServer(routes, {
       port: this.port,
       logger: this.logger,
+      lifecycle: this.lifecycle,
     });
 
     const serverInfo = await this.server.start();

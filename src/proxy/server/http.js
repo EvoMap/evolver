@@ -7,6 +7,18 @@ const { writeSettings, readSettings, clearSettings, clearIfStale } = require('./
 const MAX_PORT_ATTEMPTS = 100;
 const DEFAULT_PORT = 19820;
 
+// Routes whose handlers are read-only introspection of proxy/hub state. We
+// must NOT call lifecycle.pokeHeartbeat() on these because stale-state
+// detection paths (CLI status probes, UI pollers, the user manually checking
+// "is my proxy alive?") hit them; poking from inside those calls would mask
+// the very backoff condition the user is trying to observe and would also
+// burn the hub's 6/300s per-sender heartbeat rate budget on no-op traffic.
+const POKE_EXCLUDED_PATHS = new Set([
+  '/proxy/status',
+  '/proxy/config',
+  '/proxy/hub-status',
+]);
+
 // GHSA-7xp7-m392-h92c: cap request body at 1 MiB. The proxy's HTTP surface is
 // bound to 127.0.0.1 but still reachable by any local process (other users on
 // a shared dev host, container neighbors sharing the host netns, malicious
@@ -84,13 +96,17 @@ function tryListen(server, port) {
 }
 
 class ProxyHttpServer {
-  constructor(routes, { port, logger } = {}) {
+  constructor(routes, { port, logger, lifecycle } = {}) {
     this.routes = routes;
     this.basePort = port || Number(process.env.EVOMAP_PROXY_PORT) || DEFAULT_PORT;
     this.actualPort = null;
     this.logger = logger || console;
     this.server = null;
     this.token = null;
+    // Optional reference to LifecycleManager. Held weakly in the sense that
+    // every access is null-checked: tests and partial-init paths construct
+    // the HTTP server without a lifecycle and must still work.
+    this.lifecycle = lifecycle || null;
   }
 
   async start() {
@@ -150,6 +166,17 @@ class ProxyHttpServer {
     }
 
     const { handler, params } = paramMatch;
+
+    // #544: any authenticated inbound request is liveness proof that the user
+    // is actively driving the proxy (Cursor, Claude Code, Codex, etc.). Poke
+    // the lifecycle manager so a node stuck in 30-min reauth backoff can drop
+    // that state and re-prove itself instead of staying "dead" while the user
+    // hammers the proxy. pokeHeartbeat() has its own 60s throttle for healthy
+    // nodes and a single-flight gate, so per-request invocation is safe.
+    if (this.lifecycle && !POKE_EXCLUDED_PATHS.has(url.pathname)) {
+      try { this.lifecycle.pokeHeartbeat(); }
+      catch (e) { this.logger.warn?.('[proxy] pokeHeartbeat failed:', e.message); }
+    }
 
     try {
       const body = (req.method === 'POST' || req.method === 'PUT') ? await parseBody(req) : {};
