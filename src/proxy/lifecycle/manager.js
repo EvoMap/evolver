@@ -646,9 +646,9 @@ class LifecycleManager {
   }
 
   /**
-   * Wake the heartbeat loop immediately. Clears accumulated backoff state
-   * (consecutive failures + re-auth backoff window) so subsequent failures
-   * start fresh, then fires one tick right away if conditions allow.
+   * Wake the heartbeat loop immediately. Clears accumulated loop-failure
+   * backoff so subsequent failures start fresh, then fires one tick right
+   * away if conditions allow.
    *
    * Throttling rules:
    *   - Returns false if the loop isn't running.
@@ -658,17 +658,46 @@ class LifecycleManager {
    *     backoff), the call is debounced to one tick per POKE_THROTTLE_MS
    *     so user-activity-triggered pokes can't bypass the hub's 6/300s
    *     per-sender heartbeat rate limit.
-   *   - A FAILING node (consecutiveFailures > 0 or active reauth backoff)
+   *   - A node with a transient failure streak (consecutiveFailures > 0,
+   *     OR _consecutiveReauthFailures < 2 with active reauth backoff)
    *     bypasses the throttle so recovery is never blocked.
+   *   - A node DEEP in a reauth-failure streak (>= 2 consecutive reauth
+   *     failures) still respects the throttle AND keeps its
+   *     _reauthBackoffUntil intact. See below.
+   *
+   * Reauth backoff handling (issue #544 hot-loop fix):
+   *   The HTTP middleware pokes on every authenticated request. If the hub
+   *   has genuinely invalidated the secret (operator did "Reset Secret"
+   *   in the account UI), every poke would otherwise wipe the 30-min
+   *   _reauthBackoffUntil that reAuthenticate() just installed -> next
+   *   user action would trigger another reAuth attempt (up to
+   *   MAX_REAUTH_ATTEMPTS=2 /a2a/hello calls) -> the hub's per-IP 60/h
+   *   hello rate limit would be exhausted in <30 minutes of typing. We
+   *   gate the clear on _consecutiveReauthFailures < 2:
+   *     - 1st/2nd failure: still let user activity drive a retry. The
+   *       backoff was probably set against a transient hub blip and a
+   *       fresh attempt is cheap.
+   *     - >= 2 failures: the hub is genuinely-rejecting; the backoff is
+   *       doing real work and user activity must not be able to wipe it.
    *
    * @returns {boolean} true if a tick is in flight or was kicked off.
    */
   pokeHeartbeat() {
     if (!this._running || !this._tick) return false;
 
-    const wasFailing = this._consecutiveFailures > 0 || this._reauthBackoffUntil > Date.now();
+    // Deep-failure nodes (>= 2 consecutive reauth failures) keep their
+    // backoff intact and respect the throttle. wasFailing semantics here
+    // mean "this poke is allowed to bypass the debounce", NOT "we cleared
+    // backoff state". Loop-level failure counter is still always cleared
+    // because the poke IS the user-driven retry signal we want to honor.
+    const deepReauthFailure = this._consecutiveReauthFailures >= 2;
+    const reauthBackoffActive = this._reauthBackoffUntil > Date.now();
+    const wasFailing =
+      this._consecutiveFailures > 0 || (reauthBackoffActive && !deepReauthFailure);
     this._consecutiveFailures = 0;
-    this._reauthBackoffUntil = 0;
+    if (!deepReauthFailure) {
+      this._reauthBackoffUntil = 0;
+    }
 
     if (this._tickInFlight) return true;
 

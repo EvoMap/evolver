@@ -554,4 +554,154 @@ test('drift detector: healthy node with small gap does NOT poke (no false positi
     lc.stopHeartbeatLoop();
     global.setInterval = realSetInterval;
   }
+// Reauth-backoff hot-loop protection (task #15)
+//
+// HTTP middleware pokes lifecycle on every authenticated request. If the
+// hub has genuinely invalidated the secret (operator "Reset Secret"),
+// poke must NOT keep wiping _reauthBackoffUntil -- otherwise every user
+// keystroke triggers a reAuth attempt and the hub's per-IP 60/h hello
+// rate limit gets exhausted in <30 minutes of typing.
+// --------------------------------------------------------------------------
+
+test('pokeHeartbeat(): respects reauth backoff after 2+ consecutive reauth failures', async () => {
+  // Deep-failure state: the hub has rejected us multiple reauth attempts
+  // in a row. _reauthBackoffUntil was set deliberately by reAuthenticate.
+  // pokeHeartbeat must NOT wipe it -- the backoff is the only thing
+  // preventing a hot loop against a genuinely-rejecting hub.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+
+  const backoffUntil = Date.now() + 30 * 60_000;
+  lc._consecutiveReauthFailures = 2;
+  lc._reauthBackoffUntil = backoffUntil;
+
+  lc.pokeHeartbeat();
+
+  assert.equal(
+    lc._reauthBackoffUntil, backoffUntil,
+    'reauth backoff must NOT be wiped when _consecutiveReauthFailures >= 2',
+  );
+  assert.equal(lc._consecutiveReauthFailures, 2, 'failure counter must be preserved');
+
+  lc.stopHeartbeatLoop();
+});
+
+test('pokeHeartbeat(): clears reauth backoff after only 1 reauth failure', async () => {
+  // Single reauth failure could be a transient hub blip. We still want
+  // user activity to drive a retry, so the clear-on-poke behavior is
+  // preserved for shallow failure streaks.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+
+  lc._consecutiveReauthFailures = 1;
+  lc._reauthBackoffUntil = Date.now() + 30 * 60_000;
+
+  lc.pokeHeartbeat();
+
+  assert.equal(
+    lc._reauthBackoffUntil, 0,
+    'reauth backoff must be cleared on 1st failure (transient-blip retry path)',
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('pokeHeartbeat(): rapid pokes in deep-failure state do NOT spam reAuthenticate', async () => {
+  // Hot-loop regression: pre-fix, 10 user actions in Cursor would each
+  // wipe _reauthBackoffUntil, and the next tick would re-enter reAuth.
+  // With the gate, the backoff stays installed, so the tick path that
+  // would normally call reAuthenticate must observe the backoff and
+  // short-circuit.
+  const lc = makeManager();
+  let reauthCalls = 0;
+  lc.reAuthenticate = async () => { reauthCalls++; return false; };
+  // Make heartbeat always 401 so the tick would normally call reAuth.
+  // We don't actually wire that path here; we test the invariant that
+  // poke can't push reAuthenticate into a hot loop by inspecting how
+  // many ticks made it past the backoff gate.
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => {
+    heartbeatCalls++;
+    // Simulate a tick that would have triggered reAuth: respect the
+    // installed backoff (same gate reAuthenticate uses at L312).
+    if (lc._reauthBackoffUntil > Date.now()) return { ok: false, error: 'backoff_active' };
+    await lc.reAuthenticate();
+    return { ok: false, error: '401' };
+  };
+
+  lc.startHeartbeatLoop(30_000);
+  // Wait for the first auto-tick to settle so _tick is bound.
+  await new Promise((r) => setTimeout(r, 30));
+
+  // Install deep-failure state with a fresh 30-min backoff.
+  lc._consecutiveReauthFailures = 5;
+  lc._reauthBackoffUntil = Date.now() + 30 * 60_000;
+  const heartbeatCallsBefore = heartbeatCalls;
+  const reauthCallsBefore = reauthCalls;
+
+  // Fire 10 rapid pokes (simulating 10 user actions in Cursor).
+  for (let i = 0; i < 10; i++) lc.pokeHeartbeat();
+  // Drain the microtask queue + any timer the pokes might have scheduled.
+  await new Promise((r) => setTimeout(r, 80));
+
+  const newHeartbeats = heartbeatCalls - heartbeatCallsBefore;
+  const newReauths = reauthCalls - reauthCallsBefore;
+
+  // Backoff must still be intact.
+  assert.ok(
+    lc._reauthBackoffUntil > Date.now() + 25 * 60_000,
+    `_reauthBackoffUntil must still be ~30min out, got ${lc._reauthBackoffUntil - Date.now()}ms`,
+  );
+  // reAuthenticate must NOT have been called 10 times. The point of the
+  // fix is that the hub's per-IP hello rate limit is not exhausted by
+  // user activity. 0 or 1 calls are acceptable; >= 2 would indicate the
+  // fix isn't working.
+  assert.ok(
+    newReauths <= 1,
+    `reAuthenticate must NOT be called per-poke (got ${newReauths} for 10 pokes)`,
+  );
+  // Heartbeat ticks themselves are bounded by the in-flight gate; we
+  // assert <= 2 (one in-flight, at most one queued) as a regression on
+  // the tick-storm aspect.
+  assert.ok(
+    newHeartbeats <= 2,
+    `heartbeat ticks per 10 pokes must be bounded (got ${newHeartbeats})`,
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('pokeHeartbeat(): deep-failure node still respects POKE_THROTTLE_MS', async () => {
+  // Pairs with the previous test. When _consecutiveReauthFailures >= 2,
+  // not only must we keep the backoff, we must also not bypass the
+  // POKE_THROTTLE_MS debounce -- otherwise a deep-failure node would
+  // still fire a tick on every keystroke (even if reAuth itself is
+  // gated, the tick storm wastes CPU and clobbers _lastTickAt).
+  const lc = makeManager();
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
+
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(heartbeatCalls, 1, 'sanity: first auto-tick fired');
+
+  // Deep-failure state with active backoff.
+  lc._consecutiveReauthFailures = 3;
+  lc._reauthBackoffUntil = Date.now() + 30 * 60_000;
+
+  const r = lc.pokeHeartbeat();
+  await new Promise((r2) => setTimeout(r2, 30));
+
+  // Throttle must apply -- the recent _lastTickAt blocks a new tick.
+  assert.equal(
+    r, false,
+    'deep-failure poke must respect POKE_THROTTLE_MS (got true == bypass)',
+  );
+  assert.equal(heartbeatCalls, 1, 'no extra heartbeat must fire under throttle');
+
+  lc.stopHeartbeatLoop();
 });
