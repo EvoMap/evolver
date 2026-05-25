@@ -592,6 +592,35 @@ class LifecycleManager {
             'likely sleep/wake or process suspension, poking heartbeat',
         );
         try { this.pokeHeartbeat(); } catch { /* never let the detector escape */ }
+        return;
+      }
+      // Race recovery (task #14): on macOS wake the setInterval (this
+      // detector) and the setTimeout (heartbeat tick) fire near-
+      // simultaneously. If the tick enters first, _tickInFlight=true and
+      // the detector's poke would no-op via the single-flight gate. That
+      // post-wake tick almost always fails (WiFi/DNS not up yet), bumping
+      // _consecutiveFailures to 1 and pushing the next scheduled tick out
+      // to the backoff cap. By the next drift sample 30s later, the gap
+      // test fails (~30s < 90s threshold) and no further poke fires --
+      // the user is stuck in 12-30 min backoff even though network is up.
+      //
+      // Mitigation (Approach B from the review): if we already have a
+      // recent failure AND it's been longer than 2*interval since the
+      // last tick, poke again. The pokeHeartbeat throttle / in-flight
+      // gate still protects healthy nodes (this branch never runs when
+      // _consecutiveFailures === 0). Effective user-perceived recovery
+      // time after a failed post-wake tick: ~30s (one drift-check
+      // interval) instead of up to ~30 min.
+      if (
+        this._consecutiveFailures > 0
+        && this._lastTickAt
+        && (now - this._lastTickAt) > 2 * interval
+      ) {
+        this.logger.warn(
+          `[lifecycle] persistent failure (${this._consecutiveFailures}) and no tick for ` +
+            `${Math.round((now - this._lastTickAt) / 1000)}s; poking heartbeat`,
+        );
+        try { this.pokeHeartbeat(); } catch { /* never let the detector escape */ }
       }
     }, DRIFT_CHECK_MS);
     // Don't keep the event loop alive on behalf of the detector alone --

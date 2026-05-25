@@ -434,3 +434,124 @@ test('drift detector: stopHeartbeatLoop clears the interval', () => {
   lc.stopHeartbeatLoop();
   assert.equal(lc._driftInterval, null, 'stopHeartbeatLoop must null out the drift interval');
 });
+
+// --------------------------------------------------------------------------
+// Drift detector re-poke on persistent failures (task #14 race fix)
+// --------------------------------------------------------------------------
+
+test('drift detector: re-pokes when _consecutiveFailures>0 even with small wall-clock gap', async () => {
+  // Regression for the macOS-wake race described in task #14:
+  //   1. host wakes -> both setInterval (drift) and setTimeout (heartbeat
+  //      tick) fire near-simultaneously
+  //   2. heartbeat tick enters first, _tickInFlight=true, awaits the fetch
+  //   3. drift detector's poke is a no-op (in-flight gate)
+  //   4. post-wake tick fails because WiFi/DNS isn't up yet ->
+  //      _consecutiveFailures=1, next tick pushed out by minutes
+  //   5. next drift check 30s later sees only a 30s wall-clock gap (we've
+  //      been awake the whole time) -> < 90s threshold -> no poke
+  //   6. user is stuck in long backoff with network fully up
+  //
+  // Fix: drift detector also pokes when _consecutiveFailures > 0 and the
+  // last tick was longer ago than 2 * interval. Asserts that with a small
+  // wall-clock gap (<90s) the detector still pokes once we are in a
+  // failing state.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    const interval = 30_000;
+    lc.startHeartbeatLoop(interval);
+    assert.ok(driftCallback, 'drift interval must be registered');
+
+    // Simulate state immediately after the post-wake tick failure:
+    //   - one consecutive failure
+    //   - _lastTickAt is well in the past (longer than 2 * interval) but
+    //     wall-clock gap on the drift sample itself is small (<90s).
+    const realNow = Date.now;
+    const baseline = realNow();
+    lc._consecutiveFailures = 1;
+    lc._lastDriftCheckAt = baseline;
+    lc._lastTickAt = baseline - 5 * interval; // 150s since last tick
+
+    let pokeCount = 0;
+    lc.pokeHeartbeat = () => { pokeCount++; return true; };
+
+    // Small wall-clock jump (15s) -- below the 90s sleep threshold so the
+    // existing branch must NOT fire. The new persistent-failure branch
+    // must fire instead.
+    Date.now = () => baseline + 15_000;
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(
+      pokeCount, 1,
+      'drift detector must re-poke when failures>0 and tick is stale, even with sub-threshold wall-clock gap',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});
+
+test('drift detector: healthy node with small gap does NOT poke (no false positive)', async () => {
+  // Counterpart to the regression above: confirm Approach B does not turn
+  // the drift detector into a constant poke source on a healthy node.
+  // With _consecutiveFailures === 0 and a small wall-clock gap, neither
+  // the wall-clock branch nor the persistent-failure branch must fire.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    const interval = 30_000;
+    lc.startHeartbeatLoop(interval);
+    assert.ok(driftCallback);
+
+    const realNow = Date.now;
+    const baseline = realNow();
+    // Healthy node: no failures. Even if _lastTickAt is "stale" by the
+    // 2*interval rule, the consecutiveFailures===0 guard must prevent
+    // any poke -- this is the only thing keeping the drift detector
+    // quiet on healthy systems.
+    lc._consecutiveFailures = 0;
+    lc._lastDriftCheckAt = baseline;
+    lc._lastTickAt = baseline - 5 * interval;
+
+    let pokeCount = 0;
+    lc.pokeHeartbeat = () => { pokeCount++; return true; };
+
+    Date.now = () => baseline + 15_000; // small gap, well under 90s
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(pokeCount, 0, 'healthy node + sub-threshold gap must NOT trigger pokeHeartbeat');
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});
