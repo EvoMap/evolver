@@ -20,6 +20,13 @@ const MAX_REAUTH_ATTEMPTS = 2;
 // minutes by inbound auth errors and fills the log forever.
 const REAUTH_BACKOFF_BASE_MS = 30 * 60_000;
 const REAUTH_BACKOFF_MAX_MS = 4 * 60 * 60_000;
+// pokeHeartbeat() debounce window. Hub enforces ~6 heartbeats / 300s per
+// sender (evomap-hub/src/routes/a2a/protocol.js); without a client-side
+// throttle, pokes wired to user activity would 429 on busy proxies. A
+// healthy node that has just ticked is skipped until this window passes;
+// failing nodes (consecutiveFailures > 0 or active reauth backoff) bypass
+// the throttle so recovery isn't blocked.
+const POKE_THROTTLE_MS = 60_000;
 
 let _cachedFingerprint = null;
 function _getEnvFingerprint() {
@@ -324,6 +331,12 @@ class LifecycleManager {
         if (hbResult.ok) {
           this.logger.log('[lifecycle] re-auth succeeded: heartbeat confirmed with new secret');
           this._consecutiveReauthFailures = 0;
+          // Clear the pending backoff window too. Without this, a stale
+          // _reauthBackoffUntil from a previous incident would still be in
+          // the future when the next 401 arrives, causing the next call to
+          // reAuthenticate() to short-circuit and refuse to try -- even
+          // though we just proved auth is healthy.
+          this._reauthBackoffUntil = 0;
           // Note: _envOverrideLogged is intentionally NOT reset here.
           // The successful hello path above already set _suppressEnvSecret=true,
           // which means _resolveNodeSecret will never hit the env-vs-store
@@ -390,30 +403,36 @@ class LifecycleManager {
   async heartbeat({ _skipReauth = false } = {}) {
     if (!this.hubUrl) return { ok: false, error: 'no_hub_url' };
 
-    const nodeId = this.nodeId;
-    if (!nodeId) {
-      const helloResult = await this.hello();
-      if (!helloResult.ok) return helloResult;
-    }
-
-    const endpoint = `${this.hubUrl}/a2a/heartbeat`;
-    const taskMeta = typeof this.getTaskMeta === 'function' ? this.getTaskMeta() : {};
-    const fp = _getEnvFingerprint();
-    const body = {
-      node_id: this.nodeId,
-      sender_id: this.nodeId,
-      evolver_version: fp.evolver_version || PROXY_PROTOCOL_VERSION,
-      env_fingerprint: fp,
-      meta: {
-        proxy_version: PROXY_PROTOCOL_VERSION,
-        proxy_protocol_version: PROXY_PROTOCOL_VERSION,
-        outbound_pending: this.store.countPending({ direction: 'outbound' }),
-        inbound_pending: this.store.countPending({ direction: 'inbound' }),
-        ...taskMeta,
-      },
-    };
-
+    // The try block must cover ALL of body assembly, not just the fetch.
+    // Previously, this.nodeId / this.getTaskMeta() / this.store.countPending()
+    // ran before `try {` -- any synchronous throw there (corrupt store, hook
+    // raising, locked mailbox file) escaped heartbeat(), escaped the tick
+    // closure in startHeartbeatLoop, and the next setTimeout(tick) was never
+    // scheduled. Loop dead until daemon restart.
     try {
+      const nodeId = this.nodeId;
+      if (!nodeId) {
+        const helloResult = await this.hello();
+        if (!helloResult.ok) return helloResult;
+      }
+
+      const endpoint = `${this.hubUrl}/a2a/heartbeat`;
+      const taskMeta = typeof this.getTaskMeta === 'function' ? this.getTaskMeta() : {};
+      const fp = _getEnvFingerprint();
+      const body = {
+        node_id: this.nodeId,
+        sender_id: this.nodeId,
+        evolver_version: fp.evolver_version || PROXY_PROTOCOL_VERSION,
+        env_fingerprint: fp,
+        meta: {
+          proxy_version: PROXY_PROTOCOL_VERSION,
+          proxy_protocol_version: PROXY_PROTOCOL_VERSION,
+          outbound_pending: this.store.countPending({ direction: 'outbound' }),
+          inbound_pending: this.store.countPending({ direction: 'inbound' }),
+          ...taskMeta,
+        },
+      };
+
       const res = await hubFetch(endpoint, {
         method: 'POST',
         headers: this._buildHeaders(),
@@ -490,22 +509,58 @@ class LifecycleManager {
     if (this._running) return;
     this._running = true;
     this._startedAt = Date.now();
+    this._tickInFlight = false;
+    this._lastTickAt = 0;
 
     const interval = Math.max(30_000, intervalMs || DEFAULT_HEARTBEAT_INTERVAL);
 
-    const tick = async () => {
+    // Hoisted to this._tick so pokeHeartbeat() can re-enter the loop after
+    // resetting backoff state without having to start a parallel loop.
+    this._tick = async () => {
       if (!this._running) return;
-      await this.heartbeat();
-      if (this._running) {
-        const backoff = this._consecutiveFailures > 0
-          ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
-          : interval;
-        this._heartbeatTimer = setTimeout(tick, backoff);
-        if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+      // Single-flight gate. Prevents pokeHeartbeat() (or any other re-entry)
+      // from starting a parallel tick while one is mid-await. Two ticks
+      // running concurrently would each schedule a setTimeout at the end
+      // and the earlier timer reference would be leaked (and would still
+      // fire later, fanning out into more parallel ticks).
+      if (this._tickInFlight) return;
+      this._tickInFlight = true;
+      this._lastTickAt = Date.now();
+      try {
+        try {
+          await this.heartbeat();
+        } catch (err) {
+          // Defense in depth. heartbeat() catches its own errors and returns
+          // {ok:false}, but a future change that lets one slip through must
+          // NOT silently kill the loop. Bump the failure counter so backoff
+          // takes effect, then fall through (finally) to reschedule.
+          this._consecutiveFailures++;
+          // Wrap the logger call: if the logger transport itself throws,
+          // we must not let it escape and skip the reschedule in finally.
+          try {
+            this.logger.error(
+              `[lifecycle] heartbeat threw unexpectedly (${this._consecutiveFailures}): ${err && err.message || err}`,
+            );
+          } catch { /* logger blew up; loop must still survive */ }
+        }
+      } finally {
+        // Reschedule lives in finally so NO failure path inside the try
+        // (including the catch above) can drop us out of the loop. This
+        // is the load-bearing invariant of issue #544 -- if this line is
+        // ever skipped, the daemon goes offline until restart.
+        this._tickInFlight = false;
+        if (this._running) {
+          const backoff = this._consecutiveFailures > 0
+            ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
+            : interval;
+          this._heartbeatTimer = setTimeout(this._tick, backoff);
+          if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+        }
       }
     };
 
-    tick();
+    // Backstop in case tick ever throws synchronously before its own try.
+    this._tick().catch(() => {});
   }
 
   stopHeartbeatLoop() {
@@ -514,6 +569,51 @@ class LifecycleManager {
       clearTimeout(this._heartbeatTimer);
       this._heartbeatTimer = null;
     }
+    // Clear the closure so a subsequent pokeHeartbeat() cleanly returns
+    // false on its own check, not just via the _running guard. Keeps the
+    // "noop if loop hasn't been started" docstring contract honest after
+    // a stop.
+    this._tick = null;
+  }
+
+  /**
+   * Wake the heartbeat loop immediately. Clears accumulated backoff state
+   * (consecutive failures + re-auth backoff window) so subsequent failures
+   * start fresh, then fires one tick right away if conditions allow.
+   *
+   * Throttling rules:
+   *   - Returns false if the loop isn't running.
+   *   - Returns true (no new tick) if a tick is already in flight -- that
+   *     IS the liveness proof we wanted.
+   *   - For a HEALTHY node (no consecutive failures, no active reauth
+   *     backoff), the call is debounced to one tick per POKE_THROTTLE_MS
+   *     so user-activity-triggered pokes can't bypass the hub's 6/300s
+   *     per-sender heartbeat rate limit.
+   *   - A FAILING node (consecutiveFailures > 0 or active reauth backoff)
+   *     bypasses the throttle so recovery is never blocked.
+   *
+   * @returns {boolean} true if a tick is in flight or was kicked off.
+   */
+  pokeHeartbeat() {
+    if (!this._running || !this._tick) return false;
+
+    const wasFailing = this._consecutiveFailures > 0 || this._reauthBackoffUntil > Date.now();
+    this._consecutiveFailures = 0;
+    this._reauthBackoffUntil = 0;
+
+    if (this._tickInFlight) return true;
+
+    if (!wasFailing) {
+      const sinceLast = Date.now() - (this._lastTickAt || 0);
+      if (this._lastTickAt && sinceLast < POKE_THROTTLE_MS) return false;
+    }
+
+    if (this._heartbeatTimer) {
+      clearTimeout(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+    this._tick().catch(() => {});
+    return true;
   }
 
   _shouldUpgrade(minVersion) {
