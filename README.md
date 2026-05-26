@@ -497,28 +497,25 @@ The `sessions_spawn(...)` strings in `index.js` and `evolve.js` are **text outpu
 
 This repository is the public distribution.
 
-- Build public output: `npm run build`
-- Publish public output: `npm run publish:public`
-- Dry run: `DRY_RUN=true npm run publish:public`
+Before publishing, verify the release from a clean `main` checkout:
 
-Required env vars:
+```bash
+npm view @evomap/evolver version
+node --test test/adapters.test.js test/adaptersSyntax.test.js test/adapters.kiro.test.js test/adapters.opencode.test.js
+npm pack --dry-run
+npm publish --dry-run --access public
+```
 
-- `PUBLIC_REMOTE` (default: `public`)
-- `PUBLIC_REPO` (e.g. `EvoMap/evolver`)
-- `PUBLIC_OUT_DIR` (default: `dist-public`)
-- `PUBLIC_USE_BUILD_OUTPUT` (default: `true`)
+Patch releases use the standard npm version flow:
 
-Optional env vars:
+```bash
+npm version patch -m "Release v%s"
+git push origin main --tags
+npm publish --access public
+npm view @evomap/evolver version
+```
 
-- `SOURCE_BRANCH` (default: `main`)
-- `PUBLIC_BRANCH` (default: `main`)
-- `RELEASE_TAG` (e.g. `v1.0.41`)
-- `RELEASE_TITLE` (e.g. `v1.0.41 - GEP protocol`)
-- `RELEASE_NOTES` or `RELEASE_NOTES_FILE`
-- `GITHUB_TOKEN` (or `GH_TOKEN` / `GITHUB_PAT`) for GitHub Release creation
-- `RELEASE_SKIP` (`true` to skip creating a GitHub Release; default is to create)
-- `RELEASE_USE_GH` (`true` to use `gh` CLI instead of GitHub API)
-- `PUBLIC_RELEASE_ONLY` (`true` to only create a Release for an existing tag; no publish)
+After publishing, create a GitHub Release from the pushed tag.
 
 ## Versioning (SemVer)
 

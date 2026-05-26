@@ -34,7 +34,9 @@ const path = require('path');
 const DEFAULT_REPO_ROOT = path.resolve(__dirname, '..');
 
 function readChangelogAtHead(repoRoot) {
-  return fs.readFileSync(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+  const changelogPath = path.join(repoRoot, 'CHANGELOG.md');
+  if (!fs.existsSync(changelogPath)) return null;
+  return fs.readFileSync(changelogPath, 'utf8');
 }
 
 function readChangelogAtRef(repoRoot, ref) {
@@ -98,6 +100,13 @@ function extractSection(text, version) {
 function checkChangelogIntegrity(opts) {
   const repoRoot = (opts && opts.repoRoot) || DEFAULT_REPO_ROOT;
   const head = readChangelogAtHead(repoRoot);
+  if (head == null) {
+    return {
+      drift: [],
+      skipped: [{ version: '*', reason: 'CHANGELOG.md not present in this repository' }],
+      checked: 0,
+    };
+  }
   const versions = listReleasedVersionHeadings(head);
 
   const drift = [];

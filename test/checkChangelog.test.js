@@ -141,4 +141,21 @@ describe('check-changelog integration (#113)', () => {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
   });
+
+  it('skips cleanly when the repository has no CHANGELOG.md', () => {
+    const repoDir = setupRepo();
+    try {
+      fs.writeFileSync(path.join(repoDir, 'README.md'), '# no changelog here\n', 'utf8');
+      runGit(repoDir, ['add', 'README.md']);
+      runGit(repoDir, ['commit', '-q', '-m', 'initial']);
+
+      const r = checkChangelogIntegrity({ repoRoot: repoDir });
+      assert.deepEqual(r.drift, []);
+      assert.equal(r.checked, 0);
+      assert.equal(r.skipped.length, 1);
+      assert.equal(r.skipped[0].reason, 'CHANGELOG.md not present in this repository');
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });
