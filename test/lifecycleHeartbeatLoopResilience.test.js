@@ -475,13 +475,17 @@ test('drift detector: re-pokes when _consecutiveFailures>0 even with small wall-
 
     // Simulate state immediately after the post-wake tick failure:
     //   - one consecutive failure
-    //   - _lastTickAt is well in the past (longer than 2 * interval) but
+    //   - _lastTickSuccessAt is well in the past (longer than 90s) but
     //     wall-clock gap on the drift sample itself is small (<90s).
+    //   - _lastTickAttemptAt is fresh (the failing tick just ran) -- the
+    //     recovery branch must not key off attempt time or it would never
+    //     fire on a fast-failing node.
     const realNow = Date.now;
     const baseline = realNow();
     lc._consecutiveFailures = 1;
     lc._lastDriftCheckAt = baseline;
-    lc._lastTickAt = baseline - 5 * interval; // 150s since last tick
+    lc._lastTickAttemptAt = baseline; // fresh failing attempt
+    lc._lastTickSuccessAt = baseline - 5 * interval; // 150s since last success
 
     let pokeCount = 0;
     lc.pokeHeartbeat = () => { pokeCount++; return true; };
@@ -506,18 +510,19 @@ test('drift detector: re-pokes when _consecutiveFailures>0 even with small wall-
   }
 });
 
-test('drift detector: re-pokes after 60s with default 6min heartbeat interval (Bug 2 fix)', async () => {
+test('drift detector: re-pokes when last success is stale under default 6min heartbeat interval (Bug 2 fix)', async () => {
   // Bug 2 regression: the staleness gate used `2 * interval` where
   // `interval` was the heartbeat interval (defaults to 360_000 = 6 min),
   // so the effective gate was ~12 min -- not the "~30s recovery" the
   // comment claimed. With the fix, the gate is keyed to
-  // `Math.max(2 * DRIFT_CHECK_MS, 60_000)` (~60s), independent of the
-  // configured heartbeat interval.
+  // TICK_SUCCESS_STALE_MS (~90s) against _lastTickSuccessAt, independent
+  // of the configured heartbeat interval.
   //
   // This test exercises the realistic production config: default 6 min
-  // heartbeat interval, _lastTickAt 90s in the past. Under the OLD code
-  // the staleness gate would be 12 min and the branch would NOT fire.
-  // Under the NEW code the 60s gate is exceeded and the branch must fire.
+  // heartbeat interval, _lastTickSuccessAt >90s in the past. Under the
+  // OLD code the staleness gate would be 12 min and the branch would NOT
+  // fire. Under the NEW code the 90s gate is exceeded and the branch
+  // must fire.
   const lc = makeManager();
   lc.heartbeat = async () => ({ ok: true });
 
@@ -541,7 +546,8 @@ test('drift detector: re-pokes after 60s with default 6min heartbeat interval (B
     const baseline = realNow();
     lc._consecutiveFailures = 1;
     lc._lastDriftCheckAt = baseline;
-    lc._lastTickAt = baseline - 90_000; // 90s ago: above 60s, well below 12min
+    lc._lastTickAttemptAt = baseline; // fresh failing attempt
+    lc._lastTickSuccessAt = baseline - 120_000; // 120s since last success: above 90s
 
     let pokeCount = 0;
     lc.pokeHeartbeat = () => { pokeCount++; return true; };
@@ -590,13 +596,13 @@ test('drift detector: healthy node with small gap does NOT poke (no false positi
 
     const realNow = Date.now;
     const baseline = realNow();
-    // Healthy node: no failures. Even if _lastTickAt is "stale" by the
-    // 2*interval rule, the consecutiveFailures===0 guard must prevent
-    // any poke -- this is the only thing keeping the drift detector
-    // quiet on healthy systems.
+    // Healthy node: no failures. Even if _lastTickSuccessAt is "stale",
+    // the consecutiveFailures===0 guard must prevent any poke -- this is
+    // the only thing keeping the drift detector quiet on healthy systems.
     lc._consecutiveFailures = 0;
     lc._lastDriftCheckAt = baseline;
-    lc._lastTickAt = baseline - 5 * interval;
+    lc._lastTickAttemptAt = baseline - 5 * interval;
+    lc._lastTickSuccessAt = baseline - 5 * interval;
 
     let pokeCount = 0;
     lc.pokeHeartbeat = () => { pokeCount++; return true; };
@@ -806,7 +812,7 @@ test('pokeHeartbeat(): deep-failure node still respects POKE_THROTTLE_MS', async
   // not only must we keep the backoff, we must also not bypass the
   // POKE_THROTTLE_MS debounce -- otherwise a deep-failure node would
   // still fire a tick on every keystroke (even if reAuth itself is
-  // gated, the tick storm wastes CPU and clobbers _lastTickAt).
+  // gated, the tick storm wastes CPU and clobbers _lastTickAttemptAt).
   const lc = makeManager();
   let heartbeatCalls = 0;
   lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
@@ -822,7 +828,7 @@ test('pokeHeartbeat(): deep-failure node still respects POKE_THROTTLE_MS', async
   const r = lc.pokeHeartbeat();
   await new Promise((r2) => setTimeout(r2, 30));
 
-  // Throttle must apply -- the recent _lastTickAt blocks a new tick.
+  // Throttle must apply -- the recent _lastTickAttemptAt blocks a new tick.
   assert.equal(
     r, false,
     'deep-failure poke must respect POKE_THROTTLE_MS (got true == bypass)',
@@ -830,4 +836,141 @@ test('pokeHeartbeat(): deep-failure node still respects POKE_THROTTLE_MS', async
   assert.equal(heartbeatCalls, 1, 'no extra heartbeat must fire under throttle');
 
   lc.stopHeartbeatLoop();
+});
+
+// --------------------------------------------------------------------------
+// Hung-fetch watchdog + last-success-vs-attempt timestamp (Bug A + Bug B)
+//
+// Bug A: if a fetch hangs past its AbortSignal (TLS-level hang, custom
+// transport ignoring abort), _tickInFlight stays true forever and every
+// subsequent pokeHeartbeat() early-returns. The watchdog must force-reset
+// the in-flight flag and let the next poke proceed.
+//
+// Bug B: the drift-detector recovery branch keyed off _lastTickAt
+// (attempt time). On a node failing every 30s the attempt timestamp is
+// always fresh and the branch never fires. Splitting attempt vs success
+// time fixes the gate.
+// --------------------------------------------------------------------------
+
+test('pokeHeartbeat(): rescues a hung in-flight tick past the watchdog threshold', async () => {
+  // Simulate a stuck fetch: _tickInFlight true, _tickStartedAt > 60s ago.
+  // Without the rescue, the poke would early-return at the in-flight gate
+  // and the loop would be permanently dead. With the rescue, the flag
+  // must be force-reset and a fresh tick scheduled.
+  const lc = makeManager();
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
+
+  lc.startHeartbeatLoop(30_000);
+  // Let the first auto-tick settle so the loop is bound.
+  await new Promise((r) => setTimeout(r, 30));
+  const heartbeatCallsBefore = heartbeatCalls;
+
+  // Synthesize the wedge. Mark a non-zero failure count so the throttle
+  // (which would otherwise block the immediate re-tick on a healthy node
+  // whose last attempt was <60s ago) is bypassed -- this matches the
+  // real-world scenario where a hung tick has already caused trouble.
+  lc._tickInFlight = true;
+  lc._tickStartedAt = Date.now() - 61_000;
+  lc._consecutiveFailures = 1;
+
+  const ok = lc.pokeHeartbeat();
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(ok, true, 'rescued poke must report a scheduled tick');
+  assert.equal(lc._tickInFlight, false, 'hung in-flight flag must be force-reset (post-tick)');
+  assert.equal(lc._tickStartedAt, null, '_tickStartedAt must be cleared on rescue (post-tick)');
+  assert.ok(
+    heartbeatCalls > heartbeatCallsBefore,
+    `a fresh heartbeat must fire after rescue (before=${heartbeatCallsBefore}, after=${heartbeatCalls})`,
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('_lastTickSuccessAt: not updated on failing tick, updated on succeeding tick', async () => {
+  // Failing path: heartbeat returns {ok:false}. _lastTickSuccessAt must
+  // stay null. Success path: heartbeat returns {ok:true}. The field must
+  // be populated. This is the load-bearing invariant for the drift
+  // detector's recovery branch.
+  const lc = makeManager();
+  let outcome = { ok: false, error: 'synthetic' };
+  lc.heartbeat = async () => outcome;
+
+  lc.startHeartbeatLoop(30_000);
+  // First auto-tick: failing.
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(
+    lc._lastTickSuccessAt, null,
+    '_lastTickSuccessAt must NOT be set when the tick returned {ok:false}',
+  );
+  assert.ok(
+    lc._lastTickAttemptAt > 0,
+    '_lastTickAttemptAt must be set even on failing ticks',
+  );
+
+  // Flip to success and poke a fresh tick.
+  outcome = { ok: true };
+  lc._consecutiveFailures = 1; // bypass throttle
+  lc.pokeHeartbeat();
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.ok(
+    lc._lastTickSuccessAt && lc._lastTickSuccessAt > 0,
+    `_lastTickSuccessAt must be populated after a {ok:true} tick (got ${lc._lastTickSuccessAt})`,
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('drift detector: recovery branch uses _lastTickSuccessAt, not _lastTickAttemptAt', async () => {
+  // Repro for Bug B: a node failing every 30s keeps _lastTickAttemptAt
+  // fresh, so the old "now - _lastTickAt > 60s" gate never fired. With
+  // the fix, the gate keys off _lastTickSuccessAt: if no success in 90s
+  // (and we are in a failing state) the branch must poke.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: false, error: 'still_failing' });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    assert.ok(driftCallback, 'drift interval must be registered');
+
+    const realNow = Date.now;
+    const baseline = realNow();
+    // Node failing every 30s for a while: attempt timestamp is fresh,
+    // success timestamp is stale (>90s ago). _consecutiveFailures > 0.
+    lc._consecutiveFailures = 4;
+    lc._lastDriftCheckAt = baseline;
+    lc._lastTickAttemptAt = baseline; // fresh attempt
+    lc._lastTickSuccessAt = baseline - 120_000; // 120s since last success
+
+    let pokeCount = 0;
+    lc.pokeHeartbeat = () => { pokeCount++; return true; };
+
+    // Small wall-clock gap so the sleep/wake branch does NOT fire.
+    Date.now = () => baseline + 15_000;
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(
+      pokeCount, 1,
+      'recovery branch must fire when _lastTickSuccessAt is stale even though _lastTickAttemptAt is fresh',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
 });

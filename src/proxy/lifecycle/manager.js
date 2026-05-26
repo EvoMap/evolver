@@ -42,6 +42,19 @@ const POKE_THROTTLE_MS = 60_000;
 // Standard pattern in cron daemons / Electron / browser extensions.
 const DRIFT_CHECK_MS = 30_000;
 const DRIFT_SLEEP_THRESHOLD_MS = 90_000;
+// Hung-tick watchdog. The fetch inside _tick is bounded by
+// AbortSignal.timeout(HEARTBEAT_TIMEOUT=10s), but the AbortSignal can be
+// ignored or fail to interrupt in pathological cases (TLS-level hang, a
+// stuck kernel socket, a custom transport that doesn't honor abort). If
+// _tickInFlight stays true forever, every subsequent pokeHeartbeat()
+// early-returns at the in-flight gate and the loop is permanently dead.
+// 60s sits comfortably above HEARTBEAT_TIMEOUT so we don't race a normal
+// abort cycle while still rescuing the loop within one drift sample.
+const TICK_HUNG_THRESHOLD_MS = 60_000;
+// Threshold for the drift-detector recovery branch. Keys off
+// _lastTickSuccessAt (NOT attempt time): a node failing fast every 30s
+// would keep its attempt timestamp fresh and the branch would never fire.
+const TICK_SUCCESS_STALE_MS = 90_000;
 
 let _cachedFingerprint = null;
 function _getEnvFingerprint() {
@@ -525,7 +538,9 @@ class LifecycleManager {
     this._running = true;
     this._startedAt = Date.now();
     this._tickInFlight = false;
-    this._lastTickAt = 0;
+    this._tickStartedAt = null;
+    this._lastTickAttemptAt = 0;
+    this._lastTickSuccessAt = null;
 
     const interval = Math.max(30_000, intervalMs || DEFAULT_HEARTBEAT_INTERVAL);
 
@@ -540,10 +555,12 @@ class LifecycleManager {
       // fire later, fanning out into more parallel ticks).
       if (this._tickInFlight) return;
       this._tickInFlight = true;
-      this._lastTickAt = Date.now();
+      this._tickStartedAt = Date.now();
+      this._lastTickAttemptAt = this._tickStartedAt;
+      let tickResult = null;
       try {
         try {
-          await this.heartbeat();
+          tickResult = await this.heartbeat();
         } catch (err) {
           // Defense in depth. heartbeat() catches its own errors and returns
           // {ok:false}, but a future change that lets one slip through must
@@ -563,7 +580,11 @@ class LifecycleManager {
         // (including the catch above) can drop us out of the loop. This
         // is the load-bearing invariant of issue #544 -- if this line is
         // ever skipped, the daemon goes offline until restart.
+        if (tickResult && tickResult.ok === true) {
+          this._lastTickSuccessAt = Date.now();
+        }
         this._tickInFlight = false;
+        this._tickStartedAt = null;
         if (this._running) {
           const backoff = this._consecutiveFailures > 0
             ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
@@ -586,6 +607,21 @@ class LifecycleManager {
       const now = Date.now();
       const gap = now - this._lastDriftCheckAt;
       this._lastDriftCheckAt = now;
+      // Hung-tick rescue: if a tick has been "in flight" past the
+      // watchdog threshold, the fetch (or whatever it is awaiting) is
+      // stuck and ignoring the AbortSignal. Force-reset so the next poke
+      // / scheduled tick can proceed instead of being silently gated.
+      if (
+        this._tickInFlight
+        && this._tickStartedAt
+        && (now - this._tickStartedAt) > TICK_HUNG_THRESHOLD_MS
+      ) {
+        this.logger.warn(
+          `[lifecycle] tick hung for ${now - this._tickStartedAt}ms, force-resetting`,
+        );
+        this._tickInFlight = false;
+        this._tickStartedAt = null;
+      }
       if (gap > DRIFT_SLEEP_THRESHOLD_MS) {
         this.logger.warn(
           `[lifecycle] wall-clock jump detected (+${Math.round(gap / 1000)}s); ` +
@@ -618,12 +654,17 @@ class LifecycleManager {
       // by 2 * DRIFT_CHECK_MS (~60s), one or two drift samples.
       if (
         this._consecutiveFailures > 0
-        && this._lastTickAt
-        && (now - this._lastTickAt) > Math.max(2 * DRIFT_CHECK_MS, 60_000)
+        && (
+          this._lastTickSuccessAt === null
+          || (now - this._lastTickSuccessAt) > TICK_SUCCESS_STALE_MS
+        )
       ) {
+        const sinceSuccessMs = this._lastTickSuccessAt === null
+          ? null
+          : now - this._lastTickSuccessAt;
         this.logger.warn(
-          `[lifecycle] persistent failure (${this._consecutiveFailures}) and no tick for ` +
-            `${Math.round((now - this._lastTickAt) / 1000)}s; poking heartbeat`,
+          `[lifecycle] persistent failure (${this._consecutiveFailures}) and no success for ` +
+            `${sinceSuccessMs === null ? 'ever' : Math.round(sinceSuccessMs / 1000) + 's'}; poking heartbeat`,
         );
         try { this.pokeHeartbeat(); } catch { /* never let the detector escape */ }
       }
@@ -703,6 +744,24 @@ class LifecycleManager {
   pokeHeartbeat() {
     if (!this._running || !this._tick) return false;
 
+    // Hung-tick rescue. If a previous tick has been "in flight" past
+    // TICK_HUNG_THRESHOLD_MS the underlying fetch is stuck and the
+    // AbortSignal is being ignored. Without this force-reset every poke
+    // would early-return at the in-flight gate below and the loop would
+    // be permanently dead. Runs BEFORE the in-flight gate so the rescued
+    // poke can proceed normally.
+    if (
+      this._tickInFlight
+      && this._tickStartedAt
+      && (Date.now() - this._tickStartedAt) > TICK_HUNG_THRESHOLD_MS
+    ) {
+      this.logger.warn(
+        `[lifecycle] tick hung for ${Date.now() - this._tickStartedAt}ms, force-resetting`,
+      );
+      this._tickInFlight = false;
+      this._tickStartedAt = null;
+    }
+
     // The in-flight tick IS the liveness proof we wanted. Do NOT mutate
     // state here -- the running tick will record its own outcome, and
     // wiping _consecutiveFailures / _reauthBackoffUntil mid-await would
@@ -715,8 +774,8 @@ class LifecycleManager {
       this._consecutiveFailures > 0 || (reauthBackoffActive && !deepReauthFailure);
 
     if (!wasFailing) {
-      const sinceLast = Date.now() - (this._lastTickAt || 0);
-      if (this._lastTickAt && sinceLast < POKE_THROTTLE_MS) return false;
+      const sinceLast = Date.now() - (this._lastTickAttemptAt || 0);
+      if (this._lastTickAttemptAt && sinceLast < POKE_THROTTLE_MS) return false;
     }
 
     // Committed: clear loop-level failure state, cancel any pending timer,
