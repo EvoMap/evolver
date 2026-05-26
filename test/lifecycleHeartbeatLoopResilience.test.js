@@ -506,6 +506,65 @@ test('drift detector: re-pokes when _consecutiveFailures>0 even with small wall-
   }
 });
 
+test('drift detector: re-pokes after 60s with default 6min heartbeat interval (Bug 2 fix)', async () => {
+  // Bug 2 regression: the staleness gate used `2 * interval` where
+  // `interval` was the heartbeat interval (defaults to 360_000 = 6 min),
+  // so the effective gate was ~12 min -- not the "~30s recovery" the
+  // comment claimed. With the fix, the gate is keyed to
+  // `Math.max(2 * DRIFT_CHECK_MS, 60_000)` (~60s), independent of the
+  // configured heartbeat interval.
+  //
+  // This test exercises the realistic production config: default 6 min
+  // heartbeat interval, _lastTickAt 90s in the past. Under the OLD code
+  // the staleness gate would be 12 min and the branch would NOT fire.
+  // Under the NEW code the 60s gate is exceeded and the branch must fire.
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    // Use the DEFAULT heartbeat interval (6 min) -- the exact config
+    // where the old `2 * interval` math produced the ~12 min dead window.
+    lc.startHeartbeatLoop(360_000);
+    assert.ok(driftCallback, 'drift interval must be registered');
+
+    const realNow = Date.now;
+    const baseline = realNow();
+    lc._consecutiveFailures = 1;
+    lc._lastDriftCheckAt = baseline;
+    lc._lastTickAt = baseline - 90_000; // 90s ago: above 60s, well below 12min
+
+    let pokeCount = 0;
+    lc.pokeHeartbeat = () => { pokeCount++; return true; };
+
+    // Small wall-clock jump (15s) so the sleep/wake branch does NOT fire.
+    // Only the new persistent-failure branch should trigger the poke.
+    Date.now = () => baseline + 15_000;
+    try {
+      driftCallback();
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(
+      pokeCount, 1,
+      'drift detector must re-poke at 90s staleness under the default 6min heartbeat interval',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});
+
 test('drift detector: healthy node with small gap does NOT poke (no false positive)', async () => {
   // Counterpart to the regression above: confirm Approach B does not turn
   // the drift detector into a constant poke source on a healthy node.
@@ -673,6 +732,70 @@ test('pokeHeartbeat(): rapid pokes in deep-failure state do NOT spam reAuthentic
   assert.ok(
     newHeartbeats <= 2,
     `heartbeat ticks per 10 pokes must be bounded (got ${newHeartbeats})`,
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+// --------------------------------------------------------------------------
+// Ordering invariants in pokeHeartbeat (Bug 1 follow-up to #544)
+//
+// All early-exit checks (running guard, in-flight gate, throttle) must
+// run BEFORE any state mutation. Wiping _consecutiveFailures or
+// _reauthBackoffUntil before the single-flight gate would:
+//   - corrupt the failure history a mid-await tick is about to record
+//   - let rapid user activity erase a fresh _reauthBackoffUntil even
+//     though the in-flight gate then immediately no-ops
+// --------------------------------------------------------------------------
+
+test('pokeHeartbeat(): in-flight poke does NOT clear _consecutiveFailures before tick records its 401', async () => {
+  // Repro for Bug 1: an in-flight tick that is about to fail (mid-await
+  // on a hub fetch that will 401) must record its failure on top of the
+  // pre-existing failure history. If poke clears state BEFORE the
+  // in-flight gate, the failure counter would be reset to 0 and the
+  // subsequent 401-bump would record "1" instead of (n+1), masking the
+  // streak the backoff math depends on.
+  const lc = makeManager();
+
+  // Build a heartbeat() that awaits an external promise we control, then
+  // bumps _consecutiveFailures (mirroring the real heartbeat() 401 path
+  // at L459). This lets us hold the tick "mid-await" while we poke.
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+  lc.heartbeat = async () => {
+    await fetchGate; // simulate fetch in-flight
+    lc._consecutiveFailures++; // simulate the 401 branch incrementing
+    return { ok: false, error: 'auth_failed_401' };
+  };
+
+  lc.startHeartbeatLoop(30_000);
+  // Wait one microtask so the first auto-tick has entered its await.
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(lc._tickInFlight, true, 'sanity: tick must be mid-await');
+
+  // Install a non-zero _reauthBackoffUntil to verify it is NOT wiped by
+  // the in-flight poke. Use a SHALLOW failure streak so the new ordering
+  // would otherwise be willing to clear it (deepReauthFailure=false) --
+  // the in-flight gate is the only thing that should keep it intact.
+  const backoffUntil = Date.now() + 30 * 60_000;
+  lc._reauthBackoffUntil = backoffUntil;
+  lc._consecutiveReauthFailures = 1;
+
+  // Poke while the tick is in flight.
+  const r = lc.pokeHeartbeat();
+  assert.equal(r, true, 'in-flight poke must return true (the running tick is the proof)');
+  assert.equal(
+    lc._reauthBackoffUntil, backoffUntil,
+    'in-flight poke must NOT wipe _reauthBackoffUntil (state mutation must follow the in-flight gate)',
+  );
+
+  // Now release the fetch so the tick can finish and record its 401.
+  releaseFetch();
+  await new Promise((r2) => setTimeout(r2, 30));
+
+  assert.equal(
+    lc._consecutiveFailures, 1,
+    'after in-flight tick records its 401, _consecutiveFailures must be 1 (not 0 from a premature poke clear)',
   );
 
   lc.stopHeartbeatLoop();

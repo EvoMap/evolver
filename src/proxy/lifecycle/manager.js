@@ -605,16 +605,21 @@ class LifecycleManager {
       // the user is stuck in 12-30 min backoff even though network is up.
       //
       // Mitigation (Approach B from the review): if we already have a
-      // recent failure AND it's been longer than 2*interval since the
-      // last tick, poke again. The pokeHeartbeat throttle / in-flight
-      // gate still protects healthy nodes (this branch never runs when
-      // _consecutiveFailures === 0). Effective user-perceived recovery
-      // time after a failed post-wake tick: ~30s (one drift-check
-      // interval) instead of up to ~30 min.
+      // recent failure AND it's been longer than 2 * DRIFT_CHECK_MS
+      // (~60s) since the last tick, poke again. We deliberately key the
+      // staleness window to the drift-check cadence -- not to the
+      // configured heartbeat interval -- because the heartbeat interval
+      // can be 6 min (DEFAULT_HEARTBEAT_INTERVAL), which would push
+      // 2 * interval out to ~12 min and recreate the symptom this fix
+      // exists to solve. The poke itself is throttled and single-
+      // flighted, and this branch never runs when _consecutiveFailures
+      // === 0, so healthy nodes are not affected. Effective user-
+      // perceived recovery time after a failed post-wake tick: bounded
+      // by 2 * DRIFT_CHECK_MS (~60s), one or two drift samples.
       if (
         this._consecutiveFailures > 0
         && this._lastTickAt
-        && (now - this._lastTickAt) > 2 * interval
+        && (now - this._lastTickAt) > Math.max(2 * DRIFT_CHECK_MS, 60_000)
       ) {
         this.logger.warn(
           `[lifecycle] persistent failure (${this._consecutiveFailures}) and no tick for ` +
@@ -646,14 +651,27 @@ class LifecycleManager {
   }
 
   /**
-   * Wake the heartbeat loop immediately. Clears accumulated loop-failure
-   * backoff so subsequent failures start fresh, then fires one tick right
-   * away if conditions allow.
+   * Wake the heartbeat loop immediately. When this call is committed to
+   * firing a fresh tick, it first clears accumulated loop-failure backoff
+   * so subsequent failures start fresh, then fires the tick right away.
+   *
+   * Ordering invariant (issue #544 follow-up): all early-exit checks
+   * (running guard, in-flight gate, throttle) run BEFORE any state
+   * mutation. State is only cleared once we are committed to kicking off
+   * a new tick. Two concrete bugs this prevents:
+   *   1. Rapid user activity (every request pokes) would otherwise wipe
+   *      _reauthBackoffUntil on every keystroke even though the in-flight
+   *      gate then immediately no-ops -- the per-process backoff would be
+   *      repeatedly erased and the hub hammered.
+   *   2. A tick currently mid-await (e.g. about to 401) would have its
+   *      _consecutiveFailures reset to 0 before it records the failure,
+   *      masking the failure history that the backoff math depends on.
    *
    * Throttling rules:
    *   - Returns false if the loop isn't running.
    *   - Returns true (no new tick) if a tick is already in flight -- that
-   *     IS the liveness proof we wanted.
+   *     IS the liveness proof we wanted. State is left intact; the
+   *     running tick will record its own outcome.
    *   - For a HEALTHY node (no consecutive failures, no active reauth
    *     backoff), the call is debounced to one tick per POKE_THROTTLE_MS
    *     so user-activity-triggered pokes can't bypass the hub's 6/300s
@@ -685,25 +703,29 @@ class LifecycleManager {
   pokeHeartbeat() {
     if (!this._running || !this._tick) return false;
 
-    // Deep-failure nodes (>= 2 consecutive reauth failures) keep their
-    // backoff intact and respect the throttle. wasFailing semantics here
-    // mean "this poke is allowed to bypass the debounce", NOT "we cleared
-    // backoff state". Loop-level failure counter is still always cleared
-    // because the poke IS the user-driven retry signal we want to honor.
+    // The in-flight tick IS the liveness proof we wanted. Do NOT mutate
+    // state here -- the running tick will record its own outcome, and
+    // wiping _consecutiveFailures / _reauthBackoffUntil mid-await would
+    // corrupt the failure history the backoff math depends on.
+    if (this._tickInFlight) return true;
+
     const deepReauthFailure = this._consecutiveReauthFailures >= 2;
     const reauthBackoffActive = this._reauthBackoffUntil > Date.now();
     const wasFailing =
       this._consecutiveFailures > 0 || (reauthBackoffActive && !deepReauthFailure);
-    this._consecutiveFailures = 0;
-    if (!deepReauthFailure) {
-      this._reauthBackoffUntil = 0;
-    }
-
-    if (this._tickInFlight) return true;
 
     if (!wasFailing) {
       const sinceLast = Date.now() - (this._lastTickAt || 0);
       if (this._lastTickAt && sinceLast < POKE_THROTTLE_MS) return false;
+    }
+
+    // Committed: clear loop-level failure state, cancel any pending timer,
+    // and fire a fresh tick. Deep-failure nodes (>= 2 consecutive reauth
+    // failures) keep their _reauthBackoffUntil intact so user activity
+    // cannot wipe a backoff installed against a genuinely-rejecting hub.
+    this._consecutiveFailures = 0;
+    if (!deepReauthFailure) {
+      this._reauthBackoffUntil = 0;
     }
 
     if (this._heartbeatTimer) {
