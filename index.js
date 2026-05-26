@@ -439,7 +439,8 @@ async function main() {
             process.env.A2A_TRANSPORT = 'mailbox';
           } else {
             const a2a = require('./src/gep/a2aProtocol');
-            try { a2a.startHeartbeat(); }
+            const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
+            try { heartbeatSupervisor.start(a2a); }
             catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
             try { a2a.startEventStream(); }
             catch (ssErr) { console.warn('[SSE] startEventStream failed: ' + (ssErr && ssErr.message || ssErr)); }
@@ -544,6 +545,15 @@ async function main() {
         while (true) {
           try {
           cycleCount += 1;
+
+          // Heartbeat liveness: evolve cycle entry is the strongest user-activity
+          // signal in default mode. The supervisor's poke() throttles healthy
+          // nodes (60s) and bypasses throttle for failing nodes so recovery
+          // isn't blocked. See evolver#544.
+          try {
+            const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
+            heartbeatSupervisor.poke('evolve-cycle');
+          } catch (_pokeErr) { /* poke must never throw */ }
 
           // Ralph-loop gating: do not run a new cycle while previous run is pending solidify.
           const st0 = readJsonSafe(solidifyStatePath);
@@ -746,6 +756,10 @@ async function main() {
     } else {
         // Normal Single Run
         try {
+            try {
+              const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
+              heartbeatSupervisor.poke('single-run');
+            } catch (_pokeErr) { /* poke must never throw */ }
             await evolve.run();
         } catch (error) {
             console.error('Evolution failed:', error);
