@@ -24,13 +24,14 @@ function makeStore({ countPending } = {}) {
   };
 }
 
-function makeEngine({ store, onAuthError } = {}) {
+function makeEngine({ store, onAuthError, onLiveness } = {}) {
   return new SyncEngine({
     store: store || makeStore(),
     hubUrl: 'https://example.test',
     getHeaders: () => ({}),
     logger: silentLogger(),
     onAuthError: onAuthError || null,
+    onLiveness: onLiveness || null,
   });
 }
 
@@ -232,6 +233,197 @@ test('_scheduleInbound: AuthError + _handleAuthError rejecting must NOT kill the
     assert.ok(
       stub.count >= TARGET - 1,
       `expected >= ${TARGET - 1} successive reschedules under AuthError+reject, got ${stub.count}`,
+    );
+  } finally {
+    engine.stop();
+    stub.restore();
+  }
+});
+
+// --------------------------------------------------------------------------
+// onLiveness wire-up (#544 "sync alive but heartbeat dead")
+//
+// The sync engine never holds a direct reference to LifecycleManager, but it
+// MUST notify the lifecycle on the two recovery signals it can observe:
+//   1. inbound.pull() returning received > 0  -> 'inbound-received'
+//   2. onAuthError() resolving successfully    -> 'auth-recovered'
+// Without this, a node whose heartbeat is stuck in 12-30 min exponential
+// backoff stays "dead" from the hub's perspective even as the mailbox drains.
+
+test('onLiveness: inbound pull receiving data fires onLiveness("inbound-received")', async () => {
+  const calls = [];
+  const engine = makeEngine({ onLiveness: (reason) => calls.push(reason) });
+  engine.inbound = {
+    pull: async () => ({ received: 1 }),
+    ackDelivered: async () => {},
+  };
+
+  const realSetTimeout = global.setTimeout;
+  // Run exactly one tick of _scheduleInbound, then no-op the reschedule.
+  let callIdx = 0;
+  global.setTimeout = function (fn, ms, ...rest) {
+    const src = fn && fn.toString ? fn.toString() : '';
+    if (src.includes('_scheduleInbound')) {
+      callIdx++;
+      if (callIdx === 1) return realSetTimeout(fn, 0, ...rest);
+      return { unref: () => {} };
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    engine._running = true;
+    engine._scheduleInbound(0);
+    await new Promise((r) => realSetTimeout(r, 50));
+    assert.deepEqual(calls, ['inbound-received'],
+      `expected exactly one inbound-received signal, got ${JSON.stringify(calls)}`);
+  } finally {
+    engine.stop();
+    global.setTimeout = realSetTimeout;
+  }
+});
+
+test('onLiveness: NOT fired when received === 0 (would defeat lifecycle throttle)', async () => {
+  // Zero-data pulls happen every few seconds; if each one poked the
+  // heartbeat the 60s throttle inside LifecycleManager.pokeHeartbeat
+  // becomes meaningless and the recovery signal loses all signal value.
+  const calls = [];
+  const engine = makeEngine({ onLiveness: (reason) => calls.push(reason) });
+  engine.inbound = {
+    pull: async () => ({ received: 0 }),
+    ackDelivered: async () => {},
+  };
+
+  const realSetTimeout = global.setTimeout;
+  let callIdx = 0;
+  global.setTimeout = function (fn, ms, ...rest) {
+    const src = fn && fn.toString ? fn.toString() : '';
+    if (src.includes('_scheduleInbound')) {
+      callIdx++;
+      if (callIdx === 1) return realSetTimeout(fn, 0, ...rest);
+      return { unref: () => {} };
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    engine._running = true;
+    engine._scheduleInbound(0);
+    await new Promise((r) => realSetTimeout(r, 50));
+    assert.deepEqual(calls, [],
+      `expected no liveness signal on zero-data pull, got ${JSON.stringify(calls)}`);
+  } finally {
+    engine.stop();
+    global.setTimeout = realSetTimeout;
+  }
+});
+
+test('onLiveness: successful auth recovery fires onLiveness("auth-recovered")', async () => {
+  const calls = [];
+  const engine = makeEngine({
+    // onAuthError resolves cleanly -> reauth succeeded -> liveness signal.
+    onAuthError: async () => { /* simulate successful reauth */ },
+    onLiveness: (reason) => calls.push(reason),
+  });
+  engine.outbound = {
+    flush: async () => { throw new AuthError('401', 401); },
+  };
+  engine.store = makeStore({ countPending: () => 0 });
+
+  const realSetTimeout = global.setTimeout;
+  let callIdx = 0;
+  global.setTimeout = function (fn, ms, ...rest) {
+    const src = fn && fn.toString ? fn.toString() : '';
+    if (src.includes('_scheduleOutbound')) {
+      callIdx++;
+      if (callIdx === 1) return realSetTimeout(fn, 0, ...rest);
+      return { unref: () => {} };
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    engine._running = true;
+    engine._scheduleOutbound(0);
+    await new Promise((r) => realSetTimeout(r, 50));
+    assert.deepEqual(calls, ['auth-recovered'],
+      `expected exactly one auth-recovered signal, got ${JSON.stringify(calls)}`);
+  } finally {
+    engine.stop();
+    global.setTimeout = realSetTimeout;
+  }
+});
+
+test('onLiveness: NOT fired when onAuthError rejects (auth recovery failed)', async () => {
+  // Reauth failure means we did NOT prove the network is healthy, so no
+  // liveness signal should be sent -- the heartbeat loop should keep its
+  // backoff state intact.
+  const calls = [];
+  const engine = makeEngine({
+    onAuthError: async () => { throw new Error('reauth blew up'); },
+    onLiveness: (reason) => calls.push(reason),
+  });
+  engine.outbound = {
+    flush: async () => { throw new AuthError('401', 401); },
+  };
+  engine.store = makeStore({ countPending: () => 0 });
+
+  const realSetTimeout = global.setTimeout;
+  let callIdx = 0;
+  global.setTimeout = function (fn, ms, ...rest) {
+    const src = fn && fn.toString ? fn.toString() : '';
+    if (src.includes('_scheduleOutbound')) {
+      callIdx++;
+      if (callIdx === 1) return realSetTimeout(fn, 0, ...rest);
+      return { unref: () => {} };
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    engine._running = true;
+    engine._scheduleOutbound(0);
+    await new Promise((r) => realSetTimeout(r, 50));
+    assert.deepEqual(calls, [],
+      `expected no liveness signal when reauth fails, got ${JSON.stringify(calls)}`);
+  } finally {
+    engine.stop();
+    global.setTimeout = realSetTimeout;
+  }
+});
+
+test('onLiveness: a throwing onLiveness must NOT kill the sync loop', async () => {
+  // Same defense-in-depth invariant as #544: any callback hosted by the
+  // sync loop must be wrapped so it can't pull control out of the
+  // reschedule path.
+  const engine = makeEngine({
+    onAuthError: async () => { /* successful reauth */ },
+    onLiveness: () => { throw new Error('liveness consumer blew up'); },
+  });
+  let flushCalls = 0;
+  engine.outbound = {
+    flush: async () => { flushCalls++; throw new AuthError('401', 401); },
+  };
+  engine.store = makeStore({ countPending: () => 0 });
+
+  const TARGET = 6;
+  const stub = installRescheduleStub({
+    matcher: (src) => src.includes('_scheduleOutbound'),
+    target: TARGET,
+  });
+
+  try {
+    engine._running = true;
+    engine._scheduleOutbound(0);
+    await new Promise((r) => stub.realSetTimeout(r, 200));
+
+    assert.ok(
+      flushCalls >= TARGET - 1,
+      `expected >= ${TARGET - 1} flush calls under throwing onLiveness, got ${flushCalls}`,
+    );
+    assert.ok(
+      stub.count >= TARGET - 1,
+      `expected >= ${TARGET - 1} successive reschedules under throwing onLiveness, got ${stub.count}`,
     );
   } finally {
     engine.stop();

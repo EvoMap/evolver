@@ -8,13 +8,17 @@ const DEFAULT_OUTBOUND_INTERVAL = 5_000;
 const IDLE_THRESHOLD = 5 * 60_000;
 
 class SyncEngine {
-  constructor({ store, hubUrl, getHeaders, logger, onInboundReceived, onAuthError }) {
+  constructor({ store, hubUrl, getHeaders, logger, onInboundReceived, onAuthError, onLiveness }) {
     this.store = store;
     this.hubUrl = hubUrl;
     this.logger = logger || console;
     this.getHeaders = getHeaders;
     this.onInboundReceived = onInboundReceived || null;
     this.onAuthError = onAuthError || null;
+    // Liveness pings to the lifecycle manager (#544). Sync engine never holds a
+    // direct ref to LifecycleManager -- it just fires reason-tagged callbacks
+    // (e.g. 'inbound-received', 'auth-recovered') and lets the caller decide.
+    this.onLiveness = onLiveness || null;
 
     this.outbound = new OutboundSync({ store, hubUrl, getHeaders, logger });
     this.inbound = new InboundSync({ store, hubUrl, getHeaders, logger });
@@ -56,9 +60,29 @@ class SyncEngine {
   async _handleAuthError(source) {
     this.logger.error(`[sync] auth error from ${source}, triggering re-authentication`);
     if (typeof this.onAuthError === 'function') {
-      try { await this.onAuthError(); } catch (e) {
+      try {
+        await this.onAuthError();
+        // Auth recovery succeeded: hub is reachable and our credentials work.
+        // Poke lifecycle so the heartbeat loop can break out of any pending
+        // reauth backoff (#544 "sync alive but heartbeat dead" failure mode).
+        // Wrapped so a throwing onLiveness cannot escape into the sync loop.
+        try { this._fireLiveness('auth-recovered'); } catch { /* never let onLiveness escape */ }
+      } catch (e) {
         this.logger.error(`[sync] onAuthError callback failed: ${e.message}`);
       }
+    }
+  }
+
+  // Defensive wrapper around the optional onLiveness callback. Any failure
+  // here (callback throwing, callback missing, logger throwing) must NOT
+  // propagate back into the sync loops, which already paid for #544 once.
+  _fireLiveness(reason) {
+    if (typeof this.onLiveness !== 'function') return;
+    try {
+      this.onLiveness(reason);
+    } catch (e) {
+      try { this.logger.warn?.(`[sync] onLiveness(${reason}) callback failed: ${e && e.message || e}`); }
+      catch { /* logger blew up; loop must still survive */ }
     }
   }
 
@@ -140,6 +164,11 @@ class SyncEngine {
                 catch { /* logger blew up; loop must still survive */ }
               }
             }
+            // Inbound pull with data proves the hub is reachable and our auth
+            // is good -- a strong liveness signal for the heartbeat loop.
+            // Zero-received pulls are NOT signalled: too frequent, would
+            // defeat lifecycle's poke throttle. (#544)
+            try { this._fireLiveness('inbound-received'); } catch { /* never let onLiveness escape */ }
           }
           await this.inbound.ackDelivered();
         } catch (err) {

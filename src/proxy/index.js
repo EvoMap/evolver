@@ -82,6 +82,13 @@ class EvoMapProxy {
           this.logger?.warn?.('[proxy] skillUpdater.pollAndApply failed:', e.message);
         }
       },
+      // #544 "sync alive but heartbeat dead": if the sync engine recovers
+      // (inbound pull with data, or successful auth re-auth) the heartbeat
+      // loop must be told so it can break out of exponential backoff.
+      onLiveness: (_reason) => {
+        try { this.lifecycle.pokeHeartbeat(); }
+        catch (e) { this.logger?.warn?.('[sync] onLiveness poke failed:', e.message); }
+      },
     });
 
     const proxyHandlers = {
