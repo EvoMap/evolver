@@ -541,6 +541,15 @@ class LifecycleManager {
     this._tickStartedAt = null;
     this._lastTickAttemptAt = 0;
     this._lastTickSuccessAt = null;
+    // Generation counter to detect zombie ticks. Bumped by every watchdog
+    // rescue (_rescueHungTick) so the original tick, when its hung fetch
+    // finally resolves, sees a generation mismatch and bails without
+    // rescheduling. Without this, a hung-tick rescue produces TWO concurrent
+    // _tick invocations: the replacement (started by the rescuer) and the
+    // zombie original (eventually resolved). Both would write _tickInFlight,
+    // _heartbeatTimer, and _consecutiveFailures, fanning out into duplicate
+    // timers and racing on backoff state.
+    this._tickGeneration = 0;
 
     const interval = Math.max(30_000, intervalMs || DEFAULT_HEARTBEAT_INTERVAL);
 
@@ -554,6 +563,7 @@ class LifecycleManager {
       // and the earlier timer reference would be leaked (and would still
       // fire later, fanning out into more parallel ticks).
       if (this._tickInFlight) return;
+      const myGen = ++this._tickGeneration;
       this._tickInFlight = true;
       this._tickStartedAt = Date.now();
       this._lastTickAttemptAt = this._tickStartedAt;
@@ -576,6 +586,14 @@ class LifecycleManager {
           } catch { /* logger blew up; loop must still survive */ }
         }
       } finally {
+        // Zombie check: if a watchdog rescued us mid-await by bumping
+        // _tickGeneration, the rescuer is now the owner of the loop
+        // (it cleared _tickInFlight and scheduled a fallback timer). The
+        // zombie must NOT touch _tickInFlight, _heartbeatTimer, or
+        // _consecutiveFailures -- doing so would either overwrite the
+        // rescuer's replacement state or leak a duplicate setTimeout
+        // (the prior reference, when overwritten, still fires later).
+        if (this._tickGeneration !== myGen) return;
         // Reschedule lives in finally so NO failure path inside the try
         // (including the catch above) can drop us out of the loop. This
         // is the load-bearing invariant of issue #544 -- if this line is
@@ -607,21 +625,11 @@ class LifecycleManager {
       const now = Date.now();
       const gap = now - this._lastDriftCheckAt;
       this._lastDriftCheckAt = now;
-      // Hung-tick rescue: if a tick has been "in flight" past the
-      // watchdog threshold, the fetch (or whatever it is awaiting) is
-      // stuck and ignoring the AbortSignal. Force-reset so the next poke
-      // / scheduled tick can proceed instead of being silently gated.
-      if (
-        this._tickInFlight
-        && this._tickStartedAt
-        && (now - this._tickStartedAt) > TICK_HUNG_THRESHOLD_MS
-      ) {
-        this.logger.warn(
-          `[lifecycle] tick hung for ${now - this._tickStartedAt}ms, force-resetting`,
-        );
-        this._tickInFlight = false;
-        this._tickStartedAt = null;
-      }
+      // Hung-tick rescue. The helper bumps _tickGeneration so the zombie
+      // original tick bails on resolve, and schedules a fallback timer so
+      // the loop survives even when the rest of the drift handler decides
+      // not to fire a pokeHeartbeat().
+      this._rescueHungTick('drift-detector', now);
       if (gap > DRIFT_SLEEP_THRESHOLD_MS) {
         this.logger.warn(
           `[lifecycle] wall-clock jump detected (+${Math.round(gap / 1000)}s); ` +
@@ -640,18 +648,18 @@ class LifecycleManager {
       // test fails (~30s < 90s threshold) and no further poke fires --
       // the user is stuck in 12-30 min backoff even though network is up.
       //
-      // Mitigation (Approach B from the review): if we already have a
-      // recent failure AND it's been longer than 2 * DRIFT_CHECK_MS
-      // (~60s) since the last tick, poke again. We deliberately key the
-      // staleness window to the drift-check cadence -- not to the
-      // configured heartbeat interval -- because the heartbeat interval
-      // can be 6 min (DEFAULT_HEARTBEAT_INTERVAL), which would push
-      // 2 * interval out to ~12 min and recreate the symptom this fix
-      // exists to solve. The poke itself is throttled and single-
+      // Mitigation: if we already have a recent failure AND no successful
+      // tick within TICK_SUCCESS_STALE_MS (~90s), poke again. We
+      // deliberately key the staleness window to the drift-check cadence
+      // (90s > 2 * DRIFT_CHECK_MS = 60s, comfortably above the noise) --
+      // not to the configured heartbeat interval -- because the heartbeat
+      // interval can be 6 min (DEFAULT_HEARTBEAT_INTERVAL), which would
+      // push 2 * interval out to ~12 min and recreate the symptom this
+      // fix exists to solve. The poke itself is throttled and single-
       // flighted, and this branch never runs when _consecutiveFailures
       // === 0, so healthy nodes are not affected. Effective user-
       // perceived recovery time after a failed post-wake tick: bounded
-      // by 2 * DRIFT_CHECK_MS (~60s), one or two drift samples.
+      // by TICK_SUCCESS_STALE_MS (~90s), two or three drift samples.
       if (
         this._consecutiveFailures > 0
         && (
@@ -692,75 +700,98 @@ class LifecycleManager {
   }
 
   /**
-   * Wake the heartbeat loop immediately. When this call is committed to
-   * firing a fresh tick, it first clears accumulated loop-failure backoff
-   * so subsequent failures start fresh, then fires the tick right away.
+   * Force-reset a hung tick and ensure the loop has a scheduled timer
+   * after the rescue.
    *
-   * Ordering invariant (issue #544 follow-up): all early-exit checks
-   * (running guard, in-flight gate, throttle) run BEFORE any state
-   * mutation. State is only cleared once we are committed to kicking off
-   * a new tick. Two concrete bugs this prevents:
-   *   1. Rapid user activity (every request pokes) would otherwise wipe
-   *      _reauthBackoffUntil on every keystroke even though the in-flight
-   *      gate then immediately no-ops -- the per-process backoff would be
-   *      repeatedly erased and the hub hammered.
-   *   2. A tick currently mid-await (e.g. about to 401) would have its
-   *      _consecutiveFailures reset to 0 before it records the failure,
-   *      masking the failure history that the backoff math depends on.
+   * Two responsibilities, both critical:
    *
-   * Throttling rules:
-   *   - Returns false if the loop isn't running.
-   *   - Returns true (no new tick) if a tick is already in flight -- that
-   *     IS the liveness proof we wanted. State is left intact; the
-   *     running tick will record its own outcome.
-   *   - For a HEALTHY node (no consecutive failures, no active reauth
-   *     backoff), the call is debounced to one tick per POKE_THROTTLE_MS
-   *     so user-activity-triggered pokes can't bypass the hub's 6/300s
-   *     per-sender heartbeat rate limit.
-   *   - A node with a transient failure streak (consecutiveFailures > 0,
-   *     OR _consecutiveReauthFailures < 2 with active reauth backoff)
-   *     bypasses the throttle so recovery is never blocked.
-   *   - A node DEEP in a reauth-failure streak (>= 2 consecutive reauth
-   *     failures) still respects the throttle AND keeps its
-   *     _reauthBackoffUntil intact. See below.
+   * 1. Bump _tickGeneration so the zombie original tick, when its hung
+   *    fetch eventually resolves, detects the generation mismatch in its
+   *    finally and bails without rescheduling. Without this, the loop
+   *    fans out into duplicate concurrent _tick invocations after every
+   *    rescue, each writing _tickInFlight / _heartbeatTimer / _consecutive
+   *    Failures and leaking timer references that still fire.
    *
-   * Reauth backoff handling (issue #544 hot-loop fix):
-   *   The HTTP middleware pokes on every authenticated request. If the hub
-   *   has genuinely invalidated the secret (operator did "Reset Secret"
-   *   in the account UI), every poke would otherwise wipe the 30-min
-   *   _reauthBackoffUntil that reAuthenticate() just installed -> next
-   *   user action would trigger another reAuth attempt (up to
-   *   MAX_REAUTH_ATTEMPTS=2 /a2a/hello calls) -> the hub's per-IP 60/h
-   *   hello rate limit would be exhausted in <30 minutes of typing. We
-   *   gate the clear on _consecutiveReauthFailures < 2:
-   *     - 1st/2nd failure: still let user activity drive a retry. The
-   *       backoff was probably set against a transient hub blip and a
-   *       fresh attempt is cheap.
-   *     - >= 2 failures: the hub is genuinely-rejecting; the backoff is
-   *       doing real work and user activity must not be able to wipe it.
+   * 2. Schedule a short fallback timer so the loop never coasts to a halt
+   *    when the rescuing path decides not to fire pokeHeartbeat (e.g. the
+   *    drift detector found a hung tick but no wake event and no failure
+   *    streak) or when pokeHeartbeat itself returns false for an unrelated
+   *    reason (throttle, reauth-in-progress). The fallback is short
+   *    (1s) so user-perceived recovery is bounded.
    *
-   * @returns {boolean} true if a tick is in flight or was kicked off.
+   * @param {string} reason - log tag describing the rescue source.
+   * @param {number} now - current wall-clock millis from the caller.
+   * @returns {boolean} true if a rescue was performed.
+   */
+  _rescueHungTick(reason, now) {
+    if (!this._tickInFlight || !this._tickStartedAt) return false;
+    const heldMs = now - this._tickStartedAt;
+    if (heldMs <= TICK_HUNG_THRESHOLD_MS) return false;
+    this.logger.warn(
+      `[lifecycle] tick hung for ${heldMs}ms (${reason}), force-resetting`,
+    );
+    this._tickInFlight = false;
+    this._tickStartedAt = null;
+    this._tickGeneration++;
+    if (this._heartbeatTimer) {
+      clearTimeout(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+    if (this._running) {
+      this._heartbeatTimer = setTimeout(this._tick, 1_000);
+      if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+    }
+    return true;
+  }
+
+  /**
+   * Wake the heartbeat loop. Two distinct effects, separately gated:
+   *
+   *   1. State recovery (clearing _consecutiveFailures and, unless deep
+   *      reauth failure, _reauthBackoffUntil). This does NOT hit the hub
+   *      on its own -- it only affects the starting point of the next
+   *      scheduled tick. Runs unconditionally once we know no liveness
+   *      work is already in flight, so user activity can drive recovery
+   *      even when the throttle blocks an immediate hub call.
+   *
+   *   2. Firing a fresh tick. This DOES hit the hub, so it is bounded by
+   *      POKE_THROTTLE_MS. The earlier "wasFailing bypass" let high-
+   *      frequency activity sources (a polling IDE hitting /mailbox/poll
+   *      every 250ms) fan out into many ticks per second once each tick
+   *      completed fast on a 401, exhausting the hub's 6/300s per-sender
+   *      heartbeat budget. Bounding recovery to ~60s is fine -- the
+   *      drift detector's race-recovery branch covers the post-wake
+   *      case independently, and a throttled poke still reschedules the
+   *      pending timer to fire when the throttle window opens.
+   *
+   * Reauth backoff handling:
+   *   When the hub has genuinely invalidated the secret (operator did
+   *   "Reset Secret" in the account UI), the 30-min _reauthBackoffUntil
+   *   that reAuthenticate() just installed must NOT be wiped per-request.
+   *   Gate the clear on _consecutiveReauthFailures < 2:
+   *     - 1st/2nd failure: let user activity drive a retry. The backoff
+   *       was probably set against a transient hub blip.
+   *     - >= 2 failures: the hub is genuinely rejecting; the backoff is
+   *       doing real work and user activity must not wipe it.
+   *
+   * Hung-rescue interaction: a rescue inside _rescueHungTick means we
+   * just waited >=TICK_HUNG_THRESHOLD_MS (~60s) on a stuck tick, which is
+   * past the throttle window anyway. Skip the throttle in that case so
+   * the rescued poke can fire a fresh tick immediately.
+   *
+   * @returns {boolean} true if a tick is in flight, a reauth is in
+   *   progress, or a fresh tick was kicked off. false if the loop is
+   *   stopped, or the poke was throttled (state-clear may still have
+   *   happened and the pending timer may have been pulled in).
    */
   pokeHeartbeat() {
     if (!this._running || !this._tick) return false;
 
-    // Hung-tick rescue. If a previous tick has been "in flight" past
-    // TICK_HUNG_THRESHOLD_MS the underlying fetch is stuck and the
-    // AbortSignal is being ignored. Without this force-reset every poke
-    // would early-return at the in-flight gate below and the loop would
-    // be permanently dead. Runs BEFORE the in-flight gate so the rescued
-    // poke can proceed normally.
-    if (
-      this._tickInFlight
-      && this._tickStartedAt
-      && (Date.now() - this._tickStartedAt) > TICK_HUNG_THRESHOLD_MS
-    ) {
-      this.logger.warn(
-        `[lifecycle] tick hung for ${Date.now() - this._tickStartedAt}ms, force-resetting`,
-      );
-      this._tickInFlight = false;
-      this._tickStartedAt = null;
-    }
+    // Hung-tick rescue. The helper bumps _tickGeneration so the zombie
+    // original tick bails on resolve, and schedules a 1s fallback timer
+    // so the loop survives even if the rest of this function returns
+    // without firing a fresh tick.
+    const didRescue = this._rescueHungTick('pokeHeartbeat', Date.now());
 
     // The in-flight tick IS the liveness proof we wanted. Do NOT mutate
     // state here -- the running tick will record its own outcome, and
@@ -768,23 +799,41 @@ class LifecycleManager {
     // corrupt the failure history the backoff math depends on.
     if (this._tickInFlight) return true;
 
+    // An active reauth (typically triggered by SyncEngine's onAuthError,
+    // which does NOT set _tickInFlight) is ALSO liveness work. Firing a
+    // parallel _tick here would just have heartbeat() call reAuthenticate
+    // which sees _reauthInProgress=true and returns false -- recording a
+    // spurious failure and pushing _consecutiveFailures up while the
+    // original reauth is still running.
+    if (this._reauthInProgress) return true;
+
+    // State recovery (free, always applied): clear accumulated backoff
+    // so the next tick -- whether it fires immediately below or via the
+    // scheduled timer when the throttle releases -- starts clean.
     const deepReauthFailure = this._consecutiveReauthFailures >= 2;
-    const reauthBackoffActive = this._reauthBackoffUntil > Date.now();
-    const wasFailing =
-      this._consecutiveFailures > 0 || (reauthBackoffActive && !deepReauthFailure);
-
-    if (!wasFailing) {
-      const sinceLast = Date.now() - (this._lastTickAttemptAt || 0);
-      if (this._lastTickAttemptAt && sinceLast < POKE_THROTTLE_MS) return false;
-    }
-
-    // Committed: clear loop-level failure state, cancel any pending timer,
-    // and fire a fresh tick. Deep-failure nodes (>= 2 consecutive reauth
-    // failures) keep their _reauthBackoffUntil intact so user activity
-    // cannot wipe a backoff installed against a genuinely-rejecting hub.
     this._consecutiveFailures = 0;
     if (!deepReauthFailure) {
       this._reauthBackoffUntil = 0;
+    }
+
+    // Throttle gate: applies uniformly EXCEPT after a rescue (which has
+    // already waited past the throttle window by construction).
+    if (!didRescue) {
+      const sinceLast = Date.now() - (this._lastTickAttemptAt || 0);
+      if (this._lastTickAttemptAt && sinceLast < POKE_THROTTLE_MS) {
+        // Pull the pending timer in to fire at the throttle window. The
+        // previously-scheduled tick was using backoff math from the
+        // (now-cleared) _consecutiveFailures, so its delay could be up
+        // to 30 min. Bounding user-perceived recovery to ~60s.
+        const waitMs = Math.max(0, POKE_THROTTLE_MS - sinceLast);
+        if (this._heartbeatTimer) {
+          clearTimeout(this._heartbeatTimer);
+          this._heartbeatTimer = null;
+        }
+        this._heartbeatTimer = setTimeout(this._tick, waitMs);
+        if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+        return false;
+      }
     }
 
     if (this._heartbeatTimer) {

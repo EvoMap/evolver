@@ -140,6 +140,10 @@ test('pokeHeartbeat(): resets backoff state and re-enters the loop immediately',
   // Force the manager into the worst-case stuck state.
   lc._consecutiveFailures = 8;
   lc._reauthBackoffUntil = Date.now() + 4 * 60 * 60_000; // 4h in the future
+  // Push _lastTickAttemptAt past the throttle window so we exercise the
+  // "immediate fire" branch of pokeHeartbeat. Tests for the throttled
+  // branch (state-clear without immediate fire) live separately.
+  lc._lastTickAttemptAt = 0;
   const timerBeforePoke = lc._heartbeatTimer;
 
   // Replace heartbeat with a sentinel so we can detect the poke firing it.
@@ -154,6 +158,33 @@ test('pokeHeartbeat(): resets backoff state and re-enters the loop immediately',
   assert.equal(lc._reauthBackoffUntil, 0, 'reauth backoff window must be cleared');
   assert.notStrictEqual(lc._heartbeatTimer, timerBeforePoke, 'old timer must be replaced');
   assert.ok(pokedCallCount >= 1, `heartbeat must fire at least once after poke (got ${pokedCallCount})`);
+
+  lc.stopHeartbeatLoop();
+});
+
+test('pokeHeartbeat(): under throttle still clears state and pulls the pending timer in', async () => {
+  // Recovery path when user activity hits within POKE_THROTTLE_MS of the
+  // last tick attempt: the throttle blocks an immediate hub call, but
+  // state clearing happens anyway and the pending timer is pulled in to
+  // fire when the throttle window opens (rather than at the long backoff
+  // the failing tick had originally scheduled). Bounds user-perceived
+  // recovery to ~60s instead of up to 30 min.
+  const lc = makeManager();
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+
+  // Failing state with a recent tick attempt (throttle will block).
+  lc._consecutiveFailures = 5;
+  lc._reauthBackoffUntil = Date.now() + 30 * 60_000;
+  lc._consecutiveReauthFailures = 1; // shallow -- backoff is wipeable
+  lc._lastTickAttemptAt = Date.now() - 10; // very recent
+
+  const ok = lc.pokeHeartbeat();
+
+  assert.equal(ok, false, 'throttled poke must return false');
+  assert.equal(lc._consecutiveFailures, 0, 'state clear happens regardless of throttle');
+  assert.equal(lc._reauthBackoffUntil, 0, 'shallow-reauth-failure backoff cleared regardless of throttle');
+  assert.ok(lc._heartbeatTimer, 'pending timer must remain so the loop survives');
 
   lc.stopHeartbeatLoop();
 });
@@ -260,8 +291,9 @@ test('pokeHeartbeat(): rapid calls cannot pile up parallel ticks (in-flight gate
   lc.startHeartbeatLoop(30_000);
   // Wait a microtask so the first tick has entered its await.
   await new Promise((r) => setTimeout(r, 5));
-  // Set "failing" state so throttle is bypassed -- we want pokes to TRY
-  // to fire so the in-flight gate is what's being tested, not the throttle.
+  // The first auto-tick is mid-await, so pokes will hit the in-flight
+  // gate (this test's actual subject) rather than the throttle. We do
+  // not need the old wasFailing bypass for the test to work.
   lc._consecutiveFailures = 5;
 
   // Fire many pokes during the in-flight window.
@@ -297,10 +329,15 @@ test('pokeHeartbeat(): healthy node debounces to one tick per POKE_THROTTLE_MS',
   lc.stopHeartbeatLoop();
 });
 
-test('pokeHeartbeat(): failing node bypasses the throttle so recovery is unblocked', async () => {
-  // Mirror of the previous test: when _consecutiveFailures > 0 (or reauth
-  // backoff is active), throttle MUST be bypassed -- otherwise a stuck
-  // node could never use poke to recover.
+test('pokeHeartbeat(): failing node ALSO respects the throttle (no fan-out)', async () => {
+  // Previously, _consecutiveFailures > 0 bypassed the throttle so a
+  // "stuck" node could recover immediately on any poke. That was the
+  // wrong knob: IDE pollers hitting /mailbox/poll 4x/sec during a
+  // failure streak would fan out into many ticks per second once each
+  // tick completed fast on a 401 -- exhausting the hub's 6/300s
+  // per-sender heartbeat budget and making recovery harder, not
+  // easier. The throttle now applies uniformly. Recovery is still
+  // bounded to ~60s via the timer-pull-in branch (tested separately).
   const lc = makeManager();
   let heartbeatCalls = 0;
   lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
@@ -314,8 +351,9 @@ test('pokeHeartbeat(): failing node bypasses the throttle so recovery is unblock
   const r = lc.pokeHeartbeat();
   await new Promise((r2) => setTimeout(r2, 30));
 
-  assert.equal(r, true, 'failing node must bypass throttle (return true)');
-  assert.equal(heartbeatCalls, 2, 'a recovery heartbeat must fire');
+  assert.equal(r, false, 'failing node must NOT bypass throttle (return false)');
+  assert.equal(heartbeatCalls, 1, 'no extra heartbeat must fire under throttle');
+  assert.equal(lc._consecutiveFailures, 0, 'state clear still happens regardless of throttle');
 
   lc.stopHeartbeatLoop();
 });
@@ -866,13 +904,12 @@ test('pokeHeartbeat(): rescues a hung in-flight tick past the watchdog threshold
   await new Promise((r) => setTimeout(r, 30));
   const heartbeatCallsBefore = heartbeatCalls;
 
-  // Synthesize the wedge. Mark a non-zero failure count so the throttle
-  // (which would otherwise block the immediate re-tick on a healthy node
-  // whose last attempt was <60s ago) is bypassed -- this matches the
-  // real-world scenario where a hung tick has already caused trouble.
+  // Synthesize the wedge. The rescue path inside pokeHeartbeat() detects
+  // the hung tick (held > TICK_HUNG_THRESHOLD_MS) and bypasses the
+  // throttle on the immediate re-tick, since the rescue itself proves we
+  // waited past the throttle window. No need for any wasFailing bypass.
   lc._tickInFlight = true;
   lc._tickStartedAt = Date.now() - 61_000;
-  lc._consecutiveFailures = 1;
 
   const ok = lc.pokeHeartbeat();
   await new Promise((r) => setTimeout(r, 30));
@@ -909,9 +946,12 @@ test('_lastTickSuccessAt: not updated on failing tick, updated on succeeding tic
     '_lastTickAttemptAt must be set even on failing ticks',
   );
 
-  // Flip to success and poke a fresh tick.
+  // Flip to success and poke a fresh tick. Push _lastTickAttemptAt past
+  // the throttle window so the poke can fire immediately (the
+  // wasFailing bypass no longer exists; failing nodes also obey the
+  // throttle, and tests for that path live elsewhere).
   outcome = { ok: true };
-  lc._consecutiveFailures = 1; // bypass throttle
+  lc._lastTickAttemptAt = 0;
   lc.pokeHeartbeat();
   await new Promise((r) => setTimeout(r, 30));
 
@@ -973,4 +1013,115 @@ test('drift detector: recovery branch uses _lastTickSuccessAt, not _lastTickAtte
     lc.stopHeartbeatLoop();
     global.setInterval = realSetInterval;
   }
+});
+
+// --------------------------------------------------------------------------
+// Generation counter: a hung-fetch rescue must NOT spawn parallel loops
+//
+// Pre-fix, the rescue cleared _tickInFlight while the zombie original tick
+// was still awaiting the hung fetch. When that fetch eventually resolved,
+// the zombie's finally would (a) write _tickInFlight=false (already false),
+// (b) schedule its OWN setTimeout for the next tick. Combined with the
+// rescuer's already-scheduled replacement, you got two concurrent _tick
+// invocations, each writing _heartbeatTimer / _consecutiveFailures, with
+// the earlier setTimeout reference leaking but still firing.
+// --------------------------------------------------------------------------
+
+test('rescue + zombie tick: zombie must NOT schedule a duplicate timer after generation bump', async () => {
+  const lc = makeManager();
+
+  // Manually drive _tick so we control the await point and can release the
+  // hung fetch after the rescue has run.
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => {
+    heartbeatCalls++;
+    if (heartbeatCalls === 1) {
+      // First call is the zombie -- hang past the watchdog threshold.
+      await fetchGate;
+      return { ok: true };
+    }
+    // Subsequent calls (the rescued replacement) return fast.
+    return { ok: true };
+  };
+
+  lc.startHeartbeatLoop(30_000);
+  // Wait one microtask so the first auto-tick has entered its await.
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(lc._tickInFlight, true, 'sanity: first tick is mid-await');
+  const genBefore = lc._tickGeneration;
+
+  // Synthesize a hung tick: rewind _tickStartedAt past the threshold.
+  lc._tickStartedAt = Date.now() - 61_000;
+
+  // Rescue path inside pokeHeartbeat fires the replacement.
+  lc.pokeHeartbeat();
+  // Let the replacement tick run.
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.ok(
+    lc._tickGeneration > genBefore,
+    `_tickGeneration must be bumped on rescue (before=${genBefore}, after=${lc._tickGeneration})`,
+  );
+  const timerAfterRescue = lc._heartbeatTimer;
+  const consecutiveAfterRescue = lc._consecutiveFailures;
+
+  // Now release the zombie's hung fetch. It will fall into its finally,
+  // see generation mismatch, and bail. _heartbeatTimer and
+  // _consecutiveFailures must NOT change as a result of the zombie's
+  // post-resolution code path.
+  releaseFetch();
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.strictEqual(
+    lc._heartbeatTimer, timerAfterRescue,
+    'zombie tick must NOT overwrite _heartbeatTimer (would leak the rescued replacement timer)',
+  );
+  assert.equal(
+    lc._consecutiveFailures, consecutiveAfterRescue,
+    'zombie tick must NOT touch _consecutiveFailures',
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+// --------------------------------------------------------------------------
+// _reauthInProgress guard: pokeHeartbeat must observe an active reauth
+// as liveness work and NOT fire a parallel tick that would collide.
+//
+// SyncEngine.onAuthError -> lifecycle.reAuthenticate() runs WITHOUT the
+// _tickInFlight slot held (no heartbeat tick is involved). If poke fires
+// a fresh tick during that window, heartbeat() calls reAuthenticate
+// which sees _reauthInProgress=true and returns false -- a spurious
+// failure that bumps _consecutiveFailures while the original reauth is
+// still genuinely running.
+// --------------------------------------------------------------------------
+
+test('pokeHeartbeat(): does NOT fire a parallel tick while reAuthenticate is in progress', async () => {
+  const lc = makeManager();
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
+
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+  const heartbeatCallsBefore = heartbeatCalls;
+
+  // Simulate the SyncEngine.onAuthError path: reauth in progress, no
+  // tick mid-flight (loop has been quiet since startup).
+  lc._reauthInProgress = true;
+  // Push _lastTickAttemptAt past the throttle window so the only thing
+  // gating the poke is the reauth guard.
+  lc._lastTickAttemptAt = 0;
+
+  const ok = lc.pokeHeartbeat();
+
+  assert.equal(ok, true, 'poke must report success (active reauth IS liveness)');
+  assert.equal(
+    heartbeatCalls, heartbeatCallsBefore,
+    'no parallel heartbeat tick must fire during active reauth',
+  );
+
+  lc._reauthInProgress = false;
+  lc.stopHeartbeatLoop();
 });
