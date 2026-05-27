@@ -1805,3 +1805,231 @@ test('Retry-After: hub Retry-After is preferred over local backoff when shorter 
     restore();
   }
 });
+
+// --------------------------------------------------------------------------
+// E4: consume hub-provided resend_hello / force_update / upgrade_available
+//
+// Hub publishes these signals in the heartbeat success body but the proxy
+// loop was silently ignoring them (a2aService.js:6252-6317):
+//
+//   resend_hello       -- hub-side env fingerprint missing for this node,
+//                         hub wants client to re-run hello() on the next
+//                         tick instead of heartbeat(). Without this, the
+//                         hub state stayed permanently stale.
+//   force_update       -- hub considers this client below a hard version
+//                         floor. Must surface loudly to the user.
+//   upgrade_available  -- soft hint that an upgrade exists.
+//
+// All three handlers use strict === true comparisons so malformed values
+// (string "true", number 1, etc.) cannot crash the loop. force_update and
+// upgrade_available dedupe their log output across the process lifetime
+// so repeated ticks do not spam the same banner.
+// --------------------------------------------------------------------------
+
+test('E4: resend_hello=true sets pending flag and logs INFO once', async () => {
+  const infoCalls = [];
+  const lc = makeManager();
+  // Replace the silentLogger with one that captures info-level output.
+  lc.logger = {
+    log: (msg) => infoCalls.push(msg),
+    info: (msg) => infoCalls.push(msg),
+    warn: () => {},
+    error: () => {},
+  };
+
+  const restore = installFetchStub(async () => _okHbRes({
+    status: 'ok',
+    resend_hello: true,
+    resend_reason: 'missing_env_fingerprint',
+  }));
+
+  try {
+    const result = await lc.heartbeat();
+    assert.equal(result.ok, true, 'heartbeat with resend_hello must still return ok');
+    assert.equal(
+      lc._resendHelloPending, true,
+      'resend_hello=true must latch _resendHelloPending',
+    );
+    const resendLogs = infoCalls.filter((m) => /resend_hello/.test(m));
+    assert.equal(resendLogs.length, 1, `expected exactly 1 resend_hello info log, got ${resendLogs.length}`);
+    assert.match(resendLogs[0], /missing_env_fingerprint/, 'resend_reason must be included in the log');
+  } finally {
+    restore();
+  }
+});
+
+test('E4: next tick after resend_hello runs hello() instead of heartbeat()', async () => {
+  const lc = makeManager();
+  // Stub both surfaces with bare counters so we can observe which one the
+  // tick actually invoked. heartbeat() must NOT be called when the latch
+  // is set; hello() must be called exactly once and the latch cleared.
+  let helloCalls = 0;
+  let heartbeatCalls = 0;
+  lc.hello = async () => { helloCalls++; return { ok: true, nodeId: 'node_aaaaaaaaaaaa' }; };
+  lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
+
+  lc.startHeartbeatLoop(30_000);
+  // Wait for the bootstrap tick (which has the latch unset) to settle so
+  // the next manual _tick exercises the resend path in isolation.
+  await new Promise((r) => setTimeout(r, 30));
+  helloCalls = 0;
+  heartbeatCalls = 0;
+
+  lc._resendHelloPending = true;
+  // Push attempt timestamp past the throttle so a poke would fire if
+  // we used that path; we drive _tick directly to avoid throttle noise.
+  lc._lastTickAttemptAt = 0;
+  await lc._tick();
+
+  assert.equal(helloCalls, 1, `expected hello() called once, got ${helloCalls}`);
+  assert.equal(heartbeatCalls, 0, `expected heartbeat() NOT called, got ${heartbeatCalls}`);
+  assert.equal(
+    lc._resendHelloPending, false,
+    '_resendHelloPending must be cleared after the resend tick',
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('E4: hello throw during resend does NOT kill the loop', async () => {
+  const lc = makeManager();
+  // hello throws -- this is the failure mode the swallow guard exists for.
+  // The loop must still reschedule via the finally block and the latch
+  // must be cleared so we don't infinite-loop on the same bad hello.
+  lc.hello = async () => { throw new Error('boom'); };
+  lc.heartbeat = async () => ({ ok: true });
+
+  const reschedules = [];
+  lc._onTickReschedule = (delayMs, reason) => { reschedules.push({ delayMs, reason }); };
+
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 30));
+  const reschedulesBefore = reschedules.length;
+
+  lc._resendHelloPending = true;
+  lc._lastTickAttemptAt = 0;
+  await lc._tick();
+
+  assert.equal(
+    lc._resendHelloPending, false,
+    'latch must be cleared even when hello throws (otherwise we infinite-loop on the bad hello)',
+  );
+  assert.ok(
+    reschedules.length > reschedulesBefore,
+    `loop must reschedule after a thrown hello (got ${reschedules.length - reschedulesBefore} new entries)`,
+  );
+
+  lc.stopHeartbeatLoop();
+});
+
+test('E4: force_update=true sets state and logs WARN once even across multiple ticks', async () => {
+  const warnCalls = [];
+  const lc = makeManager();
+  lc.logger = {
+    log: () => {}, info: () => {},
+    warn: (msg) => warnCalls.push(msg),
+    error: () => {},
+  };
+
+  // Hub returns force_update on every response. The handler must dedupe
+  // the warn log so 3 successive ticks produce exactly 1 warn line.
+  const restore = installFetchStub(async () => _okHbRes({
+    status: 'ok',
+    force_update: true,
+  }));
+
+  try {
+    await lc.heartbeat();
+    assert.equal(lc._forceUpdateRequired, true, 'force_update=true must set _forceUpdateRequired');
+    const forceWarnsAfterTick1 = warnCalls.filter((m) => /force_update/.test(m)).length;
+    assert.equal(forceWarnsAfterTick1, 1, 'first force_update tick must log warn once');
+
+    await lc.heartbeat();
+    await lc.heartbeat();
+    const forceWarnsAfterTick3 = warnCalls.filter((m) => /force_update/.test(m)).length;
+    assert.equal(
+      forceWarnsAfterTick3, 1,
+      `force_update warn must dedupe across ticks (expected 1 warn after 3 ticks, got ${forceWarnsAfterTick3})`,
+    );
+    assert.equal(lc._forceUpdateRequired, true, 'state stays latched across ticks');
+  } finally {
+    restore();
+  }
+});
+
+test('E4: upgrade_available=true logs INFO once even across multiple ticks', async () => {
+  const infoCalls = [];
+  const lc = makeManager();
+  lc.logger = {
+    log: (msg) => infoCalls.push(msg),
+    info: (msg) => infoCalls.push(msg),
+    warn: () => {},
+    error: () => {},
+  };
+
+  // Hub returns upgrade_available on every response. Soft hint -- must
+  // log info exactly once across multiple ticks, never mutate any state.
+  const restore = installFetchStub(async () => _okHbRes({
+    status: 'ok',
+    upgrade_available: true,
+  }));
+
+  try {
+    await lc.heartbeat();
+    await lc.heartbeat();
+    await lc.heartbeat();
+    const upgradeInfos = infoCalls.filter((m) => /upgrade available/.test(m));
+    assert.equal(
+      upgradeInfos.length, 1,
+      `upgrade_available info must dedupe across ticks (expected 1, got ${upgradeInfos.length})`,
+    );
+    // No state should have been mutated by this branch.
+    assert.equal(lc._forceUpdateRequired, false, 'upgrade_available must NOT touch _forceUpdateRequired');
+    assert.equal(lc._resendHelloPending, false, 'upgrade_available must NOT touch _resendHelloPending');
+  } finally {
+    restore();
+  }
+});
+
+test("E4: malformed values (string 'true', number 1) do NOT trigger handling", async () => {
+  // Strict === true comparisons protect the loop from accidental misuse
+  // on the hub side (a deserialization bug returning "true" instead of
+  // true would otherwise crash or false-positive the handlers).
+  const warnCalls = [];
+  const infoCalls = [];
+  const lc = makeManager();
+  lc.logger = {
+    log: (msg) => infoCalls.push(msg),
+    info: (msg) => infoCalls.push(msg),
+    warn: (msg) => warnCalls.push(msg),
+    error: () => {},
+  };
+
+  const restore = installFetchStub(async () => _okHbRes({
+    status: 'ok',
+    resend_hello: 'true',     // string, not boolean
+    force_update: 1,          // number, not boolean
+    upgrade_available: 'yes', // string, not boolean
+  }));
+
+  try {
+    const result = await lc.heartbeat();
+    assert.equal(result.ok, true, 'malformed values must not break the success path');
+    assert.equal(
+      lc._resendHelloPending, false,
+      'string "true" must NOT trigger _resendHelloPending',
+    );
+    assert.equal(
+      lc._forceUpdateRequired, false,
+      'number 1 must NOT trigger _forceUpdateRequired',
+    );
+    const resendLogs = infoCalls.filter((m) => /resend_hello/.test(m));
+    const upgradeLogs = infoCalls.filter((m) => /upgrade available/.test(m));
+    const forceLogs = warnCalls.filter((m) => /force_update/.test(m));
+    assert.equal(resendLogs.length, 0, 'malformed resend_hello must not log');
+    assert.equal(upgradeLogs.length, 0, 'malformed upgrade_available must not log');
+    assert.equal(forceLogs.length, 0, 'malformed force_update must not log');
+  } finally {
+    restore();
+  }
+});

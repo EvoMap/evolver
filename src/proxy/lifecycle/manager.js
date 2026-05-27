@@ -156,6 +156,16 @@ class LifecycleManager {
     // never retry sooner than the hub asked. Cleared on the next
     // successful (non-429) response.
     this._hubRetryAfterMs = null;
+    // Hub-provided heartbeat signals consumed in heartbeat()'s success
+    // branch. resend_hello asks us to re-run hello() on the next tick (hub
+    // lost the env fingerprint and wants a fresh handshake). force_update
+    // says the hub considers this client below a hard version floor;
+    // upgrade_available is a soft hint. The *_Logged flags dedupe the
+    // user-facing warn/info so we never spam the same banner every 60s.
+    this._resendHelloPending = false;
+    this._forceUpdateRequired = false;
+    this._forceUpdateLogged = false;
+    this._upgradeAvailableLogged = false;
   }
 
   get nodeId() {
@@ -692,6 +702,66 @@ class LifecycleManager {
         this.logger.warn(`[lifecycle] Hub requires proxy >= ${data.min_proxy_version}, current: ${PROXY_PROTOCOL_VERSION}`);
       }
 
+      // Hub-provided heartbeat signals (a2aService.js:6252-6317):
+      //
+      //   resend_hello       -- hub-side env fingerprint was missing for this
+      //                         node; hub wants the client to re-run hello()
+      //                         on the NEXT tick instead of another heartbeat,
+      //                         so the fingerprint gets rebuilt. We just set
+      //                         the latch here; _tick consumes it.
+      //   force_update       -- hub considers this client below a hard
+      //                         version floor. Surface loudly (once per
+      //                         process) and record on the instance so other
+      //                         subsystems can read state.
+      //   upgrade_available  -- soft hint that a newer version exists. Log
+      //                         once per process; no state mutation.
+      //
+      // All three use strict === true comparisons so a malformed value
+      // (string "true", number 1, object) cannot trip the handlers and
+      // cannot crash the loop. Each mutation site re-checks _isStaleGen()
+      // so a zombie tick rescued by the watchdog never installs these
+      // signals on top of the replacement tick's state.
+      // Info-level helper. Some logger adapters expose `info`, others only
+      // `log`. Prefer `info` when present (better severity routing); fall
+      // back to `log`. Wrapped in try/catch so a broken transport cannot
+      // escape this far into the success path and skip the return below.
+      const _logInfo = (msg) => {
+        try {
+          const fn = typeof this.logger.info === 'function' ? this.logger.info : this.logger.log;
+          if (typeof fn === 'function') fn.call(this.logger, msg);
+        } catch { /* logger blew up; signal is best-effort */ }
+      };
+
+      if (data?.resend_hello === true) {
+        if (_isStaleGen()) return null;
+        this._resendHelloPending = true;
+        _logInfo(
+          '[lifecycle] hub requested resend_hello (reason=' + (data.resend_reason || 'unspecified') + ')',
+        );
+      }
+      if (data?.force_update === true) {
+        if (_isStaleGen()) return null;
+        this._forceUpdateRequired = true;
+        if (!this._forceUpdateLogged) {
+          this._forceUpdateLogged = true;
+          this.logger.warn(
+            '[lifecycle] hub requires evolver upgrade (force_update). ' +
+              'Heartbeats may be rejected soon. ' +
+              'See https://github.com/EvoMap/evolver/releases',
+          );
+        }
+      }
+      if (data?.upgrade_available === true) {
+        if (_isStaleGen()) return null;
+        if (!this._upgradeAvailableLogged) {
+          this._upgradeAvailableLogged = true;
+          _logInfo(
+            '[lifecycle] hub indicates upgrade available. ' +
+              'See https://github.com/EvoMap/evolver/releases',
+          );
+        }
+      }
+
       return { ok: true, response: data };
     } catch (err) {
       // Zombie guard for the catch path too. A rescued tick whose fetch
@@ -754,21 +824,43 @@ class LifecycleManager {
       this._inflightAbortController = controller;
       let tickResult = null;
       try {
-        try {
-          tickResult = await this.heartbeat({ _abortSignal: controller.signal });
-        } catch (err) {
-          // Defense in depth. heartbeat() catches its own errors and returns
-          // {ok:false}, but a future change that lets one slip through must
-          // NOT silently kill the loop. Bump the failure counter so backoff
-          // takes effect, then fall through (finally) to reschedule.
-          this._consecutiveFailures++;
-          // Wrap the logger call: if the logger transport itself throws,
-          // we must not let it escape and skip the reschedule in finally.
+        // Hub-requested handshake refresh (see heartbeat() success branch
+        // where _resendHelloPending is set in response to data.resend_hello).
+        // The hub lost our env fingerprint and wants a fresh hello() instead
+        // of another heartbeat() this tick. Clear the latch FIRST so a
+        // thrown hello cannot loop forever, then swallow any throw so the
+        // loop survives -- mirrors the heartbeat() catch path below. We
+        // leave tickResult=null intentionally so _lastTickSuccessAt is not
+        // stamped: a successful hello is not the same liveness signal as a
+        // successful heartbeat (the drift detector keys off heartbeats).
+        if (this._resendHelloPending) {
+          this._resendHelloPending = false;
           try {
-            this.logger.error(
-              `[lifecycle] heartbeat threw unexpectedly (${this._consecutiveFailures}): ${err && err.message || err}`,
-            );
-          } catch { /* logger blew up; loop must still survive */ }
+            await this.hello({ reason: 'hub_requested_resend' });
+          } catch (err) {
+            try {
+              this.logger.error(
+                '[lifecycle] resend_hello attempt threw: ' + (err && err.message || err),
+              );
+            } catch { /* logger blew up; loop must still survive */ }
+          }
+        } else {
+          try {
+            tickResult = await this.heartbeat({ _abortSignal: controller.signal });
+          } catch (err) {
+            // Defense in depth. heartbeat() catches its own errors and returns
+            // {ok:false}, but a future change that lets one slip through must
+            // NOT silently kill the loop. Bump the failure counter so backoff
+            // takes effect, then fall through (finally) to reschedule.
+            this._consecutiveFailures++;
+            // Wrap the logger call: if the logger transport itself throws,
+            // we must not let it escape and skip the reschedule in finally.
+            try {
+              this.logger.error(
+                `[lifecycle] heartbeat threw unexpectedly (${this._consecutiveFailures}): ${err && err.message || err}`,
+              );
+            } catch { /* logger blew up; loop must still survive */ }
+          }
         }
       } finally {
         // Zombie check: if a watchdog rescued us mid-await by bumping
