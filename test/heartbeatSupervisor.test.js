@@ -478,3 +478,110 @@ test('errors from stopHeartbeat / startHeartbeat during ticks do not crash the s
   try { handles._livenessTick(); } catch (e) { livenessThrew = e; }
   assert.equal(livenessThrew, null, 'liveness tick must not propagate startHeartbeat errors');
 });
+
+// --------------------------------------------------------------------------
+// H1: null-stats safety net
+// --------------------------------------------------------------------------
+
+test('liveness: NULL_STATS_RESTART_THRESHOLD consecutive null stats force _hardRestart', () => {
+  // Previously, if getHeartbeatStats() entered a state where it
+  // permanently threw or returned non-object, _safeStats() returned
+  // null and _livenessTick early-returned forever. The supervisor had
+  // no recovery for that path, so a process whose obfuscated module
+  // hit this state stayed "dead" until restart — matching the
+  // user-reported symptom exactly. The H1 fix counts consecutive
+  // nulls and force-restarts at the threshold.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+
+  // Wire a broken getHeartbeatStats that always throws — _safeStats()
+  // swallows the throw and returns null, the same as a returns-null
+  // implementation would. (Both paths feed the same counter.)
+  a2a.getHeartbeatStats = () => { throw new Error('synthetic stats failure'); };
+
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+  const threshold = supervisor.NULL_STATS_RESTART_THRESHOLD;
+
+  // Fire (threshold - 1) ticks: no restart yet, just counting.
+  for (let i = 0; i < threshold - 1; i++) handles._livenessTick();
+  assert.equal(
+    a2a._state.stopCalls, stopBefore,
+    'must not restart before threshold ticks have observed null stats',
+  );
+  assert.equal(a2a._state.startCalls, startBefore);
+
+  // The Nth null-stats tick triggers the restart.
+  handles._livenessTick();
+  assert.ok(
+    a2a._state.stopCalls > stopBefore,
+    'after threshold null stats, supervisor must call stopHeartbeat',
+  );
+  assert.ok(
+    a2a._state.startCalls > startBefore,
+    'after threshold null stats, supervisor must call startHeartbeat',
+  );
+  cleanup();
+});
+
+test('liveness: a single good stats observation resets the null-stats counter', () => {
+  // Transient stats failures (e.g. a one-off exception during a state
+  // transition inside the obfuscated module) must NOT accumulate
+  // toward the restart threshold. Any successful stats read clears
+  // the counter so only PERSISTENT null returns trigger the safety net.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+
+  const goodStats = a2a.getHeartbeatStats;
+  const threshold = supervisor.NULL_STATS_RESTART_THRESHOLD;
+
+  // (threshold - 1) bad ticks, then one good one, then (threshold - 1)
+  // more bad ticks. If the counter resets correctly, no restart fires
+  // across this sequence of 2*threshold-1 ticks.
+  a2a.getHeartbeatStats = () => null;
+  for (let i = 0; i < threshold - 1; i++) handles._livenessTick();
+
+  a2a.getHeartbeatStats = goodStats;
+  handles._livenessTick();
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+
+  a2a.getHeartbeatStats = () => null;
+  for (let i = 0; i < threshold - 1; i++) handles._livenessTick();
+
+  assert.equal(
+    a2a._state.stopCalls, stopBefore,
+    'a successful stats read must reset the null-stats counter (no restart yet)',
+  );
+  assert.equal(a2a._state.startCalls, startBefore);
+  cleanup();
+});
+
+test('liveness: wedgeThresholdMs override is honored', () => {
+  // Tests need a smaller threshold than 15 minutes to exercise the
+  // wedge path in reasonable time. The override is only used by
+  // tests; production code passes no opts and gets WEDGE_THRESHOLD_MS.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now, wedgeThresholdMs: 5_000 });
+
+  // Baseline tick at T=0 captures totalSent=0.
+  handles._livenessTick();
+  const stopBefore = a2a._state.stopCalls;
+
+  // Advance past the override (5s), still well under the production
+  // 15-min threshold. Without the override this would not fire.
+  now += 6_000;
+  handles._livenessTick();
+
+  assert.ok(
+    a2a._state.stopCalls > stopBefore,
+    'wedge must fire with override even though production WEDGE_THRESHOLD_MS is 15 min',
+  );
+  cleanup();
+});

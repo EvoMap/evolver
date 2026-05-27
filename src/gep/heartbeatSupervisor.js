@@ -25,6 +25,18 @@ const POKE_THROTTLE_MS = 60_000;
 // liveness ticks would still recover via _hardRestart, but the
 // user-activity path becomes dead weight in the interim.
 const SEND_TIMEOUT_MS = 15_000;
+// H1 safety net: if getHeartbeatStats() returns null for this many
+// consecutive _livenessTick fires, force a _hardRestart. Without this,
+// _livenessTick early-returns silently on null stats and the supervisor
+// has no recovery path for a permanently-broken getHeartbeatStats — the
+// exact "stays dead forever" failure mode the user reported.
+//
+// At LIVENESS_CHECK_MS=60s, threshold=5 means we tolerate up to ~5 min
+// of dead stats before forcing a restart. This is a conservative balance:
+// long enough that a transient blip during startup doesn't cause
+// thrashing, short enough that the user's "I came back and it's still
+// dead" window is bounded.
+const NULL_STATS_RESTART_THRESHOLD = 5;
 
 let _a2a = null;
 let _driftInterval = null;
@@ -41,6 +53,11 @@ let _lastSuccessfulSendAt = 0;
 let _lastPokeAt = 0;
 let _pokeInFlight = null;
 let _started = false;
+let _consecutiveNullStats = 0;
+// Per-supervisor wedge threshold, settable via start() opts so tests can
+// drive the wedge path without waiting 15 minutes. Defaults to the
+// module-level constant in production.
+let _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
 
 function _now(opts) {
   return opts && typeof opts.nowFn === 'function' ? opts.nowFn() : Date.now();
@@ -123,7 +140,22 @@ function _driftTick(opts) {
 function _livenessTick(opts) {
   const now = _now(opts);
   const stats = _safeStats();
-  if (!stats) return;
+  if (!stats) {
+    // H1: getHeartbeatStats() permanently returning null/throwing was a
+    // silent-death failure mode — _livenessTick would early-return forever
+    // and the supervisor never recovered. Count consecutive null returns
+    // and force a _hardRestart at the threshold. The restart itself does
+    // not depend on getHeartbeatStats: _safeStop()+_safeStart() only call
+    // the start/stop functions, so even a broken stats path gets a fresh
+    // chance at re-arming the underlying loop.
+    _consecutiveNullStats += 1;
+    if (_consecutiveNullStats >= NULL_STATS_RESTART_THRESHOLD) {
+      _hardRestart(now);
+      _consecutiveNullStats = 0;
+    }
+    return;
+  }
+  _consecutiveNullStats = 0;
 
   if (stats.running === false) {
     _safeStart();
@@ -132,12 +164,13 @@ function _livenessTick(opts) {
     return;
   }
 
-  // Freshness keys off totalSent. WEDGE_THRESHOLD_MS without an attempt
-  // means the internal loop has either stopped attempting (timer dead)
-  // or its backoff interval exceeds the threshold -- in both cases the
-  // hub has seen no recent heartbeat and we restart to re-arm a fresh
-  // cadence. See the WEDGE_THRESHOLD_MS comment for the bounded-recovery
-  // analysis against the documented 30-min backoff cap.
+  // Freshness keys off totalSent. _wedgeThresholdMs (defaults to
+  // WEDGE_THRESHOLD_MS) without an attempt means the internal loop has
+  // either stopped attempting (timer dead) or its backoff interval
+  // exceeds the threshold -- in both cases the hub has seen no recent
+  // heartbeat and we restart to re-arm a fresh cadence. See the
+  // WEDGE_THRESHOLD_MS comment for the bounded-recovery analysis against
+  // the documented 30-min backoff cap.
   const sent = _sentOf(stats);
   if (sent !== _lastObservedSent) {
     _lastObservedSent = sent;
@@ -145,7 +178,7 @@ function _livenessTick(opts) {
     return;
   }
 
-  if (_lastSuccessfulSendAt > 0 && now - _lastSuccessfulSendAt > WEDGE_THRESHOLD_MS) {
+  if (_lastSuccessfulSendAt > 0 && now - _lastSuccessfulSendAt > _wedgeThresholdMs) {
     _hardRestart(now);
   }
 }
@@ -166,6 +199,10 @@ function start(a2a, opts) {
   _lastObservedSent = -1;
   _lastPokeAt = 0;
   _pokeInFlight = null;
+  _consecutiveNullStats = 0;
+  _wedgeThresholdMs = typeof options.wedgeThresholdMs === 'number' && options.wedgeThresholdMs > 0
+    ? options.wedgeThresholdMs
+    : WEDGE_THRESHOLD_MS;
 
   // Install intervals BEFORE attempting the initial startHeartbeat. If that
   // call throws (e.g. transient resource error at process start), we want
@@ -253,6 +290,8 @@ function stop() {
   }
   _started = false;
   _pokeInFlight = null;
+  _consecutiveNullStats = 0;
+  _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
 }
 
 function _resetForTesting() {
@@ -267,6 +306,8 @@ function _resetForTesting() {
   _lastPokeAt = 0;
   _pokeInFlight = null;
   _started = false;
+  _consecutiveNullStats = 0;
+  _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
 }
 
 module.exports = {
@@ -280,4 +321,5 @@ module.exports = {
   WEDGE_THRESHOLD_MS,
   POKE_THROTTLE_MS,
   SEND_TIMEOUT_MS,
+  NULL_STATS_RESTART_THRESHOLD,
 };
