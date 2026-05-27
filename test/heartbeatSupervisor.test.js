@@ -244,9 +244,15 @@ test('liveness: advancing totalSent (healthy node) does NOT trigger restart', ()
   cleanup();
 });
 
-test('liveness: advancing totalFailed (loop alive but network broken) does NOT trigger restart', () => {
-  // The internal loop is doing its job — attempting and failing. That is
-  // network failure, not wedge. Do not restart in this case.
+test('liveness: advancing totalFailed only (stuck-in-backoff) DOES trigger restart after WEDGE_THRESHOLD_MS', () => {
+  // To the hub, a loop that attempts every minute and fails every minute
+  // for 15 min is indistinguishable from a wedged loop -- no successful
+  // heartbeat reaches the hub in either case. The previous "totalSent +
+  // totalFailed" freshness signal kept refreshing on every failed attempt
+  // and never fired the restart in this mode. Keying off totalSent ONLY
+  // catches it: 15 min with no successful send -> stop+start (which drops
+  // the obfuscated module's accumulated backoff and gives the loop a
+  // fresh chance).
   const a2a = makeFakeA2a();
   let now = 1_000_000;
   a2a._state.nowFn = () => now;
@@ -256,14 +262,20 @@ test('liveness: advancing totalFailed (loop alive but network broken) does NOT t
   const stopBefore = a2a._state.stopCalls;
   const startBefore = a2a._state.startCalls;
 
+  // Walk forward >15 min advancing totalFailed every interval. totalSent
+  // stays put (no successful heartbeat reached the hub).
   for (let i = 0; i < 5; i++) {
-    now += 6 * 60 * 1000;
+    now += 4 * 60 * 1000;
     a2a._state.totalFailed += 1;
     a2a._state.consecutiveFailures += 1;
     handles._livenessTick();
   }
-  assert.equal(a2a._state.stopCalls, stopBefore);
-  assert.equal(a2a._state.startCalls, startBefore);
+
+  assert.ok(
+    a2a._state.stopCalls > stopBefore,
+    'wedge gate must fire stop+start when no successful send for > WEDGE_THRESHOLD_MS',
+  );
+  assert.ok(a2a._state.startCalls > startBefore, 'wedge restart must also call startHeartbeat');
   cleanup();
 });
 
@@ -324,8 +336,11 @@ test('poke: single-flight gate dedupes concurrent calls', async () => {
   supervisor.start(a2a, { nowFn: () => 1_000_000 });
   const initialSends = a2a._state.sendCalls;
 
-  // Mark as failing to bypass throttle and force real sends.
-  a2a._state.consecutiveFailures = 5;
+  // First poke fires through (no prior poke = throttle doesn't apply).
+  // The other 9 dedupe via _pokeInFlight, which is what this test is
+  // actually probing -- the throttle is a separate concern covered
+  // elsewhere.
+  a2a._state.consecutiveFailures = 0;
 
   const results = [];
   for (let i = 0; i < 10; i++) results.push(supervisor.poke('test', { nowFn: () => 1_000_000 + i }));
@@ -362,7 +377,15 @@ test('poke: healthy node second call within 60s is throttled', async () => {
   cleanup();
 });
 
-test('poke: failing node bypasses throttle', async () => {
+test('poke: failing node ALSO respects throttle (no fan-out)', async () => {
+  // Previously, consecutiveFailures > 0 bypassed the throttle so a stuck
+  // node could recover immediately on any poke. That was the wrong knob:
+  // an IDE polling at 4 Hz during a failure streak would fan out into
+  // many sends per second once each send completed fast on a 401,
+  // exhausting the hub's 6/300s per-sender heartbeat budget. The
+  // throttle now applies uniformly. The drift detector still handles
+  // sleep/wake recovery independently, and the liveness watchdog handles
+  // wedged loops -- so user-perceived recovery is still bounded.
   const a2a = makeFakeA2a();
   let now = 1_000_000;
   supervisor.start(a2a, { nowFn: () => now });
@@ -377,7 +400,7 @@ test('poke: failing node bypasses throttle', async () => {
   const r2 = supervisor.poke('recovery', { nowFn: () => now });
   await new Promise((r) => setImmediate(r));
 
-  assert.equal(r2, true, 'failing node must bypass throttle so recovery is unblocked');
+  assert.equal(r2, false, 'failing node within throttle window must NOT bypass throttle');
   cleanup();
 });
 
