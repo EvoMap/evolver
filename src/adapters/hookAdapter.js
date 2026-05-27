@@ -159,6 +159,7 @@ function copyHookScripts(destDir, evolverRoot) {
   // with MODULE_NOT_FOUND at runtime. Caught in PR #94 review.
   const scripts = [
     '_runtimePaths.js',
+    '_memoryFiltering.js',
     'evolver-session-start.js',
     'evolver-signal-detect.js',
     'evolver-session-end.js',
@@ -237,6 +238,7 @@ function removeEvolverHooks(filePath, { markerKey = '_evolver_managed' } = {}) {
 function removeHookScripts(hooksDir) {
   const scripts = [
     '_runtimePaths.js',
+    '_memoryFiltering.js',
     'evolver-session-start.js',
     'evolver-signal-detect.js',
     'evolver-session-end.js',

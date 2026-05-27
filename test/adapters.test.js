@@ -140,8 +140,9 @@ describe('hookAdapter', () => {
         const destDir = path.join(tmp, 'hooks');
         const evolverRoot = path.resolve(__dirname, '..');
         const copied = hookAdapter.copyHookScripts(destDir, path.join(evolverRoot, 'src', 'adapters'));
-        // 3 hook entry points + _runtimePaths helper required by two of them.
-        assert.equal(copied.length, 4);
+        // 3 hook entry points + _runtimePaths and _memoryFiltering helpers
+        // required by session-start.
+        assert.equal(copied.length, 5);
         for (const f of copied) {
           assert.ok(fs.existsSync(f));
         }
@@ -168,6 +169,17 @@ describe('hookAdapter', () => {
           `copied evolver-session-start.js must run without error. stderr=${result.stderr}`);
       } finally { cleanup(tmp); }
     });
+
+    it('includes _memoryFiltering.js so copied session-start can require it (#547)', () => {
+      const tmp = makeTmpDir();
+      try {
+        const destDir = path.join(tmp, 'hooks');
+        const evolverRoot = path.resolve(__dirname, '..');
+        hookAdapter.copyHookScripts(destDir, path.join(evolverRoot, 'src', 'adapters'));
+        assert.ok(fs.existsSync(path.join(destDir, '_memoryFiltering.js')),
+          '_memoryFiltering.js must ship alongside session-start or it crashes with MODULE_NOT_FOUND');
+      } finally { cleanup(tmp); }
+    });
   });
 
   describe('removeHookScripts', () => {
@@ -177,12 +189,13 @@ describe('hookAdapter', () => {
         const hooksDir = path.join(tmp, 'hooks');
         fs.mkdirSync(hooksDir, { recursive: true });
         fs.writeFileSync(path.join(hooksDir, '_runtimePaths.js'), '');
+        fs.writeFileSync(path.join(hooksDir, '_memoryFiltering.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-session-start.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-signal-detect.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'evolver-session-end.js'), '');
         fs.writeFileSync(path.join(hooksDir, 'user-custom.js'), '');
         const removed = hookAdapter.removeHookScripts(hooksDir);
-        assert.equal(removed, 4);
+        assert.equal(removed, 5);
         assert.ok(fs.existsSync(path.join(hooksDir, 'user-custom.js')));
       } finally { cleanup(tmp); }
     });
