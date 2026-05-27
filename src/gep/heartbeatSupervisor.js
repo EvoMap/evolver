@@ -3,16 +3,23 @@
 const DRIFT_CHECK_MS = 30_000;
 const DRIFT_SLEEP_THRESHOLD_MS = 90_000;
 const LIVENESS_CHECK_MS = 60_000;
-const WEDGE_THRESHOLD_MS = 180_000;
+// 15 min: longer than the default-mode heartbeat interval (~6 min) plus one
+// healthy backoff cycle, so we do not false-positive during a normal failure
+// retry, but short enough to recover before the obfuscated module's documented
+// 30-min worst-case backoff cap.
+const WEDGE_THRESHOLD_MS = 15 * 60 * 1000;
 const POKE_THROTTLE_MS = 60_000;
 
 let _a2a = null;
 let _driftInterval = null;
 let _livenessInterval = null;
 let _lastDriftSampleAt = 0;
-let _lastObservedUptimeMs = -1;
-let _lastUptimeAdvanceAt = 0;
-let _lastObservedFailures = 0;
+// Freshness signal: totalSent + totalFailed only advances on real send
+// attempts. The previously-used `uptimeMs` is wall-clock since
+// startHeartbeat(), so it advances even when the internal loop is wedged in
+// backoff and never useful as a "loop is doing work" signal.
+let _lastObservedAttempts = -1;
+let _lastAttemptAdvanceAt = 0;
 let _lastPokeAt = 0;
 let _pokeInFlight = null;
 let _started = false;
@@ -29,6 +36,13 @@ function _safeStats() {
   } catch (_e) {
     return null;
   }
+}
+
+function _attemptsOf(stats) {
+  if (!stats) return -1;
+  const sent = typeof stats.totalSent === 'number' ? stats.totalSent : 0;
+  const failed = typeof stats.totalFailed === 'number' ? stats.totalFailed : 0;
+  return sent + failed;
 }
 
 function _safeStart() {
@@ -49,14 +63,11 @@ function _safeStop() {
   }
 }
 
-async function _safeSend() {
-  try {
-    if (_a2a && typeof _a2a.sendHeartbeat === 'function') {
-      await _a2a.sendHeartbeat();
-    }
-  } catch (e) {
-    console.warn('[Heartbeat] supervisor sendHeartbeat failed: ' + (e && e.message || e));
-  }
+function _hardRestart(now) {
+  _safeStop();
+  _safeStart();
+  _lastObservedAttempts = -1;
+  _lastAttemptAdvanceAt = now;
 }
 
 function _driftTick(opts) {
@@ -65,21 +76,16 @@ function _driftTick(opts) {
   const gap = now - prev;
   _lastDriftSampleAt = now;
 
-  // Wall-clock not monotonic: laptop sleep suspends setInterval but Date.now()
-  // reflects real time, so a > threshold gap means we just woke.
+  // setInterval is suspended during laptop sleep while Date.now() keeps real
+  // time, so a > threshold gap means we just woke. We cannot tell from outside
+  // whether the internal loop is wedged in backoff or about to fire normally
+  // (uptimeMs advances on real time, not on send activity), so unconditionally
+  // stop+start to drop any accumulated backoff. A single sendHeartbeat() is
+  // not enough: there is no evidence it resets the obfuscated module's
+  // internal cadence/backoff state. stop+start is the only API pair known to
+  // re-initialise the cadence.
   if (gap > DRIFT_SLEEP_THRESHOLD_MS) {
-    const stats = _safeStats();
-    const wedged = stats && stats.running === true
-      && _lastObservedUptimeMs >= 0
-      && stats.uptimeMs === _lastObservedUptimeMs;
-    if (wedged) {
-      _safeStop();
-      _safeStart();
-      _lastObservedUptimeMs = -1;
-      _lastUptimeAdvanceAt = now;
-      return;
-    }
-    _safeSend();
+    _hardRestart(now);
   }
 }
 
@@ -90,30 +96,25 @@ function _livenessTick(opts) {
 
   if (stats.running === false) {
     _safeStart();
-    _lastObservedUptimeMs = -1;
-    _lastUptimeAdvanceAt = now;
-    _lastObservedFailures = 0;
+    _lastObservedAttempts = -1;
+    _lastAttemptAdvanceAt = now;
     return;
   }
 
-  const uptimeAdvanced = stats.uptimeMs !== _lastObservedUptimeMs;
-  if (uptimeAdvanced) {
-    _lastObservedUptimeMs = stats.uptimeMs;
-    _lastUptimeAdvanceAt = now;
-  } else if (
-    stats.consecutiveFailures > 0
-    && stats.consecutiveFailures >= _lastObservedFailures
-    && _lastUptimeAdvanceAt > 0
-    && now - _lastUptimeAdvanceAt > WEDGE_THRESHOLD_MS
-  ) {
-    _safeStop();
-    _safeStart();
-    _lastObservedUptimeMs = -1;
-    _lastUptimeAdvanceAt = now;
-    _lastObservedFailures = 0;
+  // Freshness: totalSent + totalFailed only increments on actual send
+  // attempts. If neither has advanced for WEDGE_THRESHOLD_MS the internal
+  // loop is doing nothing (regardless of what `running` claims) and needs a
+  // stop+start to clear backoff.
+  const attempts = _attemptsOf(stats);
+  if (attempts !== _lastObservedAttempts) {
+    _lastObservedAttempts = attempts;
+    _lastAttemptAdvanceAt = now;
     return;
   }
-  _lastObservedFailures = stats.consecutiveFailures || 0;
+
+  if (_lastAttemptAdvanceAt > 0 && now - _lastAttemptAdvanceAt > WEDGE_THRESHOLD_MS) {
+    _hardRestart(now);
+  }
 }
 
 function start(a2a, opts) {
@@ -125,9 +126,8 @@ function start(a2a, opts) {
   const options = opts || {};
   const now = _now(options);
   _lastDriftSampleAt = now;
-  _lastUptimeAdvanceAt = now;
-  _lastObservedUptimeMs = -1;
-  _lastObservedFailures = 0;
+  _lastAttemptAdvanceAt = now;
+  _lastObservedAttempts = -1;
   _lastPokeAt = 0;
   _pokeInFlight = null;
 
@@ -204,9 +204,8 @@ function _resetForTesting() {
   _driftInterval = null;
   _livenessInterval = null;
   _lastDriftSampleAt = 0;
-  _lastObservedUptimeMs = -1;
-  _lastUptimeAdvanceAt = 0;
-  _lastObservedFailures = 0;
+  _lastObservedAttempts = -1;
+  _lastAttemptAdvanceAt = 0;
   _lastPokeAt = 0;
   _pokeInFlight = null;
   _started = false;

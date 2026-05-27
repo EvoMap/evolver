@@ -5,10 +5,15 @@ const assert = require('node:assert');
 
 const supervisor = require('../src/gep/heartbeatSupervisor');
 
+// Production-faithful fake. `uptimeMs` is driven by `nowFn` so it advances on
+// real time (matching the obfuscated a2aProtocol's actual semantics, which is
+// the whole point of this refactor: uptimeMs is NOT a freshness signal). The
+// only way `totalSent` / `totalFailed` advance is by actually exercising
+// `sendHeartbeat`, which is the new freshness signal the supervisor relies on.
 function makeFakeA2a(overrides) {
   const state = {
     running: false,
-    uptimeMs: 0,
+    startedAtMs: null,
     totalSent: 0,
     totalFailed: 0,
     consecutiveFailures: 0,
@@ -19,12 +24,15 @@ function makeFakeA2a(overrides) {
     startThrows: false,
     sendThrows: false,
     onSend: null,
+    // Optional clock — if set, getHeartbeatStats() computes uptimeMs from it.
+    nowFn: null,
   };
   const api = {
     startHeartbeat() {
       state.startCalls++;
       if (state.startThrows) throw new Error('synthetic startHeartbeat error');
       state.running = true;
+      state.startedAtMs = typeof state.nowFn === 'function' ? state.nowFn() : Date.now();
     },
     stopHeartbeat() {
       state.stopCalls++;
@@ -34,15 +42,18 @@ function makeFakeA2a(overrides) {
       state.sendCalls++;
       if (state.sendThrows) {
         state.sendErrors++;
+        state.totalFailed++;
         throw new Error('synthetic sendHeartbeat error');
       }
       if (typeof state.onSend === 'function') await state.onSend();
       state.totalSent++;
     },
     getHeartbeatStats() {
+      const now = typeof state.nowFn === 'function' ? state.nowFn() : Date.now();
+      const uptimeMs = state.running && state.startedAtMs != null ? now - state.startedAtMs : 0;
       return {
         running: state.running,
-        uptimeMs: state.uptimeMs,
+        uptimeMs,
         totalSent: state.totalSent,
         totalFailed: state.totalFailed,
         consecutiveFailures: state.consecutiveFailures,
@@ -82,59 +93,70 @@ test('start: installs intervals and they are unref-able', () => {
 // Drift detector
 // --------------------------------------------------------------------------
 
-test('drift: wall-clock jump > threshold triggers sendHeartbeat', async () => {
+test('drift: wall-clock jump > threshold triggers stop+start (unconditional)', () => {
   const a2a = makeFakeA2a();
   let now = 1_000_000;
+  a2a._state.nowFn = () => now;
   const handles = supervisor.start(a2a, { nowFn: () => now });
-  const sendBefore = a2a._state.sendCalls;
-
-  now += supervisor.DRIFT_SLEEP_THRESHOLD_MS + 1_000;
-  handles._driftTick();
-  await new Promise((r) => setImmediate(r));
-
-  assert.ok(
-    a2a._state.sendCalls > sendBefore,
-    `expected sendHeartbeat after drift jump, got ${a2a._state.sendCalls - sendBefore} new calls`,
-  );
-  cleanup();
-});
-
-test('drift: small gap (< threshold) does NOT trigger send', async () => {
-  const a2a = makeFakeA2a();
-  let now = 1_000_000;
-  const handles = supervisor.start(a2a, { nowFn: () => now });
-  const sendBefore = a2a._state.sendCalls;
-
-  now += 30_000;
-  handles._driftTick();
-  await new Promise((r) => setImmediate(r));
-
-  assert.equal(a2a._state.sendCalls, sendBefore, 'no send for sub-threshold gap');
-  cleanup();
-});
-
-test('drift: hard-restarts when wedge confirmed (running true but uptime stuck)', async () => {
-  const a2a = makeFakeA2a();
-  let now = 1_000_000;
-  const handles = supervisor.start(a2a, { nowFn: () => now });
-
-  // Prime: liveness records uptime=0 as the current observation.
-  handles._livenessTick();
   const stopBefore = a2a._state.stopCalls;
   const startBefore = a2a._state.startCalls;
+  const sendBefore = a2a._state.sendCalls;
 
-  // Wall-clock jump confirms suspension AND uptime did not advance.
-  now += supervisor.DRIFT_SLEEP_THRESHOLD_MS + 1_000;
+  // Simulate macOS sleep: wall-clock jumps by an hour while the supervisor
+  // was suspended.
+  now += 60 * 60 * 1000;
   handles._driftTick();
 
   assert.ok(
     a2a._state.stopCalls > stopBefore,
-    'wedge confirmation must call stopHeartbeat',
+    `expected stopHeartbeat on sleep gap, got ${a2a._state.stopCalls - stopBefore} new calls`,
   );
   assert.ok(
     a2a._state.startCalls > startBefore,
-    'wedge confirmation must call startHeartbeat',
+    `expected startHeartbeat on sleep gap, got ${a2a._state.startCalls - startBefore} new calls`,
   );
+  // Drift no longer uses one-shot sendHeartbeat: stop+start is the only known
+  // way to reset the obfuscated module's internal cadence.
+  assert.equal(a2a._state.sendCalls, sendBefore, 'drift must not call sendHeartbeat');
+  cleanup();
+});
+
+test('drift: small gap (< threshold) does NOT touch the heartbeat', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+  const sendBefore = a2a._state.sendCalls;
+
+  now += 30_000;
+  handles._driftTick();
+
+  assert.equal(a2a._state.stopCalls, stopBefore);
+  assert.equal(a2a._state.startCalls, startBefore);
+  assert.equal(a2a._state.sendCalls, sendBefore);
+  cleanup();
+});
+
+test('drift: sleep gap restart does NOT depend on prior liveness observation', () => {
+  // The old wedge gate required `_lastObservedUptimeMs >= 0` which only got
+  // set by a prior liveness tick. After a fast sleep that beat liveness to
+  // the punch, the supervisor used to send a one-shot heartbeat instead of
+  // restarting. Verify the new behaviour does not have that race.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+
+  // Sleep BEFORE liveness ever runs (would have been < 60s in old code).
+  now += supervisor.DRIFT_SLEEP_THRESHOLD_MS + 1_000;
+  handles._driftTick();
+
+  assert.ok(a2a._state.stopCalls > stopBefore);
+  assert.ok(a2a._state.startCalls > startBefore);
   cleanup();
 });
 
@@ -142,9 +164,10 @@ test('drift: hard-restarts when wedge confirmed (running true but uptime stuck)'
 // Liveness watchdog
 // --------------------------------------------------------------------------
 
-test('liveness: revives the loop when running flips to false', async () => {
+test('liveness: revives the loop when running flips to false', () => {
   const a2a = makeFakeA2a();
   let now = 1_000_000;
+  a2a._state.nowFn = () => now;
   const handles = supervisor.start(a2a, { nowFn: () => now });
   const startBefore = a2a._state.startCalls;
 
@@ -158,20 +181,22 @@ test('liveness: revives the loop when running flips to false', async () => {
   cleanup();
 });
 
-test('liveness: hard-restarts when uptime stuck AND failures > 0 past WEDGE_THRESHOLD_MS', async () => {
+test('liveness: hard-restarts when totalSent+totalFailed unchanged past WEDGE_THRESHOLD_MS', () => {
   const a2a = makeFakeA2a();
   let now = 1_000_000;
+  a2a._state.nowFn = () => now;
   const handles = supervisor.start(a2a, { nowFn: () => now });
 
-  // First tick locks in uptime=0 and lastUptimeAdvanceAt=now.
-  a2a._state.uptimeMs = 100;
+  // First tick: observe baseline (totalSent=0, totalFailed=0).
   handles._livenessTick();
   const stopBefore = a2a._state.stopCalls;
   const startBefore = a2a._state.startCalls;
 
-  // Time passes past wedge threshold, uptime stays the same, failures rising.
-  now += supervisor.WEDGE_THRESHOLD_MS + 1_000;
-  a2a._state.consecutiveFailures = 3;
+  // Time passes well beyond wedge threshold with NO send attempts. This is
+  // the realistic "stuck in backoff" scenario: uptimeMs advances on real
+  // time (verified by getHeartbeatStats() using nowFn) but totalSent and
+  // totalFailed stay put because the internal loop made zero attempts.
+  now += supervisor.WEDGE_THRESHOLD_MS + 60_000;
   handles._livenessTick();
 
   assert.ok(a2a._state.stopCalls > stopBefore, 'wedged loop must be stopped');
@@ -179,23 +204,93 @@ test('liveness: hard-restarts when uptime stuck AND failures > 0 past WEDGE_THRE
   cleanup();
 });
 
-test('liveness: healthy advancing uptime does NOT trigger restart', async () => {
+test('liveness: advancing totalSent (healthy node) does NOT trigger restart', () => {
   const a2a = makeFakeA2a();
   let now = 1_000_000;
+  a2a._state.nowFn = () => now;
   const handles = supervisor.start(a2a, { nowFn: () => now });
 
-  a2a._state.uptimeMs = 1_000;
+  handles._livenessTick(); // baseline
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+
+  // Healthy: a send happens every cycle, totalSent grows.
+  for (let i = 0; i < 5; i++) {
+    now += 6 * 60 * 1000; // one healthy heartbeat interval
+    a2a._state.totalSent += 1;
+    handles._livenessTick();
+  }
+  // Even though much more than WEDGE_THRESHOLD_MS has elapsed in absolute
+  // terms, freshness was refreshed at each tick.
+  assert.equal(a2a._state.stopCalls, stopBefore, 'healthy node must not be restarted');
+  assert.equal(a2a._state.startCalls, startBefore);
+  cleanup();
+});
+
+test('liveness: advancing totalFailed (loop alive but network broken) does NOT trigger restart', () => {
+  // The internal loop is doing its job — attempting and failing. That is
+  // network failure, not wedge. Do not restart in this case.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+
   handles._livenessTick();
   const stopBefore = a2a._state.stopCalls;
   const startBefore = a2a._state.startCalls;
 
-  now += supervisor.WEDGE_THRESHOLD_MS + 10_000;
-  a2a._state.uptimeMs = 200_000; // advanced
-  a2a._state.consecutiveFailures = 0;
-  handles._livenessTick();
-
-  assert.equal(a2a._state.stopCalls, stopBefore, 'healthy node must not be restarted');
+  for (let i = 0; i < 5; i++) {
+    now += 6 * 60 * 1000;
+    a2a._state.totalFailed += 1;
+    a2a._state.consecutiveFailures += 1;
+    handles._livenessTick();
+  }
+  assert.equal(a2a._state.stopCalls, stopBefore);
   assert.equal(a2a._state.startCalls, startBefore);
+  cleanup();
+});
+
+// --------------------------------------------------------------------------
+// End-to-end: the reported user scenario
+// --------------------------------------------------------------------------
+
+test('end-to-end: heartbeat alive -> long sleep -> drift restart -> resumes sending', async () => {
+  // This is the actual reported bug: process starts and registers, user
+  // goes idle for a long time (macOS sleeps), comes back, and the heartbeat
+  // never recovers. We model the obfuscated module's "stuck in backoff"
+  // state as `running:true, no totalSent advance, uptimeMs growing on real
+  // time" — which is what production stats look like.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+
+  // T0: one successful heartbeat early in life.
+  await a2a.sendHeartbeat();
+  const sentAfterFirst = a2a._state.totalSent;
+  assert.equal(sentAfterFirst, 1);
+
+  // The internal loop falls into a long backoff: no further send attempts.
+  // (We do not call sendHeartbeat. running stays true. uptimeMs grows.)
+
+  // User closes lid for 1 hour. setInterval is suspended during sleep, so
+  // we model that by NOT calling tick functions during the gap.
+  now += 60 * 60 * 1000;
+
+  // On wake, drift tick fires before liveness. With the new logic it
+  // unconditionally stops and restarts the internal heartbeat, dropping
+  // accumulated backoff.
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+  handles._driftTick();
+  assert.ok(a2a._state.stopCalls > stopBefore, 'drift must stop the wedged loop');
+  assert.ok(a2a._state.startCalls > startBefore, 'drift must restart the loop');
+
+  // After restart, the next heartbeat send works (real obfuscated module
+  // would resume its internal cadence; we model that by an external send
+  // succeeding now).
+  await a2a.sendHeartbeat();
+  assert.equal(a2a._state.totalSent, sentAfterFirst + 1, 'heartbeat must resume sending');
   cleanup();
 });
 
@@ -321,27 +416,25 @@ test('stop: clears intervals, calls a2a.stopHeartbeat, and is idempotent', () =>
   cleanup();
 });
 
-test('errors from sendHeartbeat / startHeartbeat after start do not crash the supervisor', async () => {
+test('errors from stopHeartbeat / startHeartbeat during ticks do not crash the supervisor', () => {
   const a2a = makeFakeA2a();
   let now = 1_000_000;
+  a2a._state.nowFn = () => now;
   const handles = supervisor.start(a2a, { nowFn: () => now });
 
-  // Subsequent startHeartbeat calls throw, and so does sendHeartbeat.
+  // Subsequent start/stop calls all throw — drift tick (stop+start) and
+  // liveness tick (start on running=false) must both swallow.
   a2a._state.startThrows = true;
-  a2a._state.sendThrows = true;
 
-  // Force a drift jump (would call sendHeartbeat) — must not throw.
+  // Force a drift sleep gap: would call stop+start.
   now += supervisor.DRIFT_SLEEP_THRESHOLD_MS + 1_000;
   let driftThrew = null;
   try { handles._driftTick(); } catch (e) { driftThrew = e; }
-  assert.equal(driftThrew, null, 'drift tick must not propagate sendHeartbeat errors');
+  assert.equal(driftThrew, null, 'drift tick must not propagate startHeartbeat errors');
 
   // Force liveness to call startHeartbeat (running=false) — must not throw.
   a2a._state.running = false;
   let livenessThrew = null;
   try { handles._livenessTick(); } catch (e) { livenessThrew = e; }
   assert.equal(livenessThrew, null, 'liveness tick must not propagate startHeartbeat errors');
-
-  await new Promise((r) => setImmediate(r));
-  cleanup();
 });
