@@ -122,6 +122,9 @@ function start(a2a, opts) {
   if (!a2a || typeof a2a !== 'object') {
     throw new Error('heartbeatSupervisor.start: a2a module is required');
   }
+  if (typeof a2a.startHeartbeat !== 'function') {
+    throw new Error('heartbeatSupervisor.start: a2a.startHeartbeat is required');
+  }
   _a2a = a2a;
   const options = opts || {};
   const now = _now(options);
@@ -131,21 +134,26 @@ function start(a2a, opts) {
   _lastPokeAt = 0;
   _pokeInFlight = null;
 
-  if (typeof a2a.startHeartbeat !== 'function') {
-    throw new Error('heartbeatSupervisor.start: a2a.startHeartbeat is required');
-  }
-  // Rethrow first-attempt failure: a startup error is worth surfacing.
-  a2a.startHeartbeat();
-
+  // Install intervals BEFORE attempting the initial startHeartbeat. If that
+  // call throws (e.g. transient resource error at process start), we want
+  // the supervisor to remain alive so the liveness tick can observe
+  // running===false and retry via _safeStart(). Previously a throw here
+  // left _started=false and every subsequent poke() / interval no-opped,
+  // so the process ran with no heartbeat for the rest of its lifetime.
   const driftFn = function () { _driftTick(options); };
   const livenessFn = function () { _livenessTick(options); };
-
   _driftInterval = setInterval(driftFn, DRIFT_CHECK_MS);
   if (_driftInterval && typeof _driftInterval.unref === 'function') _driftInterval.unref();
   _livenessInterval = setInterval(livenessFn, LIVENESS_CHECK_MS);
   if (_livenessInterval && typeof _livenessInterval.unref === 'function') _livenessInterval.unref();
-
   _started = true;
+
+  try {
+    a2a.startHeartbeat();
+  } catch (e) {
+    console.warn('[Heartbeat] supervisor initial startHeartbeat failed (liveness will retry): ' + (e && e.message || e));
+  }
+
   return {
     _driftTick: driftFn,
     _livenessTick: livenessFn,

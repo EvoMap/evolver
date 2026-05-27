@@ -72,12 +72,29 @@ function cleanup() {
 
 // --------------------------------------------------------------------------
 
-test('start: calls a2a.startHeartbeat and rethrows first-attempt failure', () => {
+test('start: swallows first-attempt startHeartbeat throw and stays alive for liveness retry', () => {
+  // Previously this rethrew, which caused index.js's outer catch to log and
+  // continue — but the supervisor was then permanently dead (_started=false,
+  // every poke() and tick a no-op). Now the supervisor must stay alive so
+  // the liveness tick can observe running===false and retry _safeStart().
   const a2a = makeFakeA2a({ startThrows: true });
   let threw = null;
-  try { supervisor.start(a2a); } catch (e) { threw = e; }
-  assert.ok(threw, 'first-attempt startHeartbeat failure must propagate');
-  assert.match(threw.message, /synthetic startHeartbeat/);
+  let handles = null;
+  try { handles = supervisor.start(a2a); } catch (e) { threw = e; }
+  assert.equal(threw, null, 'initial startHeartbeat throw must not propagate');
+  assert.ok(handles, 'supervisor must hand back tick handles even after initial throw');
+
+  // Stats still report running=false because startHeartbeat threw before
+  // flipping it. Now allow the next call to succeed and verify the liveness
+  // tick brings the loop up.
+  a2a._state.startThrows = false;
+  const startBefore = a2a._state.startCalls;
+  handles._livenessTick();
+  assert.ok(
+    a2a._state.startCalls > startBefore,
+    'liveness must retry startHeartbeat after the initial failure',
+  );
+  assert.equal(a2a._state.running, true, 'retry must bring the loop up');
   cleanup();
 });
 
