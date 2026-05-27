@@ -846,6 +846,41 @@ test('terminalDiagnostic: logs user-visible warning after N consecutive restarts
     );
     // Logged at most once per stuck episode.
     assert.equal(matches.length, 1, 'must not spam the diagnostic across each tick');
+
+    // Message must reference REAL hub terminal states (verified against
+    // evomap-hub: status:"suspended", status:"unknown_node",
+    // survival_status:"dead", and HTTP 403 error:"node_secret_invalid")
+    // and the real hub-suggested recovery URL (the dashboard at
+    // https://evomap.ai/account, returned by the hub as
+    // recovery_action.url for node_secret_invalid). It must NOT
+    // reference the prior fabricated error codes "node_disabled",
+    // "node_revoked", or "secret_rejected", which a grep of the hub
+    // source confirmed are not emitted anywhere.
+    const msg = matches[0];
+    assert.ok(
+      msg.includes('https://evomap.ai/account'),
+      'diagnostic must point users at the hub-suggested recovery URL; got: ' + msg,
+    );
+    assert.ok(
+      msg.includes('suspended'),
+      'diagnostic must mention the real "suspended" hub state; got: ' + msg,
+    );
+    assert.ok(
+      msg.includes('node_secret_invalid'),
+      'diagnostic must mention the real node_secret_invalid hub error; got: ' + msg,
+    );
+    assert.ok(
+      !msg.includes('node_disabled'),
+      'diagnostic must NOT reference the fabricated "node_disabled" code; got: ' + msg,
+    );
+    assert.ok(
+      !msg.includes('node_revoked'),
+      'diagnostic must NOT reference the fabricated "node_revoked" code; got: ' + msg,
+    );
+    assert.ok(
+      !msg.includes('secret_rejected'),
+      'diagnostic must NOT reference the fabricated "secret_rejected" code; got: ' + msg,
+    );
   } finally {
     console.warn = originalWarn;
     cleanup();

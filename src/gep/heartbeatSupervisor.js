@@ -34,11 +34,15 @@ const CONSECUTIVE_FAILURE_RESTART_THRESHOLD = 10;
 // After this many _hardRestart()s without ever seeing the underlying loop
 // recover (i.e. totalSent advances AND consecutiveFailures drops back to
 // zero), log a clear user-visible diagnostic. We cannot inspect hub
-// error codes from outside the obfuscated module, so we cannot detect
-// node_disabled / node_revoked / secret_rejected automatically; instead
-// we surface "the supervisor has restarted N times and it isn't helping"
-// so the user knows to investigate (likely fixes: `evolver
-// reset-local-secret`, check `A2A_NODE_SECRET`, contact hub operator).
+// response bodies from outside the obfuscated module -- getHeartbeatStats()
+// exposes only {running, uptimeMs, totalSent, totalFailed,
+// consecutiveFailures} and no error/response surface -- so we cannot
+// detect terminal hub states (status:"suspended", status:"unknown_node",
+// survival_status:"dead", or HTTP 403 error:"node_secret_invalid")
+// automatically. Instead we surface "the supervisor has restarted N times
+// and it isn't helping" so the user knows to check the dashboard at
+// https://evomap.ai/account, which is the recovery path the hub itself
+// directs users to (see evomap-hub _middleware.js recovery_action url).
 // Without this signal a permanently-disabled node would loop forever in
 // 15-min restart cycles with no indication to the operator that the
 // problem is terminal from the client's perspective.
@@ -167,13 +171,17 @@ function _hardRestart(now) {
     _lastSuccessfulSendAt = now;
     _lastHardRestartAt = now;
     _consecutiveHardRestarts += 1;
-    // Terminal-state diagnostic: the supervisor cannot read hub error
-    // codes from outside the obfuscated module, so it cannot detect
-    // node_disabled / node_revoked / secret_rejected automatically. After
-    // N consecutive restarts that didn't restore the loop, log a clear
-    // pointer to user-actionable fixes instead of silently retrying
-    // forever. Logged at most once per stuck-state episode; reset on the
-    // first observed recovery (see _livenessTick).
+    // Terminal-state diagnostic: getHeartbeatStats() does not expose
+    // response bodies or HTTP status, so we cannot detect the hub's real
+    // terminal states (status:"suspended", status:"unknown_node",
+    // survival_status:"dead", HTTP 403 error:"node_secret_invalid")
+    // automatically from outside the obfuscated module. After N
+    // consecutive restarts that didn't restore the loop, log a clear
+    // pointer to the hub-suggested recovery path (the dashboard at
+    // https://evomap.ai/account, which the hub itself returns as
+    // recovery_action.url for node_secret_invalid). Logged at most once
+    // per stuck-state episode; reset on the first observed recovery
+    // (see _livenessTick).
     if (
       _consecutiveHardRestarts >= TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD
       && !_terminalDiagnosticLogged
@@ -181,9 +189,16 @@ function _hardRestart(now) {
       _terminalDiagnosticLogged = true;
       console.warn(
         '[Heartbeat] supervisor has restarted ' + _consecutiveHardRestarts +
-        ' times without recovery. The hub may be rejecting this node ' +
-        '(disabled / revoked / bad secret) or there may be no network. ' +
-        'Try `evolver reset-local-secret` and verify A2A_NODE_SECRET.',
+        ' times without observed recovery. This may indicate the hub ' +
+        'considers this node terminal. Check https://evomap.ai/account ' +
+        'to see node status. If the dashboard shows the node as ' +
+        '"suspended" or reports an invalid node secret ' +
+        '(node_secret_invalid), take action there (re-enable, or reset ' +
+        'the node secret via the web UI). If the node is shown as ' +
+        'offline or unknown, ensure A2A_NODE_SECRET is set correctly ' +
+        'and restart evolver (you can also run `evolver ' +
+        'reset-local-secret` to clear any stale local secret before ' +
+        'restart).',
       );
     }
     return true;
