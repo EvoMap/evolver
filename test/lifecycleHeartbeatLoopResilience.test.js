@@ -1456,6 +1456,105 @@ test('BUG-1: rescued zombie tick does NOT write last_heartbeat_at on stale 200',
   }
 });
 
+// --------------------------------------------------------------------------
+// BUG-2 Claim A: reauth watchdog
+//
+// Pre-fix, _reauthInProgress was cleared only in reAuthenticate's finally.
+// If the inner hello()/heartbeat() returned a promise that never settled
+// (TLS-level hang where AbortSignal is ignored), the finally never ran and
+// _reauthInProgress stayed true forever. Every subsequent pokeHeartbeat()
+// early-returned at the reauth-in-progress gate doing zero work -- exact
+// "I keep clicking but nothing happens" symptom.
+//
+// Fix: REAUTH_HUNG_THRESHOLD_MS (60s) watchdog races the inner state
+// machine. When it fires, the finally clears _reauthInProgress and the
+// next poke can drive recovery.
+// --------------------------------------------------------------------------
+
+test('BUG-2: reauth that never resolves does NOT permanently latch _reauthInProgress', async () => {
+  const lc = makeManager();
+  // hello() returns a never-resolving promise -- simulates TLS hang that
+  // ignores AbortSignal. Pre-fix the await on this would never return and
+  // the finally clearing _reauthInProgress would never run.
+  lc.hello = () => new Promise(() => {});
+
+  // Shorten the watchdog window via setTimeout patching so the test
+  // doesn't block for 60s. We only intercept the FIRST setTimeout call
+  // with the production threshold delay (REAUTH_HUNG_THRESHOLD_MS=60000)
+  // and replace it with 50ms, so the watchdog fires inside the test.
+  const realSetTimeout = global.setTimeout;
+  let intercepted = false;
+  global.setTimeout = function (fn, ms, ...rest) {
+    if (!intercepted && ms === 60_000) {
+      intercepted = true;
+      return realSetTimeout(fn, 50, ...rest);
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    const reauthPromise = lc.reAuthenticate();
+    // Sanity: latch is held while we wait.
+    assert.equal(lc._reauthInProgress, true, 'sanity: latch held during await');
+
+    const result = await reauthPromise;
+
+    assert.equal(intercepted, true, 'sanity: watchdog setTimeout call was intercepted');
+    assert.equal(
+      lc._reauthInProgress, false,
+      'reauth watchdog must clear _reauthInProgress even when inner promise never settles',
+    );
+    assert.equal(result, false, 'watchdog-timed-out reauth must return false');
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
+});
+
+test('BUG-2: after reauth watchdog fires, pokeHeartbeat is no longer a no-op', async () => {
+  const lc = makeManager();
+  lc.hello = () => new Promise(() => {});
+
+  const realSetTimeout = global.setTimeout;
+  let intercepted = false;
+  global.setTimeout = function (fn, ms, ...rest) {
+    if (!intercepted && ms === 60_000) {
+      intercepted = true;
+      return realSetTimeout(fn, 50, ...rest);
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    // Wait for reauth to time out via the watchdog.
+    await lc.reAuthenticate();
+    assert.equal(lc._reauthInProgress, false, 'sanity: watchdog cleared the latch');
+
+    // Now start the heartbeat loop and confirm a poke actually does work
+    // (clears _consecutiveFailures). Pre-fix the reauth-in-progress gate
+    // would early-return true and the state-clear below would never run.
+    let heartbeatCalls = 0;
+    lc.heartbeat = async () => { heartbeatCalls++; return { ok: true }; };
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => realSetTimeout(r, 20));
+    // Install a non-zero failure counter -- the poke's state-clear path
+    // must reset it (proof that the reauth-in-progress gate is no longer
+    // short-circuiting the work).
+    lc._consecutiveFailures = 5;
+    // Push attempt timestamp past the throttle so the poke proceeds.
+    lc._lastTickAttemptAt = 0;
+    lc.pokeHeartbeat();
+
+    assert.equal(
+      lc._consecutiveFailures, 0,
+      'pokeHeartbeat must perform its state-clear work after the watchdog released the latch',
+    );
+
+    lc.stopHeartbeatLoop();
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
+});
+
 test('BUG-1: rescued zombie tick does NOT writeInboundBatch stale events', async () => {
   const store = makeStore();
   let batchCalls = 0;

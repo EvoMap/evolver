@@ -51,6 +51,19 @@ const DRIFT_SLEEP_THRESHOLD_MS = 90_000;
 // 60s sits comfortably above HEARTBEAT_TIMEOUT so we don't race a normal
 // abort cycle while still rescuing the loop within one drift sample.
 const TICK_HUNG_THRESHOLD_MS = 60_000;
+// Reauth-hung watchdog. _reauthInProgress is set true at the top of
+// reAuthenticate() and cleared only in the finally. If the inner hello()
+// or heartbeat() returns a never-resolving promise (TLS-level hang where
+// the AbortSignal is ignored, same failure class TICK_HUNG_THRESHOLD_MS
+// guards against), the finally never runs and _reauthInProgress stays
+// true forever. Every subsequent pokeHeartbeat() early-returns true at
+// the reauth-in-progress gate without doing any work -- exact
+// "I keep clicking but evolver is dead" symptom. Wrapping the body in
+// Promise.race against this timeout lets the finally clear the latch
+// even when the underlying fetch never settles. 60s mirrors
+// TICK_HUNG_THRESHOLD_MS for the same "comfortably above the inner
+// AbortSignal" reason.
+const REAUTH_HUNG_THRESHOLD_MS = 60_000;
 // Threshold for the drift-detector recovery branch. Keys off
 // _lastTickSuccessAt (NOT attempt time): a node failing fast every 30s
 // would keep its attempt timestamp fresh and the branch would never fire.
@@ -329,7 +342,15 @@ class LifecycleManager {
     }
     this._reauthInProgress = true;
     let manualResetRequired = false;
-    try {
+    // The inner async function holds the full reauth state machine. We
+    // race it against REAUTH_HUNG_THRESHOLD_MS so a hung hello()/heartbeat()
+    // promise that never settles cannot latch _reauthInProgress=true
+    // forever. The underlying fetch promise may keep dangling in the
+    // background (we cannot cancel a promise we don't own), but the state
+    // machine releases for the next attempt -- which is the whole point:
+    // every subsequent pokeHeartbeat() would otherwise no-op at the
+    // reauth-in-progress gate. See REAUTH_HUNG_THRESHOLD_MS above.
+    const run = async () => {
       for (let attempt = 1; attempt <= MAX_REAUTH_ATTEMPTS; attempt++) {
         this.logger.warn(`[lifecycle] re-auth attempt ${attempt}/${MAX_REAUTH_ATTEMPTS}: rotating secret via hello...`);
         const helloResult = await this.hello({ rotateSecret: true });
@@ -389,7 +410,38 @@ class LifecycleManager {
       );
       this._reauthBackoffUntil = Date.now() + backoffMs;
       return false;
+    };
+
+    let watchdogTimer = null;
+    const watchdog = new Promise((_, reject) => {
+      watchdogTimer = setTimeout(
+        () => reject(new Error('reauth_hung_timeout')),
+        REAUTH_HUNG_THRESHOLD_MS,
+      );
+      // unref() so a still-pending watchdog never keeps the event loop
+      // alive on its own (matches the unref pattern used elsewhere in
+      // this file for heartbeat / drift timers).
+      if (watchdogTimer && watchdogTimer.unref) watchdogTimer.unref();
+    });
+
+    try {
+      return await Promise.race([run(), watchdog]);
+    } catch (err) {
+      if (err && err.message === 'reauth_hung_timeout') {
+        this.logger.error(
+          `[lifecycle] re-auth watchdog fired after ${Math.round(REAUTH_HUNG_THRESHOLD_MS / 1000)}s; ` +
+            'releasing _reauthInProgress so subsequent pokes can drive recovery. ' +
+            'Underlying hello/heartbeat fetch may still be pending in the background.',
+        );
+        return false;
+      }
+      // Inner state-machine throw (rare; hello/heartbeat normally return
+      // {ok:false} instead of throwing). Bump the failure counter so the
+      // backoff escalation tracks reality, and surface false.
+      this.logger.error(`[lifecycle] re-auth threw unexpectedly: ${err && err.message || err}`);
+      return false;
     } finally {
+      if (watchdogTimer) clearTimeout(watchdogTimer);
       this._reauthInProgress = false;
     }
   }
