@@ -32,7 +32,7 @@
 >
 > Evolver 正是把这一结论落地的开源引擎：它基于 GEP 协议，把 Agent 的经验沉淀为 Gene 与 Capsule，而不是散落的 prompt 或技能文档。如果你想知道 *为什么* Evolver 坚持使用 Gene 而不是更长的 skill 文档，这就是那篇该读的论文。
 >
-> 想看应用落地的样本？[OpenClaw x EvoMap：CritPt 评测报告](https://evomap.ai/blog/openclaw-critpt-report) 以 OpenClaw Agent 在 CritPt Physics Solver 上的五个版本演进（Beta → v2.2）为例，完整拆解了同一套 Gene 进化闭环如何把得分从 0.00% 推到 18.57%，并给出 token 成本轨迹、基因激活映射，以及推理被压缩成可复用基因后所呈现的「token 先升后降」特征。
+> 想看应用落地的样本？[OpenClaw x EvoMap：CritPt 评测报告](https://evomap.ai/blog/openclaw-critpt-report) 以 OpenClaw Agent 在 CritPt Physics Solver 上的五个版本演进（Beta → v2.2）为例，完整拆解了同一套 Gene 进化闭环如何把得分从 9.1% 推到 18.57%，并给出 token 成本轨迹、基因激活映射，以及推理被压缩成可复用基因后所呈现的「token 先升后降」特征。
 
 ---
 

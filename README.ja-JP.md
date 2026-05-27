@@ -32,7 +32,7 @@
 >
 > Evolver はこの結論を実装に落とし込んだオープンソースエンジンです。GEP プロトコルの下で、エージェントの経験を場当たり的なプロンプトやスキルドキュメントではなく、Gene と Capsule として符号化します。*なぜ* Evolver が長いスキルドキュメントではなく Gene にこだわるのか疑問に思ったことがあるなら、読むべきはこの論文です。
 >
-> 応用事例を見たい方へ：[OpenClaw x EvoMap：CritPt 評価レポート](https://evomap.ai/blog/openclaw-critpt-report) では、OpenClaw エージェントが CritPt Physics Solver 上の 5 バージョン（Beta → v2.2）にわたって、同じ Gene ベース進化ループによってスコアを 0.00% から 18.57% まで押し上げる全過程を、トークンコストの軌跡、遺伝子活性化マップ、そして推論が再利用可能な Gene に圧縮されるときに現れる「トークンが上昇してから下降する」シグネチャとともに詳述しています。
+> 応用事例を見たい方へ：[OpenClaw x EvoMap：CritPt 評価レポート](https://evomap.ai/blog/openclaw-critpt-report) では、OpenClaw エージェントが CritPt Physics Solver 上の 5 バージョン（Beta → v2.2）にわたって、同じ Gene ベース進化ループによってスコアを 9.1% から 18.57% まで押し上げる全過程を、トークンコストの軌跡、遺伝子活性化マップ、そして推論が再利用可能な Gene に圧縮されるときに現れる「トークンが上昇してから下降する」シグネチャとともに詳述しています。
 
 ---
 

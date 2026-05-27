@@ -32,7 +32,7 @@
 >
 > Evolver는 이 결과를 실제로 구현하는 오픈소스 엔진입니다. GEP 프로토콜 아래 에이전트의 경험을 임시 프롬프트나 스킬 문서가 아니라 Gene과 Capsule로 인코딩합니다. *왜* Evolver가 더 긴 스킬 문서 대신 Gene을 고집하는지 궁금했다면, 바로 이 논문을 읽어야 합니다.
 >
-> 적용 사례가 궁금하신가요? [OpenClaw x EvoMap: CritPt 평가 보고서](https://evomap.ai/blog/openclaw-critpt-report)는 동일한 Gene 기반 진화 루프가 OpenClaw 에이전트를 CritPt Physics Solver의 5개 버전(Beta → v2.2)에 걸쳐 0.00%에서 18.57%까지 끌어올리는 과정을, 전체 토큰 비용 궤적, 유전자 활성화 매핑, 그리고 추론이 재사용 가능한 Gene으로 압축될 때 나타나는 "토큰이 먼저 상승한 뒤 하강하는" 시그니처와 함께 단계별로 보여줍니다.
+> 적용 사례가 궁금하신가요? [OpenClaw x EvoMap: CritPt 평가 보고서](https://evomap.ai/blog/openclaw-critpt-report)는 동일한 Gene 기반 진화 루프가 OpenClaw 에이전트를 CritPt Physics Solver의 5개 버전(Beta → v2.2)에 걸쳐 9.1%에서 18.57%까지 끌어올리는 과정을, 전체 토큰 비용 궤적, 유전자 활성화 매핑, 그리고 추론이 재사용 가능한 Gene으로 압축될 때 나타나는 "토큰이 먼저 상승한 뒤 하강하는" 시그니처와 함께 단계별로 보여줍니다.
 
 ---
 
