@@ -1313,3 +1313,187 @@ test('drift detector: throw from logger.warn does NOT escape the setInterval cal
     global.setInterval = realSetInterval;
   }
 });
+
+// --------------------------------------------------------------------------
+// BUG-1: zombie tick state pollution via heartbeat()
+//
+// Pre-fix the _tickGeneration generation check at _tick's finally only
+// stopped the zombie from RESCHEDULING. The body of heartbeat() itself ran
+// every post-await mutation when its hung fetch eventually resolved:
+//   - _consecutiveFailures++ on stale 401/!ok
+//   - reAuthenticate() on stale 401
+//   - _consecutiveFailures = 0 on stale 200 (masking the replacement
+//     tick's real failures)
+//   - last_heartbeat_at write with stale timestamp
+//   - writeInboundBatch with stale events
+//   - proxy_upgrade_required emit from stale state
+//
+// Fix layers:
+//   1. _tick creates a fresh AbortController per tick stored on
+//      this._inflightAbortController; _rescueHungTick aborts it.
+//   2. heartbeat() snapshots _tickGeneration on entry and re-checks
+//      before EVERY mutation after the hubFetch await; returns null on
+//      mismatch without touching state.
+// --------------------------------------------------------------------------
+
+function _makeDeferredFetch() {
+  // Builds a fetch stub that returns a promise we control. The test can
+  // capture and resolve/reject the inner promise after triggering the
+  // watchdog, simulating "fetch finally returned after the rescue".
+  let resolveOuter;
+  const gate = new Promise((resolve) => { resolveOuter = resolve; });
+  const fetchImpl = async (_url, _opts) => gate;
+  return { fetchImpl, resolveOuter: (...args) => resolveOuter(...args) };
+}
+
+test('BUG-1: rescued zombie tick does NOT increment _consecutiveFailures via stale 401', async () => {
+  const lc = makeManager();
+  const { fetchImpl, resolveOuter } = _makeDeferredFetch();
+  const restore = installFetchStub(fetchImpl);
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    // Wait for the first tick to enter its hubFetch await.
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(lc._tickInFlight, true, 'sanity: first tick mid-await');
+    assert.ok(lc._inflightAbortController, 'sanity: per-tick controller set');
+    const controller = lc._inflightAbortController;
+
+    // Synthesize hang past the threshold and rescue.
+    lc._tickStartedAt = Date.now() - 61_000;
+    const rescued = lc._rescueHungTick('test', Date.now());
+    assert.equal(rescued, true, 'sanity: rescue fired');
+    assert.equal(controller.signal.aborted, true, 'controller must be aborted by rescue');
+
+    const failuresAfterRescue = lc._consecutiveFailures;
+
+    // Now resolve the hung fetch with a stale 401. The zombie's resumed
+    // heartbeat() must NOT bump _consecutiveFailures.
+    resolveOuter({
+      ok: false, status: 401,
+      headers: { get: () => null },
+      json: async () => ({}),
+      text: async () => 'stale auth error',
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(
+      lc._consecutiveFailures, failuresAfterRescue,
+      'zombie tick must NOT bump _consecutiveFailures on stale 401',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    restore();
+  }
+});
+
+test('BUG-1: rescued zombie tick does NOT call reAuthenticate', async () => {
+  const lc = makeManager();
+  let reauthCalls = 0;
+  lc.reAuthenticate = async () => { reauthCalls++; return true; };
+
+  const { fetchImpl, resolveOuter } = _makeDeferredFetch();
+  const restore = installFetchStub(fetchImpl);
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(lc._tickInFlight, true);
+
+    lc._tickStartedAt = Date.now() - 61_000;
+    lc._rescueHungTick('test', Date.now());
+
+    resolveOuter({
+      ok: false, status: 401,
+      headers: { get: () => null },
+      json: async () => ({}),
+      text: async () => '',
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(reauthCalls, 0, 'zombie tick must NOT call reAuthenticate on stale 401');
+  } finally {
+    lc.stopHeartbeatLoop();
+    restore();
+  }
+});
+
+test('BUG-1: rescued zombie tick does NOT write last_heartbeat_at on stale 200', async () => {
+  const store = makeStore();
+  const setStateCalls = [];
+  const realSetState = store.setState;
+  store.setState = (k, v) => { setStateCalls.push({ k, v }); return realSetState(k, v); };
+
+  const lc = makeManager({ store });
+  const { fetchImpl, resolveOuter } = _makeDeferredFetch();
+  const restore = installFetchStub(fetchImpl);
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(lc._tickInFlight, true);
+
+    lc._tickStartedAt = Date.now() - 61_000;
+    lc._rescueHungTick('test', Date.now());
+
+    // Stale success response.
+    resolveOuter({
+      ok: true, status: 200,
+      headers: { get: () => null },
+      json: async () => ({ status: 'ok' }),
+      text: async () => '',
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const lastHbWrites = setStateCalls.filter((c) => c.k === 'last_heartbeat_at');
+    assert.equal(
+      lastHbWrites.length, 0,
+      'zombie tick must NOT write last_heartbeat_at on stale 200',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    restore();
+  }
+});
+
+test('BUG-1: rescued zombie tick does NOT writeInboundBatch stale events', async () => {
+  const store = makeStore();
+  let batchCalls = 0;
+  store.writeInboundBatch = () => { batchCalls++; };
+
+  const lc = makeManager({ store });
+  const { fetchImpl, resolveOuter } = _makeDeferredFetch();
+  const restore = installFetchStub(fetchImpl);
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(lc._tickInFlight, true);
+
+    lc._tickStartedAt = Date.now() - 61_000;
+    lc._rescueHungTick('test', Date.now());
+
+    // Stale success with events payload that would otherwise be batched in.
+    resolveOuter({
+      ok: true, status: 200,
+      headers: { get: () => null },
+      json: async () => ({
+        status: 'ok',
+        events: [
+          { type: 'stale_a', payload: { v: 1 } },
+          { type: 'stale_b', payload: { v: 2 } },
+        ],
+      }),
+      text: async () => '',
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(
+      batchCalls, 0,
+      'zombie tick must NOT writeInboundBatch on stale events payload',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    restore();
+  }
+});

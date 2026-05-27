@@ -428,8 +428,24 @@ class LifecycleManager {
     }
   }
 
-  async heartbeat({ _skipReauth = false } = {}) {
+  async heartbeat({ _skipReauth = false, _abortSignal = null } = {}) {
     if (!this.hubUrl) return { ok: false, error: 'no_hub_url' };
+
+    // Snapshot the tick generation on entry. After `await hubFetch` resumes,
+    // a watchdog (_rescueHungTick) may have bumped _tickGeneration and
+    // started a replacement tick. The zombie original must NOT mutate any
+    // state (this._consecutiveFailures, reAuthenticate, last_heartbeat_at,
+    // writeInboundBatch, proxy_upgrade_required emit). See issue #544
+    // BUG-1: pre-fix, the generation check at _tick's finally only stopped
+    // the zombie from rescheduling -- it still ran every post-await
+    // mutation. We now re-check the generation before every mutation site.
+    // When called outside the heartbeat loop (e.g. from reAuthenticate's
+    // verification path, where _tickGeneration is undefined) the snapshot
+    // and compare are both undefined and the guard is a no-op.
+    const myHeartbeatGen = this._tickGeneration;
+    const _isStaleGen = () => (
+      myHeartbeatGen !== undefined && myHeartbeatGen !== this._tickGeneration
+    );
 
     // The try block must cover ALL of body assembly, not just the fetch.
     // Previously, this.nodeId / this.getTaskMeta() / this.store.countPending()
@@ -461,19 +477,35 @@ class LifecycleManager {
         },
       };
 
+      // Compose the per-tick AbortController (forwarded from _tick so the
+      // watchdog can cancel a hung fetch) with the normal request timeout.
+      // AbortSignal.any() resolves whichever fires first.
+      const timeoutSignal = AbortSignal.timeout(HEARTBEAT_TIMEOUT);
+      const signal = _abortSignal
+        ? AbortSignal.any([_abortSignal, timeoutSignal])
+        : timeoutSignal;
+
       const res = await hubFetch(endpoint, {
         method: 'POST',
         headers: this._buildHeaders(),
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT),
+        signal,
       });
+
+      // Zombie guard. If a watchdog bumped _tickGeneration while we were
+      // awaiting hubFetch, the replacement tick owns the state machine; we
+      // must return without touching _consecutiveFailures, reAuthenticate,
+      // last_heartbeat_at, or writeInboundBatch.
+      if (_isStaleGen()) return null;
 
       if (res.status === 403 || res.status === 401) {
         this._consecutiveFailures++;
         const errText = await res.text().catch(() => '');
         this.logger.error(`[lifecycle] heartbeat auth failed (${res.status}): ${errText}`);
+        if (_isStaleGen()) return null;
         if (!_skipReauth) {
           const recovered = await this.reAuthenticate();
+          if (_isStaleGen()) return null;
           if (recovered) {
             this._consecutiveFailures = 0;
             return { ok: true, recovered: true };
@@ -491,12 +523,15 @@ class LifecycleManager {
 
       const data = await res.json();
 
+      if (_isStaleGen()) return null;
+
       this._consecutiveFailures = 0;
       this.store.setState('last_heartbeat_at', new Date().toISOString());
 
       if (data?.status === 'unknown_node') {
         this.logger.warn('[lifecycle] Node unknown, re-registering...');
         await this.hello();
+        if (_isStaleGen()) return null;
       }
 
       if (Array.isArray(data?.events) && data.events.length > 0) {
@@ -527,6 +562,10 @@ class LifecycleManager {
 
       return { ok: true, response: data };
     } catch (err) {
+      // Zombie guard for the catch path too. A rescued tick whose fetch
+      // rejects with AbortError must NOT bump _consecutiveFailures -- the
+      // replacement tick will record its own outcome.
+      if (_isStaleGen()) return null;
       this._consecutiveFailures++;
       this.logger.error(`[lifecycle] heartbeat failed (${this._consecutiveFailures}): ${err.message}`);
       return { ok: false, error: err.message };
@@ -550,6 +589,10 @@ class LifecycleManager {
     // _heartbeatTimer, and _consecutiveFailures, fanning out into duplicate
     // timers and racing on backoff state.
     this._tickGeneration = 0;
+    // Per-tick AbortController slot. Set by each _tick invocation, cleared
+    // by that same invocation's finally; _rescueHungTick may abort the
+    // current one to interrupt a hung hubFetch.
+    this._inflightAbortController = null;
 
     const interval = Math.max(30_000, intervalMs || DEFAULT_HEARTBEAT_INTERVAL);
 
@@ -567,10 +610,17 @@ class LifecycleManager {
       this._tickInFlight = true;
       this._tickStartedAt = Date.now();
       this._lastTickAttemptAt = this._tickStartedAt;
+      // Per-tick AbortController so _rescueHungTick can cancel a stuck
+      // hubFetch and force the zombie heartbeat() into its catch path
+      // promptly (rather than waiting up to a TLS-level keep-alive for
+      // the underlying socket to close on its own). Stored on the
+      // instance so the watchdog can reach it.
+      const controller = new AbortController();
+      this._inflightAbortController = controller;
       let tickResult = null;
       try {
         try {
-          tickResult = await this.heartbeat();
+          tickResult = await this.heartbeat({ _abortSignal: controller.signal });
         } catch (err) {
           // Defense in depth. heartbeat() catches its own errors and returns
           // {ok:false}, but a future change that lets one slip through must
@@ -603,6 +653,11 @@ class LifecycleManager {
         }
         this._tickInFlight = false;
         this._tickStartedAt = null;
+        // Clear only if still ours: a watchdog rescue may have replaced
+        // the controller with a fresh one for the next tick.
+        if (this._inflightAbortController === controller) {
+          this._inflightAbortController = null;
+        }
         if (this._running) {
           const backoff = this._consecutiveFailures > 0
             ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
@@ -746,6 +801,19 @@ class LifecycleManager {
     this.logger.warn(
       `[lifecycle] tick hung for ${heldMs}ms (${reason}), force-resetting`,
     );
+    // Abort the hung fetch BEFORE bumping the generation. Two reasons:
+    //   1. Cancels the underlying request promptly so the zombie tick falls
+    //      into its catch path instead of waiting for the socket to time
+    //      out on its own (which can be minutes on a TLS-level hang).
+    //   2. The zombie's catch path checks _tickGeneration against the
+    //      snapshot it took on entry; the bump immediately below ensures
+    //      that check fails and the catch is a no-op (no
+    //      _consecutiveFailures bump from the synthetic AbortError).
+    if (this._inflightAbortController) {
+      try { this._inflightAbortController.abort(new Error('hung_tick_rescued')); }
+      catch { /* abort throws on no listeners in some runtimes; best-effort */ }
+      this._inflightAbortController = null;
+    }
     this._tickInFlight = false;
     this._tickStartedAt = null;
     this._tickGeneration++;
