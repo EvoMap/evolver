@@ -585,3 +585,315 @@ test('liveness: wedgeThresholdMs override is honored', () => {
   );
   cleanup();
 });
+
+// --------------------------------------------------------------------------
+// Consecutive-failure gate (503-loop blindness fix)
+// --------------------------------------------------------------------------
+
+test('liveness: consecutiveFailures >= threshold triggers hardRestart even when totalSent advances', () => {
+  // Reproduces the documented "hub returns 503 in a tight loop" failure
+  // mode. totalSent keeps advancing (the obfuscated module increments it
+  // on every HTTP round-trip regardless of status), so the freshness wedge
+  // never fires. The companion gate must catch this.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, {
+    nowFn: () => now,
+    consecutiveFailureRestartThreshold: 5,
+    wedgeThresholdMs: 60 * 60_000, // way out so the wedge cannot fire
+  });
+
+  // Simulate the 503-loop: every attempt advances totalSent AND
+  // consecutiveFailures. Tick a few times.
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+  for (let i = 0; i < 6; i++) {
+    a2a._state.totalSent += 1;
+    a2a._state.consecutiveFailures += 1;
+    now += 30_000;
+    handles._livenessTick();
+  }
+
+  assert.ok(
+    a2a._state.stopCalls > stopBefore,
+    'consecutiveFailures gate must trigger stopHeartbeat once cf >= threshold',
+  );
+  assert.ok(
+    a2a._state.startCalls > startBefore,
+    'consecutiveFailures gate must trigger startHeartbeat after stop',
+  );
+  cleanup();
+});
+
+test('liveness: consecutiveFailures gate respects thrash guard (no tight restart loop)', () => {
+  // If a restart does not fix the underlying issue and consecutiveFailures
+  // stays high, the gate must NOT fire again until _wedgeThresholdMs has
+  // elapsed since the last restart. Without this guard a permanent 503
+  // would produce a stop+start every liveness tick.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, {
+    nowFn: () => now,
+    consecutiveFailureRestartThreshold: 3,
+    wedgeThresholdMs: 30_000, // also used as the cf-gate cooldown
+  });
+
+  a2a._state.consecutiveFailures = 10;
+  // First fire.
+  handles._livenessTick();
+  const stopAfterFirst = a2a._state.stopCalls;
+  assert.ok(stopAfterFirst > 0, 'first qualifying observation must restart');
+
+  // Same tick state, only ~5s later: cooldown not elapsed.
+  now += 5_000;
+  handles._livenessTick();
+  assert.equal(a2a._state.stopCalls, stopAfterFirst, 'must NOT restart within cooldown');
+
+  // Past cooldown: can fire again.
+  now += 30_000;
+  handles._livenessTick();
+  assert.ok(
+    a2a._state.stopCalls > stopAfterFirst,
+    'must restart once cooldown has elapsed and cf still high',
+  );
+  cleanup();
+});
+
+test('liveness: consecutiveFailures below threshold does NOT restart', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, {
+    nowFn: () => now,
+    consecutiveFailureRestartThreshold: 10,
+    wedgeThresholdMs: 60 * 60_000,
+  });
+  const stopBefore = a2a._state.stopCalls;
+  a2a._state.consecutiveFailures = 3;
+  for (let i = 0; i < 3; i++) {
+    a2a._state.totalSent += 1;
+    now += 30_000;
+    handles._livenessTick();
+  }
+  assert.equal(a2a._state.stopCalls, stopBefore, 'must not restart while cf below threshold');
+  cleanup();
+});
+
+// --------------------------------------------------------------------------
+// _hardRestart single-flight (concurrent drift+liveness race on host wake)
+// --------------------------------------------------------------------------
+
+test('hardRestart: concurrent drift and liveness ticks do not interleave stop+start', () => {
+  // On macOS wake both intervals fire near-simultaneously. Without single-
+  // flight, both would call _safeStop()+_safeStart() and potentially
+  // interleave with each other inside the obfuscated module's own state.
+  //
+  // We simulate the race by making stopHeartbeat re-entrantly invoke
+  // _driftTick from inside (the worst-case observation: stop yields the
+  // micro-task to a pending drift fire). With the single-flight gate, the
+  // re-entrant call must be a no-op; without it, we would see stopCalls
+  // jump by 2 or more on a single restart.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+  // Force a wake gap so the next _driftTick wants to restart.
+  now += 60 * 60 * 1000;
+
+  let reentryDriftCalls = 0;
+  const realStop = a2a.stopHeartbeat.bind(a2a);
+  a2a.stopHeartbeat = function () {
+    realStop();
+    // Re-enter while _hardRestart is mid-flight. Must be a no-op.
+    reentryDriftCalls += 1;
+    handles._driftTick();
+  };
+
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+  handles._driftTick();
+
+  assert.equal(reentryDriftCalls, 1, 'sanity: reentrant drift fired exactly once');
+  assert.equal(
+    a2a._state.stopCalls - stopBefore, 1,
+    'single-flight gate must suppress the reentrant stopHeartbeat',
+  );
+  assert.equal(
+    a2a._state.startCalls - startBefore, 1,
+    'single-flight gate must suppress the reentrant startHeartbeat',
+  );
+  cleanup();
+});
+
+// --------------------------------------------------------------------------
+// Configurable interval cadences (testability for real-timer suspend tests)
+// --------------------------------------------------------------------------
+
+test('start: driftCheckMs and livenessCheckMs opts drive real intervals', async () => {
+  // The supervisor's normal production cadence is 30s / 60s; this test
+  // verifies the override actually wires through to setInterval. Without
+  // the override, a real-timer suspend test would have to wait minutes
+  // per assertion.
+  const a2a = makeFakeA2a();
+  let driftFires = 0;
+  let livenessFires = 0;
+  const originalSetInterval = global.setInterval;
+  const intervalDelays = [];
+  global.setInterval = function (fn, delay) {
+    intervalDelays.push(delay);
+    return originalSetInterval(function () {
+      // Tag which interval is which by closure inspection — not great,
+      // but acceptable here. The supervisor's drift fn is the first
+      // setInterval call; liveness is the second.
+      if (intervalDelays[0] === delay && driftFires + livenessFires < 1000) {
+        driftFires += 1;
+      } else {
+        livenessFires += 1;
+      }
+      try { fn(); } catch (_) { /* noop */ }
+    }, delay);
+  };
+  try {
+    supervisor.start(a2a, { driftCheckMs: 10, livenessCheckMs: 20 });
+    assert.deepEqual(intervalDelays.slice(0, 2), [10, 20], 'opts must reach setInterval');
+  } finally {
+    global.setInterval = originalSetInterval;
+    cleanup();
+  }
+});
+
+// --------------------------------------------------------------------------
+// Terminal-state diagnostic (cannot detect node_disabled from outside the
+// obfuscated module; surface a user-visible warning after N stuck restarts)
+// --------------------------------------------------------------------------
+
+// --------------------------------------------------------------------------
+// Real-timer suspend simulation (closes the audit gap that all sleep tests
+// were manual _driftTick() calls; this drives the actual setInterval path)
+// --------------------------------------------------------------------------
+
+test('realTimer: driftCheckMs interval + synthetic clock jump triggers _hardRestart without manual tick', async () => {
+  const a2a = makeFakeA2a();
+  // Synthetic clock: starts at 0, real time advances normally, but we
+  // simulate "host suspend" by manually jumping it forward mid-test.
+  // The supervisor's drift detector reads nowFn() each fire; the gap
+  // it sees on its NEXT fire will exceed DRIFT_SLEEP_THRESHOLD_MS.
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const stopBefore = a2a._state.stopCalls;
+  const startBefore = a2a._state.startCalls;
+
+  // Cadence: drift fires every 20ms in this test. Production is 30_000ms.
+  supervisor.start(a2a, {
+    nowFn: () => now,
+    driftCheckMs: 20,
+    livenessCheckMs: 5000, // irrelevant for this test
+  });
+
+  // Let the drift interval fire once or twice at baseline (gap << threshold).
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    a2a._state.stopCalls, stopBefore,
+    'baseline drift fires must not restart',
+  );
+
+  // Simulate host suspend: jump the synthetic clock forward by 5 minutes.
+  // The next REAL interval fire (without us calling _driftTick manually)
+  // will see a 5-minute gap > 90s threshold and trigger _hardRestart.
+  now += 5 * 60 * 1000;
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.ok(
+    a2a._state.stopCalls > stopBefore,
+    'real-timer drift fire after clock jump must call stopHeartbeat',
+  );
+  assert.ok(
+    a2a._state.startCalls > startBefore,
+    'real-timer drift fire after clock jump must call startHeartbeat',
+  );
+  cleanup();
+});
+
+test('terminalDiagnostic: logs user-visible warning after N consecutive restarts without recovery', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, {
+      nowFn: () => now,
+      consecutiveFailureRestartThreshold: 3,
+      wedgeThresholdMs: 30_000,
+    });
+
+    // Drive 3 consecutive _hardRestart calls (via the cf gate) without any
+    // observed recovery: consecutiveFailures stays elevated, totalSent
+    // does not change. Cooldown is 30s so we step >30s between each.
+    a2a._state.consecutiveFailures = 10;
+    for (let i = 0; i < 3; i++) {
+      handles._livenessTick();
+      now += 35_000;
+    }
+
+    const matches = warnings.filter((w) => w.includes('supervisor has restarted'));
+    assert.ok(
+      matches.length >= 1,
+      'must emit at least one terminal-state diagnostic after 3 stuck restarts; got ' + JSON.stringify(warnings),
+    );
+    // Logged at most once per stuck episode.
+    assert.equal(matches.length, 1, 'must not spam the diagnostic across each tick');
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('terminalDiagnostic: recovery (sent advances + cf=0) resets the counter and re-arms the warning', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, {
+      nowFn: () => now,
+      consecutiveFailureRestartThreshold: 3,
+      wedgeThresholdMs: 30_000,
+    });
+
+    // Stuck episode: drive 3 restarts.
+    a2a._state.consecutiveFailures = 10;
+    for (let i = 0; i < 3; i++) {
+      handles._livenessTick();
+      now += 35_000;
+    }
+    const stuckMatches = warnings.filter((w) => w.includes('supervisor has restarted'));
+    assert.equal(stuckMatches.length, 1, 'first stuck episode must log once');
+
+    // Recovery: totalSent advances AND consecutiveFailures drops to 0.
+    a2a._state.totalSent = 5;
+    a2a._state.consecutiveFailures = 0;
+    handles._livenessTick();
+
+    // Second stuck episode: drive 3 more restarts. The latch must have
+    // been cleared by the recovery, so a fresh warning fires.
+    a2a._state.consecutiveFailures = 10;
+    for (let i = 0; i < 3; i++) {
+      now += 35_000;
+      handles._livenessTick();
+    }
+    const allMatches = warnings.filter((w) => w.includes('supervisor has restarted'));
+    assert.equal(
+      allMatches.length, 2,
+      'after recovery, a fresh stuck episode must re-fire the diagnostic; got ' + allMatches.length,
+    );
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});

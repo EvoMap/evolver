@@ -1676,8 +1676,24 @@ async function main() {
     try {
       const info = await startWebUi({ port });
       console.log('[webui] Open ' + info.url);
+      // The webui blocks the process forever via `await new Promise(() => {})`.
+      // Without supervisor wiring, an evolver instance left running in
+      // `webui` mode goes the full 6-min default heartbeat interval at
+      // best, and stays dead after macOS sleep/wake at worst -- the exact
+      // class of bug the supervisor was added to fix in `--loop`. Skip in
+      // proxy / mailbox mode: that path uses its own lifecycle manager.
+      let _webuiSupervisor = null;
+      try {
+        if (!(process.env.EVOMAP_PROXY === '1' || process.env.A2A_TRANSPORT === 'mailbox')) {
+          const a2a = require('./src/gep/a2aProtocol');
+          _webuiSupervisor = require('./src/gep/heartbeatSupervisor');
+          try { _webuiSupervisor.start(a2a); }
+          catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
+        }
+      } catch (_hbInitErr) { /* startup failure must never block webui */ }
       const shutdown = async () => {
         try { await info.server.stop(); } catch (_) {}
+        try { if (_webuiSupervisor) _webuiSupervisor.stop(); } catch (_) {}
         process.exit(0);
       };
       process.on('SIGINT', shutdown);

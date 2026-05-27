@@ -17,6 +17,32 @@ const LIVENESS_CHECK_MS = 60_000;
 // backoff cap means we wait at most WEDGE_THRESHOLD_MS (15 min) of
 // dead time before forcing a fresh cadence via stop+start.
 const WEDGE_THRESHOLD_MS = 15 * 60 * 1000;
+// Companion gate to the totalSent-freshness wedge. Closes the documented
+// blind spot where `totalSent` keeps advancing on every attempt (because
+// the obfuscated module increments it on HTTP round-trip, not success)
+// while the hub steadily returns errors. If consecutiveFailures stays at
+// or above this threshold, the loop is "alive but failing" and a fresh
+// stop+start drops accumulated backoff to retry the cadence from zero.
+// Without this, a hub returning 503 (or any failure) in a tight loop is
+// invisible to the wedge -- the user-perceived "evolver is dead" symptom
+// the supervisor exists to mitigate.
+//
+// Pair with `_lastHardRestartAt + _wedgeThresholdMs` thrash guard so the
+// gate cannot fire faster than the wedge cadence: a restart that doesn't
+// fix the underlying issue must not produce a tight stop+start loop.
+const CONSECUTIVE_FAILURE_RESTART_THRESHOLD = 10;
+// After this many _hardRestart()s without ever seeing the underlying loop
+// recover (i.e. totalSent advances AND consecutiveFailures drops back to
+// zero), log a clear user-visible diagnostic. We cannot inspect hub
+// error codes from outside the obfuscated module, so we cannot detect
+// node_disabled / node_revoked / secret_rejected automatically; instead
+// we surface "the supervisor has restarted N times and it isn't helping"
+// so the user knows to investigate (likely fixes: `evolver
+// reset-local-secret`, check `A2A_NODE_SECRET`, contact hub operator).
+// Without this signal a permanently-disabled node would loop forever in
+// 15-min restart cycles with no indication to the operator that the
+// problem is terminal from the client's perspective.
+const TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD = 3;
 const POKE_THROTTLE_MS = 60_000;
 // Cap on how long we wait for the obfuscated module's sendHeartbeat to
 // resolve from inside poke(). Without this, a never-resolving promise
@@ -58,6 +84,30 @@ let _consecutiveNullStats = 0;
 // drive the wedge path without waiting 15 minutes. Defaults to the
 // module-level constant in production.
 let _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
+let _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
+// Wall-clock of the last _hardRestart. Used to throttle the consecutive-
+// failure gate: a hard restart that didn't fix the underlying problem
+// must not produce a tight stop+start loop. Initialised to 0 so the gate
+// can fire on first qualifying observation.
+let _lastHardRestartAt = 0;
+// Single-flight gate for _hardRestart. Drift and liveness ticks can fire
+// concurrently right after host resume (both intervals are queued by
+// libuv and run on the next event-loop turn). Without this gate both
+// would call _safeStop()+_safeStart() in sequence, interleaving with each
+// other on the obfuscated module's internal state -- depending on what
+// the module does inside its own stop/start, this could leave it half-
+// initialised. Coarse-grained: a hard-restart in flight blocks every
+// other _hardRestart attempt until the synchronous stop+start completes.
+let _hardRestartInFlight = false;
+// Restart-recovery accounting. _consecutiveHardRestarts counts how many
+// times _hardRestart has fired without seeing the underlying loop
+// recover in between (recovery == totalSent advances AND consecutive
+// Failures drops back to zero). Resets to 0 on observed recovery.
+// _terminalDiagnosticLogged ensures we emit the user-visible diagnostic
+// at most once per stuck-state episode -- a permanently disabled node
+// would otherwise spam the same warning every wedge-threshold cycle.
+let _consecutiveHardRestarts = 0;
+let _terminalDiagnosticLogged = false;
 
 function _now(opts) {
   return opts && typeof opts.nowFn === 'function' ? opts.nowFn() : Date.now();
@@ -97,10 +147,38 @@ function _safeStop() {
 }
 
 function _hardRestart(now) {
-  _safeStop();
-  _safeStart();
-  _lastObservedSent = -1;
-  _lastSuccessfulSendAt = now;
+  if (_hardRestartInFlight) return false;
+  _hardRestartInFlight = true;
+  try {
+    _safeStop();
+    _safeStart();
+    _lastObservedSent = -1;
+    _lastSuccessfulSendAt = now;
+    _lastHardRestartAt = now;
+    _consecutiveHardRestarts += 1;
+    // Terminal-state diagnostic: the supervisor cannot read hub error
+    // codes from outside the obfuscated module, so it cannot detect
+    // node_disabled / node_revoked / secret_rejected automatically. After
+    // N consecutive restarts that didn't restore the loop, log a clear
+    // pointer to user-actionable fixes instead of silently retrying
+    // forever. Logged at most once per stuck-state episode; reset on the
+    // first observed recovery (see _livenessTick).
+    if (
+      _consecutiveHardRestarts >= TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD
+      && !_terminalDiagnosticLogged
+    ) {
+      _terminalDiagnosticLogged = true;
+      console.warn(
+        '[Heartbeat] supervisor has restarted ' + _consecutiveHardRestarts +
+        ' times without recovery. The hub may be rejecting this node ' +
+        '(disabled / revoked / bad secret) or there may be no network. ' +
+        'Try `evolver reset-local-secret` and verify A2A_NODE_SECRET.',
+      );
+    }
+    return true;
+  } finally {
+    _hardRestartInFlight = false;
+  }
 }
 
 // Race a promise against a timeout. If the timeout wins, the returned
@@ -171,14 +249,46 @@ function _livenessTick(opts) {
   // heartbeat and we restart to re-arm a fresh cadence. See the
   // WEDGE_THRESHOLD_MS comment for the bounded-recovery analysis against
   // the documented 30-min backoff cap.
+  //
+  // Important: do NOT early-return when totalSent advances. The cf gate
+  // below specifically targets the "totalSent moves but everything fails"
+  // case (503-loop blindness), so evaluating it depends on the cf reading
+  // even when freshness was just refreshed.
   const sent = _sentOf(stats);
   if (sent !== _lastObservedSent) {
     _lastObservedSent = sent;
     _lastSuccessfulSendAt = now;
+    // Recovery signal for the terminal-state diagnostic: a fresh sent
+    // observation combined with low consecutiveFailures means the loop
+    // is healthy again. Reset the restart counter so the diagnostic can
+    // re-arm if the loop later wedges again, and clear the "logged once"
+    // latch so a future stuck-state episode can warn the user again.
+    const cfNow = typeof stats.consecutiveFailures === 'number' ? stats.consecutiveFailures : 0;
+    if (cfNow === 0 && _consecutiveHardRestarts > 0) {
+      _consecutiveHardRestarts = 0;
+      _terminalDiagnosticLogged = false;
+    }
+  } else if (_lastSuccessfulSendAt > 0 && now - _lastSuccessfulSendAt > _wedgeThresholdMs) {
+    _hardRestart(now);
     return;
   }
 
-  if (_lastSuccessfulSendAt > 0 && now - _lastSuccessfulSendAt > _wedgeThresholdMs) {
+  // Companion gate: the totalSent wedge above only fires when ATTEMPTS
+  // have stalled. If the underlying loop is attempting on cadence but
+  // every attempt is failing (hub returning 503 / 5xx, network down with
+  // attempts still resolving as failures, etc.), totalSent keeps moving
+  // and the wedge never trips. consecutiveFailures advances in that case,
+  // and a stop+start drops accumulated backoff so the next attempt fires
+  // immediately rather than after the documented 30-min cap.
+  //
+  // Cooldown guard: a restart that didn't fix the underlying issue must
+  // not produce a tight stop+start loop -- the next cf-gated restart is
+  // throttled by _wedgeThresholdMs since the last restart. First fire is
+  // unthrottled (_lastHardRestartAt === 0 on a fresh supervisor).
+  const cf = typeof stats.consecutiveFailures === 'number' ? stats.consecutiveFailures : 0;
+  const restartCooledDown = _lastHardRestartAt === 0
+    || (now - _lastHardRestartAt) > _wedgeThresholdMs;
+  if (cf >= _consecutiveFailureRestartThreshold && restartCooledDown) {
     _hardRestart(now);
   }
 }
@@ -200,9 +310,26 @@ function start(a2a, opts) {
   _lastPokeAt = 0;
   _pokeInFlight = null;
   _consecutiveNullStats = 0;
+  _lastHardRestartAt = 0;
+  _hardRestartInFlight = false;
+  _consecutiveHardRestarts = 0;
+  _terminalDiagnosticLogged = false;
   _wedgeThresholdMs = typeof options.wedgeThresholdMs === 'number' && options.wedgeThresholdMs > 0
     ? options.wedgeThresholdMs
     : WEDGE_THRESHOLD_MS;
+  _consecutiveFailureRestartThreshold = typeof options.consecutiveFailureRestartThreshold === 'number'
+      && options.consecutiveFailureRestartThreshold > 0
+    ? options.consecutiveFailureRestartThreshold
+    : CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
+  // Interval cadences are settable so tests can drive the loop with real
+  // timers across simulated host suspend (vs. manually invoking the
+  // returned tick handles). Production keeps the module-level constants.
+  const driftCheckMs = typeof options.driftCheckMs === 'number' && options.driftCheckMs > 0
+    ? options.driftCheckMs
+    : DRIFT_CHECK_MS;
+  const livenessCheckMs = typeof options.livenessCheckMs === 'number' && options.livenessCheckMs > 0
+    ? options.livenessCheckMs
+    : LIVENESS_CHECK_MS;
 
   // Install intervals BEFORE attempting the initial startHeartbeat. If that
   // call throws (e.g. transient resource error at process start), we want
@@ -212,9 +339,9 @@ function start(a2a, opts) {
   // so the process ran with no heartbeat for the rest of its lifetime.
   const driftFn = function () { _driftTick(options); };
   const livenessFn = function () { _livenessTick(options); };
-  _driftInterval = setInterval(driftFn, DRIFT_CHECK_MS);
+  _driftInterval = setInterval(driftFn, driftCheckMs);
   if (_driftInterval && typeof _driftInterval.unref === 'function') _driftInterval.unref();
-  _livenessInterval = setInterval(livenessFn, LIVENESS_CHECK_MS);
+  _livenessInterval = setInterval(livenessFn, livenessCheckMs);
   if (_livenessInterval && typeof _livenessInterval.unref === 'function') _livenessInterval.unref();
   _started = true;
 
@@ -292,6 +419,11 @@ function stop() {
   _pokeInFlight = null;
   _consecutiveNullStats = 0;
   _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
+  _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
+  _lastHardRestartAt = 0;
+  _hardRestartInFlight = false;
+  _consecutiveHardRestarts = 0;
+  _terminalDiagnosticLogged = false;
 }
 
 function _resetForTesting() {
@@ -308,6 +440,11 @@ function _resetForTesting() {
   _started = false;
   _consecutiveNullStats = 0;
   _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
+  _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
+  _lastHardRestartAt = 0;
+  _hardRestartInFlight = false;
+  _consecutiveHardRestarts = 0;
+  _terminalDiagnosticLogged = false;
 }
 
 module.exports = {
@@ -322,4 +459,6 @@ module.exports = {
   POKE_THROTTLE_MS,
   SEND_TIMEOUT_MS,
   NULL_STATS_RESTART_THRESHOLD,
+  CONSECUTIVE_FAILURE_RESTART_THRESHOLD,
+  TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD,
 };
