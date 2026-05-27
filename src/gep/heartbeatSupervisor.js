@@ -67,6 +67,31 @@ const SEND_TIMEOUT_MS = 15_000;
 // thrashing, short enough that the user's "I came back and it's still
 // dead" window is bounded.
 const NULL_STATS_RESTART_THRESHOLD = 5;
+// E6 / E7 watchdog thresholds. Both single-flight latches
+// (_hardRestartInFlight and _pokeInFlight) record an acquire timestamp;
+// _livenessTick force-clears either latch if it has been held longer
+// than these thresholds. The watchdog clears the LATCH only -- the
+// underlying sync call (_safeStop/_safeStart) or pending sendHeartbeat
+// promise keeps doing whatever it's doing. The point is to free the
+// supervisor's state machine so the next attempt can proceed.
+//
+// HARDRESTART: _safeStop()/_safeStart() are synchronous calls into the
+// obfuscated module and cannot be timed out from JS. If either blocks
+// (sync I/O on a wedged transport, blocked main thread, etc.), the
+// finally never runs and every subsequent _driftTick / _livenessTick
+// that wants to restart bails -- the supervisor's primary recovery
+// primitive is dead. 30s is generous; a hardRestart should normally
+// complete in <1s.
+//
+// POKE: even with SEND_TIMEOUT_MS=15s, a sendHeartbeat promise can
+// stall in a way the timeout doesn't always cover (e.g. unhandled
+// rejection chain that never reaches the finally clearing _pokeInFlight).
+// Every subsequent poke() then early-returns at the in-flight check.
+// _hardRestart already clears this latch (see _pokeInFlight = null in
+// _hardRestart), but only if _hardRestart itself isn't latched. 30s is
+// 2x past the natural SEND_TIMEOUT_MS deadline.
+const HARDRESTART_HUNG_THRESHOLD_MS = 30_000;
+const POKE_HUNG_THRESHOLD_MS = 30_000;
 
 let _a2a = null;
 let _driftInterval = null;
@@ -103,6 +128,14 @@ let _lastHardRestartAt = 0;
 // initialised. Coarse-grained: a hard-restart in flight blocks every
 // other _hardRestart attempt until the synchronous stop+start completes.
 let _hardRestartInFlight = false;
+// Acquire timestamps for the two single-flight latches (E6 / E7
+// watchdog). Set to Date.now() immediately after the latch flips true;
+// cleared back to 0 in the same finally that releases the latch. The
+// watchdog in _livenessTick force-clears either latch if it has been
+// held longer than the threshold, freeing the supervisor's state
+// machine for the next attempt.
+let _hardRestartStartedAt = 0;
+let _pokeStartedAt = 0;
 // Restart-recovery accounting. _consecutiveHardRestarts counts how many
 // times _hardRestart has fired without seeing the underlying loop
 // recover in between (recovery == totalSent advances AND consecutive
@@ -153,6 +186,7 @@ function _safeStop() {
 function _hardRestart(now) {
   if (_hardRestartInFlight) return false;
   _hardRestartInFlight = true;
+  _hardRestartStartedAt = Date.now();
   try {
     _safeStop();
     _safeStart();
@@ -166,7 +200,11 @@ function _hardRestart(now) {
     // again. Resetting here is safe: stop+start has just reinitialised
     // the underlying loop, so any pending sendHeartbeat from before the
     // restart targets stale state and we no longer care about its result.
+    // Also clear the poke acquire timestamp for symmetry with the E7
+    // watchdog (otherwise a stale timestamp would dangle past the latch
+    // it tracks).
     _pokeInFlight = null;
+    _pokeStartedAt = 0;
     _lastObservedSent = -1;
     _lastSuccessfulSendAt = now;
     _lastHardRestartAt = now;
@@ -204,6 +242,7 @@ function _hardRestart(now) {
     return true;
   } finally {
     _hardRestartInFlight = false;
+    _hardRestartStartedAt = 0;
   }
 }
 
@@ -242,6 +281,44 @@ function _driftTick(opts) {
 }
 
 function _livenessTick(opts) {
+  // E6 / E7 watchdog: force-clear either single-flight latch if it has
+  // been held longer than its threshold. This must run BEFORE the rest
+  // of the tick body so a freshly-cleared latch can be used by the
+  // current tick if needed (e.g. _hardRestartInFlight cleared here lets
+  // the cf-gate _hardRestart below actually fire). The watchdog clears
+  // the LATCH only -- the underlying sync call / pending promise keeps
+  // doing whatever it's doing. We use wall-clock Date.now() (not
+  // _now(opts)) because the latch acquire timestamps were stamped with
+  // Date.now() at acquire time; mixing clocks here would race tests
+  // that drive nowFn forward without advancing real time.
+  const wallNow = Date.now();
+  if (
+    _hardRestartInFlight
+    && _hardRestartStartedAt > 0
+    && wallNow - _hardRestartStartedAt > HARDRESTART_HUNG_THRESHOLD_MS
+  ) {
+    console.warn(
+      '[heartbeatSupervisor] _hardRestartInFlight held >'
+      + (HARDRESTART_HUNG_THRESHOLD_MS / 1000)
+      + 's; force-clearing latch. Underlying sync call may still be wedged.',
+    );
+    _hardRestartInFlight = false;
+    _hardRestartStartedAt = 0;
+  }
+  if (
+    _pokeInFlight
+    && _pokeStartedAt > 0
+    && wallNow - _pokeStartedAt > POKE_HUNG_THRESHOLD_MS
+  ) {
+    console.warn(
+      '[heartbeatSupervisor] _pokeInFlight held >'
+      + (POKE_HUNG_THRESHOLD_MS / 1000)
+      + 's; force-clearing latch. Underlying send may still be pending.',
+    );
+    _pokeInFlight = null;
+    _pokeStartedAt = 0;
+  }
+
   const now = _now(opts);
   const stats = _safeStats();
   if (!stats) {
@@ -335,9 +412,11 @@ function start(a2a, opts) {
   _lastObservedSent = -1;
   _lastPokeAt = 0;
   _pokeInFlight = null;
+  _pokeStartedAt = 0;
   _consecutiveNullStats = 0;
   _lastHardRestartAt = 0;
   _hardRestartInFlight = false;
+  _hardRestartStartedAt = 0;
   _consecutiveHardRestarts = 0;
   _terminalDiagnosticLogged = false;
   _wedgeThresholdMs = typeof options.wedgeThresholdMs === 'number' && options.wedgeThresholdMs > 0
@@ -449,8 +528,14 @@ function poke(reason, opts) {
       }
     } finally {
       _pokeInFlight = null;
+      _pokeStartedAt = 0;
     }
   })();
+  // Stamp the acquire timestamp AFTER assigning the IIFE so the E7
+  // watchdog has both signals (_pokeInFlight non-null AND timestamp >0)
+  // for the held-too-long check. Use wall-clock Date.now() to match the
+  // wallNow reference in _livenessTick (see comment there).
+  _pokeStartedAt = Date.now();
 
   return true;
 }
@@ -464,11 +549,13 @@ function stop() {
   }
   _started = false;
   _pokeInFlight = null;
+  _pokeStartedAt = 0;
   _consecutiveNullStats = 0;
   _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
   _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
   _lastHardRestartAt = 0;
   _hardRestartInFlight = false;
+  _hardRestartStartedAt = 0;
   _consecutiveHardRestarts = 0;
   _terminalDiagnosticLogged = false;
 }
@@ -484,14 +571,37 @@ function _resetForTesting() {
   _lastSuccessfulSendAt = 0;
   _lastPokeAt = 0;
   _pokeInFlight = null;
+  _pokeStartedAt = 0;
   _started = false;
   _consecutiveNullStats = 0;
   _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
   _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
   _lastHardRestartAt = 0;
   _hardRestartInFlight = false;
+  _hardRestartStartedAt = 0;
   _consecutiveHardRestarts = 0;
   _terminalDiagnosticLogged = false;
+}
+
+// Testing helpers for the E6 / E7 watchdog. The latches and their
+// acquire timestamps are module-level `let` bindings, so external tests
+// cannot read or write them via property access on the exported object.
+// These helpers exist solely to let the watchdog tests stage a "latch
+// held for N seconds" precondition without sleeping or coupling to the
+// real acquire paths.
+function _setLatchForTesting(name, value) {
+  if (name === '_hardRestartInFlight') { _hardRestartInFlight = value; return; }
+  if (name === '_hardRestartStartedAt') { _hardRestartStartedAt = value; return; }
+  if (name === '_pokeInFlight') { _pokeInFlight = value; return; }
+  if (name === '_pokeStartedAt') { _pokeStartedAt = value; return; }
+  throw new Error('_setLatchForTesting: unknown latch ' + name);
+}
+function _getLatchForTesting(name) {
+  if (name === '_hardRestartInFlight') return _hardRestartInFlight;
+  if (name === '_hardRestartStartedAt') return _hardRestartStartedAt;
+  if (name === '_pokeInFlight') return _pokeInFlight;
+  if (name === '_pokeStartedAt') return _pokeStartedAt;
+  throw new Error('_getLatchForTesting: unknown latch ' + name);
 }
 
 module.exports = {
@@ -499,6 +609,9 @@ module.exports = {
   poke,
   stop,
   _resetForTesting,
+  _setLatchForTesting,
+  _getLatchForTesting,
+  _hardRestart,
   DRIFT_CHECK_MS,
   DRIFT_SLEEP_THRESHOLD_MS,
   LIVENESS_CHECK_MS,
@@ -508,4 +621,6 @@ module.exports = {
   NULL_STATS_RESTART_THRESHOLD,
   CONSECUTIVE_FAILURE_RESTART_THRESHOLD,
   TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD,
+  HARDRESTART_HUNG_THRESHOLD_MS,
+  POKE_HUNG_THRESHOLD_MS,
 };

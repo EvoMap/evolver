@@ -1052,3 +1052,233 @@ test('drift/liveness tick: throw inside the body does not escape to uncaughtExce
   );
   cleanup();
 });
+
+// --------------------------------------------------------------------------
+// E6 / E7 watchdog: hung single-flight latches must be force-cleared.
+//
+// Both _hardRestartInFlight and _pokeInFlight can be held forever if the
+// operation they guard never releases (_safeStop/_safeStart is a sync call
+// into the obfuscated module and not timeoutable from JS; sendHeartbeat
+// promises can stall past SEND_TIMEOUT_MS via unhandled rejection chains
+// that never reach the finally). _livenessTick now checks the acquire
+// timestamp on entry and force-clears any latch held >30s, freeing the
+// state machine for the next attempt.
+//
+// Tests use _setLatchForTesting / _getLatchForTesting to stage the
+// "latch held for N seconds" precondition without sleeping or coupling
+// to the real acquire paths.
+// --------------------------------------------------------------------------
+
+test('E6: _hardRestartInFlight held >30s is force-cleared by next _livenessTick', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, { nowFn: () => now });
+    // Stage a stale latch: acquired 31s ago in wall-clock time. The
+    // watchdog uses Date.now() (see comment in _livenessTick) so we
+    // must use real wall-clock time here, not the synthetic nowFn.
+    supervisor._setLatchForTesting('_hardRestartInFlight', true);
+    supervisor._setLatchForTesting('_hardRestartStartedAt', Date.now() - 31_000);
+
+    handles._livenessTick();
+
+    assert.equal(
+      supervisor._getLatchForTesting('_hardRestartInFlight'), false,
+      'watchdog must force-clear a stale _hardRestartInFlight latch',
+    );
+    assert.equal(
+      supervisor._getLatchForTesting('_hardRestartStartedAt'), 0,
+      'watchdog must also reset the acquire timestamp',
+    );
+    const matches = warnings.filter((w) => w.includes('_hardRestartInFlight'));
+    assert.ok(
+      matches.length >= 1,
+      'watchdog must log a warning naming the cleared latch; got ' + JSON.stringify(warnings),
+    );
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('E6: _hardRestartInFlight held <30s is NOT cleared', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, { nowFn: () => now });
+    // Latch only 5s old: well under the 30s threshold.
+    supervisor._setLatchForTesting('_hardRestartInFlight', true);
+    supervisor._setLatchForTesting('_hardRestartStartedAt', Date.now() - 5_000);
+
+    handles._livenessTick();
+
+    assert.equal(
+      supervisor._getLatchForTesting('_hardRestartInFlight'), true,
+      'fresh latch must be left intact',
+    );
+    const matches = warnings.filter((w) => w.includes('_hardRestartInFlight'));
+    assert.equal(
+      matches.length, 0,
+      'no watchdog warning must fire for a fresh latch; got ' + JSON.stringify(warnings),
+    );
+  } finally {
+    console.warn = originalWarn;
+    // Manually clear the staged latch so cleanup's stop() path is sane.
+    supervisor._setLatchForTesting('_hardRestartInFlight', false);
+    supervisor._setLatchForTesting('_hardRestartStartedAt', 0);
+    cleanup();
+  }
+});
+
+test('E7: _pokeInFlight held >30s is force-cleared by next _livenessTick', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, { nowFn: () => now });
+    // Stage a stale poke latch. _pokeInFlight is conventionally a
+    // Promise in production but the watchdog only checks truthiness;
+    // an object sentinel is enough to stand in.
+    supervisor._setLatchForTesting('_pokeInFlight', { __test: true });
+    supervisor._setLatchForTesting('_pokeStartedAt', Date.now() - 31_000);
+
+    handles._livenessTick();
+
+    assert.equal(
+      supervisor._getLatchForTesting('_pokeInFlight'), null,
+      'watchdog must force-clear a stale _pokeInFlight latch',
+    );
+    assert.equal(
+      supervisor._getLatchForTesting('_pokeStartedAt'), 0,
+      'watchdog must also reset the poke acquire timestamp',
+    );
+    const matches = warnings.filter((w) => w.includes('_pokeInFlight'));
+    assert.ok(
+      matches.length >= 1,
+      'watchdog must log a warning naming the cleared latch; got ' + JSON.stringify(warnings),
+    );
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('E7: _pokeInFlight held <30s is NOT cleared', () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, { nowFn: () => now });
+    supervisor._setLatchForTesting('_pokeInFlight', { __test: true });
+    supervisor._setLatchForTesting('_pokeStartedAt', Date.now() - 5_000);
+
+    handles._livenessTick();
+
+    assert.ok(
+      supervisor._getLatchForTesting('_pokeInFlight'),
+      'fresh _pokeInFlight latch must be left intact',
+    );
+    const matches = warnings.filter((w) => w.includes('_pokeInFlight'));
+    assert.equal(
+      matches.length, 0,
+      'no watchdog warning must fire for a fresh latch; got ' + JSON.stringify(warnings),
+    );
+  } finally {
+    console.warn = originalWarn;
+    // Clear the staged latch so cleanup is sane.
+    supervisor._setLatchForTesting('_pokeInFlight', null);
+    supervisor._setLatchForTesting('_pokeStartedAt', 0);
+    cleanup();
+  }
+});
+
+test('E6+E7: after watchdog clears _pokeInFlight, the next poke() actually fires', async () => {
+  // End-to-end shape of the bug: a stale latch makes every poke() short-
+  // return at the in-flight gate. Once the watchdog clears the latch on
+  // the next _livenessTick, user-activity pokes resume firing real sends.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const originalWarn = console.warn;
+  console.warn = function () { /* suppress watchdog warn in this test */ };
+  try {
+    const handles = supervisor.start(a2a, { nowFn: () => now });
+    // Stage a stale latch.
+    supervisor._setLatchForTesting('_pokeInFlight', { __test: true });
+    supervisor._setLatchForTesting('_pokeStartedAt', Date.now() - 31_000);
+
+    // Pre-watchdog: poke() must short-return on the latch.
+    const sendsBefore = a2a._state.sendCalls;
+    const rPre = supervisor.poke('pre', { nowFn: () => now });
+    assert.equal(rPre, false, 'pre-watchdog poke must be blocked by stale latch');
+    assert.equal(
+      a2a._state.sendCalls, sendsBefore,
+      'pre-watchdog poke must not have driven a real send',
+    );
+
+    // Run the watchdog.
+    handles._livenessTick();
+    assert.equal(
+      supervisor._getLatchForTesting('_pokeInFlight'), null,
+      'sanity: watchdog must have cleared the latch',
+    );
+
+    // Post-watchdog poke past the throttle window must actually fire.
+    now += 70_000;
+    const rPost = supervisor.poke('post', { nowFn: () => now });
+    assert.equal(rPost, true, 'post-watchdog poke must attempt a send');
+    // Drain the in-flight async IIFE.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.ok(
+      a2a._state.sendCalls > sendsBefore,
+      'post-watchdog poke must drive a real sendHeartbeat call',
+    );
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('E6: _hardRestart\'s _pokeInFlight cleanup also clears _pokeStartedAt', () => {
+  // Symmetry check: commit 0ed373d added `_pokeInFlight = null` inside
+  // _hardRestart to free a latched poke. The E7 watchdog tracks an acquire
+  // timestamp alongside that latch, so the same cleanup site must also
+  // reset the timestamp -- otherwise a stale timestamp would dangle past
+  // the latch it tracks and confuse the watchdog on the next tick.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  supervisor.start(a2a, { nowFn: () => now });
+  // Stage a poke latch + timestamp as if a send is in flight right now.
+  supervisor._setLatchForTesting('_pokeInFlight', { __test: true });
+  supervisor._setLatchForTesting('_pokeStartedAt', Date.now());
+
+  // Drive _hardRestart directly. The exported reference is the same
+  // function used internally by the drift / liveness paths.
+  supervisor._hardRestart(now);
+
+  assert.equal(
+    supervisor._getLatchForTesting('_pokeInFlight'), null,
+    '_hardRestart must clear _pokeInFlight (regression for 0ed373d)',
+  );
+  assert.equal(
+    supervisor._getLatchForTesting('_pokeStartedAt'), 0,
+    '_hardRestart must also clear _pokeStartedAt for symmetry with E7',
+  );
+  cleanup();
+});
