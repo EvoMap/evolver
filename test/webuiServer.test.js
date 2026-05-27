@@ -204,3 +204,48 @@ describe('WebUiServer', () => {
     );
   });
 });
+
+describe('WebUiServer onRequest hook', () => {
+  // Default-mode supervisor wiring relies on per-request poke() to bound
+  // user-perceived heartbeat recovery to ~60s after long idle / sleep.
+  // Without the onRequest hook, the user could open the dashboard and
+  // still wait up to 30-60s for the supervisor's drift / liveness
+  // intervals to fire. Pin the contract here so a future refactor that
+  // drops the hook fails the suite instead of silently degrading.
+
+  it('fires onRequest before route dispatch for every incoming request', async () => {
+    const calls = [];
+    const server = new WebUiServer({
+      port: 39931,
+      logger: { log: () => {}, error: () => {}, warn: () => {} },
+      onRequest: (req, url) => calls.push({ method: req.method, path: url.pathname }),
+    });
+    try {
+      const info = await server.start();
+      await request(`${info.url}/`);
+      await request(`${info.url}/webui/status`);
+      await request(`${info.url}/this/path/does/not/exist`);
+      assert.equal(calls.length, 3, 'onRequest must fire for every request, including 404s');
+      assert.equal(calls[0].path, '/');
+      assert.equal(calls[1].path, '/webui/status');
+      assert.equal(calls[2].path, '/this/path/does/not/exist');
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('a throwing onRequest does not break request handling', async () => {
+    const server = new WebUiServer({
+      port: 39932,
+      logger: { log: () => {}, error: () => {}, warn: () => {} },
+      onRequest: () => { throw new Error('synthetic hook failure'); },
+    });
+    try {
+      const info = await server.start();
+      const res = await request(`${info.url}/`);
+      assert.equal(res.status, 200, 'a throwing onRequest must not break requests');
+    } finally {
+      await server.stop();
+    }
+  });
+});

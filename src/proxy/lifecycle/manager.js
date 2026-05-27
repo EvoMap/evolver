@@ -619,7 +619,17 @@ class LifecycleManager {
     // rationale. Uses Date.now() (wall-clock) because setTimeout fires on
     // libuv's monotonic clock and won't tell us the host was suspended.
     this._lastDriftCheckAt = Date.now();
+    // Outer try/catch wraps the whole callback. The inner try/catch around
+    // pokeHeartbeat() already exists, but logger.warn / _rescueHungTick /
+    // the arithmetic above them all sit outside it. A throw out of a
+    // setInterval callback routes to process.on('uncaughtException'), so a
+    // single bad log (file handle exhausted, transport error in a logger
+    // adapter) could take down a daemon whose uncaughtException handler is
+    // configured to exit. Containing the failure here keeps the detector
+    // alive and the process safe; setInterval continues firing either way,
+    // but we lose the work this tick would have done.
     this._driftInterval = setInterval(() => {
+      try {
       if (!this._running) return;
       const now = Date.now();
       const gap = now - this._lastDriftCheckAt;
@@ -674,6 +684,13 @@ class LifecycleManager {
             `${sinceSuccessMs === null ? 'ever' : Math.round(sinceSuccessMs / 1000) + 's'}; poking heartbeat`,
         );
         try { this.pokeHeartbeat(); } catch { /* never let the detector escape */ }
+      }
+      } catch (driftErr) {
+        // Outer guard: swallow any throw from log adapters, rescue helper,
+        // or future additions so the setInterval callback never raises into
+        // uncaughtException territory. See block comment above setInterval.
+        try { this.logger.warn('[lifecycle] drift detector tick threw: ' + (driftErr && driftErr.message || driftErr)); }
+        catch (_) { /* logger itself broken; nothing useful to do */ }
       }
     }, DRIFT_CHECK_MS);
     // Don't keep the event loop alive on behalf of the detector alone --

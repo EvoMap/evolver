@@ -12,6 +12,15 @@ class WebUiServer {
     this.port = opts.port || Number(process.env.EVOLVER_WEBUI_PORT) || DEFAULT_WEBUI_PORT;
     this.logger = opts.logger || console;
     this.routes = opts.routes || buildWebUiRoutes();
+    // onRequest fires once per inbound HTTP request, before any route
+    // matching. webui is the only persistent default-mode process that
+    // serves user-driven HTTP, so this is the only hook in default mode
+    // where "user is actively using evolver" can drive heartbeat recovery
+    // (proxy mode pokes from its own http handler; --loop pokes from the
+    // evolve cycle entry). Without it, a user opening the dashboard after
+    // a long sleep would have to wait for the supervisor's 30-60s
+    // interval-based recovery instead of recovering on the first click.
+    this.onRequest = typeof opts.onRequest === 'function' ? opts.onRequest : null;
     this.server = null;
     this.actualPort = null;
   }
@@ -40,6 +49,12 @@ class WebUiServer {
 
   async _handle(req, res) {
     const url = new URL(req.url, `http://127.0.0.1:${this.actualPort || this.port}`);
+    // Fire the activity hook before route dispatch so even 404s and static
+    // asset fetches count -- the user IS interacting with evolver. Never
+    // let a misbehaving hook break request handling.
+    if (this.onRequest) {
+      try { this.onRequest(req, url); } catch (_) { /* hook must not break requests */ }
+    }
     if (req.method === 'GET' && url.pathname === '/') return sendText(res, 200, 'text/html; charset=utf-8', getIndexHtml());
     if (req.method === 'GET' && url.pathname === '/app.js') return sendText(res, 200, 'application/javascript; charset=utf-8', getClientJs());
     if (req.method === 'GET' && url.pathname === '/app.css') return sendText(res, 200, 'text/css; charset=utf-8', getStylesCss());

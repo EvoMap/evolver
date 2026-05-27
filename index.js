@@ -1674,8 +1674,6 @@ async function main() {
     const port = portFlag ? Number(portFlag.slice('--port='.length)) : undefined;
     const { startWebUi } = require('./src/webui');
     try {
-      const info = await startWebUi({ port });
-      console.log('[webui] Open ' + info.url);
       // The webui blocks the process forever via `await new Promise(() => {})`.
       // Without supervisor wiring, an evolver instance left running in
       // `webui` mode goes the full 6-min default heartbeat interval at
@@ -1691,6 +1689,18 @@ async function main() {
           catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
         }
       } catch (_hbInitErr) { /* startup failure must never block webui */ }
+      // Per-request poke. The supervisor's own drift / liveness intervals
+      // already self-recover within 30-60s, but a user clicking the dashboard
+      // is the strongest possible "I'm using evolver right now" signal --
+      // forwarding it through poke() bounds user-perceived recovery to the
+      // throttle window (60s) instead of waiting for the next interval fire.
+      // No-op when the supervisor was skipped (proxy / mailbox mode) or
+      // failed to start.
+      const onWebuiRequest = _webuiSupervisor
+        ? () => { try { _webuiSupervisor.poke('webui-request'); } catch (_) {} }
+        : undefined;
+      const info = await startWebUi({ port, onRequest: onWebuiRequest });
+      console.log('[webui] Open ' + info.url);
       const shutdown = async () => {
         try { await info.server.stop(); } catch (_) {}
         try { if (_webuiSupervisor) _webuiSupervisor.stop(); } catch (_) {}

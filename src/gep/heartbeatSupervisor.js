@@ -152,6 +152,17 @@ function _hardRestart(now) {
   try {
     _safeStop();
     _safeStart();
+    // Clear any latched single-flight poke. If a poke()'s sendHeartbeat
+    // never resolves (TLS hang, transport ignoring abort), _withTimeout
+    // frees the caller's await but the underlying promise's .finally
+    // chain can stall, leaving _pokeInFlight non-null forever. Every
+    // subsequent poke() then early-returns at the in-flight check and
+    // the user-activity recovery path goes silently dead. The internal
+    // loop still recovers via drift / liveness, but pokes never fire
+    // again. Resetting here is safe: stop+start has just reinitialised
+    // the underlying loop, so any pending sendHeartbeat from before the
+    // restart targets stale state and we no longer care about its result.
+    _pokeInFlight = null;
     _lastObservedSent = -1;
     _lastSuccessfulSendAt = now;
     _lastHardRestartAt = now;
@@ -337,8 +348,29 @@ function start(a2a, opts) {
   // running===false and retry via _safeStart(). Previously a throw here
   // left _started=false and every subsequent poke() / interval no-opped,
   // so the process ran with no heartbeat for the rest of its lifetime.
-  const driftFn = function () { _driftTick(options); };
-  const livenessFn = function () { _livenessTick(options); };
+  //
+  // Outer try/catch on the interval callbacks: the tick bodies and their
+  // dependencies (logger.warn inside _hardRestart, future hub-side error
+  // paths, etc.) can throw. A synchronous throw out of a setInterval
+  // callback routes to process.on('uncaughtException'). Many production
+  // daemons install a self-killing handler there, so an exception we
+  // could have swallowed would take the whole process down. setInterval
+  // itself continues to fire after a throw, but we still want to keep
+  // any single tick failure local and observable.
+  const driftFn = function () {
+    try {
+      _driftTick(options);
+    } catch (e) {
+      try { console.warn('[Heartbeat] supervisor driftTick threw: ' + (e && e.message || e)); } catch (_) {}
+    }
+  };
+  const livenessFn = function () {
+    try {
+      _livenessTick(options);
+    } catch (e) {
+      try { console.warn('[Heartbeat] supervisor livenessTick threw: ' + (e && e.message || e)); } catch (_) {}
+    }
+  };
   _driftInterval = setInterval(driftFn, driftCheckMs);
   if (_driftInterval && typeof _driftInterval.unref === 'function') _driftInterval.unref();
   _livenessInterval = setInterval(livenessFn, livenessCheckMs);

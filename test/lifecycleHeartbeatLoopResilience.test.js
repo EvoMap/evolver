@@ -1250,3 +1250,66 @@ test('pokeHeartbeat(): does NOT fire a parallel tick while reAuthenticate is in 
   lc._reauthInProgress = false;
   lc.stopHeartbeatLoop();
 });
+
+// --------------------------------------------------------------------------
+// Regression: drift detector callback must contain any throw locally.
+//
+// Without an outer try/catch on the setInterval body, a throw from
+// logger.warn (file handle exhausted, transport adapter bug) or any other
+// dependency would escape the callback and route to process.on(
+// 'uncaughtException'). Many production daemons install a self-killing
+// handler there, so a trivial log failure could take the entire process
+// down. The detector now swallows the throw, logs it, and keeps running.
+// --------------------------------------------------------------------------
+
+test('drift detector: throw from logger.warn does NOT escape the setInterval callback', async () => {
+  const lc = makeManager();
+  lc.heartbeat = async () => ({ ok: true });
+
+  const realSetInterval = global.setInterval;
+  let driftCallback = null;
+  global.setInterval = function (fn, ms, ...rest) {
+    if (ms === 30_000) {
+      driftCallback = fn;
+      return { unref: () => {}, _captured: true };
+    }
+    return realSetInterval(fn, ms, ...rest);
+  };
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    assert.ok(driftCallback);
+
+    // Replace the logger with one that throws on every call. The detector
+    // logs once on the wall-clock-jump branch and once on the recovery
+    // branch -- both sit inside the outer try/catch.
+    lc.logger = {
+      warn: () => { throw new Error('synthetic logger failure'); },
+      log: () => {},
+      error: () => {},
+    };
+
+    // Trigger the wall-clock-jump branch.
+    const realNow = Date.now;
+    const baseline = realNow();
+    lc._lastDriftCheckAt = baseline;
+    Date.now = () => baseline + 5 * 60_000;
+
+    let escaped = false;
+    try {
+      driftCallback();
+    } catch (_) {
+      escaped = true;
+    } finally {
+      Date.now = realNow;
+    }
+
+    assert.equal(
+      escaped, false,
+      'a throw from inside the drift callback must be swallowed by the outer guard',
+    );
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setInterval = realSetInterval;
+  }
+});

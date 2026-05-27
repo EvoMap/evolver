@@ -897,3 +897,123 @@ test('terminalDiagnostic: recovery (sent advances + cf=0) resets the counter and
     cleanup();
   }
 });
+
+// --------------------------------------------------------------------------
+// Regression: _pokeInFlight must not survive a hard restart.
+//
+// poke()'s sendHeartbeat() is wrapped in _withTimeout, but _withTimeout only
+// frees the caller's await -- it does not cancel the underlying promise. If
+// the transport never settles (TLS hang, custom transport ignoring abort),
+// the IIFE around sendHeartbeat in poke() stays pending forever, and
+// _pokeInFlight never becomes null. Every subsequent poke() then short-
+// returns at the in-flight check, killing the user-activity recovery path.
+// _hardRestart now clears _pokeInFlight so the next user activity can drive
+// a fresh send against the freshly-restarted loop.
+
+test('hardRestart clears latched _pokeInFlight from a never-resolving send', async () => {
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+
+  // Block sendHeartbeat forever. _withTimeout will reject the caller after
+  // SEND_TIMEOUT_MS, but the underlying promise stays pending -- which is
+  // exactly the production failure mode we're protecting against.
+  a2a._state.onSend = () => new Promise(() => {});
+
+  const handles = supervisor.start(a2a, { nowFn: () => now });
+
+  // First poke latches _pokeInFlight on a never-settling send.
+  const r1 = supervisor.poke('latch', { nowFn: () => now });
+  assert.equal(r1, true, 'first poke must attempt the send');
+
+  // A second poke past the throttle window: without the hard-restart fix,
+  // _pokeInFlight is still set and the gate short-returns. This isolates
+  // the latch effect from the throttle (60s) -- if the test passes only
+  // because the throttle moved, we'd be measuring the wrong thing.
+  now += 70_000;
+  const r2BeforeRestart = supervisor.poke('still-latched', { nowFn: () => now });
+  assert.equal(
+    r2BeforeRestart, false,
+    'pre-restart: in-flight gate keeps the second poke from firing',
+  );
+
+  // Force a hard restart via the consecutiveFailures gate. This is the
+  // most-direct way to drive _hardRestart from a test without coupling
+  // to the wedge path's first-observation initialisation.
+  a2a._state.consecutiveFailures = 20;
+  const restartsBefore = a2a._state.stopCalls;
+  handles._livenessTick();
+  assert.ok(
+    a2a._state.stopCalls > restartsBefore,
+    'cf gate must have triggered stop+start',
+  );
+
+  // Replace the blocking send with one that succeeds, then poke again
+  // past the throttle window. If _pokeInFlight was cleared by the
+  // restart, this poke must attempt a fresh send.
+  a2a._state.onSend = null;
+  a2a._state.consecutiveFailures = 0;
+  now += 70_000;
+  const sendsBefore = a2a._state.sendCalls;
+  const r3 = supervisor.poke('post-restart', { nowFn: () => now });
+  assert.equal(
+    r3, true,
+    'post-restart poke must NOT be blocked by a stale in-flight latch',
+  );
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(
+    a2a._state.sendCalls > sendsBefore,
+    'post-restart poke must drive a real sendHeartbeat call',
+  );
+
+  cleanup();
+});
+
+// --------------------------------------------------------------------------
+// Regression: interval ticks must not let a thrown logger / hub error escape
+// into process.on('uncaughtException').
+//
+// _driftTick and _livenessTick are wrapped in start() so a synchronous throw
+// from any of their dependencies (a logger transport, _hardRestart's
+// console.warn, _safeStats' downstream code) is contained. Without this
+// wrap, daemons with self-killing uncaughtException handlers would treat a
+// trivial log failure as a process-fatal event.
+
+test('drift/liveness tick: throw inside the body does not escape to uncaughtException', () => {
+  const a2a = makeFakeA2a();
+  const handles = supervisor.start(a2a, { nowFn: () => 1_000_000 });
+
+  // Make _safeStats path throw asynchronously by monkey-patching the
+  // module to feed a stats object whose property access blows up. We
+  // can't patch supervisor internals, so we make the fake API's
+  // getHeartbeatStats throw -- _safeStats() already swallows that case
+  // (returns null), so to actually reach the outer catch we have to
+  // force a throw from somewhere _livenessTick does NOT internally
+  // guard. The console.warn used by _hardRestart for the terminal-state
+  // diagnostic is the cleanest such surface.
+  const originalWarn = console.warn;
+  console.warn = () => { throw new Error('synthetic logger failure'); };
+
+  // Drive the terminal diagnostic path (≥3 hard restarts without
+  // recovery) so console.warn is invoked from inside _hardRestart.
+  a2a._state.consecutiveFailures = 20;
+  let crashed = false;
+  try {
+    // Three livenessTick fires past wedge threshold => three _hardRestart
+    // calls => one of them triggers the diagnostic console.warn.
+    for (let i = 0; i < 5; i++) {
+      handles._livenessTick();
+    }
+  } catch (_) {
+    crashed = true;
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(
+    crashed, false,
+    'a throw from inside the tick body must be swallowed by the outer guard',
+  );
+  cleanup();
+});
