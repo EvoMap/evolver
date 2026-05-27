@@ -756,6 +756,20 @@ async function main() {
     } else {
         // Normal Single Run
         try {
+            // Start the heartbeat supervisor for single-run too. Previously the
+            // supervisor was only started inside the --loop branch, so the
+            // poke() below was a no-op (it short-circuits when _started is
+            // false). The supervisor's intervals are unref'd, so they do not
+            // prevent process exit after evolve.run() returns. Skip in proxy /
+            // mailbox mode: that path uses its own lifecycle manager.
+            try {
+              if (!(process.env.EVOMAP_PROXY === '1' || process.env.A2A_TRANSPORT === 'mailbox')) {
+                const a2a = require('./src/gep/a2aProtocol');
+                const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
+                try { heartbeatSupervisor.start(a2a); }
+                catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
+              }
+            } catch (_hbInitErr) { /* startup failure must never block evolve.run() */ }
             try {
               const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
               heartbeatSupervisor.poke('single-run');
