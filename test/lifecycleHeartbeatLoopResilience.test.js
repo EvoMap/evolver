@@ -1596,3 +1596,212 @@ test('BUG-1: rescued zombie tick does NOT writeInboundBatch stale events', async
     restore();
   }
 });
+
+// --------------------------------------------------------------------------
+// Hub signal handling: suspended status + next_heartbeat_ms + Retry-After
+//
+// The hub publishes three signals the heartbeat loop was previously
+// ignoring:
+//   1. {status:"suspended"} body -- node is admin-disabled or revoked.
+//      evolver was treating this as a normal success and writing
+//      last_heartbeat_at. Now bumps failure counter, logs operator hint,
+//      does NOT stamp liveness, loop continues so a manual un-suspend
+//      recovers on its own.
+//   2. next_heartbeat_ms in every success body (drops to 60s when there
+//      are pending events). evolver was sticking to the configured
+//      interval (default 6 min). Now: success path snapshots it; _tick
+//      reschedule prefers it over the configured interval.
+//   3. HTTP 429 Retry-After header (seconds) and retry_after_ms body.
+//      evolver was computing its own backoff that could be shorter than
+//      the hub asked. Now: parsed and used as a floor for the next delay
+//      until the next non-429 response.
+// --------------------------------------------------------------------------
+
+function _okHbRes(body) {
+  return {
+    ok: true, status: 200,
+    headers: { get: () => null },
+    json: async () => body,
+    clone: function () { return this; },
+    text: async () => '',
+  };
+}
+
+test('suspended status: bumps failure counter and does NOT write last_heartbeat_at', async () => {
+  const store = makeStore();
+  const setStateCalls = [];
+  const realSetState = store.setState;
+  store.setState = (k, v) => { setStateCalls.push({ k, v }); return realSetState(k, v); };
+
+  const restore = installFetchStub(async () => _okHbRes({ status: 'suspended', hint: 'admin disabled' }));
+  const lc = makeManager({ store });
+
+  try {
+    const failuresBefore = lc._consecutiveFailures;
+    const result = await lc.heartbeat();
+
+    assert.equal(result.ok, false, 'suspended must return ok:false');
+    assert.equal(result.suspended, true, 'suspended must carry the suspended flag');
+    assert.equal(
+      lc._consecutiveFailures, failuresBefore + 1,
+      'suspended must bump _consecutiveFailures',
+    );
+    const lastHbWrites = setStateCalls.filter((c) => c.k === 'last_heartbeat_at');
+    assert.equal(
+      lastHbWrites.length, 0,
+      'suspended must NOT write last_heartbeat_at (do not fake liveness)',
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('suspended status: subsequent ticks continue (loop survives -- recovery is operator action)', async () => {
+  // Alternates suspended -> healthy to prove the loop keeps ticking after
+  // a suspended response. If the heartbeat returned a result that killed
+  // the loop, the second tick would never fire.
+  let callCount = 0;
+  const restore = installFetchStub(async () => {
+    callCount++;
+    if (callCount === 1) return _okHbRes({ status: 'suspended' });
+    return _okHbRes({ status: 'ok' });
+  });
+
+  const lc = makeManager();
+  try {
+    // Stub heartbeat via the real path -- we want the production code to
+    // actually parse the body and reschedule.
+    lc.startHeartbeatLoop(30_000);
+    // Wait for the first tick (suspended) and the second (healthy).
+    // Force the reschedule to fire immediately so we don't sleep 30s.
+    lc._onTickReschedule = (_d, _r) => {
+      // Pull any pending timer in to fire immediately.
+      if (lc._heartbeatTimer) clearTimeout(lc._heartbeatTimer);
+      lc._heartbeatTimer = setTimeout(lc._tick, 0);
+    };
+    // Let the chain play out: tick 1 (suspended), reschedule pulled to 0,
+    // tick 2 (ok).
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.ok(callCount >= 2, `loop must keep ticking after suspended (callCount=${callCount})`);
+    lc.stopHeartbeatLoop();
+  } finally {
+    restore();
+  }
+});
+
+test('next_heartbeat_ms: success response with next_heartbeat_ms=60000 schedules next tick at 60s not at the default interval', async () => {
+  // Hub returns next_heartbeat_ms=60000. The reschedule must be 60s (not
+  // the configured 360000 interval) so queued hub events drain promptly.
+  const restore = installFetchStub(async () => _okHbRes({ status: 'ok', next_heartbeat_ms: 60_000 }));
+  const lc = makeManager();
+
+  try {
+    const reschedules = [];
+    lc._onTickReschedule = (delayMs, reason) => { reschedules.push({ delayMs, reason }); };
+
+    // Use the production default interval (360s) -- that's the gap the
+    // hub hint should close.
+    lc.startHeartbeatLoop(360_000);
+    // Let the first tick settle.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const finallyReschedules = reschedules.filter((e) => e.reason === 'tick-finally');
+    assert.ok(finallyReschedules.length >= 1, 'at least one tick-finally reschedule must have fired');
+    const lastFinally = finallyReschedules[finallyReschedules.length - 1];
+    assert.equal(
+      lastFinally.delayMs, 60_000,
+      `expected next_heartbeat_ms=60000 to be honored, got delayMs=${lastFinally.delayMs}`,
+    );
+
+    lc.stopHeartbeatLoop();
+  } finally {
+    restore();
+  }
+});
+
+test('Retry-After: 429 response with retry_after_ms=120000 schedules next tick at >=120s', async () => {
+  // Hub returns 429 + retry_after_ms=120000 in JSON body. The reschedule
+  // must be >= 120s no matter what backoff math would have computed.
+  const body429 = { retry_after_ms: 120_000 };
+  const restore = installFetchStub(async () => ({
+    ok: false, status: 429,
+    headers: { get: () => null },
+    json: async () => body429,
+    clone: function () { return this; },
+    text: async () => JSON.stringify(body429),
+  }));
+  const lc = makeManager();
+
+  try {
+    const reschedules = [];
+    lc._onTickReschedule = (delayMs, reason) => { reschedules.push({ delayMs, reason }); };
+
+    // Use a small base interval -- proves the floor comes from
+    // _hubRetryAfterMs, not from the local backoff curve.
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const finallyReschedules = reschedules.filter((e) => e.reason === 'tick-finally');
+    assert.ok(finallyReschedules.length >= 1, 'tick-finally reschedule must have fired');
+    const lastFinally = finallyReschedules[finallyReschedules.length - 1];
+    assert.ok(
+      lastFinally.delayMs >= 120_000,
+      `429 retry_after_ms must floor the reschedule (>=120000, got ${lastFinally.delayMs})`,
+    );
+
+    lc.stopHeartbeatLoop();
+  } finally {
+    restore();
+  }
+});
+
+test('Retry-After: hub Retry-After is preferred over local backoff when shorter would have been used', async () => {
+  // Counterpart to the test above: forces the local backoff to compute a
+  // smaller value than Retry-After (1 failure with 30s interval -> 60s).
+  // Hub Retry-After says 120s. The 120s value must win.
+  let firstCall = true;
+  const restore = installFetchStub(async () => {
+    if (firstCall) {
+      firstCall = false;
+      return _okHbRes({ status: 'ok' }); // first response: success, so no prior failure state
+    }
+    return {
+      ok: false, status: 429,
+      headers: { get: (h) => (String(h).toLowerCase() === 'retry-after' ? '120' : null) },
+      json: async () => ({}),
+      clone: function () { return this; },
+      text: async () => '',
+    };
+  });
+  const lc = makeManager();
+
+  try {
+    const reschedules = [];
+    lc._onTickReschedule = (delayMs, reason) => { reschedules.push({ delayMs, reason }); };
+
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Now trigger a poke to drive the second (429) tick. Push attempt
+    // timestamp past the throttle so the poke fires immediately.
+    lc._lastTickAttemptAt = 0;
+    lc.pokeHeartbeat();
+    await new Promise((r) => setTimeout(r, 30));
+
+    // The most recent reschedule comes from the 429 tick.
+    const finallyReschedules = reschedules.filter((e) => e.reason === 'tick-finally');
+    assert.ok(finallyReschedules.length >= 2, 'two tick-finally reschedules expected');
+    const last = finallyReschedules[finallyReschedules.length - 1];
+    // Local backoff (1 failure, 30s interval) would compute 30000 * 2 = 60000.
+    // Retry-After=120s -> 120000ms. The max must win.
+    assert.ok(
+      last.delayMs >= 120_000,
+      `Retry-After=120s must be honored over local backoff (got ${last.delayMs})`,
+    );
+
+    lc.stopHeartbeatLoop();
+  } finally {
+    restore();
+  }
+});

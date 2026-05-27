@@ -12,6 +12,11 @@ const { getEvomapPath } = require('../../gep/paths');
 const NODE_ID_RE = /^node_[a-f0-9]{12,32}$/;
 
 const DEFAULT_HEARTBEAT_INTERVAL = 360_000;
+// Floor for any hub-provided next_heartbeat_ms hint. Without this, a hub
+// bug or misconfiguration that returns next_heartbeat_ms=0 would put us
+// in a hot loop. 30s matches the existing floor applied to the
+// caller-supplied intervalMs in startHeartbeatLoop.
+const MIN_HEARTBEAT_INTERVAL = 30_000;
 const HELLO_TIMEOUT = 15_000;
 const HEARTBEAT_TIMEOUT = 10_000;
 const MAX_REAUTH_ATTEMPTS = 2;
@@ -141,6 +146,16 @@ class LifecycleManager {
     this._helloRateLimitUntil = 0;
     this._reauthBackoffUntil = 0;
     this._consecutiveReauthFailures = 0;
+    // Hub-provided next-tick hints. Set on a successful heartbeat
+    // response that includes next_heartbeat_ms, cleared on failure paths
+    // so the local backoff math takes over. Null = use the configured
+    // interval / backoff math.
+    this._lastHubNextHeartbeatMs = null;
+    // Hub rate-limit hint from HTTP 429 Retry-After header / retry_after_ms
+    // body. The reschedule logic floors the next delay to this value so we
+    // never retry sooner than the hub asked. Cleared on the next
+    // successful (non-429) response.
+    this._hubRetryAfterMs = null;
   }
 
   get nodeId() {
@@ -552,6 +567,9 @@ class LifecycleManager {
 
       if (res.status === 403 || res.status === 401) {
         this._consecutiveFailures++;
+        // Auth failure: drop any stale hub next-heartbeat hint so the
+        // local backoff math owns the reschedule cadence.
+        this._lastHubNextHeartbeatMs = null;
         const errText = await res.text().catch(() => '');
         this.logger.error(`[lifecycle] heartbeat auth failed (${res.status}): ${errText}`);
         if (_isStaleGen()) return null;
@@ -568,6 +586,36 @@ class LifecycleManager {
 
       if (!res.ok) {
         this._consecutiveFailures++;
+        // Hub returns HTTP 429 with Retry-After header (seconds) and
+        // optional retry_after_ms in the JSON body when rate-limiting us
+        // (evomap-hub/src/lib/rateLimitHints.js). Honor whichever is
+        // present so we never retry sooner than the hub asked. Body wins
+        // when both present (ms is more precise than seconds).
+        if (res.status === 429) {
+          let retryMs = null;
+          try {
+            const body = await res.clone().json().catch(() => null);
+            if (body && typeof body.retry_after_ms === 'number' && body.retry_after_ms > 0) {
+              retryMs = body.retry_after_ms;
+            }
+          } catch { /* body not JSON; fall back to header */ }
+          if (retryMs === null) {
+            const retryAfterHeader = res.headers.get('retry-after');
+            const retryAfterSec = parseInt(retryAfterHeader || '', 10);
+            if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+              retryMs = retryAfterSec * 1000;
+            }
+          }
+          if (retryMs !== null) {
+            this._hubRetryAfterMs = retryMs;
+            this.logger.warn(
+              `[lifecycle] heartbeat 429 from hub; honoring Retry-After=${Math.round(retryMs / 1000)}s`,
+            );
+          }
+        }
+        // Clear stale next-heartbeat hint -- failure response means the
+        // local backoff math owns the next reschedule.
+        this._lastHubNextHeartbeatMs = null;
         const errText = await res.text().catch(() => '');
         this.logger.error(`[lifecycle] heartbeat HTTP ${res.status}: ${errText}`);
         return { ok: false, error: `http_${res.status}`, statusCode: res.status };
@@ -578,7 +626,39 @@ class LifecycleManager {
       if (_isStaleGen()) return null;
 
       this._consecutiveFailures = 0;
+      // Successful (non-429) response: clear any pending hub rate-limit
+      // hint -- the hub is no longer asking us to back off.
+      this._hubRetryAfterMs = null;
+
+      // Suspended status: hub considers this node terminally disabled
+      // (admin disabled, secret revoked, etc. -- see
+      // evomap-hub/src/services/a2aService.js). Bump the failure counter
+      // (so backoff escalates) and surface a clear log pointing at the
+      // operator-actionable URL, but do NOT write last_heartbeat_at -- the
+      // node is not really live and stamping a fresh timestamp would mask
+      // the terminal state from any tooling that watches it. The loop
+      // continues so a manual un-suspend recovers on its own.
+      if (data?.status === 'suspended') {
+        this._consecutiveFailures++;
+        this._lastHubNextHeartbeatMs = null;
+        this.logger.warn(
+          '[lifecycle] node is suspended on hub; check https://evomap.ai/account',
+        );
+        return { ok: false, suspended: true, error: 'node_suspended' };
+      }
+
       this.store.setState('last_heartbeat_at', new Date().toISOString());
+
+      // Snapshot the hub's next-heartbeat hint. Hub drops this to ~60s
+      // when has_pending_events is true (see a2aService.js), so honoring
+      // it bounds queued event delivery latency to the hub's preferred
+      // cadence rather than DEFAULT_HEARTBEAT_INTERVAL (6 min). The
+      // reschedule logic in _tick's finally consumes this if set.
+      if (typeof data?.next_heartbeat_ms === 'number' && data.next_heartbeat_ms > 0) {
+        this._lastHubNextHeartbeatMs = data.next_heartbeat_ms;
+      } else {
+        this._lastHubNextHeartbeatMs = null;
+      }
 
       if (data?.status === 'unknown_node') {
         this.logger.warn('[lifecycle] Node unknown, re-registering...');
@@ -619,6 +699,9 @@ class LifecycleManager {
       // replacement tick will record its own outcome.
       if (_isStaleGen()) return null;
       this._consecutiveFailures++;
+      // Network throw or similar: drop any stale next-heartbeat hint so
+      // the local backoff math takes over for the reschedule.
+      this._lastHubNextHeartbeatMs = null;
       this.logger.error(`[lifecycle] heartbeat failed (${this._consecutiveFailures}): ${err.message}`);
       return { ok: false, error: err.message };
     }
@@ -711,10 +794,28 @@ class LifecycleManager {
           this._inflightAbortController = null;
         }
         if (this._running) {
-          const backoff = this._consecutiveFailures > 0
-            ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
-            : interval;
-          this._scheduleNextTick(backoff, 'tick-finally');
+          // Base delay decision tree:
+          //   - Hub gave us next_heartbeat_ms on the last successful
+          //     response -> honor it (floored to MIN_HEARTBEAT_INTERVAL).
+          //     This lets the hub pull us in to 60s when there are
+          //     pending events, instead of waiting the full 6 min for
+          //     the next natural tick.
+          //   - Otherwise: failures -> exponential backoff, else interval.
+          let baseDelay;
+          if (this._lastHubNextHeartbeatMs !== null && this._consecutiveFailures === 0) {
+            baseDelay = Math.max(this._lastHubNextHeartbeatMs, MIN_HEARTBEAT_INTERVAL);
+          } else if (this._consecutiveFailures > 0) {
+            baseDelay = Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000);
+          } else {
+            baseDelay = interval;
+          }
+          // Honor any pending hub Retry-After hint. The hub asked us to
+          // wait at least this long; never retry sooner. Cleared on the
+          // next non-429 response.
+          const finalDelay = this._hubRetryAfterMs !== null
+            ? Math.max(baseDelay, this._hubRetryAfterMs)
+            : baseDelay;
+          this._scheduleNextTick(finalDelay, 'tick-finally');
         }
       }
     };
