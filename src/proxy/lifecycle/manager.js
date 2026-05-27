@@ -607,8 +607,7 @@ class LifecycleManager {
           const backoff = this._consecutiveFailures > 0
             ? Math.min(interval * Math.pow(2, this._consecutiveFailures), 30 * 60_000)
             : interval;
-          this._heartbeatTimer = setTimeout(this._tick, backoff);
-          if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+          this._scheduleNextTick(backoff, 'tick-finally');
         }
       }
     };
@@ -738,10 +737,36 @@ class LifecycleManager {
       this._heartbeatTimer = null;
     }
     if (this._running) {
-      this._heartbeatTimer = setTimeout(this._tick, 1_000);
-      if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+      this._scheduleNextTick(1_000, 'rescue-fallback');
     }
     return true;
+  }
+
+  /**
+   * Single funnel for every reschedule of the heartbeat tick. Three sites
+   * call it: the normal `_tick` finally, `_rescueHungTick`'s 1s fallback,
+   * and `pokeHeartbeat`'s throttle-window pull-in. Centralising the
+   * setTimeout call lets tests subscribe to reschedules via the explicit
+   * `_onTickReschedule(delayMs, reason)` hook without resorting to
+   * fragile `setTimeout(fn).toString().includes('_tickInFlight')` sniffing
+   * that breaks under minification or rename.
+   *
+   * @param {number} delayMs - milliseconds until next tick should fire.
+   * @param {string} reason - log tag describing which reschedule site
+   *   invoked this. Forwarded to the test hook for assertions.
+   */
+  _scheduleNextTick(delayMs, reason) {
+    // Hook fires BEFORE setTimeout so a test stub can flag "the next
+    // setTimeout call is the heartbeat reschedule" and chain it with a
+    // 0-ms real timer. Without this ordering, the test would need to
+    // resort to fn.toString() sniffing the setTimeout fn -- fragile under
+    // minification or rename.
+    if (typeof this._onTickReschedule === 'function') {
+      try { this._onTickReschedule(delayMs, reason || 'unknown'); }
+      catch { /* never let a test hook escape into production code paths */ }
+    }
+    this._heartbeatTimer = setTimeout(this._tick, delayMs);
+    if (this._heartbeatTimer && this._heartbeatTimer.unref) this._heartbeatTimer.unref();
   }
 
   /**
@@ -830,8 +855,7 @@ class LifecycleManager {
           clearTimeout(this._heartbeatTimer);
           this._heartbeatTimer = null;
         }
-        this._heartbeatTimer = setTimeout(this._tick, waitMs);
-        if (this._heartbeatTimer.unref) this._heartbeatTimer.unref();
+        this._scheduleNextTick(waitMs, 'poke-throttle');
         return false;
       }
     }

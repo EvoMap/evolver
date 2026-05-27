@@ -81,6 +81,69 @@ test('heartbeat: store.countPending throwing does NOT escape heartbeat()', async
   assert.equal(lc._consecutiveFailures, 1, '_consecutiveFailures must be bumped so backoff kicks in');
 });
 
+test('startHeartbeatLoop: explicit _onTickReschedule hook observes every reschedule with reason+delay', async () => {
+  // Robust to minification/rename — the existing test sniffs fn.toString()
+  // to identify which setTimeout call is the heartbeat reschedule, which
+  // silently no-ops if the production code is ever bundled/obfuscated.
+  // This test exercises the same loop-survival invariant via the explicit
+  // hook that production code emits at every reschedule site.
+  const lc = makeManager();
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => { heartbeatCalls++; throw new Error('synthetic'); };
+
+  const reschedules = [];
+  lc._onTickReschedule = (delayMs, reason) => { reschedules.push({ delayMs, reason }); };
+
+  const realSetTimeout = global.setTimeout;
+  const TARGET = 5;
+  // Stub setTimeout to chain via the hook signal rather than fn-toString.
+  // We chain a setTimeout only when the immediately-preceding hook fired
+  // (the engine reschedule path always calls the hook just before
+  // setTimeout). Bootstrap call from startHeartbeatLoop's initial
+  // this._tick() does NOT go through _scheduleNextTick, so it's not
+  // counted -- which matches our intent (we count reschedules, not the
+  // initial fire).
+  let pendingHook = false;
+  const hookProxy = lc._onTickReschedule;
+  lc._onTickReschedule = (delayMs, reason) => {
+    pendingHook = true;
+    hookProxy(delayMs, reason);
+  };
+  let chained = 0;
+  global.setTimeout = function (fn, ms, ...rest) {
+    if (pendingHook) {
+      pendingHook = false;
+      chained++;
+      if (chained < TARGET) {
+        return realSetTimeout(fn, 0, ...rest);
+      }
+      return { unref: () => {} };
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  };
+
+  try {
+    lc.startHeartbeatLoop(30_000);
+    await new Promise((r) => realSetTimeout(r, 100));
+    assert.ok(
+      heartbeatCalls >= TARGET,
+      `expected >= ${TARGET} heartbeat calls across the chain, got ${heartbeatCalls}`,
+    );
+    assert.ok(
+      reschedules.length >= TARGET,
+      `expected >= ${TARGET} hook fires, got ${reschedules.length}`,
+    );
+    // Every reschedule should carry a non-empty reason tag.
+    for (const entry of reschedules) {
+      assert.equal(typeof entry.delayMs, 'number');
+      assert.ok(entry.reason && typeof entry.reason === 'string', 'reason must be set');
+    }
+  } finally {
+    lc.stopHeartbeatLoop();
+    global.setTimeout = realSetTimeout;
+  }
+});
+
 test('startHeartbeatLoop: continuous rejections must reschedule >=5 successive ticks', async () => {
   // The loop-killer bug class is "stops rescheduling at tick N>=2". Asserting
   // a single reschedule (the previous version of this test) would also pass
@@ -1026,6 +1089,68 @@ test('drift detector: recovery branch uses _lastTickSuccessAt, not _lastTickAtte
 // invocations, each writing _heartbeatTimer / _consecutiveFailures, with
 // the earlier setTimeout reference leaking but still firing.
 // --------------------------------------------------------------------------
+
+test('rescue chain: back-to-back rescues bump _tickGeneration monotonically and never leak parallel timers', async () => {
+  // Single-rescue is tested below; this verifies the COMPOUND case where
+  // two ticks hang in succession. The audit flagged this as untested. If
+  // _tickGeneration bump or _heartbeatTimer reset is off in any sequence,
+  // the second rescue could either (a) leave the first rescue's replacement
+  // tick orphaned (parallel ticks) or (b) skip the generation bump and
+  // let the zombie corrupt state on resolve.
+  const lc = makeManager();
+
+  const gates = [];
+  let heartbeatCalls = 0;
+  lc.heartbeat = async () => {
+    heartbeatCalls++;
+    if (heartbeatCalls <= 2) {
+      // First two ticks hang past the threshold until released.
+      const release = new Promise((resolve) => { gates.push(resolve); });
+      await release;
+      return { ok: true };
+    }
+    return { ok: true };
+  };
+
+  lc.startHeartbeatLoop(30_000);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(lc._tickInFlight, true);
+  const gen0 = lc._tickGeneration;
+
+  // First rescue: hang the first tick past the threshold.
+  lc._tickStartedAt = Date.now() - 61_000;
+  lc.pokeHeartbeat();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(lc._tickGeneration > gen0, 'first rescue must bump generation');
+  const gen1 = lc._tickGeneration;
+  // The replacement tick has entered heartbeat() (heartbeatCalls=2) and
+  // is awaiting its gate.
+  assert.equal(heartbeatCalls, 2, 'rescue must have started the second tick');
+  assert.equal(lc._tickInFlight, true, 'replacement tick must be in flight');
+
+  // Second rescue: hang the SECOND tick (the rescuer's replacement) past
+  // the threshold too.
+  lc._tickStartedAt = Date.now() - 61_000;
+  lc.pokeHeartbeat();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(lc._tickGeneration > gen1, 'second rescue must bump generation again');
+  // The chain can bump generation more than once per rescue: _rescueHungTick
+  // bumps once, then the replacement _tick body bumps again on entry
+  // (myGen = ++_tickGeneration). What matters is monotonic increase and
+  // that no zombie ever writes _heartbeatTimer (asserted below).
+
+  // Now release BOTH zombies. Their finally blocks must see generation
+  // mismatch and bail.
+  const timerAfter = lc._heartbeatTimer;
+  for (const release of gates) release();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.strictEqual(
+    lc._heartbeatTimer, timerAfter,
+    'neither zombie must overwrite _heartbeatTimer across the rescue chain',
+  );
+
+  lc.stopHeartbeatLoop();
+});
 
 test('rescue + zombie tick: zombie must NOT schedule a duplicate timer after generation bump', async () => {
   const lc = makeManager();

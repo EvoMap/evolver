@@ -141,6 +141,10 @@ class SyncEngine {
         // Load-bearing: this reschedule must run on every path. Issue #544
         // proved that letting it sit outside try/finally is a latent
         // daemon-killer.
+        if (typeof this._onScheduleOutbound === 'function') {
+          try { this._onScheduleOutbound(nextDelay); }
+          catch { /* never let a test hook escape into production code paths */ }
+        }
         this._scheduleOutbound(nextDelay);
       }
     }, delayMs);
@@ -193,6 +197,10 @@ class SyncEngine {
           nextDelay = DEFAULT_POLL_INTERVAL_ACTIVE;
         }
       } finally {
+        if (typeof this._onScheduleInbound === 'function') {
+          try { this._onScheduleInbound(nextDelay); }
+          catch { /* never let a test hook escape into production code paths */ }
+        }
         this._scheduleInbound(nextDelay);
       }
     }, delayMs);
