@@ -419,6 +419,40 @@ test('poke: revives loop when stats.running is false', async () => {
   cleanup();
 });
 
+test('poke: throttled poke STILL re-arms a dead loop (cheap recovery is unconditional)', async () => {
+  // Behaviour change: pre-fix, the cheap startHeartbeat() call for a
+  // running===false loop sat INSIDE the throttled IIFE. A user who
+  // poked twice in quick succession (proxy HTTP request + sync engine
+  // onLiveness firing within a few seconds) would skip the
+  // startHeartbeat on the second poke even though the first was
+  // throttled out -- leaving the internal timer dead until the next 60s
+  // liveness sample. Now the cheap path runs unconditionally.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  supervisor.start(a2a, { nowFn: () => now });
+
+  // First poke (loop alive): primes _lastPokeAt and fires a send.
+  a2a._state.running = true;
+  a2a._state.consecutiveFailures = 0;
+  supervisor.poke('first', { nowFn: () => now });
+  await new Promise((r) => setImmediate(r));
+
+  // The internal loop dies between pokes (e.g. obfuscated module's own
+  // recovery glitch). Second poke arrives within throttle window.
+  now += 5_000;
+  a2a._state.running = false;
+  const startBefore = a2a._state.startCalls;
+  const r = supervisor.poke('revive-within-throttle', { nowFn: () => now });
+
+  assert.ok(
+    a2a._state.startCalls > startBefore,
+    'startHeartbeat MUST be called synchronously even when send is throttled (cheap recovery is not gated by throttle)',
+  );
+  // Return value: needsStart was true so return is truthy.
+  assert.ok(r, 'throttled poke that re-armed dead loop must signal recovery happened');
+  cleanup();
+});
+
 test('poke: swallows sendHeartbeat errors (does not throw)', async () => {
   const a2a = makeFakeA2a();
   supervisor.start(a2a, { nowFn: () => 1_000_000 });
@@ -926,6 +960,65 @@ test('terminalDiagnostic: recovery (sent advances + cf=0) resets the counter and
     assert.equal(
       allMatches.length, 2,
       'after recovery, a fresh stuck episode must re-fire the diagnostic; got ' + allMatches.length,
+    );
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('terminalDiagnostic: recovery resets when sent advances AND cf is below cf-restart-gate (not strictly 0)', () => {
+  // Pre-fix, the reset required `cfNow === 0`. The obfuscated module
+  // clears its consecutiveFailures counter only on the next FULLY
+  // successful round-trip; between a hard restart and the first 2xx
+  // there is a window where totalSent advances (forward progress) but
+  // cf has not yet been zeroed by the module's internal accounting.
+  // Holding the recovery latch on cf===0 kept _consecutiveHardRestarts
+  // non-zero across legitimate recoveries, and TERMINAL_DIAGNOSTIC mis-
+  // fired on healthy supervisors. Reset must trigger when cf is below
+  // the cf-restart-gate (cf-storm threshold) -- a strictly stronger
+  // health signal than cf===0.
+  const a2a = makeFakeA2a();
+  let now = 1_000_000;
+  a2a._state.nowFn = () => now;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = function (msg) { warnings.push(String(msg)); };
+  try {
+    const handles = supervisor.start(a2a, {
+      nowFn: () => now,
+      consecutiveFailureRestartThreshold: 3,
+      wedgeThresholdMs: 30_000,
+    });
+
+    // Stuck episode.
+    a2a._state.consecutiveFailures = 10;
+    for (let i = 0; i < 3; i++) {
+      handles._livenessTick();
+      now += 35_000;
+    }
+    assert.equal(
+      warnings.filter((w) => w.includes('supervisor has restarted')).length, 1,
+      'stuck episode must log once',
+    );
+
+    // Mid-recovery state: totalSent advanced (round-trip landed) but cf
+    // has NOT dropped to zero yet (still 1, hasn't reset to 0). cf=1 is
+    // BELOW cf-restart-gate (3), so this counts as forward progress.
+    a2a._state.totalSent = 5;
+    a2a._state.consecutiveFailures = 1;
+    handles._livenessTick();
+
+    // Verify latch was cleared by re-stressing and asserting fresh warn.
+    a2a._state.consecutiveFailures = 10;
+    for (let i = 0; i < 3; i++) {
+      now += 35_000;
+      handles._livenessTick();
+    }
+    const allMatches = warnings.filter((w) => w.includes('supervisor has restarted'));
+    assert.equal(
+      allMatches.length, 2,
+      'mid-recovery (sent advances + cf below cf-gate) must reset the latch; got ' + allMatches.length,
     );
   } finally {
     console.warn = originalWarn;

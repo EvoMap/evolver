@@ -10,14 +10,26 @@
 // heartbeat within the 7-min Redis cache window.
 //
 // The motivating problem is broader than "deliver events promptly": the
-// poll itself is an independent external liveness probe. A successful
-// HTTP round-trip to /a2a/events/poll proves the network, TLS,
-// node_secret auth path, and hub are all working -- a different code
-// path from the heartbeat loop. If the heartbeat tick is wedged on a
-// half-dead socket while events/poll succeeds, we know the issue is
-// local heartbeat state and we wake the heartbeat loop via
-// lifecycle.pokeHeartbeat(). Conversely, if both fail, the supervisor
-// already has a uniform "everything is broken" signal to act on.
+// poll itself is a *partial* external liveness probe. A successful HTTP
+// round-trip to /a2a/events/poll proves the network, TLS, and hub
+// availability are working from the OUTBOUND direction, which is enough
+// to know the heartbeat loop's failure (if any) is local and to wake it
+// via lifecycle.pokeHeartbeat().
+//
+// Caveat -- NOT a fully independent auth channel:
+//   The hub mounts both /a2a/events/poll and /a2a/heartbeat behind the
+//   same middleware stack (evomap-hub _middleware.js:52-60): the same
+//   captureNodeSecret + checkSenderBan + requireNodeSecret guards, the
+//   same `badsec:` Redis cache, the same sender-ban list. If the hub
+//   judges our node_secret invalid, BOTH endpoints return 403 in
+//   lockstep -- the consumer cannot survive an auth failure that the
+//   heartbeat loop also sees. We document this here rather than oversell
+//   the consumer as a "fully independent liveness channel": it is a
+//   recovery channel for transient transport / scheduler failures, not
+//   for hub-side terminal auth states. For the latter,
+//   `node_secret_invalid` from either endpoint deliberately fans out to
+//   manual reset (see manager.js reAuthenticate terminal-rejection
+//   short-circuit).
 //
 // Implementation notes:
 //   - The loop is async (while+await), not setInterval. macOS App Nap

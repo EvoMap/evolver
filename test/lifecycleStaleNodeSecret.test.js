@@ -77,10 +77,18 @@ function responseFromJson({ status = 200, json = {}, headers = {} } = {}) {
   };
 }
 
-test('nodeSecret getter: env var wins over store with no source tag (legacy / first boot)', () => {
-  // Mirrors #529: store carries a legacy or env_seed value that has gone
-  // stale in the meantime, while the operator just exported a fresh secret
-  // in A2A_NODE_SECRET. With no source tag, env still wins and we re-sync.
+test('nodeSecret getter: store wins when source tag is missing and store secret is valid', () => {
+  // Behaviour change from earlier #529 fix: when env and store both hold
+  // valid 64-hex secrets, differ, and the store has NO source tag, we now
+  // default to STORE rather than ENV. Rationale: a present non-empty
+  // stored secret is the most recently persisted intent we can observe
+  // locally; overwriting it with whatever the parent shell exports is
+  // exactly the path that produces `node_secret_invalid` from the hub
+  // on the next heartbeat (the protocol cannot self-rotate without the
+  // current secret). See manager.js:_resolveNodeSecret block comment and
+  // reAuthenticate terminal-rejection short-circuit. Operator can opt
+  // back into env-wins by running `evolver reset-local-secret` (which
+  // clears the store) or by tagging source=env_seed explicitly.
   const original = process.env.A2A_NODE_SECRET;
   try {
     process.env.A2A_NODE_SECRET = VALID_HEX64_A;
@@ -90,22 +98,51 @@ test('nodeSecret getter: env var wins over store with no source tag (legacy / fi
 
     const resolved = mgr.nodeSecret;
 
-    assert.strictEqual(resolved, VALID_HEX64_A, 'env value should win on conflict');
-    assert.strictEqual(store.getState('node_secret'), VALID_HEX64_A, 'store should be re-synced');
-    assert.strictEqual(
-      store.getState('node_secret_source'),
-      'env_seed',
-      'env-resync must mark the new store value as env_seed'
-    );
+    assert.strictEqual(resolved, VALID_HEX64_B, 'store value should win when source tag absent');
+    assert.strictEqual(store.getState('node_secret'), VALID_HEX64_B, 'store must NOT be overwritten by stale env');
     assert.ok(
-      logger._calls.warn.some((m) => m.includes('A2A_NODE_SECRET env var differs')),
-      'should warn the operator exactly once'
+      logger._calls.warn.some((m) => m.includes('defaulting to STORE value')),
+      'should warn the operator about the missing source tag'
     );
 
     // Second access must NOT log again -- prevents log flooding on every header build.
     mgr.nodeSecret;
-    const warnCount = logger._calls.warn.filter((m) => m.includes('A2A_NODE_SECRET env var differs')).length;
-    assert.strictEqual(warnCount, 1, 'override warning should be one-shot');
+    const warnCount = logger._calls.warn.filter((m) => m.includes('defaulting to STORE value')).length;
+    assert.strictEqual(warnCount, 1, 'missing-source warning should be one-shot');
+  } finally {
+    if (original === undefined) delete process.env.A2A_NODE_SECRET;
+    else process.env.A2A_NODE_SECRET = original;
+  }
+});
+
+test('nodeSecret getter: env wins when store carries an explicit env_seed source tag', () => {
+  // Legacy / bootstrap path: store was previously written from env (tag
+  // node_secret_source='env_seed'). If the operator has now updated the
+  // env value, we adopt it and re-sync the store. This is the only path
+  // where env can overwrite store under the new precedence.
+  const original = process.env.A2A_NODE_SECRET;
+  try {
+    process.env.A2A_NODE_SECRET = VALID_HEX64_A;
+    const store = makeStore({
+      node_secret: VALID_HEX64_B,
+      node_secret_source: 'env_seed',
+    });
+    const logger = silentLogger();
+    const mgr = new LifecycleManager({ hubUrl: 'https://example.test', store, logger });
+
+    const resolved = mgr.nodeSecret;
+
+    assert.strictEqual(resolved, VALID_HEX64_A, 'env value should win when source=env_seed');
+    assert.strictEqual(store.getState('node_secret'), VALID_HEX64_A, 'store should be re-synced');
+    assert.strictEqual(
+      store.getState('node_secret_source'),
+      'env_seed',
+      'env-resync must keep the env_seed tag'
+    );
+    assert.ok(
+      logger._calls.warn.some((m) => m.includes('source=env_seed')),
+      'should warn the operator about the env-override'
+    );
   } finally {
     if (original === undefined) delete process.env.A2A_NODE_SECRET;
     else process.env.A2A_NODE_SECRET = original;
@@ -292,6 +329,96 @@ test('reAuthenticate: env var does NOT undo a successful rotation during verific
     assert.strictEqual(mgr._suppressEnvSecret, true, 'env var must be suppressed after a successful rotation');
     // And subsequent reads should keep returning the rotated secret, not the env value.
     assert.strictEqual(mgr.nodeSecret, VALID_HEX64_Z, 'subsequent nodeSecret reads must keep returning Z');
+  } finally {
+    if (original === undefined) delete process.env.A2A_NODE_SECRET;
+    else process.env.A2A_NODE_SECRET = original;
+    global.fetch = originalFetch;
+  }
+});
+
+test('reAuthenticate: short-circuits to manual reset on node_secret_invalid (no wasted attempt 2)', async () => {
+  // Hub a2aService.js:1666-1670 returns
+  //   { status:"rejected", reason:"node_secret_invalid: ..." }
+  // when we present rotate_secret=true with a Bearer that does not match
+  // the stored hash. Attempt 2 (drop-bearer + rotate) would receive
+  // rotation_requires_current_secret in turn (hub a2aService.js:1652-1656)
+  // and we'd enter 30-min backoff for nothing. Verify we instead
+  // recognise this terminal-rejection code, emit manual_reset, install
+  // backoff, and STOP -- no second hello call.
+  const original = process.env.A2A_NODE_SECRET;
+  const originalFetch = global.fetch;
+  try {
+    delete process.env.A2A_NODE_SECRET;
+    const store = makeStore({ node_id: 'node_test', node_secret: VALID_HEX64_A });
+    const mf = mockFetch(() => (
+      responseFromJson({
+        status: 200,
+        json: {
+          payload: {
+            status: 'rejected',
+            reason: 'node_secret_invalid: the current node_secret you provided does not match the stored secret.',
+          },
+        },
+      })
+    ));
+    global.fetch = mf;
+
+    const mgr = new LifecycleManager({ hubUrl: 'https://example.test', store, logger: silentLogger() });
+    const result = await mgr.reAuthenticate();
+
+    assert.strictEqual(result, false, 're-auth must return false on terminal rejection');
+    assert.strictEqual(
+      mf.calls.length, 1,
+      'must NOT issue a second hello -- attempt 2 with same/empty bearer would fail identically'
+    );
+    assert.ok(mgr._reauthBackoffUntil > Date.now(), 'backoff must be installed');
+    assert.ok(
+      store._inbound.some((e) => e?.payload?.action === 'manual_secret_reset_required'),
+      'must emit manual_secret_reset_required so the user-visible UI can prompt for a web reset'
+    );
+  } finally {
+    if (original === undefined) delete process.env.A2A_NODE_SECRET;
+    else process.env.A2A_NODE_SECRET = original;
+    global.fetch = originalFetch;
+  }
+});
+
+test('reAuthenticate: short-circuits to manual reset on rotation_requires_current_secret', async () => {
+  // Same shape as node_secret_invalid: hub rejects rotate when no current
+  // secret is supplied (or when supplied secret is malformed/empty). Even
+  // the unauthenticated-rotate attempt 2 path would receive this same
+  // rejection. Skip directly to manual reset.
+  const original = process.env.A2A_NODE_SECRET;
+  const originalFetch = global.fetch;
+  try {
+    delete process.env.A2A_NODE_SECRET;
+    const store = makeStore({ node_id: 'node_test' });
+    const mf = mockFetch(() => (
+      responseFromJson({
+        status: 200,
+        json: {
+          payload: {
+            status: 'rejected',
+            reason: 'rotation_requires_current_secret: include your current node_secret as Authorization: Bearer <secret> to authorize rotation',
+          },
+        },
+      })
+    ));
+    global.fetch = mf;
+
+    const mgr = new LifecycleManager({ hubUrl: 'https://example.test', store, logger: silentLogger() });
+    const result = await mgr.reAuthenticate();
+
+    assert.strictEqual(result, false);
+    assert.strictEqual(
+      mf.calls.length, 1,
+      'must NOT retry -- second attempt would hit the same hub-side guard'
+    );
+    assert.ok(mgr._reauthBackoffUntil > Date.now(), 'backoff must be installed');
+    assert.ok(
+      store._inbound.some((e) => e?.payload?.action === 'manual_secret_reset_required'),
+      'must emit manual_secret_reset_required'
+    );
   } finally {
     if (original === undefined) delete process.env.A2A_NODE_SECRET;
     else process.env.A2A_NODE_SECRET = original;

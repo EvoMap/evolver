@@ -362,12 +362,27 @@ function _livenessTick(opts) {
     _lastObservedSent = sent;
     _lastSuccessfulSendAt = now;
     // Recovery signal for the terminal-state diagnostic: a fresh sent
-    // observation combined with low consecutiveFailures means the loop
-    // is healthy again. Reset the restart counter so the diagnostic can
+    // observation combined with consecutiveFailures BELOW the cf-restart
+    // gate means the loop is making forward progress (not stuck in a
+    // 503-storm). Reset the restart counter so the diagnostic can
     // re-arm if the loop later wedges again, and clear the "logged once"
     // latch so a future stuck-state episode can warn the user again.
+    //
+    // Pre-fix this required `cfNow === 0`. The obfuscated module clears
+    // its consecutiveFailures counter only on the next FULLY successful
+    // send round-trip; between a hard restart and the first 2xx response
+    // there is a window where totalSent advances (proving forward
+    // progress) but cf has not yet been zeroed by the module's internal
+    // accounting. Holding the recovery latch on `cf === 0` made
+    // _consecutiveHardRestarts stay non-zero across multiple healthy
+    // restart cycles, which caused TERMINAL_DIAGNOSTIC_RESTART_THRESHOLD
+    // to mis-fire and warn the user about a "stuck" supervisor that had
+    // in fact recovered. Keying off `cf < cf-restart-gate` instead is
+    // a strictly stronger signal: we're not in cf-storm territory AND
+    // attempts are landing, so by every observable signal we are
+    // healthy enough to drop the stuck-state accounting.
     const cfNow = typeof stats.consecutiveFailures === 'number' ? stats.consecutiveFailures : 0;
-    if (cfNow === 0 && _consecutiveHardRestarts > 0) {
+    if (cfNow < _consecutiveFailureRestartThreshold && _consecutiveHardRestarts > 0) {
       _consecutiveHardRestarts = 0;
       _terminalDiagnosticLogged = false;
     }
@@ -485,31 +500,56 @@ function start(a2a, opts) {
 
 function poke(reason, opts) {
   if (!_started || !_a2a) return false;
-  if (_pokeInFlight) return false;
 
-  // Throttle applies uniformly. The previous "failing nodes bypass throttle"
-  // shortcut let a high-frequency activity source (e.g. an IDE polling
-  // /mailbox/poll) fan out into 4+ sends/sec during failure streaks once
-  // each tick completed fast (immediate 401), which then hit the hub's
-  // 6/300s per-sender rate limit and made recovery harder, not easier.
-  // Recovery within ~60s is sufficient -- the drift and liveness ticks
-  // already provide the fallback path.
+  // Two distinct effects, separately gated -- mirrors the structure of
+  // LifecycleManager.pokeHeartbeat for proxy mode:
+  //
+  //   1. Cheap recovery (running===false -> startHeartbeat()): the
+  //      obfuscated module's heartbeat timer is dead. Re-arming it has no
+  //      hub cost (it just schedules an in-process timer; the next actual
+  //      hub send is owned by the module itself, throttled by its own
+  //      cadence). This MUST run regardless of POKE_THROTTLE_MS or
+  //      _pokeInFlight -- otherwise a poke arriving 30s after another
+  //      poke leaves the internal loop dead until the next 60s drift
+  //      sample, which is precisely the "I keep clicking and it stays
+  //      dead" symptom this module exists to fix.
+  //
+  //   2. Expensive send (sendHeartbeat()): this DOES hit the hub. Bound
+  //      by POKE_THROTTLE_MS and the single-flight _pokeInFlight gate so
+  //      a polling activity source can't fan out into 4+ sends/sec during
+  //      failure streaks (the previous code already had this; the only
+  //      change is that the cheap path no longer shares the gate).
+
   const now = _now(opts);
-  if (_lastPokeAt && now - _lastPokeAt < POKE_THROTTLE_MS) return false;
-
-  _lastPokeAt = now;
   const stats = _safeStats();
   const needsStart = stats && stats.running === false;
 
+  // Unconditional cheap recovery: re-arm a dead timer regardless of
+  // throttle. Pre-fix this lived inside the throttled IIFE, so a user
+  // who pokes twice in quick succession (e.g. proxy HTTP request + sync
+  // engine onLiveness firing within a few seconds of each other) would
+  // skip the startHeartbeat on the second poke even though the first
+  // was still throttled out. Synchronous so the next event-loop turn
+  // sees the timer alive.
+  if (needsStart) {
+    try {
+      if (typeof _a2a.startHeartbeat === 'function') _a2a.startHeartbeat();
+    } catch (e) {
+      console.warn('[Heartbeat] supervisor poke startHeartbeat failed: ' + (e && e.message || e));
+    }
+  }
+
+  // Send-path gating: throttle and single-flight only the actual
+  // sendHeartbeat() call. Return false but do NOT consider the poke
+  // "ignored" -- the cheap recovery above may already have re-armed the
+  // loop, which is the whole point of an activity poke from the user.
+  if (_pokeInFlight) return needsStart || false;
+  if (_lastPokeAt && now - _lastPokeAt < POKE_THROTTLE_MS) return needsStart || false;
+
+  _lastPokeAt = now;
+
   _pokeInFlight = (async function () {
     try {
-      if (needsStart) {
-        try {
-          if (typeof _a2a.startHeartbeat === 'function') _a2a.startHeartbeat();
-        } catch (e) {
-          console.warn('[Heartbeat] supervisor poke startHeartbeat failed: ' + (e && e.message || e));
-        }
-      }
       try {
         if (typeof _a2a.sendHeartbeat === 'function') {
           // Race the send against SEND_TIMEOUT_MS so a never-resolving

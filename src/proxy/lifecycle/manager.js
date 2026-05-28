@@ -11,7 +11,16 @@ const { getEvomapPath } = require('../../gep/paths');
 // legacy file can never feed garbage into the hello payload.
 const NODE_ID_RE = /^node_[a-f0-9]{12,32}$/;
 
-const DEFAULT_HEARTBEAT_INTERVAL = 360_000;
+// Match hub's HEARTBEAT_INTERVAL_MS (evomap-hub a2aService.js:80,
+// 5 minutes). The hub flags a node "non-online" when its lastSeenAt
+// falls behind ONLINE_THRESHOLD_MS (= 3 * HEARTBEAT_INTERVAL_MS = 15 min),
+// so a client cadence longer than the hub's expectation lets a single
+// missed-then-slow tick push us toward that threshold. The previous
+// 6-minute cadence meant three borderline-slow ticks (e.g. 6m + 1m
+// jitter each from any of the failure paths below) would cross
+// 15 minutes and the hub would mark us non-online -- a user-visible
+// "is my evolver dead?" symptom even though the loop is intact.
+const DEFAULT_HEARTBEAT_INTERVAL = 300_000;
 // Floor for any hub-provided next_heartbeat_ms hint. Without this, a hub
 // bug or misconfiguration that returns next_heartbeat_ms=0 would put us
 // in a hot loop. 30s matches the existing floor applied to the
@@ -201,7 +210,24 @@ class LifecycleManager {
    * `node_secret_source = 'hub_rotate'`. On conflict we honour that tag:
    *
    *   source=hub_rotate -> store wins (recent rotation; env is stale)
-   *   source missing/'env_seed' -> env wins (legacy / first-boot bootstrap)
+   *   source='env_seed' -> env wins (legacy / first-boot bootstrap)
+   *   source missing/unknown + storeSecret valid -> STORE wins (see below)
+   *
+   * Why "missing source -> store wins" (changed from the previous "env wins"):
+   *   Pre-fix, an absent source tag let a stale shell env value silently
+   *   overwrite a valid persisted secret. The most common path that hits
+   *   this is a process upgrade or migration that wrote node_secret to
+   *   the store but did NOT write node_secret_source (older code, manual
+   *   state.json edit, or a partial write). After such a write the next
+   *   boot would see env != store + missing tag and clobber the store
+   *   with whatever the parent shell still exports -- which is precisely
+   *   the secret the hub will reject. The hub then returns
+   *   `node_secret_invalid` (a2aService.js:1666-1670) and the only
+   *   recovery is a web Reset Secret. Choosing store-wins by default
+   *   when both are valid is the safer fallback: if env is actually the
+   *   fresh value the operator can either delete state.json or set the
+   *   source tag explicitly via `evolver reset-local-secret`. We log
+   *   loudly so the conflict is visible.
    *
    * Single-source mode (only one of store/env present) is unchanged.
    * @returns {string|null}
@@ -231,6 +257,41 @@ class LifecycleManager {
         }
         return storeSecret;
       }
+      // Explicit env_seed tag: store was last written from env, env still
+      // matches our intent. If env has changed since (operator updated
+      // .env), the new env value is the right one to adopt.
+      if (storeSource === 'env_seed' && valid(envSecret)) {
+        this.store.setState('node_secret', envSecret);
+        this.store.setState('node_secret_source', 'env_seed');
+        if (!this._envOverrideLogged) {
+          this._envOverrideLogged = true;
+          this.logger.warn(
+            '[lifecycle] A2A_NODE_SECRET env var differs from MailboxStore (source=env_seed); using env value and syncing store. ' +
+              'Clear ~/.evomap/mailbox/state.json or unset A2A_NODE_SECRET to silence this warning.'
+          );
+        }
+        return envSecret;
+      }
+      // Source tag missing/unknown. Default to store when valid -- a
+      // present non-empty stored secret is the most recently persisted
+      // intent we can observe locally, and overwriting it with a stale
+      // shell env value is the precise failure path that produces
+      // `node_secret_invalid` on the next heartbeat and leaves the daemon
+      // unable to self-recover (see reAuthenticate's terminal-rejection
+      // short-circuit).
+      if (valid(storeSecret)) {
+        if (!this._storeSourceLogged) {
+          this._storeSourceLogged = true;
+          this.logger.warn(
+            '[lifecycle] A2A_NODE_SECRET env var differs from MailboxStore; ' +
+              'store has no recorded source tag, defaulting to STORE value to avoid ' +
+              'overwriting a valid persisted secret with a potentially stale env value. ' +
+              'If the env value is the intended one, run `evolver reset-local-secret` ' +
+              'then restart, or unset A2A_NODE_SECRET to silence this warning.'
+          );
+        }
+        return storeSecret;
+      }
       if (valid(envSecret)) {
         this.store.setState('node_secret', envSecret);
         // Mark the new store value as env-seeded so a future rotation can
@@ -239,13 +300,12 @@ class LifecycleManager {
         if (!this._envOverrideLogged) {
           this._envOverrideLogged = true;
           this.logger.warn(
-            '[lifecycle] A2A_NODE_SECRET env var differs from MailboxStore; using env value and syncing store. ' +
-              'Clear ~/.evomap/mailbox/state.json or unset A2A_NODE_SECRET to silence this warning.'
+            '[lifecycle] A2A_NODE_SECRET env var differs from MailboxStore (store value malformed); using env value and syncing store.'
           );
         }
         return envSecret;
       }
-      // env var malformed -- ignore it, fall back to store
+      // both malformed -- nothing usable
       return storeSecret;
     }
 
@@ -357,6 +417,17 @@ class LifecycleManager {
    *                + rotate_secret=true. If the node is owned by someone
    *                else, hub returns node_id_already_claimed; we surface a
    *                manual-reset hint to the user instead of churning forever.
+   *
+   * Terminal-rejection short-circuit (hub a2aService.js:1646-1672):
+   *   When the hub returns rotate-rejection codes that the protocol cannot
+   *   self-heal -- specifically `rotation_requires_current_secret` and
+   *   `node_secret_invalid` -- attempt 2 (unauthenticated rotate) WILL ALSO
+   *   FAIL with `rotation_requires_current_secret`. Hub requires the
+   *   current secret to authorize any rotation against an existing
+   *   claimed node. Without short-circuiting, we churn through 2 attempts
+   *   for nothing and then enter 30-min backoff, leaving the user with
+   *   "evolver is dead and clicking does nothing" for up to 30 minutes
+   *   while only a web Reset Secret can recover.
    */
   async reAuthenticate() {
     if (this._reauthInProgress) return false;
@@ -391,6 +462,26 @@ class LifecycleManager {
               this._dropLocalSecret('node_id_already_claimed');
               continue;
             }
+            manualResetRequired = true;
+            break;
+          }
+          if (
+            typeof helloResult.error === 'string'
+            && (
+              helloResult.error.startsWith('node_secret_invalid')
+              || helloResult.error.startsWith('rotation_requires_current_secret')
+            )
+          ) {
+            // Hub recognises the node but our presented current secret is
+            // either missing or mismatched against the stored hash (see
+            // a2aService.js:1646-1672). The protocol REQUIRES the current
+            // secret to authorize rotation, so retrying unauthenticated
+            // would fail with rotation_requires_current_secret in turn,
+            // and there is no client-side path that can recover -- only a
+            // web Reset Secret can. Short-circuit to manual reset to
+            // bound user-perceived recovery to "see the inbound message
+            // + visit dashboard" instead of "wait 30 min backoff for
+            // each loop, forever".
             manualResetRequired = true;
             break;
           }
@@ -642,20 +733,35 @@ class LifecycleManager {
 
       // Suspended status: hub considers this node terminally disabled
       // (admin disabled, secret revoked, etc. -- see
-      // evomap-hub/src/services/a2aService.js). Bump the failure counter
-      // (so backoff escalates) and surface a clear log pointing at the
-      // operator-actionable URL, but do NOT write last_heartbeat_at -- the
-      // node is not really live and stamping a fresh timestamp would mask
-      // the terminal state from any tooling that watches it. The loop
-      // continues so a manual un-suspend recovers on its own.
+      // evomap-hub/src/services/a2aService.js). Do NOT bump
+      // _consecutiveFailures: suspended is a stable hub-side admin state,
+      // not a transient transport / auth failure, and the loop should keep
+      // the natural cadence so an un-suspend from the dashboard is picked
+      // up promptly (within DEFAULT_HEARTBEAT_INTERVAL=5min). Pre-fix the
+      // counter bumped each suspended tick and exponential backoff pushed
+      // the reschedule out to the 30-min cap, so the user who un-suspended
+      // on the web waited up to 30 minutes for the daemon to notice -- the
+      // exact "evolver is dead and clicking does nothing" symptom this PR
+      // exists to fix. Also do NOT write last_heartbeat_at -- the node is
+      // not really live and stamping a fresh timestamp would mask the
+      // terminal state from any tooling that watches it.
       if (data?.status === 'suspended') {
-        this._consecutiveFailures++;
         this._lastHubNextHeartbeatMs = null;
-        this.logger.warn(
-          '[lifecycle] node is suspended on hub; check https://evomap.ai/account',
-        );
+        this._hubRetryAfterMs = null;
+        if (!this._suspendedLogged) {
+          this._suspendedLogged = true;
+          this.logger.warn(
+            '[lifecycle] node is suspended on hub; visit https://evomap.ai/account ' +
+              'to re-enable. Daemon continues polling at the default cadence and will ' +
+              'resume normal operation as soon as the hub clears the suspension.',
+          );
+        }
         return { ok: false, suspended: true, error: 'node_suspended' };
       }
+      // Clear the latched warn flag on the first successful non-suspended
+      // tick so the next suspension episode (e.g. user re-suspends from the
+      // dashboard) emits a fresh diagnostic instead of silent looping.
+      this._suspendedLogged = false;
 
       this.store.setState('last_heartbeat_at', new Date().toISOString());
 

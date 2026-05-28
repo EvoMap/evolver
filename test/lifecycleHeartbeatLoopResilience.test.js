@@ -1604,9 +1604,11 @@ test('BUG-1: rescued zombie tick does NOT writeInboundBatch stale events', async
 // ignoring:
 //   1. {status:"suspended"} body -- node is admin-disabled or revoked.
 //      evolver was treating this as a normal success and writing
-//      last_heartbeat_at. Now bumps failure counter, logs operator hint,
-//      does NOT stamp liveness, loop continues so a manual un-suspend
-//      recovers on its own.
+//      last_heartbeat_at. Now logs operator hint (once per episode),
+//      does NOT stamp liveness, does NOT bump _consecutiveFailures (so
+//      backoff does not escalate against a stable hub-side admin state),
+//      loop continues at the natural cadence so a manual un-suspend
+//      recovers on its own within DEFAULT_HEARTBEAT_INTERVAL.
 //   2. next_heartbeat_ms in every success body (drops to 60s when there
 //      are pending events). evolver was sticking to the configured
 //      interval (default 6 min). Now: success path snapshots it; _tick
@@ -1627,7 +1629,13 @@ function _okHbRes(body) {
   };
 }
 
-test('suspended status: bumps failure counter and does NOT write last_heartbeat_at', async () => {
+test('suspended status: does NOT bump failure counter and does NOT write last_heartbeat_at', async () => {
+  // suspended is a stable hub-side admin state (not a transient failure).
+  // Bumping _consecutiveFailures would escalate exponential backoff toward
+  // the 30-min cap, delaying recovery after a manual web un-suspend by up
+  // to 30 minutes -- exactly the "evolver is dead, clicking does nothing"
+  // symptom this PR exists to fix. Loop must keep the natural cadence so
+  // an un-suspend is picked up within DEFAULT_HEARTBEAT_INTERVAL (5 min).
   const store = makeStore();
   const setStateCalls = [];
   const realSetState = store.setState;
@@ -1643,13 +1651,60 @@ test('suspended status: bumps failure counter and does NOT write last_heartbeat_
     assert.equal(result.ok, false, 'suspended must return ok:false');
     assert.equal(result.suspended, true, 'suspended must carry the suspended flag');
     assert.equal(
-      lc._consecutiveFailures, failuresBefore + 1,
-      'suspended must bump _consecutiveFailures',
+      lc._consecutiveFailures, failuresBefore,
+      'suspended must NOT bump _consecutiveFailures (otherwise backoff escalates to 30-min cap and recovery from manual web un-suspend takes up to 30 min)',
     );
     const lastHbWrites = setStateCalls.filter((c) => c.k === 'last_heartbeat_at');
     assert.equal(
       lastHbWrites.length, 0,
       'suspended must NOT write last_heartbeat_at (do not fake liveness)',
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('suspended status: warn is latched (logs once per episode, clears on first healthy tick)', async () => {
+  // Without the latch, every 5-min suspended tick spams the same operator
+  // hint. With the latch, we log exactly once per "stuck suspended"
+  // episode and re-arm on first healthy response so a subsequent
+  // suspension can warn again.
+  let healthy = false;
+  const restore = installFetchStub(async () => (
+    healthy ? _okHbRes({ status: 'ok' }) : _okHbRes({ status: 'suspended' })
+  ));
+  const lc = makeManager();
+  // Swap in a logger that records warns. makeManager() installed a
+  // silentLogger; we capture its warn channel by replacing the instance
+  // logger directly.
+  const warns = [];
+  lc.logger = {
+    log: () => {},
+    info: () => {},
+    warn: (m) => warns.push(String(m)),
+    error: () => {},
+  };
+
+  try {
+    await lc.heartbeat();
+    await lc.heartbeat();
+    await lc.heartbeat();
+    const suspendedWarns = warns.filter((m) => m.includes('node is suspended'));
+    assert.equal(
+      suspendedWarns.length, 1,
+      `suspended warn must latch (log once per episode); got ${suspendedWarns.length} warns`,
+    );
+
+    // First healthy tick must clear the latch so a later re-suspension
+    // emits a fresh warning.
+    healthy = true;
+    await lc.heartbeat();
+    healthy = false;
+    await lc.heartbeat();
+    const suspendedWarnsAfter = warns.filter((m) => m.includes('node is suspended'));
+    assert.equal(
+      suspendedWarnsAfter.length, 2,
+      'suspended warn must re-arm on first healthy tick (so a subsequent suspension episode warns again)',
     );
   } finally {
     restore();
