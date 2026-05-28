@@ -6,6 +6,7 @@ const { ProxyHttpServer } = require('./server/http');
 const { buildRoutes } = require('./server/routes');
 const { buildMessagesHandler } = require('./router/messages_route');
 const { SyncEngine } = require('./sync/engine');
+const { EventConsumer } = require('./sync/eventConsumer');
 const { LifecycleManager } = require('./lifecycle/manager');
 const { TaskMonitor } = require('./task/monitor');
 const { SkillUpdater } = require('./extensions/skillUpdater');
@@ -28,6 +29,7 @@ class EvoMapProxy {
     this.server = null;
     this.sync = null;
     this.lifecycle = null;
+    this.eventConsumer = null;
     this.taskMonitor = null;
     this.skillUpdater = null;
     this.dmHandler = null;
@@ -152,6 +154,19 @@ class EvoMapProxy {
       await this.lifecycle.hello();
       this.lifecycle.startHeartbeatLoop();
       this.sync.start();
+
+      // Long-poll hub events. Independently of the heartbeat tick, this
+      // proves auth+network are healthy every successful round-trip and
+      // pokes the heartbeat loop. Survives macOS App Nap where setInterval
+      // would not. EVOLVER_EVENT_POLL=0 disables. See sync/eventConsumer.js.
+      if (String(process.env.EVOLVER_EVENT_POLL || '1') !== '0') {
+        this.eventConsumer = new EventConsumer({
+          hubUrl: this.hubUrl,
+          lifecycle: this.lifecycle,
+          logger: this.logger,
+        });
+        this.eventConsumer.start();
+      }
     } else {
       this.logger.warn('[proxy] No A2A_HUB_URL set, running in offline/local mode');
     }
@@ -167,6 +182,9 @@ class EvoMapProxy {
 
   async stop() {
     if (!this._started) return;
+    if (this.eventConsumer) {
+      try { await this.eventConsumer.stop(); } catch (_e) { /* never block shutdown */ }
+    }
     this.sync?.stop();
     this.lifecycle?.stopHeartbeatLoop();
     await this.server?.stop();
