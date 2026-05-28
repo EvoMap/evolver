@@ -190,7 +190,12 @@ class EvoMapProxy {
           });
         } catch (_writeErr) { /* never block startup on the inbound write */ }
       }
-      this.lifecycle.startHeartbeatLoop();
+      // keepAlive: proxy is a long-running daemon. The drift detector is
+      // the recovery primitive after macOS sleep/wake and App Nap; if
+      // unref'd, Node will deprioritise it under background coalescing
+      // and the heartbeat can stay dead past wake. See manager.js
+      // startHeartbeatLoop comment for the full rationale (#548 D2).
+      this.lifecycle.startHeartbeatLoop(undefined, { keepAlive: true });
       this.sync.start();
 
       // Long-poll hub events. Independently of the heartbeat tick, this

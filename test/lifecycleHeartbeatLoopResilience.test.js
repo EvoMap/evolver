@@ -2046,10 +2046,13 @@ test('E4: upgrade_available=true logs INFO once even across multiple ticks', asy
   }
 });
 
-test("E4: malformed values (string 'true', number 1) do NOT trigger handling", async () => {
-  // Strict === true comparisons protect the loop from accidental misuse
-  // on the hub side (a deserialization bug returning "true" instead of
-  // true would otherwise crash or false-positive the handlers).
+test("E4: resend_hello stays strict (=== true); force_update/upgrade_available accept truthy objects", async () => {
+  // (#548 third-pass G1.) The hub emits force_update and upgrade_available
+  // as OBJECTS (a2aService.js:6362, :6360), not booleans, so the prior
+  // `=== true` checks were dead code. We relaxed those two to truthy
+  // checks. resend_hello stays strict because the hub sends it as a
+  // literal boolean true (a2aService.js:6316) -- and we still want to
+  // reject malformed string/number variants there.
   const warnCalls = [];
   const infoCalls = [];
   const lc = makeManager();
@@ -2062,9 +2065,9 @@ test("E4: malformed values (string 'true', number 1) do NOT trigger handling", a
 
   const restore = installFetchStub(async () => _okHbRes({
     status: 'ok',
-    resend_hello: 'true',     // string, not boolean
-    force_update: 1,          // number, not boolean
-    upgrade_available: 'yes', // string, not boolean
+    resend_hello: 'true',     // string, not boolean -- must still be ignored
+    force_update: 1,          // truthy number -- the relaxed check accepts this
+    upgrade_available: 'yes', // truthy string -- the relaxed check accepts this
   }));
 
   try {
@@ -2072,18 +2075,20 @@ test("E4: malformed values (string 'true', number 1) do NOT trigger handling", a
     assert.equal(result.ok, true, 'malformed values must not break the success path');
     assert.equal(
       lc._resendHelloPending, false,
-      'string "true" must NOT trigger _resendHelloPending',
+      'string "true" must NOT trigger _resendHelloPending (still strict)',
     );
+    // For force_update / upgrade_available the relaxed semantics fire on
+    // any truthy value. That's the intended behaviour after G1.
     assert.equal(
-      lc._forceUpdateRequired, false,
-      'number 1 must NOT trigger _forceUpdateRequired',
+      lc._forceUpdateRequired, true,
+      'truthy force_update must arm _forceUpdateRequired under the relaxed check',
     );
     const resendLogs = infoCalls.filter((m) => /resend_hello/.test(m));
     const upgradeLogs = infoCalls.filter((m) => /upgrade available/.test(m));
     const forceLogs = warnCalls.filter((m) => /force_update/.test(m));
-    assert.equal(resendLogs.length, 0, 'malformed resend_hello must not log');
-    assert.equal(upgradeLogs.length, 0, 'malformed upgrade_available must not log');
-    assert.equal(forceLogs.length, 0, 'malformed force_update must not log');
+    assert.equal(resendLogs.length, 0, 'strict resend_hello must still not log on string "true"');
+    assert.equal(upgradeLogs.length, 1, 'truthy upgrade_available must log exactly once');
+    assert.equal(forceLogs.length, 1, 'truthy force_update must log exactly once');
   } finally {
     restore();
   }

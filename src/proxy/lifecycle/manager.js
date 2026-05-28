@@ -863,11 +863,21 @@ class LifecycleManager {
       //   upgrade_available  -- soft hint that a newer version exists. Log
       //                         once per process; no state mutation.
       //
-      // All three use strict === true comparisons so a malformed value
-      // (string "true", number 1, object) cannot trip the handlers and
-      // cannot crash the loop. Each mutation site re-checks _isStaleGen()
-      // so a zombie tick rescued by the watchdog never installs these
-      // signals on top of the replacement tick's state.
+      // Field semantics:
+      //   resend_hello       -- hub sends literal `true` (a2aService.js:6316).
+      //                         We keep the strict `=== true` compare for it.
+      //   force_update       -- hub sends an OBJECT (a2aService.js:6362, set
+      //                         from decision.forceUpdate which is a notice
+      //                         object). The original `=== true` check was
+      //                         dead code -- the signal never armed even
+      //                         when the hub demanded an upgrade. Fixed to
+      //                         truthy. (#548 third-pass G1.)
+      //   upgrade_available  -- hub sends an OBJECT (a2aService.js:6360,
+      //                         set from decision.upgrade). Same fix.
+      //
+      // Each mutation site re-checks _isStaleGen() so a zombie tick rescued
+      // by the watchdog never installs these signals on top of the
+      // replacement tick's state.
       // Info-level helper. Some logger adapters expose `info`, others only
       // `log`. Prefer `info` when present (better severity routing); fall
       // back to `log`. Wrapped in try/catch so a broken transport cannot
@@ -886,25 +896,43 @@ class LifecycleManager {
           '[lifecycle] hub requested resend_hello (reason=' + (data.resend_reason || 'unspecified') + ')',
         );
       }
-      if (data?.force_update === true) {
+      if (data?.force_update) {
         if (_isStaleGen()) return null;
         this._forceUpdateRequired = true;
         if (!this._forceUpdateLogged) {
           this._forceUpdateLogged = true;
+          // Pull the user-friendly notice from the hub-provided object
+          // when available (decision.forceUpdate carries .message/.url),
+          // falling back to a generic message if the shape is unexpected.
+          const notice = (data.force_update && typeof data.force_update === 'object')
+            ? data.force_update
+            : {};
+          const detail = (notice && typeof notice.message === 'string' && notice.message)
+            ? notice.message
+            : 'Heartbeats may be rejected soon.';
+          const url = (notice && typeof notice.url === 'string' && notice.url)
+            ? notice.url
+            : 'https://github.com/EvoMap/evolver/releases';
           this.logger.warn(
-            '[lifecycle] hub requires evolver upgrade (force_update). ' +
-              'Heartbeats may be rejected soon. ' +
-              'See https://github.com/EvoMap/evolver/releases',
+            `[lifecycle] hub requires evolver upgrade (force_update): ${detail} See ${url}`,
           );
         }
       }
-      if (data?.upgrade_available === true) {
+      if (data?.upgrade_available) {
         if (_isStaleGen()) return null;
         if (!this._upgradeAvailableLogged) {
           this._upgradeAvailableLogged = true;
+          const notice = (data.upgrade_available && typeof data.upgrade_available === 'object')
+            ? data.upgrade_available
+            : {};
+          const detail = (notice && typeof notice.message === 'string' && notice.message)
+            ? notice.message
+            : 'Upgrade available.';
+          const url = (notice && typeof notice.url === 'string' && notice.url)
+            ? notice.url
+            : 'https://github.com/EvoMap/evolver/releases';
           _logInfo(
-            '[lifecycle] hub indicates upgrade available. ' +
-              'See https://github.com/EvoMap/evolver/releases',
+            `[lifecycle] hub indicates upgrade available: ${detail} See ${url}`,
           );
         }
       }
@@ -924,8 +952,17 @@ class LifecycleManager {
     }
   }
 
-  startHeartbeatLoop(intervalMs) {
+  startHeartbeatLoop(intervalMs, opts) {
     if (this._running) return;
+    // FIX (#548 third-pass D2): expose keepAlive for parity with
+    // heartbeatSupervisor.start({ keepAlive }). The proxy daemon is a
+    // long-running process and the drift detector IS the recovery
+    // primitive after host suspend; unref'ing it lets Node deprioritise
+    // it under App Nap / background coalescing, which is exactly the
+    // failure mode the detector was added to fix. Default behaviour
+    // (unref) is preserved so existing single-run / test callers do
+    // not start blocking the event loop.
+    this._driftKeepAlive = !!(opts && opts.keepAlive);
     this._running = true;
     this._startedAt = Date.now();
     this._tickInFlight = false;
@@ -940,7 +977,20 @@ class LifecycleManager {
     // zombie original (eventually resolved). Both would write _tickInFlight,
     // _heartbeatTimer, and _consecutiveFailures, fanning out into duplicate
     // timers and racing on backoff state.
-    this._tickGeneration = 0;
+    //
+    // FIX (#548 third-pass TG-2): bump rather than reset. A zombie tick
+    // captured myGen=N before stopHeartbeatLoop fired; if start re-zeroed
+    // the counter, the zombie's first compare after stop+start would see
+    // _tickGeneration < N and bail correctly --- but if a subsequent
+    // _rescueHungTick climbed back to N, the zombie would suddenly look
+    // live again. Bumping by a large constant guarantees monotonicity
+    // across the stop/start boundary so prior-session zombies can never
+    // collide with the current generation.
+    if (typeof this._tickGeneration === 'number') {
+      this._tickGeneration += 1_000_000;
+    } else {
+      this._tickGeneration = 0;
+    }
     // Per-tick AbortController slot. Set by each _tick invocation, cleared
     // by that same invocation's finally; _rescueHungTick may abort the
     // current one to interrupt a hung hubFetch.
@@ -1141,8 +1191,10 @@ class LifecycleManager {
       }
     }, DRIFT_CHECK_MS);
     // Don't keep the event loop alive on behalf of the detector alone --
-    // matches the unref() used on the heartbeat timer above.
-    if (this._driftInterval.unref) this._driftInterval.unref();
+    // matches the unref() used on the heartbeat timer above. Skip the
+    // unref when the caller opted in to keepAlive (proxy --loop daemon)
+    // so App Nap cannot deprioritise the recovery primitive.
+    if (!this._driftKeepAlive && this._driftInterval.unref) this._driftInterval.unref();
   }
 
   stopHeartbeatLoop() {
