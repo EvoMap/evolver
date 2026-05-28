@@ -78,6 +78,9 @@ class EventConsumer {
    * @param {function} [deps.onEvent]             - (event) => void, invoked per delivered event.
    * @param {function} [deps.fetchImpl]           - Override fetch (testing).
    * @param {number}   [deps.pollTimeoutMs]       - Long-poll wait passed to hub.
+   * @param {number}   [deps.fetchDeadlinePaddingMs] - Override for the
+   *                                                   deadline padding above
+   *                                                   pollTimeoutMs. Tests only.
    */
   constructor({
     hubUrl,
@@ -88,6 +91,7 @@ class EventConsumer {
     onEvent,
     fetchImpl,
     pollTimeoutMs,
+    fetchDeadlinePaddingMs,
   } = {}) {
     this.hubUrl = (hubUrl || '').replace(/\/+$/, '');
     this.lifecycle = lifecycle || null;
@@ -105,6 +109,10 @@ class EventConsumer {
     this._pollTimeoutMs = typeof pollTimeoutMs === 'number' && pollTimeoutMs > 0
       ? pollTimeoutMs
       : DEFAULT_POLL_TIMEOUT_MS;
+    this._fetchDeadlinePaddingMs =
+      typeof fetchDeadlinePaddingMs === 'number' && fetchDeadlinePaddingMs > 0
+        ? fetchDeadlinePaddingMs
+        : FETCH_DEADLINE_PADDING_MS;
 
     this._running = false;
     this._abortCtrl = null;
@@ -164,13 +172,22 @@ class EventConsumer {
 
       let res = null;
       let fetchErr = null;
+      let deadlineFired = false;
       this._abortCtrl = new AbortController();
       // Deadline timer is a safety net for transports that ignore the
       // long-poll timeout we tell the hub about. Hub max wait is ~55s;
       // we abort a touch after our requested timeout to leave room for
       // the response itself to come back.
-      const deadlineMs = this._pollTimeoutMs + FETCH_DEADLINE_PADDING_MS;
+      //
+      // FIX (#548 third-pass MAJOR-1): the deadline-fired AbortError used
+      // to fall into the same `break` as a stop()-driven abort, killing
+      // the long-poll loop permanently after the first NAT-idle timeout.
+      // We now distinguish via the deadlineFired flag and treat a
+      // deadline-fired abort as a transient error to retry on, not as
+      // a clean shutdown.
+      const deadlineMs = this._pollTimeoutMs + this._fetchDeadlinePaddingMs;
       const deadline = setTimeout(() => {
+        deadlineFired = true;
         try { this._abortCtrl?.abort(); } catch (_e) { /* noop */ }
       }, deadlineMs);
       if (deadline && typeof deadline.unref === 'function') deadline.unref();
@@ -197,8 +214,23 @@ class EventConsumer {
       if (!this._running) break;
 
       if (fetchErr) {
-        // Aborted by stop() -- exit cleanly.
-        if (fetchErr.name === 'AbortError') break;
+        // Aborted by stop() -- exit cleanly. Deadline-fired AbortErrors
+        // are NOT a stop signal; they mean the transport hung past our
+        // long-poll window and we should reconnect.
+        if (fetchErr.name === 'AbortError' && !deadlineFired) break;
+        if (deadlineFired) {
+          // Treat as a transient transport hang. Hub long-poll has its
+          // own ~55s ceiling; us hitting the deadline means the
+          // connection (TLS/keepalive/NAT) is in trouble, not that the
+          // hub is down. Use a small fixed retry instead of exponential
+          // backoff so recovery is bounded.
+          this.logger.warn?.(
+            `[eventConsumer] long-poll deadline fired (${this._pollTimeoutMs + this._fetchDeadlinePaddingMs}ms); reconnecting`,
+          );
+          this._notifyIteration({ status: 'error', error: 'deadline_fired' });
+          await this._sleep(MIN_BACKOFF_MS);
+          continue;
+        }
         const msg = fetchErr.message || String(fetchErr);
         this._backoffMs = Math.min(this._backoffMs * 2, MAX_BACKOFF_MS);
         this.logger.warn?.(
