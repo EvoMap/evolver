@@ -481,9 +481,18 @@ function start(a2a, opts) {
     }
   };
   _driftInterval = setInterval(driftFn, driftCheckMs);
-  if (_driftInterval && typeof _driftInterval.unref === 'function') _driftInterval.unref();
   _livenessInterval = setInterval(livenessFn, livenessCheckMs);
-  if (_livenessInterval && typeof _livenessInterval.unref === 'function') _livenessInterval.unref();
+  // F12: unref() only when the caller has no other event-loop pressure
+  // (e.g. `evolver run` single-shot: evolve.run() resolves and the
+  // process should exit). Long-running modes (--loop, webui) opt in to
+  // keepAlive=true so the recovery intervals are NOT the first thing
+  // Node drops or coalesces. Default false preserves the prior
+  // single-shot behavior.
+  const keepAlive = options.keepAlive === true;
+  if (!keepAlive) {
+    if (_driftInterval && typeof _driftInterval.unref === 'function') _driftInterval.unref();
+    if (_livenessInterval && typeof _livenessInterval.unref === 'function') _livenessInterval.unref();
+  }
   _started = true;
 
   try {

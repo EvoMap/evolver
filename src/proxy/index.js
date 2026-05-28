@@ -151,7 +151,45 @@ class EvoMapProxy {
     const serverInfo = await this.server.start();
 
     if (this.hubUrl) {
-      await this.lifecycle.hello();
+      // F7: Previously this return value was discarded. If the very first
+      // hello() returns ok=false (e.g. hub returns hello_rate_limited with
+      // Retry-After 3600s, transient DNS failure, or hub returns a 5xx),
+      // _helloRateLimitUntil gets set and the daemon then silently spins
+      // for up to an hour with no user-visible signal -- every subsequent
+      // tick re-enters hello() which short-circuits at the rate-limit gate.
+      // Surface the failure: log it loudly AND write a system inbound the
+      // dashboard can render so the user knows the daemon is wedged on
+      // first-start rather than running normally.
+      const helloResult = await this.lifecycle.hello();
+      if (helloResult && helloResult.ok === false) {
+        const reason = helloResult.error || 'unknown';
+        const retryHint = helloResult.retryAfter
+          ? ` (retry after ${helloResult.retryAfter}s)`
+          : (helloResult.waitSec ? ` (waiting ${helloResult.waitSec}s)` : '');
+        this.logger.error(
+          `[proxy] First hello() failed: ${reason}${retryHint}. ` +
+            'Daemon will keep retrying via the heartbeat loop, but external traffic may ' +
+            'observe "evolver dead" until hello succeeds.'
+        );
+        try {
+          this.store?.writeInbound({
+            type: 'system',
+            priority: 'high',
+            channel: 'evomap-hub',
+            payload: {
+              action: 'first_hello_failed',
+              reason,
+              retry_after_sec: helloResult.retryAfter || helloResult.waitSec || null,
+              message:
+                `Initial handshake with hub failed (${reason}). Daemon is still running but ` +
+                `the hub does not yet consider this node alive. If the cause is rate limiting, ` +
+                `recovery is automatic once the window expires. If persistent, check A2A_HUB_URL ` +
+                `and A2A_NODE_SECRET.`,
+              docs_url: 'https://evomap.ai/account',
+            },
+          });
+        } catch (_writeErr) { /* never block startup on the inbound write */ }
+      }
       this.lifecycle.startHeartbeatLoop();
       this.sync.start();
 

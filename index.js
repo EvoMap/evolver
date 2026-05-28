@@ -232,7 +232,14 @@ function releaseLock() {
   } catch (e) { /* ignore */ }
 }
 
+// Hoisted to src/ops/crashGuards.js so the semantics are testable in
+// isolation and every long-running mode (--loop, proxy, webui) shares
+// the same handler. Previously only --loop installed these listeners,
+// so proxy/webui daemons silently exited on any uncaught exception.
+const { installCrashGuards } = require('./src/ops/crashGuards');
+
 async function main() {
+  installCrashGuards({ releaseLock });
   const args = process.argv.slice(2);
   const command = args[0];
   const isLoop = args.includes('--loop') || args.includes('--mad-dog');
@@ -281,32 +288,8 @@ async function main() {
         process.on('exit', shutdown);
         process.on('SIGINT', () => { shutdown(); process.exit(); });
         process.on('SIGTERM', () => { shutdown(); process.exit(); });
-        process.on('uncaughtException', (err) => {
-          console.error('[FATAL] Uncaught exception:', err && err.stack ? err.stack : String(err));
-          releaseLock();
-          process.exit(1);
-        });
-        // Sliding window: only exit if many rejections cluster in a short
-        // period. A daemon running for weeks can accumulate harmless,
-        // unrelated rejections (transient network blips, hub timeouts);
-        // the original cumulative counter would eventually kill the
-        // process for noise. Cluster = real failure cascade.
-        const REJECTION_WINDOW_MS = 5 * 60 * 1000;
-        const REJECTION_THRESHOLD = 5;
-        let _rejectionTimestamps = [];
-        process.on('unhandledRejection', (reason) => {
-          const now = Date.now();
-          _rejectionTimestamps.push(now);
-          _rejectionTimestamps = _rejectionTimestamps.filter(function (t) {
-            return now - t < REJECTION_WINDOW_MS;
-          });
-          console.error('[FATAL] Unhandled promise rejection (' + _rejectionTimestamps.length + ' in window):', reason && reason.stack ? reason.stack : String(reason));
-          if (_rejectionTimestamps.length >= REJECTION_THRESHOLD) {
-            console.error('[FATAL] ' + _rejectionTimestamps.length + ' unhandled rejections within ' + (REJECTION_WINDOW_MS / 1000) + 's. Exiting to avoid corrupt state.');
-            releaseLock();
-            process.exit(1);
-          }
-        });
+        // installCrashGuards() installed at main() entry handles
+        // uncaughtException and unhandledRejection for every mode.
 
         process.env.EVOLVE_LOOP = 'true';
         // Issue #96: from v1.85.0, --loop defaults EVOLVE_BRIDGE=true so the
@@ -440,7 +423,10 @@ async function main() {
           } else {
             const a2a = require('./src/gep/a2aProtocol');
             const heartbeatSupervisor = require('./src/gep/heartbeatSupervisor');
-            try { heartbeatSupervisor.start(a2a); }
+            // keepAlive: --loop is a long-running daemon, drift/liveness
+            // intervals must NOT be unref'd (they are the recovery
+            // primitives and should not be the first thing Node drops).
+            try { heartbeatSupervisor.start(a2a, { keepAlive: true }); }
             catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
             try { a2a.startEventStream(); }
             catch (ssErr) { console.warn('[SSE] startEventStream failed: ' + (ssErr && ssErr.message || ssErr)); }
@@ -1678,15 +1664,46 @@ async function main() {
       // Without supervisor wiring, an evolver instance left running in
       // `webui` mode goes the full 6-min default heartbeat interval at
       // best, and stays dead after macOS sleep/wake at worst -- the exact
-      // class of bug the supervisor was added to fix in `--loop`. Skip in
-      // proxy / mailbox mode: that path uses its own lifecycle manager.
+      // class of bug the supervisor was added to fix in `--loop`.
+      //
+      // F5: previously this gated on env vars (EVOMAP_PROXY/A2A_TRANSPORT),
+      // but `evolver webui` never invokes startProxy() in its own process --
+      // so the env vars only signal that a proxy daemon MIGHT be running
+      // elsewhere. A user who exported EVOMAP_PROXY=1 globally and then ran
+      // `evolver webui` without a proxy daemon got zero heartbeat.
+      //
+      // Probe instead of trusting the env: if a proxy is reachable at the
+      // settings-recorded URL, the proxy owns the heartbeat and we skip.
+      // Otherwise we always start our own supervisor so webui is never
+      // silently dead.
       let _webuiSupervisor = null;
       try {
-        if (!(process.env.EVOMAP_PROXY === '1' || process.env.A2A_TRANSPORT === 'mailbox')) {
+        let proxyAlive = false;
+        try {
+          const { getProxyUrl } = require('./src/proxy/server/settings');
+          const proxyUrl = getProxyUrl();
+          if (proxyUrl) {
+            // Best-effort 500ms probe. Any non-error response means
+            // something is listening; assume proxy owns the heartbeat.
+            const ctrl = new AbortController();
+            const probeTimer = setTimeout(() => ctrl.abort(), 500);
+            try {
+              const res = await fetch(`${proxyUrl}/proxy/status`, { signal: ctrl.signal });
+              if (res && (res.status >= 200 && res.status < 600)) proxyAlive = true;
+            } catch (_probeErr) { /* unreachable / timed out -> assume no proxy */ }
+            finally { clearTimeout(probeTimer); }
+          }
+        } catch (_settingsErr) { /* missing settings.json -> assume no proxy */ }
+        if (!proxyAlive) {
           const a2a = require('./src/gep/a2aProtocol');
           _webuiSupervisor = require('./src/gep/heartbeatSupervisor');
-          try { _webuiSupervisor.start(a2a); }
-          catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
+          // keepAlive: webui blocks on `await new Promise(() => {})`;
+          // the http listener is the keep-alive owner. We still want the
+          // recovery intervals ref'd so Node never deprioritises them.
+          try { _webuiSupervisor.start(a2a, { keepAlive: true }); }
+          catch (hbErr) { console.warn('[Heartbeat] supervisor.start failed: ' + (hbErr && hbErr.message || hbErr)); }
+        } else {
+          console.log('[webui] Proxy detected at the configured URL; deferring heartbeat to the proxy lifecycle.');
         }
       } catch (_hbInitErr) { /* startup failure must never block webui */ }
       // Per-request poke. The supervisor's own drift / liveness intervals

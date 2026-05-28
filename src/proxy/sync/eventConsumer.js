@@ -47,11 +47,25 @@
 
 const { hubFetch } = require('../../gep/hubFetch');
 
-const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+// F10: bumped from 30s -> 50s. Hub caps single pollEvents at 55s
+// (evomap-hub/src/services/agentEventService.js:208-209), so 30s wasted
+// roughly half of the available long-poll window and doubled the empty
+// round-trip rate. 50s leaves a 5s margin for fetch overhead under
+// FETCH_DEADLINE_PADDING_MS below.
+const DEFAULT_POLL_TIMEOUT_MS = 50_000;
 const FETCH_DEADLINE_PADDING_MS = 10_000;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 60_000;
 const NODE_NOT_READY_RETRY_MS = 2_000;
+// F8: tiny inter-poll pause on the success path. Hub rate-limits
+// /a2a/events/poll at limit=4 windowMs=60_000 per sender
+// (evomap-hub/src/routes/a2a/protocol.js:182). When events are queued,
+// each round-trip returns immediately and we re-enter the loop with no
+// delay; three events in 0-2s blew through the budget and the consumer
+// then back-off-spun for 60s. A 250ms pause floors the cadence at
+// ~4 polls/second worst case, well below the hub limit, while keeping
+// event-delivery latency under 300ms.
+const SUCCESS_PAUSE_MS = 250;
 
 class EventConsumer {
   /**
@@ -251,7 +265,11 @@ class EventConsumer {
       }
 
       this._notifyIteration({ status: 'ok', count: events.length });
-      // Immediately re-poll on success; no sleep needed.
+      // F8: tiny pause before next poll. Keeps the steady-state cadence
+      // safely under the hub's 4/min rate limit even when events arrive
+      // back-to-back. _sleep is interruptible by stop() so shutdown is
+      // not delayed.
+      if (this._running) await this._sleep(SUCCESS_PAUSE_MS);
     }
   }
 

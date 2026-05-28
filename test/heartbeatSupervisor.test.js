@@ -1375,3 +1375,69 @@ test('E6: _hardRestart\'s _pokeInFlight cleanup also clears _pokeStartedAt', () 
   );
   cleanup();
 });
+
+test('F12: start(a2a, { keepAlive: true }) does NOT unref drift / liveness intervals', () => {
+  // The drift and liveness intervals ARE the macOS sleep/wake recovery
+  // primitives. unref'd intervals are first in line for Node-level
+  // coalescing under App Nap; long-running modes (--loop, webui) opt in
+  // to keepAlive so the recovery loop is never the thing Node drops.
+  // Pin the contract here so a future refactor that drops the flag or
+  // re-introduces unconditional unref() fails the suite.
+  const a2a = makeFakeA2a();
+  const originalSetInterval = global.setInterval;
+  const installed = [];
+  global.setInterval = function patchedSetInterval(fn, ms) {
+    const t = originalSetInterval(fn, ms);
+    let unrefCount = 0;
+    const originalUnref = t.unref ? t.unref.bind(t) : null;
+    if (originalUnref) {
+      t.unref = function () { unrefCount++; return originalUnref(); };
+    }
+    installed.push({ t, ms, get unrefCount() { return unrefCount; } });
+    return t;
+  };
+  try {
+    supervisor.start(a2a, { keepAlive: true });
+    assert.equal(installed.length, 2, 'expected drift + liveness intervals');
+    for (const { unrefCount, ms } of installed) {
+      assert.equal(
+        unrefCount, 0,
+        `keepAlive=true must NOT unref the interval (ms=${ms}); got ${unrefCount} unref() call(s)`,
+      );
+    }
+  } finally {
+    global.setInterval = originalSetInterval;
+    for (const { t } of installed) clearInterval(t);
+    cleanup();
+  }
+});
+
+test('F12: start(a2a) without keepAlive DOES unref intervals (preserve single-shot behavior)', () => {
+  const a2a = makeFakeA2a();
+  const originalSetInterval = global.setInterval;
+  const installed = [];
+  global.setInterval = function patchedSetInterval(fn, ms) {
+    const t = originalSetInterval(fn, ms);
+    let unrefCount = 0;
+    const originalUnref = t.unref ? t.unref.bind(t) : null;
+    if (originalUnref) {
+      t.unref = function () { unrefCount++; return originalUnref(); };
+    }
+    installed.push({ t, ms, get unrefCount() { return unrefCount; } });
+    return t;
+  };
+  try {
+    supervisor.start(a2a);
+    assert.equal(installed.length, 2, 'expected drift + liveness intervals');
+    for (const { unrefCount, ms } of installed) {
+      assert.equal(
+        unrefCount, 1,
+        `default start() must unref the interval (ms=${ms}); got ${unrefCount} unref() call(s)`,
+      );
+    }
+  } finally {
+    global.setInterval = originalSetInterval;
+    for (const { t } of installed) clearInterval(t);
+    cleanup();
+  }
+});

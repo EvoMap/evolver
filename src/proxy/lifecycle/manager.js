@@ -155,6 +155,14 @@ class LifecycleManager {
     this._helloRateLimitUntil = 0;
     this._reauthBackoffUntil = 0;
     this._consecutiveReauthFailures = 0;
+    // Generation counter for reAuthenticate. Mirror of _tickGeneration:
+    // bumped when the watchdog rejects the race, so a late-resolving zombie
+    // hello/heartbeat from the pre-watchdog attempt sees a stale generation
+    // and refuses to mutate _consecutiveReauthFailures / _reauthBackoffUntil
+    // / call _emitManualResetNeeded. Without this guard, a hung hello that
+    // eventually resolves after the watchdog can double-write secrets and
+    // double-bump backoff alongside a concurrently-running fresh reauth.
+    this._reauthGeneration = 0;
     // Hub-provided next-tick hints. Set on a successful heartbeat
     // response that includes next_heartbeat_ms, cleared on failure paths
     // so the local backoff math takes over. Null = use the configured
@@ -437,6 +445,8 @@ class LifecycleManager {
       return false;
     }
     this._reauthInProgress = true;
+    const myGen = ++this._reauthGeneration;
+    const isStale = () => this._reauthGeneration !== myGen;
     let manualResetRequired = false;
     // The inner async function holds the full reauth state machine. We
     // race it against REAUTH_HUNG_THRESHOLD_MS so a hung hello()/heartbeat()
@@ -448,8 +458,10 @@ class LifecycleManager {
     // reauth-in-progress gate. See REAUTH_HUNG_THRESHOLD_MS above.
     const run = async () => {
       for (let attempt = 1; attempt <= MAX_REAUTH_ATTEMPTS; attempt++) {
+        if (isStale()) return false;
         this.logger.warn(`[lifecycle] re-auth attempt ${attempt}/${MAX_REAUTH_ATTEMPTS}: rotating secret via hello...`);
         const helloResult = await this.hello({ rotateSecret: true });
+        if (isStale()) return false;
         if (!helloResult.ok) {
           this.logger.error(`[lifecycle] re-auth hello failed: ${helloResult.error}`);
           if (helloResult.error === 'hello_rate_limited' || helloResult.error === 'hello_rate_limit_active') break;
@@ -493,6 +505,7 @@ class LifecycleManager {
           break;
         }
         const hbResult = await this.heartbeat({ _skipReauth: true });
+        if (isStale()) return false;
         if (hbResult.ok) {
           this.logger.log('[lifecycle] re-auth succeeded: heartbeat confirmed with new secret');
           this._consecutiveReauthFailures = 0;
@@ -511,6 +524,7 @@ class LifecycleManager {
         }
         this.logger.warn(`[lifecycle] re-auth attempt ${attempt}: heartbeat still failing after rotate`);
       }
+      if (isStale()) return false;
       if (manualResetRequired) {
         this._emitManualResetNeeded();
       }
@@ -544,16 +558,39 @@ class LifecycleManager {
       return await Promise.race([run(), watchdog]);
     } catch (err) {
       if (err && err.message === 'reauth_hung_timeout') {
+        // Watchdog rejected the race. The inner run() promise is still
+        // pending in the background; bump _reauthGeneration so its
+        // late-resolution sees a stale gen and refuses to commit state.
+        this._reauthGeneration += 1;
+        // This watchdog fire IS a real failure attempt that never
+        // returned. Without bumping cf and seeding backoff, every
+        // subsequent poke (60s throttle window) would launch another
+        // reauth that also hangs and trips the watchdog again -- a
+        // tight 60s loop hammering the hub with no exponential
+        // escalation. Treat the hung attempt as a failure for backoff
+        // accounting purposes.
+        this._consecutiveReauthFailures += 1;
+        const backoffMs = Math.min(
+          REAUTH_BACKOFF_BASE_MS * Math.pow(2, this._consecutiveReauthFailures - 1),
+          REAUTH_BACKOFF_MAX_MS,
+        );
+        this._reauthBackoffUntil = Date.now() + backoffMs;
+        const backoffMin = Math.round(backoffMs / 60_000);
         this.logger.error(
-          `[lifecycle] re-auth watchdog fired after ${Math.round(REAUTH_HUNG_THRESHOLD_MS / 1000)}s; ` +
-            'releasing _reauthInProgress so subsequent pokes can drive recovery. ' +
-            'Underlying hello/heartbeat fetch may still be pending in the background.',
+          `[lifecycle] re-auth watchdog fired after ${Math.round(REAUTH_HUNG_THRESHOLD_MS / 1000)}s ` +
+            `(failure #${this._consecutiveReauthFailures}); backing off for ${backoffMin} minutes. ` +
+            'Releasing _reauthInProgress so subsequent pokes can drive recovery after backoff. ' +
+            'Underlying hello/heartbeat fetch may still be pending in the background but will be ' +
+            'ignored when it resolves (stale generation).',
         );
         return false;
       }
       // Inner state-machine throw (rare; hello/heartbeat normally return
-      // {ok:false} instead of throwing). Bump the failure counter so the
-      // backoff escalation tracks reality, and surface false.
+      // {ok:false} instead of throwing). Surface false; do NOT bump cf
+      // because run() already handles its own failure accounting in the
+      // non-throw branches. Bump gen so any in-flight inner promise from
+      // before the throw is invalidated.
+      this._reauthGeneration += 1;
       this.logger.error(`[lifecycle] re-auth threw unexpectedly: ${err && err.message || err}`);
       return false;
     } finally {
@@ -667,13 +704,19 @@ class LifecycleManager {
       if (_isStaleGen()) return null;
 
       if (res.status === 403 || res.status === 401) {
+        // F2: "compute outcome -> single stale check -> commit" pattern.
+        // The previous shape bumped _consecutiveFailures and cleared the
+        // hub hint BEFORE the await on res.text(), so a watchdog firing
+        // during the body-read would leave both mutations on a zombie
+        // tick with no rollback. Read body first, single gen check, then
+        // commit all state.
+        const errText = await res.text().catch(() => '');
+        if (_isStaleGen()) return null;
         this._consecutiveFailures++;
         // Auth failure: drop any stale hub next-heartbeat hint so the
         // local backoff math owns the reschedule cadence.
         this._lastHubNextHeartbeatMs = null;
-        const errText = await res.text().catch(() => '');
         this.logger.error(`[lifecycle] heartbeat auth failed (${res.status}): ${errText}`);
-        if (_isStaleGen()) return null;
         if (!_skipReauth) {
           const recovered = await this.reAuthenticate();
           if (_isStaleGen()) return null;
@@ -686,16 +729,19 @@ class LifecycleManager {
       }
 
       if (!res.ok) {
-        this._consecutiveFailures++;
-        // Hub returns HTTP 429 with Retry-After header (seconds) and
-        // optional retry_after_ms in the JSON body when rate-limiting us
-        // (evomap-hub/src/lib/rateLimitHints.js). Honor whichever is
-        // present so we never retry sooner than the hub asked. Body wins
-        // when both present (ms is more precise than seconds).
+        // F2: same pattern -- consume every potentially-racing await before
+        // mutating instance state. Pre-fix, cf++ and _hubRetryAfterMs both
+        // ran before res.clone().json() / res.text() awaits.
+        let retryMs = null;
         if (res.status === 429) {
-          let retryMs = null;
+          // Hub returns HTTP 429 with Retry-After header (seconds) and
+          // optional retry_after_ms in the JSON body when rate-limiting us
+          // (evomap-hub/src/lib/rateLimitHints.js). Honor whichever is
+          // present so we never retry sooner than the hub asked. Body wins
+          // when both present (ms is more precise than seconds).
           try {
             const body = await res.clone().json().catch(() => null);
+            if (_isStaleGen()) return null;
             if (body && typeof body.retry_after_ms === 'number' && body.retry_after_ms > 0) {
               retryMs = body.retry_after_ms;
             }
@@ -707,17 +753,20 @@ class LifecycleManager {
               retryMs = retryAfterSec * 1000;
             }
           }
-          if (retryMs !== null) {
-            this._hubRetryAfterMs = retryMs;
-            this.logger.warn(
-              `[lifecycle] heartbeat 429 from hub; honoring Retry-After=${Math.round(retryMs / 1000)}s`,
-            );
-          }
+        }
+        const errText = await res.text().catch(() => '');
+        if (_isStaleGen()) return null;
+        // Single commit point, all mutations together, post-await.
+        this._consecutiveFailures++;
+        if (retryMs !== null) {
+          this._hubRetryAfterMs = retryMs;
+          this.logger.warn(
+            `[lifecycle] heartbeat 429 from hub; honoring Retry-After=${Math.round(retryMs / 1000)}s`,
+          );
         }
         // Clear stale next-heartbeat hint -- failure response means the
         // local backoff math owns the next reschedule.
         this._lastHubNextHeartbeatMs = null;
-        const errText = await res.text().catch(() => '');
         this.logger.error(`[lifecycle] heartbeat HTTP ${res.status}: ${errText}`);
         return { ok: false, error: `http_${res.status}`, statusCode: res.status };
       }
@@ -792,21 +841,13 @@ class LifecycleManager {
         );
       }
 
-      if (data?.min_proxy_version && this._shouldUpgrade(data.min_proxy_version)) {
-        this.store.writeInbound({
-          type: 'system',
-          payload: {
-            action: 'proxy_upgrade_required',
-            min_version: data.min_proxy_version,
-            current_version: PROXY_PROTOCOL_VERSION,
-            upgrade_url: data.upgrade_url || null,
-            message: data.upgrade_message || 'Proxy version is below the minimum required by Hub.',
-          },
-          channel: 'evomap-hub',
-          priority: 'high',
-        });
-        this.logger.warn(`[lifecycle] Hub requires proxy >= ${data.min_proxy_version}, current: ${PROXY_PROTOCOL_VERSION}`);
-      }
+      // F9: the legacy min_proxy_version / upgrade_url / upgrade_message
+      // branch was removed. Confirmed by grep over evomap-hub/src that no
+      // current hub code path emits these fields on /a2a/heartbeat -- the
+      // live channels are force_update and upgrade_available (handled
+      // below). If the hub ever revives min_proxy_version, route it
+      // through force_update so the supervisor gets a single uniform
+      // upgrade signal.
 
       // Hub-provided heartbeat signals (a2aService.js:6252-6317):
       //
@@ -1202,6 +1243,11 @@ class LifecycleManager {
       catch { /* never let a test hook escape into production code paths */ }
     }
     this._heartbeatTimer = setTimeout(this._tick, delayMs);
+    // Record the wall-clock fire time so pokeHeartbeat's throttle branch
+    // can compare against an already-pending wake-up and never push it
+    // out (F11). Without this, a poke landing while a fast hub-driven
+    // tick was already 5s away could replace it with a 50s timer.
+    this._nextTickAt = Date.now() + delayMs;
     if (this._heartbeatTimer && this._heartbeatTimer.unref) this._heartbeatTimer.unref();
   }
 
@@ -1220,10 +1266,13 @@ class LifecycleManager {
    *      frequency activity sources (a polling IDE hitting /mailbox/poll
    *      every 250ms) fan out into many ticks per second once each tick
    *      completed fast on a 401, exhausting the hub's 6/300s per-sender
-   *      heartbeat budget. Bounding recovery to ~60s is fine -- the
-   *      drift detector's race-recovery branch covers the post-wake
-   *      case independently, and a throttled poke still reschedules the
-   *      pending timer to fire when the throttle window opens.
+   *      heartbeat budget. Bounding activity-driven recovery to ~60s is
+   *      fine -- the drift detector's race-recovery branch covers the
+   *      post-wake case independently (90-120s; see comment block at
+   *      lines 1113-1130 -- TICK_SUCCESS_STALE_MS=90s plus up to one
+   *      DRIFT_CHECK_MS=30s jitter), and a throttled poke still
+   *      reschedules the pending timer to fire when the throttle window
+   *      opens.
    *
    * Reauth backoff handling:
    *   When the hub has genuinely invalidated the secret (operator did
@@ -1285,8 +1334,17 @@ class LifecycleManager {
         // Pull the pending timer in to fire at the throttle window. The
         // previously-scheduled tick was using backoff math from the
         // (now-cleared) _consecutiveFailures, so its delay could be up
-        // to 30 min. Bounding user-perceived recovery to ~60s.
+        // to ~30 min in deep-backoff states. Bounding user-perceived
+        // recovery to ~60s (POKE_THROTTLE_MS).
         const waitMs = Math.max(0, POKE_THROTTLE_MS - sinceLast);
+        // F11: never push an existing wake-up out. If the hub already
+        // gave us a short next_heartbeat_ms and the timer would fire
+        // sooner than waitMs, leave it alone. Only intervene when the
+        // existing timer is farther out than the throttle window.
+        const remainingMs = this._nextTickAt ? this._nextTickAt - Date.now() : Infinity;
+        if (remainingMs <= waitMs) {
+          return false;
+        }
         if (this._heartbeatTimer) {
           clearTimeout(this._heartbeatTimer);
           this._heartbeatTimer = null;

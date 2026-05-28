@@ -111,7 +111,16 @@ class SyncEngine {
       try {
         try {
           const result = await this.outbound.flush();
-          if (result.sent > 0) this._lastActivity = Date.now();
+          if (result.sent > 0) {
+            this._lastActivity = Date.now();
+            // F6: outbound push success is liveness too (full network +
+            // TLS + hub auth round-trip succeeded). Pre-fix, only inbound
+            // pulls signalled liveness -- a node whose only successful
+            // path is outbound (inbound empty / 304, eventConsumer
+            // disabled) had heartbeats running blind to real activity.
+            // Symmetric with the inbound-received path below.
+            try { this._fireLiveness('outbound-sent'); } catch { /* never let onLiveness escape */ }
+          }
         } catch (err) {
           if (err instanceof AuthError) {
             // _handleAuthError awaits an external callback that can itself
