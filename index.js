@@ -243,6 +243,22 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
   const isLoop = args.includes('--loop') || args.includes('--mad-dog');
+
+  // Best-effort poke the local daemon socket so a long-running --loop /
+  // webui process in another terminal wakes its heartbeat in response
+  // to ANY evolver subcommand the user types. Skipped for daemon-
+  // starting modes (--loop, webui) because they ARE the daemon and
+  // would just race their own future bind. Fire-and-forget; never
+  // blocks command dispatch, never throws. (#548 third-pass X1.)
+  const _isDaemonStartingCommand = isLoop || command === 'webui';
+  if (!_isDaemonStartingCommand) {
+    try {
+      const { pokeLocalDaemonBestEffort } = require('./src/ops/localPokeSocket');
+      // Don't await; whatever the result, the subcommand proceeds.
+      pokeLocalDaemonBestEffort({ reason: command || 'cli' }).catch(() => {});
+    } catch (_e) { /* never block on a missing helper */ }
+  }
+
   const isVerbose = args.includes('--verbose') || args.includes('-v') ||
     String(process.env.EVOLVER_VERBOSE || '').toLowerCase() === 'true';
   if (isVerbose) process.env.EVOLVER_VERBOSE = 'true';
@@ -410,6 +426,10 @@ async function main() {
         const progressUpdateMs = parseMs(process.env.EVOLVER_PROGRESS_UPDATE_MS, 60000); // 1 min default
 
         // Start hub heartbeat (keeps node alive independently of evolution cycles)
+        // Refs captured for the local-poke wire-up below. Either the proxy
+        // lifecycle OR the default-mode supervisor will be set, never both.
+        let _loopProxyLifecycle = null;
+        let _loopDefaultSupervisor = null;
         try {
           if (process.env.EVOMAP_PROXY === '1' || process.env.A2A_TRANSPORT === 'mailbox') {
             const { startProxy } = require('./src/proxy');
@@ -417,6 +437,7 @@ async function main() {
               hubUrl: process.env.A2A_HUB_URL,
             });
             console.log('[Proxy] Started on ' + proxyInfo.url);
+            _loopProxyLifecycle = (proxyInfo.proxy && proxyInfo.proxy.lifecycle) || null;
             const { registerMailboxTransport } = require('./src/gep/mailboxTransport');
             registerMailboxTransport();
             process.env.A2A_TRANSPORT = 'mailbox';
@@ -426,13 +447,41 @@ async function main() {
             // keepAlive: --loop is a long-running daemon, drift/liveness
             // intervals must NOT be unref'd (they are the recovery
             // primitives and should not be the first thing Node drops).
-            try { heartbeatSupervisor.start(a2a, { keepAlive: true }); }
+            try { heartbeatSupervisor.start(a2a, { keepAlive: true }); _loopDefaultSupervisor = heartbeatSupervisor; }
             catch (hbErr) { console.warn('[Heartbeat] startHeartbeat failed: ' + (hbErr && hbErr.message || hbErr)); }
             try { a2a.startEventStream(); }
             catch (ssErr) { console.warn('[SSE] startEventStream failed: ' + (ssErr && ssErr.message || ssErr)); }
           }
         } catch (e) {
           console.warn('[Heartbeat] Failed to start: ' + (e.message || e));
+        }
+
+        // Local-poke IPC server. When the user runs another evolver
+        // subcommand in a separate terminal, that subcommand connects
+        // here and the handler forwards the poke into whichever
+        // heartbeat machinery is active. Closes the "evolver run in
+        // another terminal does nothing" failure mode that the in-
+        // process recovery primitives cannot reach because they only
+        // observe this process's own state. (#548 third-pass X1.)
+        try {
+          const { startLocalPokeServer } = require('./src/ops/localPokeSocket');
+          const onLocalPoke = (reason) => {
+            const tag = 'ipc-' + (reason || 'cli');
+            try {
+              if (_loopProxyLifecycle && typeof _loopProxyLifecycle.pokeHeartbeat === 'function') {
+                _loopProxyLifecycle.pokeHeartbeat(tag);
+              } else if (_loopDefaultSupervisor && typeof _loopDefaultSupervisor.poke === 'function') {
+                _loopDefaultSupervisor.poke(tag);
+              }
+            } catch (_e) { /* poke must never throw */ }
+          };
+          startLocalPokeServer({ onPoke: onLocalPoke, logger: console })
+            .then((handle) => {
+              if (handle) console.log('[localPoke] listening at ' + handle.socketPath);
+            })
+            .catch((e) => console.warn('[localPoke] server failed to start: ' + (e && e.message || e)));
+        } catch (e) {
+          console.warn('[localPoke] init failed: ' + (e && e.message || e));
         }
 
         // RecallVerify worker: starts once per process; drains the publish-
@@ -1716,6 +1765,28 @@ async function main() {
       const onWebuiRequest = _webuiSupervisor
         ? () => { try { _webuiSupervisor.poke('webui-request'); } catch (_) {} }
         : undefined;
+
+      // Local-poke IPC server for webui mode (same rationale as the
+      // --loop wire-up: a subcommand in another terminal should wake
+      // the daemon's heartbeat). If the webui process owns no
+      // supervisor (because a separate proxy daemon does), the poke
+      // is a no-op here -- the proxy daemon's own poke server handles
+      // it. (#548 third-pass X1.)
+      try {
+        const { startLocalPokeServer } = require('./src/ops/localPokeSocket');
+        const onLocalPoke = (reason) => {
+          if (!_webuiSupervisor) return;
+          try { _webuiSupervisor.poke('ipc-' + (reason || 'cli')); } catch (_e) { /* never throw */ }
+        };
+        startLocalPokeServer({ onPoke: onLocalPoke, logger: console })
+          .then((handle) => {
+            if (handle) console.log('[localPoke] listening at ' + handle.socketPath);
+          })
+          .catch((e) => console.warn('[localPoke] server failed to start: ' + (e && e.message || e)));
+      } catch (e) {
+        console.warn('[localPoke] init failed: ' + (e && e.message || e));
+      }
+
       const info = await startWebUi({ port, onRequest: onWebuiRequest });
       console.log('[webui] Open ' + info.url);
       const shutdown = async () => {
