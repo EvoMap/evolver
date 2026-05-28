@@ -145,6 +145,21 @@ let _pokeStartedAt = 0;
 // would otherwise spam the same warning every wedge-threshold cycle.
 let _consecutiveHardRestarts = 0;
 let _terminalDiagnosticLogged = false;
+// Generation counter for the poke latch. Bumped on every poke acquire
+// AND on _hardRestart and stop(); the IIFE captures its generation at
+// acquire time and only releases the latch in its finally if the
+// generation still matches. This prevents the following race:
+//   1. poke #1 acquires the latch, awaits sendHeartbeat (hung).
+//   2. _hardRestart fires, clears the latch and bumps the generation
+//      so a new poke can fire.
+//   3. poke #2 acquires the latch with a fresh generation.
+//   4. poke #1's sendHeartbeat finally settles; its finally runs and
+//      would clear _pokeInFlight + _pokeStartedAt --- but those now
+//      belong to poke #2.
+// Without the guard, poke #2's latch and acquire timestamp get
+// stomped, so the E7 watchdog loses track of its real holder and a
+// third poke can fire in parallel with #2. (#548 third-pass MAJOR-2.)
+let _pokeGeneration = 0;
 
 function _now(opts) {
   return opts && typeof opts.nowFn === 'function' ? opts.nowFn() : Date.now();
@@ -205,6 +220,10 @@ function _hardRestart(now) {
     // it tracks).
     _pokeInFlight = null;
     _pokeStartedAt = 0;
+    // Bump _pokeGeneration so any still-pending poke IIFE from before
+    // the restart cannot clobber a subsequent poke's latch when its
+    // sendHeartbeat finally settles. (See _pokeGeneration block comment.)
+    _pokeGeneration += 1;
     _lastObservedSent = -1;
     _lastSuccessfulSendAt = now;
     _lastHardRestartAt = now;
@@ -557,6 +576,13 @@ function poke(reason, opts) {
 
   _lastPokeAt = now;
 
+  // Capture the generation at acquire time. The finally below only
+  // releases the latch if the generation has NOT moved on -- if
+  // _hardRestart or stop() bumped it, a fresher poke owns the latch
+  // and we must not clobber it. (#548 third-pass MAJOR-2.)
+  _pokeGeneration += 1;
+  const myGen = _pokeGeneration;
+
   _pokeInFlight = (async function () {
     try {
       try {
@@ -576,8 +602,10 @@ function poke(reason, opts) {
         console.warn('[Heartbeat] supervisor poke sendHeartbeat failed (' + (reason || 'unknown') + '): ' + (e && e.message || e));
       }
     } finally {
-      _pokeInFlight = null;
-      _pokeStartedAt = 0;
+      if (_pokeGeneration === myGen) {
+        _pokeInFlight = null;
+        _pokeStartedAt = 0;
+      }
     }
   })();
   // Stamp the acquire timestamp AFTER assigning the IIFE so the E7
@@ -599,6 +627,9 @@ function stop() {
   _started = false;
   _pokeInFlight = null;
   _pokeStartedAt = 0;
+  // Bump the poke generation so any still-pending poke IIFE from before
+  // stop() cannot release/clobber the latch state of a future start()+poke.
+  _pokeGeneration += 1;
   _consecutiveNullStats = 0;
   _wedgeThresholdMs = WEDGE_THRESHOLD_MS;
   _consecutiveFailureRestartThreshold = CONSECUTIVE_FAILURE_RESTART_THRESHOLD;
@@ -630,6 +661,7 @@ function _resetForTesting() {
   _hardRestartStartedAt = 0;
   _consecutiveHardRestarts = 0;
   _terminalDiagnosticLogged = false;
+  _pokeGeneration = 0;
 }
 
 // Testing helpers for the E6 / E7 watchdog. The latches and their
