@@ -111,6 +111,27 @@ function resolveProjectDir() {
   return process.cwd();
 }
 
+// Resolve the current workspace id — the forge-resistant tag the session-end
+// writer stamps on every memory-graph entry (`workspace_id`). The session-start
+// reader needs the SAME value to scope which past outcomes belong to this
+// workspace, so this helper mirrors the writer's resolution exactly
+// (evolver-session-end.js#resolveWorkspaceIdForWriter):
+//   1. EVOLVER_WORKSPACE_ID env override
+//   2. paths.getWorkspaceId() loaded from the resolved evolver root
+// Returns null when neither is available (e.g. evolver package not installed),
+// in which case callers must NOT filter — falling back to "show everything"
+// preserves prior behavior rather than hiding all memory on a resolution miss.
+function resolveWorkspaceId(evolverRoot) {
+  if (process.env.EVOLVER_WORKSPACE_ID) return String(process.env.EVOLVER_WORKSPACE_ID);
+  const root = evolverRoot || findEvolverRoot();
+  if (!root) return null;
+  try {
+    const paths = require(path.join(root, 'src', 'gep', 'paths.js'));
+    if (typeof paths.getWorkspaceId === 'function') return paths.getWorkspaceId();
+  } catch { /* paths.js unreachable — return null */ }
+  return null;
+}
+
 // Returns a path to the evolution memory graph, or a fallback location that
 // is guaranteed to be writable. Never returns null — when no evolver root is
 // available, we fall back to `~/.evolver/memory/evolution/memory_graph.jsonl`
@@ -142,4 +163,4 @@ function findMemoryGraph(evolverRoot) {
   return path.join(userDir, 'memory_graph.jsonl');
 }
 
-module.exports = { findEvolverRoot, findMemoryGraph, resolveProjectDir };
+module.exports = { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId };

@@ -7,17 +7,49 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { findEvolverRoot, findMemoryGraph } = require('./_runtimePaths');
+const { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId } = require('./_runtimePaths');
 const { filterRelevantOutcomes } = require('./_memoryFiltering');
 
-function readLastN(filePath, n) {
+// Parse every entry in the memory graph (newest last). Unlike a tail-N read,
+// we must see all entries BEFORE workspace-scoping: a tail-N-then-filter order
+// would let outcomes from other projects (which share the user-level fallback
+// graph on npm-global installs) crowd out this workspace's entries from the
+// window entirely. Scope first, then take the most recent N downstream.
+function readAllEntries(filePath) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    return lines.slice(-n).map(line => {
+    return content.trim().split('\n').filter(Boolean).map(line => {
       try { return JSON.parse(line); } catch { return null; }
     }).filter(Boolean);
   } catch { return []; }
+}
+
+// Does this memory-graph entry belong to the current workspace?
+//
+// The session-end writer stamps two tags: `workspace_id` (forge-resistant,
+// preferred) and `cwd` (backward-compat). We scope reads so that one project
+// never sees another's outcomes through the shared user-level fallback graph
+// (~/.evolver/memory/evolution/memory_graph.jsonl) — the cross-project
+// disclosure / prompt-injection surface Bugbot flagged on the writer side
+// (PR #105 round-2), which the reader never enforced until now.
+//
+// Rules, in order:
+//   - currentId known + entry.workspace_id present -> must match exactly.
+//   - currentId unknown OR entry has neither tag (pre-hardening / Hub-sourced
+//     entries) -> do NOT exclude; falling back to "show it" preserves prior
+//     behavior and avoids hiding all memory when ids can't be resolved.
+//   - As a softer fallback, when the entry has no workspace_id but does carry a
+//     cwd, match that against the current project dir.
+function belongsToWorkspace(entry, currentId, currentDir) {
+  if (entry && typeof entry.workspace_id === 'string' && entry.workspace_id) {
+    if (currentId) return entry.workspace_id === currentId;
+    return true; // can't compare — don't hide it
+  }
+  if (entry && typeof entry.cwd === 'string' && entry.cwd) {
+    if (currentDir) return entry.cwd === currentDir;
+    return true;
+  }
+  return true; // untagged (legacy / Hub) — never excluded
 }
 
 function formatOutcome(entry) {
@@ -100,8 +132,17 @@ function main() {
     return;
   }
 
-  const entries = readLastN(graphPath, 5);
-  const filtered = filterRelevantOutcomes(entries);
+  // Scope to the current workspace BEFORE trimming to the most-recent window,
+  // so other projects sharing the user-level fallback graph can't crowd this
+  // workspace's outcomes out of view. When the workspace id can't be resolved,
+  // belongsToWorkspace() falls back to "show it" — no regression vs. the old
+  // unscoped behavior.
+  const currentId = resolveWorkspaceId(evolverRoot);
+  const currentDir = resolveProjectDir();
+  const scoped = readAllEntries(graphPath)
+    .filter(e => belongsToWorkspace(e, currentId, currentDir));
+  const recent = scoped.slice(-5);
+  const filtered = filterRelevantOutcomes(recent);
 
   if (filtered.length === 0) {
     process.stdout.write(JSON.stringify({}));
@@ -125,4 +166,11 @@ function main() {
   }));
 }
 
-main();
+// Run as a hook when invoked directly; expose pure helpers for unit tests when
+// required as a module. Guarding on require.main keeps the direct-execution
+// behavior (the hosts run `node evolver-session-start.js`) unchanged.
+if (require.main === module) {
+  main();
+} else {
+  module.exports = { belongsToWorkspace };
+}
