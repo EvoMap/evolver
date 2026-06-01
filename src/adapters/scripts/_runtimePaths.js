@@ -112,10 +112,13 @@ function resolveProjectDir() {
 }
 
 // Resolve the current workspace id — the forge-resistant tag the session-end
-// writer stamps on every memory-graph entry (`workspace_id`). The session-start
-// reader needs the SAME value to scope which past outcomes belong to this
-// workspace, so this helper mirrors the writer's resolution exactly
-// (evolver-session-end.js#resolveWorkspaceIdForWriter):
+// writer stamps on every memory-graph entry (`workspace_id`). This is the
+// SINGLE source of that resolution: the session-end writer stamps it and the
+// session-start reader scopes by it, so both call this one function. Keeping
+// it here (rather than a copy per hook) is what guarantees reader and writer
+// can never drift apart — if they resolved different ids, no entry would ever
+// match the reader's filter and workspace scoping would silently break.
+// Resolution order:
 //   1. EVOLVER_WORKSPACE_ID env override
 //   2. paths.getWorkspaceId() loaded from the resolved evolver root
 // Returns null when neither is available (e.g. evolver package not installed),

@@ -13,27 +13,16 @@ const { spawnSync } = require('child_process');
 // on large repos). See GHSA reports / issue #451.
 const MAX_EXEC_BUFFER = 10 * 1024 * 1024;
 
-const { findEvolverRoot, findMemoryGraph, resolveProjectDir } = require('./_runtimePaths');
+const { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId } = require('./_runtimePaths');
 
-// Workspace-id must use the same resolution as the reader in
-// src/evolve/pipeline/collect.js (which goes through src/gep/paths.js#
-// getWorkspaceRoot()). Otherwise writer and reader could land on
-// different `.evolver/workspace-id` files when EVOLVER_REPO_ROOT or
-// OPENCLAW_WORKSPACE is set, or when a `<repoRoot>/workspace`
-// subdirectory exists — in which case the IDs would never match and
-// every memory-graph entry would silently get dropped (Bugbot PR #109
-// round-1 MEDIUM). Lazy-load the canonical resolver from the resolved
-// evolver root; fall back to env-only when paths.js is unreachable.
-function resolveWorkspaceIdForWriter() {
-  if (process.env.EVOLVER_WORKSPACE_ID) return String(process.env.EVOLVER_WORKSPACE_ID);
-  const evolverRoot = findEvolverRoot();
-  if (!evolverRoot) return null;
-  try {
-    const paths = require(path.join(evolverRoot, 'src', 'gep', 'paths.js'));
-    if (typeof paths.getWorkspaceId === 'function') return paths.getWorkspaceId();
-  } catch { /* paths.js unreachable — return null */ }
-  return null;
-}
+// Workspace-id resolution is shared with the session-start reader via
+// _runtimePaths.resolveWorkspaceId(). Reader and writer MUST resolve the SAME
+// id or workspace scoping silently breaks (no entry would ever match the
+// reader's filter), so this logic lives in exactly one place instead of being
+// duplicated here. The shared resolver mirrors src/gep/paths.js#getWorkspaceId()
+// loaded from the evolver root, with an EVOLVER_WORKSPACE_ID env override —
+// consistent with the review-time reader in src/evolve/pipeline/collect.js
+// (Bugbot PR #109 round-1 MEDIUM; reader/writer drift flagged on PR #555).
 
 function runGit(args, cwd) {
   // Argv-array form, no shell. Avoids POSIX `2>/dev/null` redirects that
@@ -182,7 +171,7 @@ function recordToLocal(graphPath, outcome) {
       // tag so older entries written before this hardening still pass
       // the cwd check.
       cwd: process.cwd(),
-      workspace_id: resolveWorkspaceIdForWriter(),
+      workspace_id: resolveWorkspaceId(),
       source: 'hook:session-end',
     };
     fs.appendFileSync(graphPath, JSON.stringify(entry) + '\n', 'utf8');
