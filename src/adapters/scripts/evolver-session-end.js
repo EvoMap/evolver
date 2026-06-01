@@ -170,7 +170,16 @@ function recordToLocal(graphPath, outcome) {
       // .evolver/workspace-id file. cwd is retained as a backward-compat
       // tag so older entries written before this hardening still pass
       // the cwd check.
-      cwd: process.cwd(),
+      //
+      // Use resolveProjectDir() (NOT process.cwd()) so the cwd tag records the
+      // user's project, consistent with how the diff above is collected and
+      // with the session-start reader's cwd fallback. Under Cursor, cwd is the
+      // plugin install dir, so a raw process.cwd() tag would never match the
+      // reader's resolveProjectDir()-derived currentDir — silently hiding every
+      // cwd-only entry (Bugbot PR #555). collect.js only uses cwd as a legacy
+      // fallback (disabled once a workspace_id secret exists), so changing the
+      // tag's source — still a directory path — does not affect its scoping.
+      cwd: resolveProjectDir(),
       workspace_id: resolveWorkspaceId(),
       source: 'hook:session-end',
     };

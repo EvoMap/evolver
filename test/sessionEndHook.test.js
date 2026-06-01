@@ -251,3 +251,44 @@ describe('evolver-session-end no-changes log breadcrumb', () => {
     } finally { cleanup(repo); cleanup(home); }
   });
 });
+
+describe('evolver-session-end cwd tag consistency (reader/writer match)', () => {
+  // Regression (Bugbot PR #555 round-2): the writer must stamp the entry's
+  // `cwd` with resolveProjectDir() — the SAME resolver the session-start
+  // reader uses for its cwd fallback — not raw process.cwd(). Under Cursor the
+  // hook's process.cwd() is the plugin install dir, so a raw-cwd tag would
+  // never equal the reader's project-dir-derived currentDir, silently hiding
+  // every cwd-only entry. Force Hub off so the entry lands in local memory.
+  it('tags entry.cwd with CURSOR_PROJECT_DIR, not the hook process cwd', () => {
+    const repo = makeTmpDir();      // user's project, where the diff lives
+    const elsewhere = makeTmpDir(); // simulate Cursor's plugin-dir cwd
+    const home = makeTmpDir();
+    try {
+      initRepoWithDiff(repo);
+      const graph = path.join(home, '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+      // recordToLocal appends to MEMORY_GRAPH_PATH but does not mkdir for an
+      // explicit path — create the parent the way a real install would.
+      fs.mkdirSync(path.dirname(graph), { recursive: true });
+      const env = baseEnv({
+        HOME: home,
+        EVOLVER_HOOK_LOG_DIR: path.join(home, 'logs'),
+        MEMORY_GRAPH_PATH: graph,
+        TERM_PROGRAM: 'cursor',         // Cursor host
+        CURSOR_PROJECT_DIR: repo,       // real project dir
+        // Hub off so recordToLocal runs and we can inspect the entry.
+        EVOMAP_API_KEY: '', A2A_NODE_SECRET: '', EVOMAP_NODE_ID: '', A2A_NODE_ID: '',
+      });
+
+      const result = runHook(env, elsewhere); // process.cwd() = plugin-ish dir
+      assert.deepEqual(result, {}, 'Cursor host suppresses systemMessage');
+
+      assert.ok(fs.existsSync(graph), 'a local memory entry should be written');
+      const last = fs.readFileSync(graph, 'utf8').trim().split('\n').filter(Boolean).pop();
+      const entry = JSON.parse(last);
+      assert.equal(entry.cwd, repo,
+        `entry.cwd must be the project dir (${repo}), got ${entry.cwd}`);
+      assert.notEqual(entry.cwd, elsewhere,
+        'entry.cwd must NOT be the hook process cwd (the plugin dir under Cursor)');
+    } finally { cleanup(repo); cleanup(elsewhere); cleanup(home); }
+  });
+});
