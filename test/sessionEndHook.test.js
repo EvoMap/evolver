@@ -146,3 +146,54 @@ describe('evolver-session-end Cursor compatibility', () => {
     } finally { cleanup(tmp); }
   });
 });
+
+describe('evolver-session-end project-dir resolution', () => {
+  // Regression: Cursor runs hooks with cwd set to the plugin install dir, not
+  // the user's repo. The hook must read CURSOR_PROJECT_DIR / CLAUDE_PROJECT_DIR
+  // to find the repo and collect a real diff — otherwise it records nothing.
+  it('records the diff from CURSOR_PROJECT_DIR even when cwd is elsewhere', () => {
+    const repo = makeTmpDir();      // the user's actual project (has the diff)
+    const elsewhere = makeTmpDir(); // simulate Cursor's plugin-dir cwd (no repo)
+    const home = makeTmpDir();
+    try {
+      initRepoWithDiff(repo);
+      const logDir = path.join(home, 'logs');
+      const env = baseEnv({
+        HOME: home,
+        EVOLVER_HOOK_LOG_DIR: logDir,
+        TERM_PROGRAM: 'xterm',          // non-Cursor → emits systemMessage so we can assert
+        EVOLVER_HOOK_HOST: '',
+        CURSOR_PROJECT_DIR: repo,       // host points us at the real repo
+      });
+      delete env.CURSOR_TRACE_ID;
+      delete env.CURSOR_SESSION_ID;
+
+      const result = runHook(env, elsewhere); // cwd = wrong dir, like Cursor
+      assert.ok(result && typeof result.systemMessage === 'string',
+        `expected a recorded outcome via CURSOR_PROJECT_DIR, got ${JSON.stringify(result)}`);
+      assert.match(result.systemMessage, /file/, 'should report changed files from the repo');
+    } finally { cleanup(repo); cleanup(elsewhere); cleanup(home); }
+  });
+
+  it('CLAUDE_PROJECT_DIR alias also resolves the repo', () => {
+    const repo = makeTmpDir();
+    const elsewhere = makeTmpDir();
+    const home = makeTmpDir();
+    try {
+      initRepoWithDiff(repo);
+      const env = baseEnv({
+        HOME: home,
+        EVOLVER_HOOK_LOG_DIR: path.join(home, 'logs'),
+        TERM_PROGRAM: 'xterm',
+        EVOLVER_HOOK_HOST: '',
+        CLAUDE_PROJECT_DIR: repo,
+      });
+      delete env.CURSOR_TRACE_ID;
+      delete env.CURSOR_SESSION_ID;
+
+      const result = runHook(env, elsewhere);
+      assert.ok(result && typeof result.systemMessage === 'string',
+        `expected a recorded outcome via CLAUDE_PROJECT_DIR, got ${JSON.stringify(result)}`);
+    } finally { cleanup(repo); cleanup(elsewhere); cleanup(home); }
+  });
+});

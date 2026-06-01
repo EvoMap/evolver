@@ -80,6 +80,37 @@ function findEvolverRoot() {
   return null;
 }
 
+// Resolve the user's PROJECT directory — the workspace the agent is actually
+// working in — for git-diff collection and workspace tagging.
+//
+// Why this exists: hook scripts must NOT assume `process.cwd()` is the project
+// root. Cursor invokes some hook events (e.g. afterFileEdit) with the working
+// directory set to the *plugin* install dir (`~/.cursor/plugins/local/<name>`),
+// not the opened workspace. A hook that runs `git diff` in cwd would then look
+// for changes in the plugin directory and find none — silently recording
+// nothing for every task. Hosts expose the real workspace root via an env var:
+//   - Cursor sets CURSOR_PROJECT_DIR (and a CLAUDE_PROJECT_DIR compat alias)
+//   - Claude Code sets CLAUDE_PROJECT_DIR
+// Codex / opencode / Kiro and direct CLI usage leave both unset, in which case
+// `process.cwd()` is already the project root and remains the fallback — so
+// this change is a no-op on those platforms.
+//
+// SECURITY: only honor an env value that points at an existing directory. A
+// stale or empty value must not redirect git collection to a bogus path; we
+// fall through to cwd instead. We intentionally do NOT recurse into evolver
+// package discovery here — this is purely "where is the user's code".
+function resolveProjectDir() {
+  for (const key of ['CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR']) {
+    const v = process.env[key];
+    if (typeof v === 'string' && v.trim()) {
+      try {
+        if (fs.statSync(v).isDirectory()) return v;
+      } catch { /* not a usable dir — try next / fall back to cwd */ }
+    }
+  }
+  return process.cwd();
+}
+
 // Returns a path to the evolution memory graph, or a fallback location that
 // is guaranteed to be writable. Never returns null — when no evolver root is
 // available, we fall back to `~/.evolver/memory/evolution/memory_graph.jsonl`
@@ -111,4 +142,4 @@ function findMemoryGraph(evolverRoot) {
   return path.join(userDir, 'memory_graph.jsonl');
 }
 
-module.exports = { findEvolverRoot, findMemoryGraph };
+module.exports = { findEvolverRoot, findMemoryGraph, resolveProjectDir };

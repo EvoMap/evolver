@@ -13,7 +13,7 @@ const { spawnSync } = require('child_process');
 // on large repos). See GHSA reports / issue #451.
 const MAX_EXEC_BUFFER = 10 * 1024 * 1024;
 
-const { findEvolverRoot, findMemoryGraph } = require('./_runtimePaths');
+const { findEvolverRoot, findMemoryGraph, resolveProjectDir } = require('./_runtimePaths');
 
 // Workspace-id must use the same resolution as the reader in
 // src/evolve/pipeline/collect.js (which goes through src/gep/paths.js#
@@ -55,7 +55,9 @@ function runGit(args, cwd) {
 }
 
 function getGitDiffStats() {
-  const cwd = process.cwd();
+  // Use the host-provided workspace root, not process.cwd(): Cursor runs some
+  // hook events with cwd set to the plugin dir, where `git diff` finds nothing.
+  const cwd = resolveProjectDir();
   // Distinguish "git failed (no HEAD~1, etc.)" from "git succeeded with
   // empty output (e.g. empty merge)". The previous `||` chain treated
   // both as falsy and fell through to the working-tree diff, which can
