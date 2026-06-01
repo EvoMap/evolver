@@ -69,11 +69,16 @@ function getGitDiffStats() {
   const filesChanged = (stat.match(/\d+ files? changed/) || ['0'])[0];
   const insertions = (stat.match(/(\d+) insertions?/) || [null, '0'])[1];
   const deletions = (stat.match(/(\d+) deletions?/) || [null, '0'])[1];
+  // Distinguish "no git repo here" from "repo with no changes" purely for the
+  // skip-log message — the diff commands above can't tell the two apart (both
+  // yield empty output). A single cheap rev-parse settles it.
+  const isRepo = runGit(['rev-parse', '--is-inside-work-tree'], cwd).out === 'true';
   return {
     stat,
     summary: `${filesChanged}, +${insertions}/-${deletions}`,
     diffSnippet: diffContent.slice(0, 2000),
     hasChanges: stat.length > 0,
+    isRepo,
   };
 }
 
@@ -187,6 +192,24 @@ function recordToLocal(graphPath, outcome) {
   }
 }
 
+// Append a single timestamped line to ~/.evolver/logs/evolution.log (or
+// EVOLVER_HOOK_LOG_DIR). Best-effort: a log-write failure must never break the
+// hook. Used both for recorded outcomes and for the "skipped, nothing to
+// record" notices so a user can always see why a session did or did not
+// produce an entry.
+function appendEvolutionLog(line) {
+  try {
+    const logDir = process.env.EVOLVER_HOOK_LOG_DIR
+      || path.join(os.homedir(), '.evolver', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(logDir, 'evolution.log'),
+      `${new Date().toISOString()} ${line}\n`,
+      'utf8'
+    );
+  } catch { /* best-effort, never break the hook on log write */ }
+}
+
 function main() {
   let inputData = '';
   let handled = false;
@@ -206,6 +229,18 @@ function main() {
       const diffInfo = getGitDiffStats();
 
       if (!diffInfo.hasChanges) {
+        // No git diff means no signal source — session-end derives the
+        // outcome (status/score/signals/summary) entirely from the diff, so
+        // there is nothing meaningful to record. This is expected in a
+        // non-git workspace or a repo with no changes this session. Rather
+        // than fabricate an empty outcome (which would pollute the memory
+        // graph), record nothing — but leave a log breadcrumb so the user
+        // can tell "evolver ran but had nothing to record" apart from
+        // "evolver never fired". (Previously this branch was fully silent.)
+        const reason = diffInfo.isRepo
+          ? 'no changes detected this session'
+          : 'not a git workspace';
+        appendEvolutionLog(`[Evolution] Session end: nothing recorded (${reason}).`);
         finish({});
         return;
       }
@@ -256,16 +291,7 @@ function main() {
       // The receipt is always appended to ~/.evolver/logs/evolution.log
       // so it is never silently lost; users can opt back in to the inline
       // notification with EVOLVER_HOOK_VERBOSE=1.
-      try {
-        const logDir = process.env.EVOLVER_HOOK_LOG_DIR
-          || path.join(os.homedir(), '.evolver', 'logs');
-        fs.mkdirSync(logDir, { recursive: true });
-        fs.appendFileSync(
-          path.join(logDir, 'evolution.log'),
-          `${new Date().toISOString()} ${msg}\n`,
-          'utf8'
-        );
-      } catch { /* best-effort, never break the hook on log write */ }
+      appendEvolutionLog(msg);
 
       finish(isCursorHost() ? {} : { systemMessage: msg });
     } catch (e) {

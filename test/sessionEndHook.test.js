@@ -197,3 +197,57 @@ describe('evolver-session-end project-dir resolution', () => {
     } finally { cleanup(repo); cleanup(elsewhere); cleanup(home); }
   });
 });
+
+describe('evolver-session-end no-changes log breadcrumb', () => {
+  // A non-git workspace has no diff -> no signal source -> nothing is recorded
+  // (recording an empty outcome would pollute the memory graph). But the hook
+  // must not be fully silent: it logs a one-line skip notice so a user can tell
+  // "ran but had nothing to record" from "never fired".
+  it('logs a "not a git workspace" skip notice and records no outcome', () => {
+    const nongit = makeTmpDir(); // plain dir, no git init
+    const home = makeTmpDir();
+    try {
+      const logDir = path.join(home, 'logs');
+      const env = baseEnv({ HOME: home, EVOLVER_HOOK_LOG_DIR: logDir, TERM_PROGRAM: 'xterm' });
+      delete env.CURSOR_TRACE_ID;
+      delete env.CURSOR_SESSION_ID;
+
+      const result = runHook(env, nongit);
+      assert.deepEqual(result, {}, 'no outcome should be emitted in a non-git workspace');
+
+      const logFile = path.join(logDir, 'evolution.log');
+      assert.ok(fs.existsSync(logFile), 'a skip breadcrumb must be logged');
+      const log = fs.readFileSync(logFile, 'utf8');
+      assert.match(log, /nothing recorded \(not a git workspace\)/);
+      // And it must NOT have written a memory-graph entry.
+      const graph = path.join(home, '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+      assert.ok(!fs.existsSync(graph) || fs.readFileSync(graph, 'utf8').trim() === '',
+        'no memory-graph entry should be written when there are no changes');
+    } finally { cleanup(nongit); cleanup(home); }
+  });
+
+  it('logs a "no changes detected" notice in a clean git repo', () => {
+    const repo = makeTmpDir();
+    const home = makeTmpDir();
+    try {
+      // git repo with a committed file but NO uncommitted change this session.
+      execSync('git init -q', { cwd: repo });
+      execSync('git config user.email test@example.com', { cwd: repo });
+      execSync('git config user.name test', { cwd: repo });
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'hello\n');
+      execSync('git add a.txt', { cwd: repo });
+      execSync('git commit -q -m initial', { cwd: repo });
+      // No second commit and no edit -> diff HEAD~1 fails, working tree clean.
+
+      const logDir = path.join(home, 'logs');
+      const env = baseEnv({ HOME: home, EVOLVER_HOOK_LOG_DIR: logDir, TERM_PROGRAM: 'xterm' });
+      delete env.CURSOR_TRACE_ID;
+      delete env.CURSOR_SESSION_ID;
+
+      const result = runHook(env, repo);
+      assert.deepEqual(result, {});
+      const log = fs.readFileSync(path.join(logDir, 'evolution.log'), 'utf8');
+      assert.match(log, /nothing recorded \(no changes detected this session\)/);
+    } finally { cleanup(repo); cleanup(home); }
+  });
+});
