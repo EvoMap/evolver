@@ -81,6 +81,29 @@ describe('evolver-session-start workspace scoping', () => {
     } finally { cleanup(home); }
   });
 
+  it('surfaces this workspace\'s recent entries even behind many newer other-workspace entries', () => {
+    const home = makeTmpDir();
+    try {
+      const graph = path.join(home, '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+      // This workspace's entries come FIRST (older), then a large run of other-
+      // workspace entries (newer). A tail-N read would see only 'other'; the
+      // bounded scan-from-end must walk past them to collect ours — without
+      // parsing being capped at N total (it stops at N *matches*, not N lines).
+      const entries = [];
+      entries.push(outcome('mine-old', { workspace_id: 'ws-mine' }));
+      for (let i = 0; i < 200; i++) entries.push(outcome(`other-${i}`, { workspace_id: 'ws-other' }));
+      entries.push(outcome('mine-new', { workspace_id: 'ws-mine' }));
+      writeGraph(graph, entries);
+
+      const env = baseEnv({ HOME: home, MEMORY_GRAPH_PATH: graph, EVOLVER_WORKSPACE_ID: 'ws-mine' });
+      const result = runStart(env);
+      assert.ok(result && typeof result.additionalContext === 'string',
+        `expected an injection, got ${JSON.stringify(result)}`);
+      assert.match(result.additionalContext, /mine-new/, 'most recent own entry must show');
+      assert.doesNotMatch(result.additionalContext, /other-/, 'no other-workspace leak');
+    } finally { cleanup(home); }
+  });
+
   it('emits nothing when only other workspaces have outcomes', () => {
     const home = makeTmpDir();
     try {

@@ -10,18 +10,34 @@ const os = require('os');
 const { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId } = require('./_runtimePaths');
 const { filterRelevantOutcomes } = require('./_memoryFiltering');
 
-// Parse every entry in the memory graph (newest last). Unlike a tail-N read,
-// we must see all entries BEFORE workspace-scoping: a tail-N-then-filter order
-// would let outcomes from other projects (which share the user-level fallback
-// graph on npm-global installs) crowd out this workspace's entries from the
-// window entirely. Scope first, then take the most recent N downstream.
-function readAllEntries(filePath) {
+// Return up to `n` of the current workspace's most-recent entries, in
+// chronological (oldest-first) order.
+//
+// Why scan from the end: a plain tail-N-then-filter read would let outcomes
+// from other projects (which share the user-level fallback graph on npm-global
+// installs) crowd this workspace's entries out of the window — we must scope
+// to the workspace BEFORE trimming. But parsing the ENTIRE file to do that is
+// wasteful: the graph can reach ~100 MB before rotation, and JSON-parsing every
+// line on each session start is real CPU/memory cost (Bugbot PR #555 round-3).
+//
+// So we read the file (cheap; the previous readLastN read it whole too) but
+// JSON-parse lines lazily from the newest end, keeping only workspace matches,
+// and stop as soon as we have `n`. Parse count is bounded by where this
+// workspace's n-th-most-recent entry sits, not by total file size.
+function readRecentWorkspaceEntries(filePath, currentId, currentDir, n) {
+  let lines;
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return content.trim().split('\n').filter(Boolean).map(line => {
-      try { return JSON.parse(line); } catch { return null; }
-    }).filter(Boolean);
+    lines = fs.readFileSync(filePath, 'utf8').trim().split('\n');
   } catch { return []; }
+  const out = [];
+  for (let i = lines.length - 1; i >= 0 && out.length < n; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (belongsToWorkspace(entry, currentId, currentDir)) out.push(entry);
+  }
+  return out.reverse(); // newest-collected-first -> chronological
 }
 
 // Does this memory-graph entry belong to the current workspace?
@@ -139,9 +155,7 @@ function main() {
   // unscoped behavior.
   const currentId = resolveWorkspaceId(evolverRoot);
   const currentDir = resolveProjectDir();
-  const scoped = readAllEntries(graphPath)
-    .filter(e => belongsToWorkspace(e, currentId, currentDir));
-  const recent = scoped.slice(-5);
+  const recent = readRecentWorkspaceEntries(graphPath, currentId, currentDir, 5);
   const filtered = filterRelevantOutcomes(recent);
 
   if (filtered.length === 0) {
