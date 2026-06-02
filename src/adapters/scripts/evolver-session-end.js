@@ -148,6 +148,10 @@ function recordToHub(outcome) {
 
 function recordToLocal(graphPath, outcome) {
   try {
+    // Resolve the project dir once so the cwd tag and the workspace_id secret
+    // share a single, consistent source (both must agree with the session-start
+    // reader's resolveProjectDir()-based scoping).
+    const projectDir = resolveProjectDir();
     const entry = {
       timestamp: new Date().toISOString(),
       gene_id: outcome.geneId || 'ad_hoc',
@@ -179,8 +183,8 @@ function recordToLocal(graphPath, outcome) {
       // cwd-only entry (Bugbot PR #555). collect.js only uses cwd as a legacy
       // fallback (disabled once a workspace_id secret exists), so changing the
       // tag's source — still a directory path — does not affect its scoping.
-      cwd: resolveProjectDir(),
-      workspace_id: resolveWorkspaceId(),
+      cwd: projectDir,
+      workspace_id: resolveWorkspaceId(undefined, projectDir),
       source: 'hook:session-end',
     };
     fs.appendFileSync(graphPath, JSON.stringify(entry) + '\n', 'utf8');

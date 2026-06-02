@@ -153,8 +153,8 @@ function main() {
   // workspace's outcomes out of view. When the workspace id can't be resolved,
   // belongsToWorkspace() falls back to "show it" — no regression vs. the old
   // unscoped behavior.
-  const currentId = resolveWorkspaceId(evolverRoot);
   const currentDir = resolveProjectDir();
+  const currentId = resolveWorkspaceId(evolverRoot, currentDir);
   const recent = readRecentWorkspaceEntries(graphPath, currentId, currentDir, 5);
   const filtered = filterRelevantOutcomes(recent);
 

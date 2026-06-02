@@ -111,6 +111,76 @@ function resolveProjectDir() {
   return process.cwd();
 }
 
+// Determine the workspace ROOT for a project, mirroring src/gep/paths.js
+// getWorkspaceRoot(): OPENCLAW_WORKSPACE override, else the git repo root at or
+// above `projectDir`, else `projectDir` itself. Kept in sync so the FS-only
+// fallback below lands its secret file at the SAME path paths.js would, which
+// is what lets an installed @evomap/evolver later read the very same id.
+function _fsWorkspaceRoot(projectDir) {
+  if (process.env.OPENCLAW_WORKSPACE) return process.env.OPENCLAW_WORKSPACE;
+  // Walk up from projectDir looking for a .git entry (file or dir).
+  let dir = projectDir;
+  while (dir) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return projectDir;
+}
+
+// FS-only re-implementation of src/gep/paths.js getWorkspaceId() for the case
+// where the evolver package is not installed (plugin-only installs). It reads
+// — and lazily, atomically creates — the per-workspace secret at
+// <workspaceRoot>/.evolver/workspace-id. The format (16-byte hex), the path,
+// the 0600 mode, the O_EXCL|O_NOFOLLOW atomic create, and the symlink
+// rejection all match paths.js exactly, so a workspace seeded by this fallback
+// is transparently picked up by paths.getWorkspaceId() once the package is
+// present, and vice-versa. Returns null on any read/write error (caller then
+// falls back to legacy cwd-tag matching — no regression).
+function _fsWorkspaceId(projectDir) {
+  const dir = path.join(_fsWorkspaceRoot(projectDir), '.evolver');
+  const file = path.join(dir, 'workspace-id');
+  // Read first, with the same symlink guards paths.js uses.
+  try {
+    const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (dirStat && dirStat.isSymbolicLink()) return null;
+    const fileStat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (fileStat) {
+      if (fileStat.isSymbolicLink() || !fileStat.isFile()) return null;
+      const raw = fs.readFileSync(file, 'utf8').trim();
+      if (raw && /^[a-f0-9]{32,}$/i.test(raw)) return raw;
+      return null;
+    }
+  } catch { return null; }
+  // Missing — create atomically. Refuse a symlinked .evolver dir (O_NOFOLLOW
+  // only guards the final component, not intermediate dirs).
+  try {
+    const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (dirStat && dirStat.isSymbolicLink()) return null;
+    fs.mkdirSync(dir, { recursive: true });
+    const payload = require('crypto').randomBytes(16).toString('hex');
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL |
+      (fs.constants.O_NOFOLLOW || 0);
+    let fd;
+    try {
+      fd = fs.openSync(file, flags, 0o600);
+    } catch (e) {
+      if (e && e.code === 'EEXIST') {
+        // Lost a race — re-read.
+        try {
+          const raw = fs.readFileSync(file, 'utf8').trim();
+          return raw && /^[a-f0-9]{32,}$/i.test(raw) ? raw : null;
+        } catch { return null; }
+      }
+      return null; // ELOOP/EMLINK from O_NOFOLLOW hitting a symlink — refuse.
+    }
+    try { fs.writeSync(fd, payload + '\n', 0, 'utf8'); } finally { fs.closeSync(fd); }
+    try { fs.chmodSync(file, 0o600); } catch { /* best-effort */ }
+    return payload;
+  } catch { return null; }
+}
+
 // Resolve the current workspace id — the forge-resistant tag the session-end
 // writer stamps on every memory-graph entry (`workspace_id`). This is the
 // SINGLE source of that resolution: the session-end writer stamps it and the
@@ -120,19 +190,26 @@ function resolveProjectDir() {
 // match the reader's filter and workspace scoping would silently break.
 // Resolution order:
 //   1. EVOLVER_WORKSPACE_ID env override
-//   2. paths.getWorkspaceId() loaded from the resolved evolver root
-// Returns null when neither is available (e.g. evolver package not installed),
-// in which case callers must NOT filter — falling back to "show everything"
-// preserves prior behavior rather than hiding all memory on a resolution miss.
-function resolveWorkspaceId(evolverRoot) {
+//   2. paths.getWorkspaceId() loaded from the resolved evolver root (this is
+//      the richer path — it can additionally back the secret with the OS
+//      keychain when @napi-rs/keyring is installed).
+//   3. FS-only fallback for plugin-only installs where the evolver package is
+//      not reachable. Without this, plugin users got workspace_id=null and the
+//      forge-resistant scoping silently degraded to cwd-tag matching (found
+//      via real-Cursor end-to-end testing). The fallback writes the same
+//      secret file paths.js uses, so installing the package later is seamless.
+// Still returns null if even the FS write fails — callers must then NOT filter
+// (show everything), preserving prior behavior rather than hiding all memory.
+function resolveWorkspaceId(evolverRoot, projectDir) {
   if (process.env.EVOLVER_WORKSPACE_ID) return String(process.env.EVOLVER_WORKSPACE_ID);
   const root = evolverRoot || findEvolverRoot();
-  if (!root) return null;
-  try {
-    const paths = require(path.join(root, 'src', 'gep', 'paths.js'));
-    if (typeof paths.getWorkspaceId === 'function') return paths.getWorkspaceId();
-  } catch { /* paths.js unreachable — return null */ }
-  return null;
+  if (root) {
+    try {
+      const paths = require(path.join(root, 'src', 'gep', 'paths.js'));
+      if (typeof paths.getWorkspaceId === 'function') return paths.getWorkspaceId();
+    } catch { /* paths.js unreachable — fall through to FS-only */ }
+  }
+  return _fsWorkspaceId(projectDir || resolveProjectDir());
 }
 
 // Returns a path to the evolution memory graph, or a fallback location that
