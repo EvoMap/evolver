@@ -176,3 +176,60 @@ describe('evolver-session-start workspace scoping', () => {
     } finally { cleanup(home); cleanup(projectDir); }
   });
 });
+
+describe('evolver-session-start non-git notice', () => {
+  const { execFileSync: x } = require('child_process');
+  const gitInit = (d) => x('git', ['init', '-q'], { cwd: d });
+
+  it('surfaces a notice in a non-git folder (first time)', () => {
+    const home = makeTmpDir(); const proj = makeTmpDir();
+    try {
+      const env = baseEnv({ HOME: home, CURSOR_PROJECT_DIR: proj,
+        MEMORY_GRAPH_PATH: path.join(home, 'g.jsonl') });
+      const r = runStart(env);
+      assert.ok(r && typeof r.additionalContext === 'string', 'expected a notice');
+      assert.match(r.additionalContext, /not a git repository/);
+    } finally { cleanup(home); cleanup(proj); }
+  });
+
+  it('throttles the notice on the second run in the same folder', () => {
+    const home = makeTmpDir(); const proj = makeTmpDir();
+    try {
+      const env = baseEnv({ HOME: home, CURSOR_PROJECT_DIR: proj,
+        MEMORY_GRAPH_PATH: path.join(home, 'g.jsonl') });
+      const first = runStart(env);
+      assert.match(first.additionalContext, /not a git repository/);
+      const second = runStart(env);
+      assert.deepEqual(second, {}, 'second run within TTL must be silent');
+    } finally { cleanup(home); cleanup(proj); }
+  });
+
+  it('does NOT show the notice in a git workspace', () => {
+    const home = makeTmpDir(); const proj = makeTmpDir();
+    try {
+      gitInit(proj);
+      const env = baseEnv({ HOME: home, CURSOR_PROJECT_DIR: proj,
+        MEMORY_GRAPH_PATH: path.join(home, 'g.jsonl') });
+      const r = runStart(env);
+      // No memory + git repo -> empty; in any case never the non-git notice.
+      if (r && r.additionalContext) {
+        assert.doesNotMatch(r.additionalContext, /not a git repository/);
+      }
+    } finally { cleanup(home); cleanup(proj); }
+  });
+
+  it('shows BOTH the notice and memory when a non-git folder has cwd-tagged outcomes', () => {
+    const home = makeTmpDir(); const proj = makeTmpDir();
+    try {
+      const graph = path.join(home, '.evolver', 'memory', 'evolution', 'memory_graph.jsonl');
+      // cwd-tagged success outcome for this non-git folder (workspace_id null).
+      writeGraph(graph, [outcome('nongit-mem', { cwd: proj })]);
+      const env = baseEnv({ HOME: home, CURSOR_PROJECT_DIR: proj, MEMORY_GRAPH_PATH: graph });
+      delete env.EVOLVER_WORKSPACE_ID;
+      const r = runStart(env);
+      assert.ok(r && typeof r.additionalContext === 'string');
+      assert.match(r.additionalContext, /not a git repository/, 'notice present');
+      assert.match(r.additionalContext, /nongit-mem/, 'memory still injected');
+    } finally { cleanup(home); cleanup(proj); }
+  });
+});

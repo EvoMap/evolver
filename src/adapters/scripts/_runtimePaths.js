@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 
 function isEvolverPackageJson(filePath) {
   try {
@@ -267,4 +268,24 @@ function findMemoryGraph(evolverRoot) {
   return path.join(userDir, 'memory_graph.jsonl');
 }
 
-module.exports = { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId };
+// Is `dir` inside a git work tree? Cheap, no-shell `git rev-parse`. Returns
+// false on any error (git missing, not a repo, timeout) and never throws — the
+// session-start hook uses this only to decide whether to surface a one-line
+// "evolver needs a git workspace" notice, so a false negative just suppresses
+// the notice rather than breaking anything.
+function isGitWorkspace(dir) {
+  try {
+    const res = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
+    return res.status === 0 && typeof res.stdout === 'string' && res.stdout.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId, isGitWorkspace };

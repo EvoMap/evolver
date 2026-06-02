@@ -7,8 +7,19 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId } = require('./_runtimePaths');
+const { findEvolverRoot, findMemoryGraph, resolveProjectDir, resolveWorkspaceId, isGitWorkspace } = require('./_runtimePaths');
 const { filterRelevantOutcomes } = require('./_memoryFiltering');
+
+// One-line notice shown (throttled) when the workspace is not a git repo.
+// Evolver derives every outcome from the git diff, so in a non-git folder the
+// session-end hook records nothing — silently, unless we say so here. We surface
+// it in session-start's additionalContext (injected as opening context, which
+// does NOT trigger an extra inference round, unlike a stop-hook systemMessage).
+const NON_GIT_NOTICE =
+  '[Evolver] This folder is not a git repository, so evolution memory is inactive ' +
+  '(outcomes are derived from git diffs). Run `git init` here, or open a git project, ' +
+  'to enable recall and recording.';
+const NON_GIT_NOTICE_TTL_MS = 30 * 60 * 1000; // once per 30 min per folder
 
 // Return up to `n` of the current workspace's most-recent entries, in
 // chronological (oldest-first) order.
@@ -94,18 +105,14 @@ function getDedupStatePath() {
   return path.join(dir, 'session-start-state.json');
 }
 
-function shouldSkipInjection() {
-  // Only apply dedup when explicitly enabled (set by Kiro adapter) OR when
-  // we detect a per-prompt-firing platform via PROMPT_SUBMIT heuristic in
-  // stdin. The stdin is drained in main(), so we rely on env flag here.
-  const dedupEnabled = String(process.env.EVOLVER_SESSION_START_DEDUP || '').toLowerCase() === '1'
-    || String(process.env.EVOLVER_SESSION_START_DEDUP || '').toLowerCase() === 'true';
-  if (!dedupEnabled) return false;
-
-  const ttlMs = Number(process.env.EVOLVER_SESSION_START_DEDUP_TTL_MS) || (30 * 60 * 1000);
-  const key = process.cwd();
+// TTL throttle keyed by an arbitrary string, persisted in session-start-state
+// .json. Returns true if `key` fired within the last `ttlMs` (caller should
+// suppress); otherwise records "now" for `key` and returns false. Best-effort:
+// a state read/write failure just means no throttling (fail open). Shared by
+// the Kiro per-prompt dedup and the non-git notice so both age out of the same
+// file (entries older than 24h are pruned on write).
+function throttled(key, ttlMs) {
   const statePath = getDedupStatePath();
-
   let state = {};
   try {
     if (fs.existsSync(statePath)) {
@@ -115,9 +122,7 @@ function shouldSkipInjection() {
 
   const now = Date.now();
   const last = state[key];
-  if (typeof last === 'number' && now - last < ttlMs) {
-    return true;
-  }
+  if (typeof last === 'number' && now - last < ttlMs) return true;
 
   state[key] = now;
   try {
@@ -130,8 +135,19 @@ function shouldSkipInjection() {
     fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
     fs.renameSync(tmp, statePath);
   } catch { /* best-effort */ }
-
   return false;
+}
+
+function shouldSkipInjection() {
+  // Only apply dedup when explicitly enabled (set by Kiro adapter) OR when
+  // we detect a per-prompt-firing platform via PROMPT_SUBMIT heuristic in
+  // stdin. The stdin is drained in main(), so we rely on env flag here.
+  const dedupEnabled = String(process.env.EVOLVER_SESSION_START_DEDUP || '').toLowerCase() === '1'
+    || String(process.env.EVOLVER_SESSION_START_DEDUP || '').toLowerCase() === 'true';
+  if (!dedupEnabled) return false;
+
+  const ttlMs = Number(process.env.EVOLVER_SESSION_START_DEDUP_TTL_MS) || (30 * 60 * 1000);
+  return throttled(process.cwd(), ttlMs);
 }
 
 function main() {
@@ -140,43 +156,49 @@ function main() {
     return;
   }
 
+  const currentDir = resolveProjectDir();
+
+  // Non-git notice: evolver records nothing in a non-git folder (outcomes come
+  // from git diffs), so tell the user — once per folder per TTL — instead of
+  // failing silently. Emitted regardless of whether any memory exists below.
+  const parts = [];
+  if (!isGitWorkspace(currentDir) && !throttled('nongit:' + currentDir, NON_GIT_NOTICE_TTL_MS)) {
+    parts.push(NON_GIT_NOTICE);
+  }
+
   const evolverRoot = findEvolverRoot();
   const graphPath = findMemoryGraph(evolverRoot);
-
-  if (!graphPath) {
-    process.stdout.write(JSON.stringify({}));
-    return;
-  }
 
   // Scope to the current workspace BEFORE trimming to the most-recent window,
   // so other projects sharing the user-level fallback graph can't crowd this
   // workspace's outcomes out of view. When the workspace id can't be resolved,
   // belongsToWorkspace() falls back to "show it" — no regression vs. the old
   // unscoped behavior.
-  const currentDir = resolveProjectDir();
-  const currentId = resolveWorkspaceId(evolverRoot, currentDir);
-  const recent = readRecentWorkspaceEntries(graphPath, currentId, currentDir, 5);
-  const filtered = filterRelevantOutcomes(recent);
+  if (graphPath) {
+    const currentId = resolveWorkspaceId(evolverRoot, currentDir);
+    const recent = readRecentWorkspaceEntries(graphPath, currentId, currentDir, 5);
+    const filtered = filterRelevantOutcomes(recent);
+    if (filtered.length > 0) {
+      const successCount = filtered.filter(e => e.outcome && e.outcome.status === 'success').length;
+      const failCount = filtered.filter(e => e.outcome && e.outcome.status === 'failed').length;
+      parts.push([
+        `[Evolution Memory] Recent ${filtered.length} outcomes (${successCount} success, ${failCount} failed):`,
+        ...filtered.map(formatOutcome),
+        '',
+        'Use successful approaches. Avoid repeating failed patterns.',
+      ].join('\n'));
+    }
+  }
 
-  if (filtered.length === 0) {
+  if (parts.length === 0) {
     process.stdout.write(JSON.stringify({}));
     return;
   }
 
-  const successCount = filtered.filter(e => e.outcome && e.outcome.status === 'success').length;
-  const failCount = filtered.filter(e => e.outcome && e.outcome.status === 'failed').length;
-
-  const lines = filtered.map(formatOutcome);
-  const summary = [
-    `[Evolution Memory] Recent ${filtered.length} outcomes (${successCount} success, ${failCount} failed):`,
-    ...lines,
-    '',
-    'Use successful approaches. Avoid repeating failed patterns.',
-  ].join('\n');
-
+  const out = parts.join('\n\n');
   process.stdout.write(JSON.stringify({
-    agent_message: summary,
-    additionalContext: summary,
+    agent_message: out,
+    additionalContext: out,
   }));
 }
 
