@@ -167,18 +167,22 @@ function _readWsIdGuarded(dir, file) {
 }
 
 function _fsWorkspaceId(projectDir) {
-  const dir = path.join(_fsWorkspaceRoot(projectDir), '.evolver');
-  const file = path.join(dir, 'workspace-id');
-  // Read first, with symlink guards. (lstat the file directly: if it exists we
-  // return; if it's missing _readWsIdGuarded returns null and we create.)
-  const existing = _readWsIdGuarded(dir, file);
-  if (existing) return existing;
-  // If the file exists but the guards rejected it (symlink / bad format),
-  // refuse rather than create-over it.
-  if (fs.lstatSync(file, { throwIfNoEntry: false })) return null;
-  // Missing — create atomically. Refuse a symlinked .evolver dir (O_NOFOLLOW
-  // only guards the final component, not intermediate dirs).
+  // Whole body is wrapped: the documented contract is "returns null on ANY
+  // read/write error" so the session-start/-end hooks degrade gracefully
+  // rather than crash. throwIfNoEntry:false only suppresses ENOENT; EACCES/EIO
+  // and friends still throw, so a bare lstat/mkdir here must not escape
+  // (Bugbot PR #557 round-2 — an unguarded lstat could crash the hook).
   try {
+    const dir = path.join(_fsWorkspaceRoot(projectDir), '.evolver');
+    const file = path.join(dir, 'workspace-id');
+    // Read first, with symlink guards.
+    const existing = _readWsIdGuarded(dir, file);
+    if (existing) return existing;
+    // If the file exists but the guards rejected it (symlink / bad format),
+    // refuse rather than create over it.
+    if (fs.lstatSync(file, { throwIfNoEntry: false })) return null;
+    // Missing — create atomically. Refuse a symlinked .evolver dir (O_NOFOLLOW
+    // only guards the final component, not intermediate dirs).
     const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
     if (dirStat && dirStat.isSymbolicLink()) return null;
     fs.mkdirSync(dir, { recursive: true });

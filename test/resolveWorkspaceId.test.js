@@ -135,4 +135,26 @@ describe('resolveWorkspaceId FS-only fallback', () => {
         'must not write the secret into the symlink target');
     } finally { cleanup(proj); cleanup(evil); }
   });
+
+  // root ignores file permissions, so the EACCES path can't be provoked there.
+  const denyIt = (typeof process.getuid === 'function' && process.getuid() === 0) ? it.skip : it;
+  denyIt('returns null (does not throw) on a filesystem error like EACCES', () => {
+    const repo = makeTmpDir();
+    const evo = path.join(repo, '.evolver');
+    try {
+      // An unreadable/untraversable .evolver makes lstat on the id file throw
+      // EACCES (not ENOENT). The contract is "return null on any error" so the
+      // hook degrades instead of crashing (Bugbot PR #557 round-2 Medium).
+      fs.mkdirSync(evo, { recursive: true });
+      fs.writeFileSync(path.join(evo, 'workspace-id'), 'x');
+      fs.chmodSync(evo, 0o000);
+      let result, threw = false;
+      try { result = resolveWorkspaceId(NO_PKG, repo); } catch { threw = true; }
+      assert.equal(threw, false, 'must not throw on EACCES');
+      assert.equal(result, null, 'must return null on EACCES');
+    } finally {
+      try { fs.chmodSync(evo, 0o755); } catch {}
+      cleanup(repo);
+    }
+  });
 });
