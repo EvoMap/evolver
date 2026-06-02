@@ -96,6 +96,35 @@ describe('resolveWorkspaceId FS-only fallback', () => {
     } finally { cleanup(ws); cleanup(proj); }
   });
 
+  it('lands the secret under <repoRoot>/workspace when that subdir exists (paths.js parity)', () => {
+    // paths.js getWorkspaceRoot() returns <repoRoot>/workspace if present, so
+    // the fallback must too — otherwise an installed package reads a different
+    // file and the "read back identically" guarantee breaks (Bugbot PR #557).
+    const repo = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(repo, 'workspace'), { recursive: true });
+      const id = resolveWorkspaceId(NO_PKG, repo);
+      assert.match(id, /^[a-f0-9]{32,}$/i);
+      assert.ok(fs.existsSync(path.join(repo, 'workspace', '.evolver', 'workspace-id')),
+        'secret must live under <repoRoot>/workspace/.evolver');
+      assert.ok(!fs.existsSync(path.join(repo, '.evolver', 'workspace-id')),
+        'secret must NOT be written at <repoRoot>/.evolver when workspace/ exists');
+    } finally { cleanup(repo); }
+  });
+
+  it('refuses a pre-existing symlinked id FILE rather than following it', () => {
+    const proj = makeTmpDir(); const evil = makeTmpDir();
+    try {
+      const evoDir = path.join(proj, '.evolver');
+      fs.mkdirSync(evoDir, { recursive: true });
+      const target = path.join(evil, 'attacker-id');
+      fs.writeFileSync(target, 'deadbeef'.repeat(4) + '\n');
+      fs.symlinkSync(target, path.join(evoDir, 'workspace-id'));
+      assert.equal(resolveWorkspaceId(NO_PKG, proj), null,
+        'a symlinked workspace-id file must be refused, not followed');
+    } finally { cleanup(proj); cleanup(evil); }
+  });
+
   it('refuses a symlinked .evolver dir (returns null, no write through link)', () => {
     const proj = makeTmpDir(); const evil = makeTmpDir();
     try {

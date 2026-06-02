@@ -112,21 +112,31 @@ function resolveProjectDir() {
 }
 
 // Determine the workspace ROOT for a project, mirroring src/gep/paths.js
-// getWorkspaceRoot(): OPENCLAW_WORKSPACE override, else the git repo root at or
-// above `projectDir`, else `projectDir` itself. Kept in sync so the FS-only
-// fallback below lands its secret file at the SAME path paths.js would, which
-// is what lets an installed @evomap/evolver later read the very same id.
+// getWorkspaceRoot() step-for-step so the FS-only fallback lands its secret at
+// the SAME path paths.js would (what lets an installed @evomap/evolver read the
+// very same id):
+//   1. OPENCLAW_WORKSPACE override.
+//   2. else the git repo root at/above projectDir, BUT if that repo root has a
+//      `workspace/` subdirectory, paths.js returns <repoRoot>/workspace — so we
+//      must too, or the two land on different .evolver/workspace-id files (the
+//      "read back identically" guarantee would break for such projects).
+//   3. else projectDir.
 function _fsWorkspaceRoot(projectDir) {
   if (process.env.OPENCLAW_WORKSPACE) return process.env.OPENCLAW_WORKSPACE;
-  // Walk up from projectDir looking for a .git entry (file or dir).
+  // Walk up from projectDir looking for a .git entry (file or dir) = repo root.
+  let repoRoot = null;
   let dir = projectDir;
   while (dir) {
-    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    if (fs.existsSync(path.join(dir, '.git'))) { repoRoot = dir; break; }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return projectDir;
+  if (!repoRoot) return projectDir;
+  // Mirror getWorkspaceRoot()'s workspace/ subdir step.
+  const workspaceDir = path.join(repoRoot, 'workspace');
+  if (fs.existsSync(workspaceDir)) return workspaceDir;
+  return repoRoot;
 }
 
 // FS-only re-implementation of src/gep/paths.js getWorkspaceId() for the case
@@ -138,21 +148,34 @@ function _fsWorkspaceRoot(projectDir) {
 // is transparently picked up by paths.getWorkspaceId() once the package is
 // present, and vice-versa. Returns null on any read/write error (caller then
 // falls back to legacy cwd-tag matching — no regression).
-function _fsWorkspaceId(projectDir) {
-  const dir = path.join(_fsWorkspaceRoot(projectDir), '.evolver');
-  const file = path.join(dir, 'workspace-id');
-  // Read first, with the same symlink guards paths.js uses.
+// Read <dir>/workspace-id with the same symlink guards paths.js'
+// _readWorkspaceIdFromFs uses: reject a symlinked .evolver dir, reject a
+// symlinked / non-regular id file, and require hex format. Returns the id, or
+// null on any error / missing file. Used for BOTH the initial read and the
+// EEXIST race re-read so a symlink swapped in between our lstat and openSync
+// can never be followed (Bugbot PR #557).
+function _readWsIdGuarded(dir, file) {
   try {
     const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
     if (dirStat && dirStat.isSymbolicLink()) return null;
     const fileStat = fs.lstatSync(file, { throwIfNoEntry: false });
-    if (fileStat) {
-      if (fileStat.isSymbolicLink() || !fileStat.isFile()) return null;
-      const raw = fs.readFileSync(file, 'utf8').trim();
-      if (raw && /^[a-f0-9]{32,}$/i.test(raw)) return raw;
-      return null;
-    }
+    if (!fileStat) return null;
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) return null;
+    const raw = fs.readFileSync(file, 'utf8').trim();
+    return raw && /^[a-f0-9]{32,}$/i.test(raw) ? raw : null;
   } catch { return null; }
+}
+
+function _fsWorkspaceId(projectDir) {
+  const dir = path.join(_fsWorkspaceRoot(projectDir), '.evolver');
+  const file = path.join(dir, 'workspace-id');
+  // Read first, with symlink guards. (lstat the file directly: if it exists we
+  // return; if it's missing _readWsIdGuarded returns null and we create.)
+  const existing = _readWsIdGuarded(dir, file);
+  if (existing) return existing;
+  // If the file exists but the guards rejected it (symlink / bad format),
+  // refuse rather than create-over it.
+  if (fs.lstatSync(file, { throwIfNoEntry: false })) return null;
   // Missing — create atomically. Refuse a symlinked .evolver dir (O_NOFOLLOW
   // only guards the final component, not intermediate dirs).
   try {
@@ -166,13 +189,10 @@ function _fsWorkspaceId(projectDir) {
     try {
       fd = fs.openSync(file, flags, 0o600);
     } catch (e) {
-      if (e && e.code === 'EEXIST') {
-        // Lost a race — re-read.
-        try {
-          const raw = fs.readFileSync(file, 'utf8').trim();
-          return raw && /^[a-f0-9]{32,}$/i.test(raw) ? raw : null;
-        } catch { return null; }
-      }
+      // Lost a race — re-read WITH the same symlink guards (paths.js does the
+      // same). A bare readFileSync here would follow a symlink swapped in
+      // after our dir lstat (Bugbot PR #557).
+      if (e && e.code === 'EEXIST') return _readWsIdGuarded(dir, file);
       return null; // ELOOP/EMLINK from O_NOFOLLOW hitting a symlink — refuse.
     }
     try { fs.writeSync(fd, payload + '\n', 0, 'utf8'); } finally { fs.closeSync(fd); }
