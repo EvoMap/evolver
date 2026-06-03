@@ -157,6 +157,28 @@ describe('rejectStalePendingRun (issue #556)', () => {
     fs.writeFileSync(sp, JSON.stringify({}, null, 2));
     assert.equal(rejectStalePendingRun(sp), false);
   });
+
+  it('does NOT overwrite a run that already solidified (TOCTOU guard, Bugbot #559 High)', () => {
+    // If the sub-agent solidifies between the gate's age snapshot and this
+    // write, last_run == last_solidify (not pending) and a rejection would
+    // corrupt a successful solidify. rejectStalePendingRun must re-check
+    // pending status under its own fresh read and refuse.
+    const stateDir = path.join(tmpDir, 'memory', 'evolution');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const sp = path.join(stateDir, 'evolution_solidify_state.json');
+    const solidified = {
+      last_run: { run_id: 'run_done' },
+      last_solidify: { run_id: 'run_done', validation: { ok: true } },
+    };
+    fs.writeFileSync(sp, JSON.stringify(solidified, null, 2));
+
+    const changed = rejectStalePendingRun(sp);
+    const after = JSON.parse(fs.readFileSync(sp, 'utf8'));
+
+    assert.equal(changed, false, 'must not reject an already-solidified run');
+    // The successful solidify is preserved verbatim — not overwritten with a rejection.
+    assert.deepEqual(after.last_solidify, solidified.last_solidify);
+  });
 });
 
 describe('readJsonSafe', () => {

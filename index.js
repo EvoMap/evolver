@@ -133,7 +133,12 @@ function pendingRunAgeMs(state, now) {
 function rejectStalePendingRun(statePath) {
   try {
     const state = readJsonSafe(statePath);
-    if (state && state.last_run && state.last_run.run_id) {
+    // Re-check pending status under this fresh read (TOCTOU guard): if the
+    // sub-agent solidified between the gate's age snapshot and now, the run is
+    // no longer pending and we MUST NOT overwrite that successful solidify with
+    // a rejection. isPendingSolidify() is true only when last_run.run_id
+    // exists, so this also subsumes the run_id presence check.
+    if (state && isPendingSolidify(state)) {
       state.last_solidify = {
         run_id: state.last_run.run_id,
         rejected: true,
@@ -637,17 +642,21 @@ async function main() {
             // where the bridge-disabled auto-reject below never runs. TTL-gated
             // so a live sub-agent's in-flight pending state is left untouched.
             const ageMs = pendingRunAgeMs(st0, Date.now());
-            if (pendingStaleMs > 0 && ageMs !== null && ageMs >= pendingStaleMs) {
-              const cleared = rejectStalePendingRun(solidifyStatePath);
-              if (cleared) {
-                console.warn(
-                  '[Loop] Auto-rejected stale pending run after ' +
-                    Math.round(ageMs / 1000) + 's with no solidify ' +
-                    '(sub-agent did not complete; state only, no rollback). Issue #556.'
-                );
-              }
-              // Fall through to run a fresh cycle this iteration.
+            const cleared =
+              pendingStaleMs > 0 && ageMs !== null && ageMs >= pendingStaleMs
+                ? rejectStalePendingRun(solidifyStatePath)
+                : false;
+            if (cleared) {
+              console.warn(
+                '[Loop] Auto-rejected stale pending run after ' +
+                  Math.round(ageMs / 1000) + 's with no solidify ' +
+                  '(sub-agent did not complete; state only, no rollback). Issue #556.'
+              );
+              // Run was cleared (no longer pending) -> fall through to a fresh cycle.
             } else {
+              // Either not stale yet, or the reject did not take (write failed /
+              // solidify won the race). In every such case the run is still
+              // pending, so sleep instead of stacking a new cycle on top of it.
               await sleepMs(Math.max(pendingSleepMs, minSleepMs));
               continue;
             }
