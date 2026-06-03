@@ -492,10 +492,18 @@ async function main() {
         // last_solidify never catches up and the gate would sleep forever. Once a
         // pending run is older than the sub-agent's own hard ceiling it cannot
         // still be running, so we auto-reject it and let the next cycle proceed.
-        // Default = cycleTimeoutMs (fallback to 45 min if the timeout is disabled).
+        //
+        // The default is the cycle hard-ceiling -- but ONLY when that ceiling is
+        // actually enforced. If EVOLVER_CYCLE_TIMEOUT_ENABLED=false (or the
+        // timeout is 0), a sub-agent may legitimately run longer than 45 min, so
+        // there is no safe default age at which a pending run is provably dead;
+        // we default the TTL to 0 (staleness auto-reject OFF) and let the user
+        // opt back in explicitly via EVOLVER_PENDING_STALE_MS. A value of 0
+        // disables the TTL check in the gate below.
+        const cycleCeilingMs = cycleTimeoutEnabled ? cycleTimeoutMs : 0;
         const pendingStaleMs = parseMs(
           process.env.EVOLVER_PENDING_STALE_MS,
-          cycleTimeoutMs > 0 ? cycleTimeoutMs : 2700000
+          cycleCeilingMs
         );
 
         // Start hub heartbeat (keeps node alive independently of evolution cycles)

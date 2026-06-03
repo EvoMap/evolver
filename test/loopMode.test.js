@@ -416,6 +416,33 @@ describe('loop-mode EVOLVE_BRIDGE default (issue #96)', () => {
       'daemon must auto-reject the stale pending run in bridge mode (not Ralph-loop): ' + combined.slice(0, 800)
     );
   });
+
+  it('staleness TTL defaults OFF when the cycle timeout is disabled (Bugbot #559 Medium)', () => {
+    // When EVOLVER_CYCLE_TIMEOUT_ENABLED=false there is no enforced hard ceiling,
+    // so a sub-agent may legitimately run past 45 min. The TTL must NOT default
+    // to 45 min and reject an in-progress solidify. With no explicit
+    // EVOLVER_PENDING_STALE_MS, a stale-looking pending run must be left alone.
+    ensureGitRepo(tmpDir);
+    seedStalePending(60 * 60 * 1000); // 1h old — would trip a 45-min default TTL
+    const combined = runDaemonOnce({
+      EVOLVE_BRIDGE: 'true',
+      EVOLVER_CYCLE_TIMEOUT_ENABLED: 'false',
+      // EVOLVER_PENDING_STALE_MS intentionally unset -> default should be 0 (OFF).
+    });
+    assert.ok(
+      !/Auto-rejected stale pending run/.test(combined),
+      'TTL must be OFF by default when cycle timeout is disabled; must not auto-reject: ' + combined.slice(0, 800)
+    );
+    // The pending run is untouched (still no last_solidify written by us).
+    const sp = path.join(tmpDir, 'memory', 'evolution', 'evolution_solidify_state.json');
+    const state = JSON.parse(fs.readFileSync(sp, 'utf8'));
+    assert.equal(state.last_run && state.last_run.run_id, 'run_stuck');
+    assert.equal(
+      state.last_solidify && state.last_solidify.reason,
+      undefined,
+      'no stale-reject should have been written'
+    );
+  });
 });
 
 describe('bare invocation routing -- black-box', () => {
