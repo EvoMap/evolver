@@ -582,3 +582,7 @@ Clone it into any directory you like. If you use [OpenClaw](https://openclaw.com
 [MIT](https://opensource.org/licenses/MIT)
 
 > Core evolution engine modules are distributed in obfuscated form to protect intellectual property. Source: [EvoMap/evolver](https://github.com/EvoMap/evolver).
+
+## Download History
+
+[![Download History](https://skill-history.com/chart/autogame-17/evolver.svg)](https://skill-history.com/autogame-17/evolver)
