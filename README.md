@@ -585,4 +585,10 @@ Clone it into any directory you like. If you use [OpenClaw](https://openclaw.com
 
 ## Download History
 
-[![Download History](https://skill-history.com/chart/autogame-17/evolver.svg)](https://skill-history.com/autogame-17/evolver)
+Evolver ships through three channels — the [npm package](https://www.npmjs.com/package/@evomap/evolver), prebuilt binaries on [GitHub Releases](https://github.com/EvoMap/evolver/releases), and the [ClawHub](https://skill-history.com/autogame-17/evolver) skill registry:
+
+[![npm](https://img.shields.io/npm/dm/@evomap/evolver?logo=npm&label=npm)](https://www.npmjs.com/package/@evomap/evolver)
+[![npm total](https://img.shields.io/npm/d18m/@evomap/evolver?logo=npm&label=npm%20total)](https://npm-stat.com/charts.html?package=@evomap/evolver)
+[![GitHub releases](https://img.shields.io/github/downloads/EvoMap/evolver/total?logo=github&label=GitHub%20releases)](https://github.com/EvoMap/evolver/releases)
+
+[![ClawHub download history](https://skill-history.com/chart/autogame-17/evolver.svg)](https://skill-history.com/autogame-17/evolver)
