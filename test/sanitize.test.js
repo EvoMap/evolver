@@ -302,4 +302,39 @@ const ghLegacyNoreply = scanForLeaks('opened by classicuser@users.noreply.github
 assert.strictEqual(ghLegacyNoreply.found, false,
   'scanForLeaks must NOT flag legacy GitHub noreply addresses (any local part)');
 
-console.log('All sanitize tests passed (68 assertions)');
+// Regression: CI runners + npm populate several env vars with the repo checkout
+// path — GITHUB_WORKSPACE / RUNNER_WORKSPACE from the runner, and INIT_CWD /
+// npm_config_local_prefix / npm_package_json / PWD from `npm test`. When capsule
+// content legitimately references that build path, detectEnvValueLeaks must NOT
+// report it as an env-value leak, or every self-PR from CI would be blocked over
+// its own build path. This failed only under CI (where these vars are set to
+// /home/runner/work/...) until path/URL-shaped env values were skipped.
+const RUNNER_PATH = '/home/runner/work/evolver/evolver';
+const SECRET_VAL = 'zzz9988aa77bb66cc55dd';
+const _ciEnvKeys = ['GITHUB_WORKSPACE', 'INIT_CWD', 'npm_config_local_prefix', 'EVOLVER_TEST_SECRET'];
+const _savedCiEnv = {};
+for (const k of _ciEnvKeys) _savedCiEnv[k] = process.env[k];
+process.env.GITHUB_WORKSPACE = RUNNER_PATH;
+process.env.INIT_CWD = RUNNER_PATH;
+process.env.npm_config_local_prefix = RUNNER_PATH;
+process.env.EVOLVER_TEST_SECRET = SECRET_VAL;
+try {
+  assert.strictEqual(
+    fullLeakCheck('build trace from /home/runner/work/evolver/evolver/src/foo.js').found,
+    false,
+    'CI runner/npm checkout-path env vars must NOT be flagged as env-value leaks'
+  );
+  // Security guarantee intact: a non-path secret env value is still reverse-detected.
+  assert.strictEqual(
+    fullLeakCheck('config contains ' + SECRET_VAL + ' inline').found,
+    true,
+    'non-path secret env value must still be reverse-detected'
+  );
+} finally {
+  for (const k of _ciEnvKeys) {
+    if (_savedCiEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = _savedCiEnv[k];
+  }
+}
+
+console.log('All sanitize tests passed (70 assertions)');
