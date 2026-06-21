@@ -491,6 +491,78 @@
         "execing or deserializing anything from the payload"
       ],
       "asset_id": "sha256:ac2a2f185390aef37996651ef21355f4beb437049e52a6ca3898619a8d648084"
+    },
+    {
+      "type": "Gene",
+      "id": "gene_shared_sentinel_arena_ci_gate",
+      "category": "optimize",
+      "signals_match": [
+        "sentinel_arena",
+        "shared_ci_gate",
+        "github_actions_composite_action",
+        "self_hosted_runner",
+        "open_pr_sweep",
+        "private_internal_action_access",
+        "对抗性流水线",
+        "共享sentinel",
+        "反向依赖",
+        "本地runner"
+      ],
+      "strategy": [
+        "Extract the adversarial quality gate into a dedicated shared repository/action first; product repositories should keep only policy config and thin local wrappers",
+        "Make consumers reverse-depend on the shared action in CI and keep a fast verifier that asserts the workflow uses the shared action, uploads reports, and preserves fail-on-review policy",
+        "During migration, land narrow main-branch compatibility bridges before tightening consumer contracts, because pull_request_target enforcers execute from main while validating PR head files",
+        "For internal/private action repositories, set GitHub Actions repository access to organization; otherwise consumers fail during action resolution before the gate can run",
+        "Validate in layers: local contract verifier, shared action verifier, dry-run adversarial scan, PR matrix CI, self-hosted sentinel arena job, post-merge main CI, and open PR sweep",
+        "Treat local sandbox failures separately from runner authority: localhost bind/cache/DNS failures may be environmental, but remote self-hosted CI and uploaded reports are authoritative for merge decisions"
+      ],
+      "validation": [
+        "npm run sentinel:arena:verify",
+        "npm run verify:sentinel",
+        "node scripts/verify-pr-ci-sentinel-workflow.mjs --file .github/workflows/ci.yml",
+        "gh pr checks <consumer-pr> --repo <org>/<repo>",
+        "gh run view <main-ci-run> --repo <org>/<repo> --json status,conclusion,jobs",
+        "gh workflow run sentinel-open-pr-sweep.yml --repo <org>/<repo> --ref main"
+      ],
+      "constraints": {
+        "max_files": 30,
+        "forbidden_paths": [
+          ".git",
+          "node_modules"
+        ]
+      },
+      "preconditions": [
+        "a product repository needs an adversarial quality gate shared across multiple EvoMap repos",
+        "GitHub Actions runs on organization-owned self-hosted runners or internal/private action repos"
+      ],
+      "summary": "Roll out a reusable lowercase sentinel arena CI gate: extract the runner into a shared action, make product repos reverse-depend on it, bridge pull_request_target enforcers during migration, enable internal action repository access, and verify via PR CI, main CI, and open PR sweep.",
+      "schema_version": "1.6.0",
+      "epigenetic_marks": [],
+      "learning_history": [],
+      "anti_patterns": [],
+      "routing_hint": {
+        "tier": "mid",
+        "reasoning_level": "medium"
+      },
+      "tool_policy": {
+        "allow_only": [
+          "read",
+          "grep",
+          "git",
+          "gh",
+          "npm",
+          "node",
+          "lark-cli"
+        ],
+        "severity": "warn"
+      },
+      "avoid": [
+        "vendoring the same arena runner into each product repository",
+        "tightening PR-head contracts before main pull_request_target enforcers can accept the new shape",
+        "forgetting GitHub Actions access on the internal action repository, which fails before the job starts",
+        "treating local sandbox DNS/localhost/cache failures as product regressions without checking self-hosted runner evidence"
+      ],
+      "asset_id": "sha256:da0b3fdae6084868dda265e66d4f5618d703dd3a4821c912c3c97cb48676d714"
     }
   ]
 }
