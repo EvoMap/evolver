@@ -31,60 +31,66 @@ describe('determineBridgeEnabled -- white-box', () => {
   it('returns false when EVOLVE_BRIDGE unset and no OPENCLAW_WORKSPACE', () => {
     delete process.env.EVOLVE_BRIDGE;
     delete process.env.OPENCLAW_WORKSPACE;
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), false);
   });
 
   it('returns true when EVOLVE_BRIDGE unset but OPENCLAW_WORKSPACE is set', () => {
     delete process.env.EVOLVE_BRIDGE;
     process.env.OPENCLAW_WORKSPACE = '/some/workspace';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), true);
   });
 
   it('returns true when EVOLVE_BRIDGE explicitly "true"', () => {
     process.env.EVOLVE_BRIDGE = 'true';
     delete process.env.OPENCLAW_WORKSPACE;
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), true);
   });
 
   it('returns false when EVOLVE_BRIDGE explicitly "false"', () => {
     process.env.EVOLVE_BRIDGE = 'false';
     process.env.OPENCLAW_WORKSPACE = '/some/workspace';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), false);
   });
 
   it('returns true for EVOLVE_BRIDGE="True" (case insensitive)', () => {
     process.env.EVOLVE_BRIDGE = 'True';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), true);
   });
 
   it('returns false for EVOLVE_BRIDGE="False" (case insensitive)', () => {
     process.env.EVOLVE_BRIDGE = 'False';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), false);
   });
 
   it('returns true for EVOLVE_BRIDGE="1" (truthy non-false string)', () => {
     process.env.EVOLVE_BRIDGE = '1';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
+    assert.equal(determineBridgeEnabled(), true);
+  });
+
+  it('returns true for EVOLVE_BRIDGE whitespace (truthy non-false string)', () => {
+    process.env.EVOLVE_BRIDGE = '   ';
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), true);
   });
 
   it('returns false for EVOLVE_BRIDGE="" (empty string) without OPENCLAW_WORKSPACE', () => {
     process.env.EVOLVE_BRIDGE = '';
     delete process.env.OPENCLAW_WORKSPACE;
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), false);
   });
 
   it('returns true for EVOLVE_BRIDGE="" (empty string) with OPENCLAW_WORKSPACE', () => {
     process.env.EVOLVE_BRIDGE = '';
     process.env.OPENCLAW_WORKSPACE = '/ws';
-    const { determineBridgeEnabled } = freshRequire('../src/evolve');
+    const { determineBridgeEnabled } = freshRequire('../src/evolve/bridgeMode');
     assert.equal(determineBridgeEnabled(), true);
   });
 });
@@ -98,7 +104,7 @@ describe('determineBridgeEnabled -- black-box via child_process', () => {
       delete process.env.OPENCLAW_WORKSPACE;
       ${env.EVOLVE_BRIDGE !== undefined ? `process.env.EVOLVE_BRIDGE = ${JSON.stringify(env.EVOLVE_BRIDGE)};` : ''}
       ${env.OPENCLAW_WORKSPACE !== undefined ? `process.env.OPENCLAW_WORKSPACE = ${JSON.stringify(env.OPENCLAW_WORKSPACE)};` : ''}
-      const { determineBridgeEnabled } = require('./src/evolve');
+      const { determineBridgeEnabled } = require('./src/evolve/bridgeMode');
       console.log(determineBridgeEnabled());
     `;
     const cleanEnv = {
