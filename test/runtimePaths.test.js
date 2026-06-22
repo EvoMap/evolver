@@ -22,6 +22,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const Module = require('module');
 
 const runtimePaths = require('../src/adapters/scripts/_runtimePaths');
 
@@ -423,7 +424,8 @@ describe('_buildInstallSearchPaths → require.resolve (genuine allowlist integr
       );
       const searchPaths = runtimePaths.__internals.buildInstallSearchPaths();
       assert.ok(searchPaths.includes(nm), 'the planted node_modules dir must be in the search paths');
-      const resolved = require.resolve('@evomap/evolver/package.json', { paths: searchPaths });
+      const isolatedRequire = Module.createRequire(path.join(tmp, 'resolver.js'));
+      const resolved = isolatedRequire.resolve('@evomap/evolver/package.json', { paths: [nm] });
       assert.equal(resolved, path.join(pkgDir, 'package.json'),
         'buildInstallSearchPaths output must actually resolve the package via require.resolve');
     } finally {

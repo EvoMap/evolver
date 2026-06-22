@@ -105,6 +105,7 @@ const { solidify } = require('./src/gep/solidify');
 const path = require('path');
 const os = require('os');
 const { getRepoRoot } = require('./src/gep/paths');
+const { resolveLoopBridgeMode } = require('./src/evolve/loopBridgeMode');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
@@ -252,6 +253,14 @@ function parseBoolEnv(v, fallback) {
   if (s === 'false' || s === '0' || s === 'off' || s === 'no') return false;
   if (s === 'true' || s === '1' || s === 'on' || s === 'yes') return true;
   return fallback;
+}
+
+function classifyInvocation(args) {
+  const argv = Array.isArray(args) ? args : [];
+  const command = argv[0];
+  const isLoop = argv.includes('--loop') || argv.includes('--mad-dog');
+  const startsEvolution = !command || command === 'run' || command === '/evolve' || isLoop;
+  return { command, isLoop, startsEvolution };
 }
 
 class CycleTimeoutError extends Error {
@@ -624,13 +633,14 @@ function refuseHelloIfDaemonRunning(toolLabel) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const command = args[0];
-  const isLoop = args.includes('--loop') || args.includes('--mad-dog');
+  const invocation = classifyInvocation(args);
+  const command = invocation.command;
+  const isLoop = invocation.isLoop;
   const isVerbose = args.includes('--verbose') || args.includes('-v') ||
     String(process.env.EVOLVER_VERBOSE || '').toLowerCase() === 'true';
   if (isVerbose) process.env.EVOLVER_VERBOSE = 'true';
 
-  if (!command || command === 'run' || command === '/evolve' || isLoop) {
+  if (invocation.startsEvolution) {
     if (isLoop) {
         // EPIPE protection. The daemon may outlive the controlling
         // terminal (user closes the iTerm tab, ssh session drops, parent
@@ -1097,21 +1107,9 @@ async function main() {
         // by default since v1.81.0): the daemon's changes get pushed to a
         // stash entry the user can recover with `git stash pop`.
         // Set EVOLVE_BRIDGE=false explicitly to opt back into observe-only.
-        if (!process.env.EVOLVE_BRIDGE) {
-          process.env.EVOLVE_BRIDGE = 'true';
-        }
-        const bridgeEnabled = String(process.env.EVOLVE_BRIDGE).toLowerCase() !== 'false';
-        console.log(`Loop mode enabled (internal daemon, bridge=${process.env.EVOLVE_BRIDGE}, verbose=${isVerbose}).`);
-        if (bridgeEnabled) {
-          console.warn('[Daemon] EVOLVE_BRIDGE=true (default since v1.85.0).');
-          console.warn('[Daemon]   evolver may modify your working tree.');
-          console.warn('[Daemon]   Failed cycles auto-stash via "git stash push --include-untracked".');
-          console.warn('[Daemon]   Recover: git stash list | grep evolver-rollback');
-          console.warn('[Daemon]   Set EVOLVE_BRIDGE=false to opt out (observe-only mode).');
-        } else {
-          console.warn('[Daemon] EVOLVE_BRIDGE=false: evolver will NOT modify your working tree (observe-only).');
-          console.warn('[Daemon]   To enable real evolution: unset EVOLVE_BRIDGE or set it to "true".');
-        }
+        const bridgeMode = resolveLoopBridgeMode(process.env);
+        console.log(`Loop mode enabled (internal daemon, bridge=${bridgeMode.value}, verbose=${isVerbose}).`);
+        for (const line of bridgeMode.banner) console.warn(line);
 
         // Startup diagnostic: in daemon mode evolver consumes its own stdout
         // instead of handing `sessions_spawn(...)` directives to a host
@@ -3136,6 +3134,8 @@ module.exports = {
   rejectPendingRun,
   isPendingSolidify,
   parseBoolEnv,
+  classifyInvocation,
+  resolveLoopBridgeMode,
   CycleTimeoutError,
   writeCycleProgressAtomic,
   spawnReplacementProcess,

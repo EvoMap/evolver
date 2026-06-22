@@ -82,6 +82,7 @@ function isGitRepo(dir) {
     execSync('git rev-parse --git-dir', {
       cwd: dir, encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, maxBuffer: MAX_EXEC_BUFFER,
+      windowsHide: true,
     });
     return true;
   } catch (_) {

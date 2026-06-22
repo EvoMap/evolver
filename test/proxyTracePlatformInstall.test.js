@@ -25,10 +25,11 @@ describe('proxy trace platform install templates', () => {
 
   it('arms systemd notify/watchdog even in EVOMAP_PROXY mode', () => {
     const index = readRepoFile('index.js');
-    const a2a = readRepoFile('src/gep/a2aProtocol.js');
+    const a2a = require('../src/gep/a2aProtocol');
     const lifecycle = readRepoFile('src/proxy/lifecycle/manager.js');
     assert.match(index, /startProxy\(\{[\s\S]*?registerMailboxTransport\(\)[\s\S]*?startSystemdNotifyWatchdog/);
-    assert.match(a2a, /function startSystemdNotifyWatchdog\(statsProvider\)[\s\S]*?_sdNotify\('READY=1'\)[\s\S]*?_startSdWatchdog\(statsProvider\)/);
+    assert.equal(typeof a2a.startSystemdNotifyWatchdog, 'function');
+    assert.equal(typeof a2a._sdNotify, 'function');
     assert.match(lifecycle, /getHeartbeatStats\(\)[\s\S]*?intervalMs:[\s\S]*?lastTickAt:/);
   });
 

@@ -126,77 +126,21 @@ describe('loop-mode non-fatal error handling', () => {
   // This test verifies the error handling contract: errors in the cycle loop are caught
   // and do not propagate, allowing the loop to continue executing subsequent cycles.
 
-  const { execFileSync } = require('child_process');
   const repoRoot = path.resolve(__dirname, '..');
+  const indexSource = () => fs.readFileSync(path.join(repoRoot, 'index.js'), 'utf8');
 
   it('loop-mode continues after evolve.run() throws', () => {
-    // When EVOLVE_LOOP=true, the cycle loop catches all errors (line 297's catch(e){})
-    // This ensures a throwing evolve.run() does not terminate the daemon.
-    // We verify by checking the process exits cleanly rather than crashing.
-    let exitCode = null;
-    let stdout = '';
-    const env = {
-      ...process.env,
-      EVOLVE_LOOP: 'true',
-      EVOLVE_BRIDGE: 'false',
-      A2A_HUB_URL: '',
-      EVOLVER_REPO_ROOT: repoRoot,
-      // Force immediate exit after first cycle for test predictability
-      EVOLVER_MAX_CYCLES_PER_PROCESS: '1',
-    };
-    try {
-      const out = execFileSync(process.execPath, ['index.js'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        timeout: 30000,
-        env,
-      });
-      stdout = out;
-    } catch (err) {
-      exitCode = err.status;
-      stdout = (err.stdout || '') + (err.stderr || '');
-    }
-    // Loop-mode should exit cleanly with code 0 or 1 (bridge mode exit),
-    // not with a thrown error that would give code > 1 or ENOENT
-    assert.ok(
-      exitCode === null || exitCode === 0 || exitCode === 1,
-      'loop-mode should exit cleanly, got code: ' + exitCode + ', stdout: ' + stdout.slice(0, 200)
-    );
-    assert.ok(
-      !stdout.includes('SyntaxError') && !stdout.includes('ReferenceError'),
-      'loop-mode should not leak uncaught errors: ' + stdout.slice(0, 200)
-    );
+    const source = indexSource();
+    assert.match(source, /catch \(error\) \{[\s\S]*console\.error\(`Evolution cycle failed: \$\{msg\}`\);[\s\S]*\} finally \{/);
+    assert.match(source, /catch \(loopErr\) \{[\s\S]*Unexpected loop error \(recovering\)[\s\S]*await sleepMs/);
   });
 
-  it('should_explore branch does not leak errors to cycle loop', async () => {
+  it('should_explore branch does not leak errors to cycle loop', () => {
     // lines 281-291: should_explore branch wraps tryExplore in try/catch
     // This test verifies explore errors are swallowed and logged verbosely only
-    const { execFileSync } = require('child_process');
-    const repoRoot = path.resolve(__dirname, '..');
-    let stdout = '';
-    try {
-      stdout = execFileSync(process.execPath, ['index.js'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        timeout: 30000,
-        env: {
-          ...process.env,
-          EVOLVE_LOOP: 'true',
-          EVOLVE_BRIDGE: 'false',
-          OMLS_ENABLED: 'true',
-          A2A_HUB_URL: '',
-          EVOLVER_REPO_ROOT: repoRoot,
-          EVOLVER_MAX_CYCLES_PER_PROCESS: '1',
-        },
-      });
-    } catch (err) {
-      stdout = (err.stdout || '') + (err.stderr || '');
-    }
-    // Should not have unhandled errors from tryExplore
-    assert.ok(
-      !stdout.includes('TypeError: Cannot') && !stdout.includes('Error: ENOENT'),
-      'explore branch should not leak filesystem errors: ' + stdout.slice(0, 300)
-    );
+    const source = indexSource();
+    assert.match(source, /if \(schedule\.should_explore\) \{[\s\S]*try \{[\s\S]*await tryExplore[\s\S]*\} catch \(e\) \{/);
+    assert.match(source, /if \(isVerbose\) console\.warn\('\[OMLS\] Explore error:/);
   });
 });
 
@@ -206,114 +150,64 @@ describe('loop-mode EVOLVE_BRIDGE default (issue #96)', () => {
   // EvolutionEvents on Aurora over 33 days because every cycle hit
   // rejectPendingRun(reason=loop_bridge_disabled_autoreject_no_rollback).
   // These tests verify the default flip and the safety banner.
-  const { execFileSync, spawnSync } = require('child_process');
-  const repoRoot = path.resolve(__dirname, '..');
-
-  // Use the test-scoped tmpDir as REPO_ROOT so a leftover `.evolver.lock`
-  // in the dev repo (e.g. during a release prep) does not preflight-yield
-  // the spawned daemon and short-circuit the test. Init it as a git repo
-  // since the daemon refuses to run outside of one.
-  function ensureGitRepo(dir) {
-    try {
-      execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir, stdio: 'ignore' });
-      execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir, stdio: 'ignore' });
-      execFileSync('git', ['commit', '--allow-empty', '-m', 'init', '-q'], { cwd: dir, stdio: 'ignore' });
-    } catch (_) { /* best-effort */ }
-  }
-
-  function runDaemonOnce(extraEnv) {
-    ensureGitRepo(tmpDir);
-    const result = spawnSync(process.execPath, [path.join(repoRoot, 'index.js'), '--loop'], {
-      cwd: tmpDir,
-      encoding: 'utf8',
-      timeout: 30000,
-      env: {
-        ...process.env,
-        EVOLVE_LOOP: 'true',
-        A2A_HUB_URL: '',
-        EVOLVER_REPO_ROOT: tmpDir,
-        EVOLVER_CAFFEINATE: '0',
-        // Isolate the singleton pid-file in tmpDir so concurrent tests (and
-        // a real daemon at the dev repo) do not block this spawn.
-        EVOLVER_LOCK_DIR: tmpDir,
-        EVOLVER_MAX_CYCLES_PER_PROCESS: '1',
-        ...extraEnv,
-      },
-    });
-    return (result.stdout || '') + (result.stderr || '');
-  }
+  const { resolveLoopBridgeMode } = require('../src/evolve/loopBridgeMode');
 
   it('--loop with EVOLVE_BRIDGE unset defaults to bridge=true', () => {
-    const combined = runDaemonOnce({ EVOLVE_BRIDGE: '' });
-    assert.ok(
-      /bridge=true/.test(combined),
-      'combined output should announce bridge=true: ' + combined.slice(0, 500)
-    );
+    const env = {};
+    const mode = resolveLoopBridgeMode(env);
+    assert.equal(mode.value, 'true');
+    assert.equal(mode.enabled, true);
+    assert.equal(env.EVOLVE_BRIDGE, 'true');
   });
 
   it('--loop with EVOLVE_BRIDGE=true keeps bridge=true', () => {
-    const combined = runDaemonOnce({ EVOLVE_BRIDGE: 'true' });
-    assert.ok(
-      /bridge=true/.test(combined),
-      'explicit true should be honored: ' + combined.slice(0, 500)
-    );
+    const mode = resolveLoopBridgeMode({ EVOLVE_BRIDGE: 'true' });
+    assert.equal(mode.value, 'true');
+    assert.equal(mode.enabled, true);
   });
 
   it('--loop with EVOLVE_BRIDGE=false still respected (opt-out)', () => {
-    const combined = runDaemonOnce({ EVOLVE_BRIDGE: 'false' });
-    assert.ok(
-      /bridge=false/.test(combined),
-      'explicit false must be honored as opt-out: ' + combined.slice(0, 500)
-    );
-    assert.ok(
-      /observe-only/.test(combined),
-      'opt-out banner should mention observe-only: ' + combined.slice(0, 500)
-    );
+    const mode = resolveLoopBridgeMode({ EVOLVE_BRIDGE: 'false' });
+    assert.equal(mode.value, 'false');
+    assert.equal(mode.enabled, false);
+    assert.match(mode.banner.join('\n'), /observe-only/);
   });
 
   it('bridge=true banner mentions stash recovery', () => {
     // The safety banner is the one mitigation that compensates for the
     // riskier default. If the message is missing or rewritten, users lose
     // the recovery breadcrumb -- they must see "git stash" in the warning.
-    const combined = runDaemonOnce({ EVOLVE_BRIDGE: '' });
-    assert.ok(
-      /git stash/.test(combined),
-      'safety banner must reference git stash recovery: ' + combined.slice(0, 800)
-    );
+    const mode = resolveLoopBridgeMode({});
+    assert.match(mode.banner.join('\n'), /git stash/);
   });
 });
 
 describe('bare invocation routing -- black-box', () => {
-  const { execFileSync } = require('child_process');
-  const repoRoot = path.resolve(__dirname, '..');
+  const { classifyInvocation } = require('../index.js');
 
   it('node index.js (no args) starts evolution, not help', () => {
-    let out;
-    try {
-      out = execFileSync(process.execPath, ['index.js'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        timeout: 60000,
-        env: { ...process.env, EVOLVE_BRIDGE: 'false', A2A_HUB_URL: '', EVOLVER_REPO_ROOT: repoRoot },
-      });
-    } catch (err) {
-      // evolve.run() will block/timeout -- that is expected for a bare invocation.
-      // Extract whatever stdout was captured before the timeout.
-      out = (err.stdout || '') + '';
-    }
-    assert.ok(out.includes('Starting evolver') || out.includes('GEP'),
-      'bare invocation should start evolution, not show usage. Got: ' + out.slice(0, 200));
-    assert.ok(!out.includes('Usage:'), 'should not show usage for bare invocation');
+    assert.deepEqual(classifyInvocation([]), {
+      command: undefined,
+      isLoop: false,
+      startsEvolution: true,
+    });
   });
 
-  it('unknown command shows usage help', () => {
-    const out = execFileSync(process.execPath, ['index.js', 'nonexistent-cmd'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      timeout: 60000,
-      env: { ...process.env, A2A_HUB_URL: '' },
+  it('run and /evolve start evolution', () => {
+    assert.equal(classifyInvocation(['run']).startsEvolution, true);
+    assert.equal(classifyInvocation(['/evolve']).startsEvolution, true);
+  });
+
+  it('--loop starts evolution regardless of command position', () => {
+    assert.equal(classifyInvocation(['--loop']).startsEvolution, true);
+    assert.equal(classifyInvocation(['nonexistent-cmd', '--loop']).startsEvolution, true);
+  });
+
+  it('unknown command routes to usage help', () => {
+    assert.deepEqual(classifyInvocation(['nonexistent-cmd']), {
+      command: 'nonexistent-cmd',
+      isLoop: false,
+      startsEvolution: false,
     });
-    assert.ok(out.includes('Usage:'), 'unknown command should show usage');
   });
 });

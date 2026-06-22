@@ -1,0 +1,21 @@
+[Unit]
+Description=EvoMap Evolver daemon
+After=network-online.target
+
+[Service]
+Type=notify
+Environment=EVOMAP_PROXY=1
+Environment=EVOMAP_PROXY_TRACE=metadata
+Environment=EVOMAP_PROXY_TRACE_FILE=%h/.local/state/evomap/proxy-traces.jsonl
+WorkingDirectory=%h
+ExecStart=/usr/bin/env node %h/.npm-global/lib/node_modules/@evomap/evolver/index.js --loop
+Restart=on-failure
+RestartSec=5
+WatchdogSec=60
+StandardOutput=journal
+StandardError=journal
+# proxy_trace_failed_once is emitted by the proxy trace writer when local trace
+# persistence is unavailable; journald captures it for diagnostics.
+
+[Install]
+WantedBy=default.target

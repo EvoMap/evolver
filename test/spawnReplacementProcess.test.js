@@ -231,11 +231,11 @@ describe('Windows no-console process launch guards', () => {
 
   it('daemon loop git probes hide child windows on Windows', () => {
     const indexSource = fs.readFileSync(path.resolve(__dirname, '..', 'index.js'), 'utf8');
-    const guardsSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'evolve', 'guards.js'), 'utf8');
+    const gitOpsSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'gep', 'gitOps.js'), 'utf8');
     assert.match(indexSource, /execSync\('git --version'[\s\S]*?windowsHide:\s*true/);
     assert.match(indexSource, /execSync\('git diff'[\s\S]*?windowsHide:\s*true/);
     assert.match(indexSource, /execSync\('git ls-files --others --exclude-standard'[\s\S]*?windowsHide:\s*true/);
-    assert.match(guardsSource, /git log -1 --pretty=format:%ct%n%s'[\s\S]*?windowsHide:\s*true/);
-    assert.match(guardsSource, /execSync\('git rev-parse --git-dir'[\s\S]*?windowsHide:\s*true/);
+    assert.match(gitOpsSource, /function runCmd[\s\S]*?execSync\(cmd,[\s\S]*?windowsHide:\s*true/);
+    assert.match(gitOpsSource, /execSync\('git rev-parse --git-dir'[\s\S]*?windowsHide:\s*true/);
   });
 });
