@@ -5,8 +5,23 @@ const { mergeJsonFile, copyHookScripts, appendSectionToFile, removeHookScripts, 
 const HOOK_SCRIPTS_DIR_NAME = 'hooks';
 const EVOLVER_MARKER = '<!-- evolver-evolution-memory -->';
 
+// Resolve an evolver hook script from the PROJECT's .claude/hooks first, then
+// fall back to the user-home install. The evolver can be installed at the
+// home/global scope (one shared install), but Claude Code resolves a bare
+// `.claude/hooks/...` command path against each *project* dir — so a bare
+// relative command silently fails in every project except the install root.
+// This emits a project-or-home fallback, cross-platform, so the hook fires no
+// matter where the scripts were copied.
+function buildHookCommand(scriptName) {
+  if (process.platform === 'win32') {
+    const proj = `%CLAUDE_PROJECT_DIR%\\.claude\\hooks\\${scriptName}`;
+    const home = `%USERPROFILE%\\.claude\\hooks\\${scriptName}`;
+    return `cmd /c "IF EXIST "${proj}" (node "${proj}") ELSE (node "${home}")"`;
+  }
+  return `sh -c 'f="$CLAUDE_PROJECT_DIR/.claude/hooks/${scriptName}"; [ -f "$f" ] || f="$HOME/.claude/hooks/${scriptName}"; node "$f"'`;
+}
+
 function buildClaudeHooks(evolverRoot) {
-  const scriptsBase = '.claude/hooks';
   return {
     hooks: {
       SessionStart: [
@@ -14,7 +29,7 @@ function buildClaudeHooks(evolverRoot) {
           hooks: [
             {
               type: 'command',
-              command: `node ${scriptsBase}/evolver-session-start.js`,
+              command: buildHookCommand('evolver-session-start.js'),
               timeout: 3,
             },
           ],
@@ -32,7 +47,7 @@ function buildClaudeHooks(evolverRoot) {
               // ABOVE that watchdog, so the host never kills the script
               // mid-write. A stuck/slow recall can never block or erase the
               // user's prompt.
-              command: `node ${scriptsBase}/evolver-task-recall.js`,
+              command: buildHookCommand('evolver-task-recall.js'),
               timeout: 5,
             },
           ],
@@ -44,7 +59,7 @@ function buildClaudeHooks(evolverRoot) {
           hooks: [
             {
               type: 'command',
-              command: `node ${scriptsBase}/evolver-signal-detect.js`,
+              command: buildHookCommand('evolver-signal-detect.js'),
               timeout: 2,
             },
           ],
@@ -55,7 +70,7 @@ function buildClaudeHooks(evolverRoot) {
           hooks: [
             {
               type: 'command',
-              command: `node ${scriptsBase}/evolver-session-end.js`,
+              command: buildHookCommand('evolver-session-end.js'),
               timeout: 8,
             },
           ],

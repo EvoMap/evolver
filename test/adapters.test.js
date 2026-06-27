@@ -795,6 +795,29 @@ describe('claudeCode adapter', () => {
     }
     assert.equal(hooks.hooks.PostToolUse[0].matcher, 'Write');
   });
+
+  it('buildClaudeHooks commands resolve from project OR home scope', () => {
+    // Regression: a bare `node .claude/hooks/...` command is resolved by
+    // Claude Code against each project dir, so a home/global-scoped install
+    // silently fails everywhere except the install root. Every emitted command
+    // must reference both the project scope and a home-scope fallback, and stay
+    // recognizable to the uninstall/merge matcher.
+    const hooks = claudeAdapter.buildClaudeHooks('/evolver');
+    const commands = [];
+    for (const event of Object.keys(hooks.hooks)) {
+      for (const matcher of hooks.hooks[event]) {
+        for (const cmd of matcher.hooks) commands.push(cmd.command);
+      }
+    }
+    assert.ok(commands.length >= 4, 'expected at least 4 hook commands');
+    const homeMarker = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+    for (const cmd of commands) {
+      assert.ok(cmd.includes('CLAUDE_PROJECT_DIR'), `command must try project scope: ${cmd}`);
+      assert.ok(cmd.includes(homeMarker), `command must fall back to home scope: ${cmd}`);
+      assert.ok(/evolver-[a-z-]+\.js/.test(cmd), `command must invoke an evolver hook script: ${cmd}`);
+      assert.ok(hookAdapter.isEvolverHookCommand(cmd), `command must stay recognizable to uninstall: ${cmd}`);
+    }
+  });
 });
 
 // -- Codex adapter --
