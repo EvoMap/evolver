@@ -1,0 +1,27 @@
+{
+  "name": "@evomap/evolver-webui",
+  "version": "2.0.0-beta.0",
+  "private": false,
+  "type": "module",
+  "description": "保活/可视化 WebUI",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@evomap/evolver-core": "2.0.0-beta.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "v2-beta"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "package.json"
+  ]
+}

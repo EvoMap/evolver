@@ -1,0 +1,20 @@
+{
+  "package": "@evomap/evolver",
+  "version": "2.0.0-beta.0",
+  "channel": "v2-beta",
+  "publicRepo": "EvoMap/evolver",
+  "publicBranch": "v2-beta",
+  "releaseTag": "v2.0.0-beta.0",
+  "releaseTitle": "Evolver v2 beta v2.0.0-beta.0",
+  "prerelease": true,
+  "obfuscate": [],
+  "workspacePackages": [
+    "evolver-core",
+    "evolver-adapter-public",
+    "evolver-runtime-adapters",
+    "evolver-mcp",
+    "evolver-proxy",
+    "evolver-webui",
+    "evolver-cli"
+  ]
+}

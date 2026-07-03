@@ -1,0 +1,38 @@
+{
+  "name": "@evomap/evolver-cli",
+  "version": "2.0.0-beta.0",
+  "private": false,
+  "type": "module",
+  "description": "evolver CLI (status/watch/cycles/rebuild-views/...)",
+  "bin": {
+    "evolver": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./dispatch": {
+      "types": "./dist/dispatch.d.ts",
+      "default": "./dist/dispatch.js"
+    }
+  },
+  "dependencies": {
+    "@evomap/evolver-core": "2.0.0-beta.0",
+    "@evomap/evolver-adapter-public": "2.0.0-beta.0",
+    "@evomap/evolver-mcp": "2.0.0-beta.0",
+    "@evomap/evolver-proxy": "2.0.0-beta.0",
+    "@evomap/evolver-runtime-adapters": "2.0.0-beta.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "v2-beta"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "package.json"
+  ]
+}

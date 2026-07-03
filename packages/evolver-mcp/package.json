@@ -1,0 +1,35 @@
+{
+  "name": "@evomap/evolver-mcp",
+  "version": "2.0.0-beta.0",
+  "private": false,
+  "type": "module",
+  "description": "Evolver MCP server (agent 工具发现入口)",
+  "bin": {
+    "evolver-mcp": "./dist/stdio.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./stdio": {
+      "types": "./dist/stdio.d.ts",
+      "default": "./dist/stdio.js"
+    }
+  },
+  "dependencies": {
+    "@evomap/evolver-core": "2.0.0-beta.0",
+    "smol-toml": "^1.6.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "v2-beta"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "package.json"
+  ]
+}

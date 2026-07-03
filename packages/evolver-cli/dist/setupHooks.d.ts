@@ -1,0 +1,2 @@
+import { assetstore } from '@evomap/evolver-core';
+export declare function runSetupHooks(argv: readonly string[], store?: assetstore.AssetStoreProvider, review?: assetstore.ReviewLedger): Promise<number>;

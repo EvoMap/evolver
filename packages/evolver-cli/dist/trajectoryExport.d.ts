@@ -1,0 +1,1 @@
+export declare function runTrajectoryExport(argv: readonly string[]): Promise<number>;

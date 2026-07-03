@@ -1,0 +1,564 @@
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { assetstore, events, mailbox } from '@evomap/evolver-core';
+import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion } from '@evomap/evolver-adapter-public';
+import { resolveAtpSenderId } from './atp.js';
+const MAX_RECIPE_STEPS = 20;
+const MAX_ID_LENGTH = 200;
+const DEFAULT_PUBLIC_HUB_URL = 'https://evomap.ai';
+const SENSITIVE_ERROR_KEYS = new Set(['authorization', 'node_secret', 'nodesecret', 'token', 'access_token', 'refresh_token', 'secret']);
+const STALE_NODE_SECRET_ERRORS = new Set(['node_secret_invalid', 'node_secret_not_set']);
+export async function runRecipeCommand(argv, deps = {}) {
+    const parsed = parseRecipeArgs(argv);
+    const err = deps.err ?? ((line) => { process.stderr.write(`${line}\n`); });
+    const log = deps.log ?? ((line) => { process.stdout.write(`${line}\n`); });
+    if (!parsed.ok) {
+        err(`${parsed.error}\n${recipeUsage()}`);
+        return 1;
+    }
+    try {
+        const env = deps.env ?? process.env;
+        if (isHubDryRunEnabled(env)) {
+            if (parsed.value.sub === 'build')
+                return await runRecipeBuildDryRun(parsed.value, deps.store, { log, err });
+            return runRecipeReuseDryRun(parsed.value, { log });
+        }
+        const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
+        if (!hub.recipes) {
+            err('recipe capability is not available for the configured Hub adapter');
+            return 1;
+        }
+        if (parsed.value.sub === 'build')
+            return await runRecipeBuild(parsed.value, hub, deps.store, { log, err });
+        return await runRecipeReuse(parsed.value, hub, { log, err });
+    }
+    catch (e) {
+        err(recipeErrorMessage(e));
+        return 1;
+    }
+}
+async function runRecipeBuildDryRun(opts, store, io) {
+    const steps = await recipeStepsFromLocalAssets(opts.assetIds, store ?? new assetstore.LocalJsonlProvider(events.assetsDir()));
+    if (steps.length === 0) {
+        io.err('recipe build requires at least one asset id');
+        return 1;
+    }
+    io.log(`[recipe build] dry-run: would create DRAFT recipe ("${opts.title}", ${steps.length} step${steps.length === 1 ? '' : 's'}).`);
+    if (opts.publish) {
+        io.log('[recipe build] dry-run: would publish the recipe after creation.');
+    }
+    else {
+        io.log('[recipe build] dry-run: would leave the recipe as draft.');
+    }
+    return 0;
+}
+function runRecipeReuseDryRun(opts, io) {
+    io.log(`[recipe reuse] dry-run: would fetch recipe ${opts.recipeId}.`);
+    io.log(`[recipe reuse] dry-run: would express recipe ${opts.recipeId}.`);
+    if (opts.jsonOut) {
+        io.log(JSON.stringify({
+            dry_run: true,
+            would: 'express_recipe',
+            recipe_id: opts.recipeId,
+            input_payload: opts.inputPayload,
+        }, null, 2));
+    }
+    return 0;
+}
+export function createRecipeHubFromEnv(env = process.env, connectHub = connectPublicHub) {
+    const hubUrl = resolveRecipeHubUrl(env);
+    const credentials = resolveRecipeHubCredentials(env);
+    if (!credentials.nodeSecret && !existsSync(join(credentials.evomapDir, 'token.json'))) {
+        throw new Error(`recipe requires Hub credentials: run "evolver login" or set EVOMAP_NODE_SECRET`);
+    }
+    if (!credentials.nodeSecret && !credentials.senderId) {
+        throw new Error('recipe OAuth mode requires a node identity: register a node first, set EVOMAP_NODE_ID or A2A_NODE_ID, or ensure the Evolver proxy store contains node_id');
+    }
+    const connected = credentials.nodeSecret
+        ? connectHub({
+            hubUrl,
+            authMode: 'legacy',
+            evomapDir: credentials.evomapDir,
+            nodeSecret: credentials.nodeSecret,
+            ...(credentials.nodeSecretVersion !== undefined ? { nodeSecretVersion: credentials.nodeSecretVersion } : {}),
+            senderId: () => credentials.senderId,
+            onNodeSecretRotated: (secret, version) => persistRotatedNodeSecret(secret, version, env, credentials.rotatePersistDir),
+            onNodeSecretVersionUpdated: (version) => persistNodeSecretVersion(version, env, credentials.rotatePersistDir),
+        })
+        : connectHub({ hubUrl, authMode: 'oauth', evomapDir: credentials.evomapDir, senderId: () => credentials.senderId });
+    return connected.hub;
+}
+function resolveRecipeHubUrl(env) {
+    const hubUrl = (env['A2A_HUB_URL']?.trim() || env['EVOMAP_HUB_URL']?.trim() || DEFAULT_PUBLIC_HUB_URL).replace(/\/+$/, '');
+    return hubUrl;
+}
+export function parseRecipeArgs(argv) {
+    const sub = argv[0];
+    if (sub !== 'build' && sub !== 'reuse')
+        return { ok: false, error: 'recipe subcommand must be build|reuse' };
+    const args = argv.slice(1);
+    if (sub === 'build')
+        return parseBuildArgs(args);
+    return parseReuseArgs(args);
+}
+async function runRecipeBuild(opts, hub, store, io) {
+    const steps = await recipeStepsFromLocalAssets(opts.assetIds, store ?? new assetstore.LocalJsonlProvider(events.assetsDir()));
+    if (steps.length === 0) {
+        io.err('recipe build requires at least one asset id');
+        return 1;
+    }
+    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.create({
+        title: opts.title,
+        steps,
+        ...(opts.description ? { description: opts.description } : {}),
+        ...(opts.pricePerExecution !== undefined ? { pricePerExecution: opts.pricePerExecution } : {}),
+    }), io);
+    const recipeId = createReceipt.recipeId;
+    io.log(`[recipe build] Created DRAFT recipe ${recipeId ?? '(id pending)'} ("${opts.title}", ${steps.length} step${steps.length === 1 ? '' : 's'}).`);
+    if (opts.publish) {
+        if (!recipeId) {
+            io.err('[recipe build] Hub did not return a recipe id; cannot publish.');
+            return 1;
+        }
+        await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.publish(recipeId), io);
+        io.log(`[recipe build] Published recipe ${recipeId}.`);
+    }
+    else {
+        io.log('[recipe build] Left as draft. Re-run with --publish to make it live.');
+    }
+    return 0;
+}
+async function runRecipeReuse(opts, hub, io) {
+    await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.get(opts.recipeId), io);
+    const receipt = await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.express(opts.recipeId, { inputPayload: opts.inputPayload }), io);
+    io.log(`[recipe reuse] Expressed recipe ${opts.recipeId}.`);
+    if (opts.jsonOut)
+        io.log(JSON.stringify(receipt.raw, null, 2));
+    return 0;
+}
+async function recipeStepsFromLocalAssets(assetIds, store) {
+    const byId = new Map();
+    for (const kind of ['Gene', 'Capsule']) {
+        for (const asset of await store.list(kind, 10_000)) {
+            if (asset.asset_id)
+                byId.set(asset.asset_id, kind);
+        }
+    }
+    return assetIds.map((assetId, index) => {
+        const assetType = byId.get(assetId) ?? 'Gene';
+        return { assetId, assetType, position: index };
+    });
+}
+async function callRecipeWithAuthRetry(hub, tag, fn, io) {
+    try {
+        return await fn();
+    }
+    catch (e) {
+        if (!(e instanceof AuthError) || !hub.hello)
+            throw e;
+        if (!authErrorIndicatesStaleNodeSecret(e))
+            throw e;
+        io.log(`[${tag}] Hub reported a stale node secret; rotating credentials once and retrying...`);
+        const hello = await hub.hello({ rotate: true });
+        if (!hello.ok) {
+            io.err(`[${tag}] Could not auto-rotate credentials: ${hello.error ?? 'unknown'}`);
+            io.err('  Recover by resetting the Hub credential, then re-run `evolver login` or update EVOMAP_NODE_SECRET.');
+            throw e;
+        }
+        return await fn();
+    }
+}
+function parseBuildArgs(args) {
+    const title = flagValue(args, '--title');
+    const genesRaw = flagValue(args, '--genes') ?? flagValue(args, '--assets');
+    if (!title)
+        return { ok: false, error: 'recipe build requires --title <title>' };
+    if (!genesRaw)
+        return { ok: false, error: 'recipe build requires --genes <asset_id,...>' };
+    const assetIds = splitIds(genesRaw);
+    if (assetIds.length === 0)
+        return { ok: false, error: '--genes is empty' };
+    if (assetIds.length > MAX_RECIPE_STEPS)
+        return { ok: false, error: `recipe build supports at most ${MAX_RECIPE_STEPS} steps` };
+    const priceRaw = flagValue(args, '--price');
+    const price = priceRaw === null ? undefined : Number(priceRaw);
+    if (price !== undefined && (!Number.isFinite(price) || price < 0))
+        return { ok: false, error: '--price must be a non-negative number' };
+    const description = flagValue(args, '--description');
+    return {
+        ok: true,
+        value: {
+            sub: 'build',
+            title,
+            assetIds,
+            ...(description ? { description } : {}),
+            ...(price !== undefined ? { pricePerExecution: price } : {}),
+            publish: args.includes('--publish'),
+        },
+    };
+}
+function parseReuseArgs(args) {
+    const recipeId = flagValue(args, '--id') ?? firstPositional(args);
+    if (!recipeId)
+        return { ok: false, error: 'recipe reuse requires --id <recipe_id>' };
+    if (recipeId.length > MAX_ID_LENGTH)
+        return { ok: false, error: `recipe id must be <= ${MAX_ID_LENGTH} characters` };
+    const inputRaw = flagValue(args, '--input');
+    const input = inputRaw === null ? { ok: true, value: {} } : parseJsonObject(inputRaw);
+    if (!input.ok)
+        return input;
+    return { ok: true, value: { sub: 'reuse', recipeId, inputPayload: input.value, jsonOut: args.includes('--json') } };
+}
+function splitIds(raw) {
+    return raw.split(',').map((s) => s.trim()).filter(Boolean).filter((s) => s.length <= MAX_ID_LENGTH);
+}
+function flagValue(args, flag) {
+    for (let i = 0; i < args.length; i += 1) {
+        const token = args[i];
+        if (token === undefined)
+            continue;
+        if (token === flag) {
+            const next = args[i + 1];
+            return next && !next.startsWith('--') ? next : null;
+        }
+        if (token.startsWith(`${flag}=`))
+            return token.slice(flag.length + 1);
+    }
+    return null;
+}
+function firstPositional(args) {
+    return args.find((a) => typeof a === 'string' && !a.startsWith('--')) ?? null;
+}
+function parseJsonObject(raw) {
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+            return { ok: true, value: parsed };
+        return { ok: false, error: '--input must be a JSON object' };
+    }
+    catch {
+        return { ok: false, error: '--input must be valid JSON' };
+    }
+}
+function recipeErrorMessage(e) {
+    if (e instanceof HubClientError)
+        return `recipe Hub call failed (HTTP ${e.status}): ${JSON.stringify(redactHubErrorBody(e.body))}`;
+    if (e instanceof AuthError) {
+        const details = e.body === undefined ? '' : `: ${JSON.stringify(redactHubErrorBody(e.body))}`;
+        return `recipe Hub auth failed (HTTP ${e.status})${details}; run "evolver login" or refresh EVOMAP_NODE_SECRET`;
+    }
+    if (e instanceof HubUnreachableError)
+        return `recipe Hub is unreachable: ${e.message}`;
+    return e instanceof Error ? e.message : String(e);
+}
+function redactHubErrorBody(value, depth = 0) {
+    if (depth > 5)
+        return '[redacted-depth]';
+    if (typeof value === 'string')
+        return redactSensitiveString(value);
+    if (Array.isArray(value))
+        return value.map((item) => redactHubErrorBody(item, depth + 1));
+    if (!value || typeof value !== 'object')
+        return value;
+    const out = {};
+    for (const [key, nested] of Object.entries(value)) {
+        out[key] = isSensitiveErrorKey(key) ? '[redacted]' : redactHubErrorBody(nested, depth + 1);
+    }
+    return out;
+}
+function authErrorIndicatesStaleNodeSecret(e) {
+    const text = [
+        e.errorCode,
+        ...authErrorStringValues(e.body),
+    ].filter((value) => typeof value === 'string' && value.length > 0).join(' ').toLowerCase();
+    return [...STALE_NODE_SECRET_ERRORS].some((code) => text.includes(code));
+}
+function authErrorStringValues(value, depth = 0) {
+    if (depth > 5 || value === undefined || value === null)
+        return [];
+    if (typeof value === 'string')
+        return [value];
+    if (typeof value === 'number' || typeof value === 'boolean')
+        return [String(value)];
+    if (Array.isArray(value))
+        return value.flatMap((item) => authErrorStringValues(item, depth + 1));
+    if (typeof value !== 'object')
+        return [];
+    return Object.entries(value).flatMap(([key, nested]) => [
+        key,
+        ...authErrorStringValues(nested, depth + 1),
+    ]);
+}
+function isSensitiveErrorKey(key) {
+    const normalized = key.toLowerCase();
+    return SENSITIVE_ERROR_KEYS.has(normalized) || normalized.includes('token') || normalized.includes('secret');
+}
+function redactSensitiveString(value) {
+    return value
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+        .replace(/\b(authorization|node_secret|nodeSecret|access_token|refresh_token|token|secret)\b\s*[:=]\s*["']?[^"',\s;}]+/gi, '$1=[redacted]');
+}
+function resolveRecipeHubCredentials(env) {
+    const homeCandidates = recipeHomeCandidates(env);
+    const defaultHome = homeCandidates[0] ?? events.evomapHome();
+    const fromEnv = env['EVOMAP_NODE_SECRET']?.trim() || env['A2A_NODE_SECRET']?.trim();
+    const envNodeSecretVersion = parseNodeSecretVersion(env['EVOMAP_NODE_SECRET_VERSION'] ?? env['A2A_NODE_SECRET_VERSION']);
+    const stored = readRecipeStoreNodeCredentials(env);
+    const explicitSenderId = explicitRecipeSenderId(env);
+    if (stored?.source === 'hub_rotate' && stored.nodeSecret) {
+        return {
+            evomapDir: defaultHome,
+            nodeSecret: stored.nodeSecret,
+            ...(stored.nodeSecretVersion !== undefined ? { nodeSecretVersion: stored.nodeSecretVersion } : {}),
+            senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            rotatePersistDir: defaultHome,
+        };
+    }
+    if (fromEnv) {
+        const legacyNodeId = firstLegacyNodeId(homeCandidates);
+        const nodeSecretVersion = envNodeSecretVersion ?? pairedStoreNodeSecretVersion(fromEnv, stored) ?? pairedLegacyNodeSecretVersion(fromEnv, homeCandidates);
+        return {
+            evomapDir: defaultHome,
+            nodeSecret: fromEnv,
+            ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
+            senderId: explicitSenderId ?? legacyNodeId ?? resolveAtpSenderId(env),
+            rotatePersistDir: defaultHome,
+        };
+    }
+    if (stored?.nodeSecret) {
+        return {
+            evomapDir: defaultHome,
+            nodeSecret: stored.nodeSecret,
+            ...(stored.nodeSecretVersion !== undefined ? { nodeSecretVersion: stored.nodeSecretVersion } : {}),
+            senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            rotatePersistDir: defaultHome,
+        };
+    }
+    const legacy = firstLegacyNodeCredentials(homeCandidates);
+    if (legacy) {
+        return {
+            evomapDir: legacy.dir,
+            nodeSecret: legacy.nodeSecret,
+            ...(legacy.nodeSecretVersion !== undefined ? { nodeSecretVersion: legacy.nodeSecretVersion } : {}),
+            senderId: legacy.nodeId ?? explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            rotatePersistDir: legacy.dir,
+        };
+    }
+    const oauthDir = homeCandidates.find((dir) => existsSync(join(dir, 'token.json'))) ?? defaultHome;
+    return {
+        evomapDir: oauthDir,
+        senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+        rotatePersistDir: oauthDir,
+    };
+}
+/**
+ * The EXPLICIT home overrides (EVOMAP_DIR / EVOLVER_HOME / EVOMAP_HOME) the recipe credential layer honors,
+ * resolved purely from the passed env with no process.env fallback. Exported so `reset-local-secret` (index.ts)
+ * can clear the SAME explicit directories the recipe path may persist rotated legacy files into
+ * (rotatePersistDir = recipeHomeCandidates(env)[0], which is the first explicit home when any is set) — otherwise
+ * a reset that only wiped ~/.evomap would leave a stale node_secret under EVOMAP_DIR/EVOMAP_HOME that resurrects on
+ * the next recipe run (H3). Kept env-pure (no events.evomapHome()) so reset stays hermetic under an injected env.
+ */
+export function explicitRecipeHomes(env) {
+    const explicit = [
+        env['EVOMAP_DIR'],
+        env['EVOLVER_HOME'],
+        env['EVOMAP_HOME'],
+    ];
+    return uniqueStrings(explicit.map((value) => value?.trim()).filter((value) => Boolean(value)));
+}
+function recipeHomeCandidates(env) {
+    const explicitHomes = explicitRecipeHomes(env);
+    if (explicitHomes.length > 0)
+        return explicitHomes;
+    const candidates = [
+        env['HOME'] ? join(env['HOME'], '.evomap') : undefined,
+        events.evomapHome(),
+    ];
+    return uniqueStrings(candidates.map((value) => value?.trim()).filter((value) => Boolean(value)));
+}
+function explicitRecipeSenderId(env) {
+    return env['EVOMAP_NODE_ID']?.trim() || env['A2A_NODE_ID']?.trim();
+}
+function readRecipeStoreNodeCredentials(env) {
+    const storePath = recipeProxyStorePath(env);
+    if (!existsSync(storePath))
+        return undefined;
+    const store = new mailbox.MailboxStore({ path: storePath });
+    try {
+        const storedSecret = store.getState('node_secret');
+        const nodeSecret = storedSecret && isNodeSecret(storedSecret) ? storedSecret : undefined;
+        const nodeSecretVersion = parseNodeSecretVersion(store.getState('node_secret_version'));
+        const source = store.getState('node_secret_source') || undefined;
+        return {
+            ...(nodeSecret ? { nodeSecret } : {}),
+            ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
+            ...(source ? { source } : {}),
+        };
+    }
+    finally {
+        store.close();
+    }
+}
+// Reuse the store's node_secret_version for an env-supplied secret ONLY when the store holds a node_secret
+// EQUAL to it. v1 (manager.js nodeSecretVersion getter: `return storeSecret === envSecret ? storeVersion : null`)
+// and v2's own proxy (evolver-proxy.ts: `envNodeSecret === storeSecret ? storedNodeSecretVersion : undefined`)
+// both require strict equality — neither reuses a version when the store has a version but NO secret. The
+// previous `!stored.nodeSecret` passthrough was strictly wider than both, pairing an orphan version onto an
+// unrelated env secret. A version is meaningful only as the version OF a specific secret, so a versioned env
+// secret whose pair is unknown locally must carry no version (the hub assigns one on hello).
+function pairedStoreNodeSecretVersion(secret, stored) {
+    if (!stored?.nodeSecretVersion)
+        return undefined;
+    return stored.nodeSecret === secret ? stored.nodeSecretVersion : undefined;
+}
+// Legacy-file counterpart of the rule above: v1 (extractor.js: `if (legacySecret === envSecret) return <version>`)
+// requires the on-disk node_secret to equal the env secret before reusing its node_secret_version. Drop the
+// previous `!rawSecret` passthrough so a version file with no matching secret file is never paired onto the env
+// secret.
+function pairedLegacyNodeSecretVersion(secret, dirs) {
+    for (const dir of dirs) {
+        const nodeSecretVersion = readLegacyNodeSecretVersion(dir);
+        if (nodeSecretVersion === undefined)
+            continue;
+        const rawSecret = readTrimmedFile(join(dir, 'node_secret'));
+        if (rawSecret === secret)
+            return nodeSecretVersion;
+    }
+    return undefined;
+}
+function firstLegacyNodeCredentials(dirs) {
+    for (const dir of dirs) {
+        const nodeSecret = readLegacyNodeSecret(dir);
+        if (!nodeSecret)
+            continue;
+        const nodeSecretVersion = readLegacyNodeSecretVersion(dir);
+        return {
+            dir,
+            nodeSecret,
+            ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
+            nodeId: readLegacyNodeId(dir),
+        };
+    }
+    return undefined;
+}
+function firstLegacyNodeId(dirs) {
+    for (const dir of dirs) {
+        const nodeId = readLegacyNodeId(dir);
+        if (nodeId)
+            return nodeId;
+    }
+    return undefined;
+}
+function uniqueStrings(values) {
+    const seen = new Set();
+    const out = [];
+    for (const value of values) {
+        if (seen.has(value))
+            continue;
+        seen.add(value);
+        out.push(value);
+    }
+    return out;
+}
+function recipeProxyStorePath(env) {
+    const configuredStore = env['EVOLVER_PROXY_STORE'];
+    if (configuredStore && configuredStore.length > 0)
+        return configuredStore;
+    const configuredHome = env['EVOLVER_HOME'];
+    // `env['HOME'] || homedir()` (NOT `?? homedir()`): an empty-string HOME must fall back to homedir(), otherwise
+    // `join('', '.evomap', ...)` resolves to the RELATIVE path `.evomap/proxy/mailbox.db` and the CLI reads/writes a
+    // different mailbox.db than the proxy. This mirrors evolver-proxy's resolveLocalHome / evomapHome, which both
+    // treat '' as unset, so cli and proxy land on the same store.
+    const evomapHome = configuredHome && configuredHome.length > 0
+        ? configuredHome
+        : join(env['HOME'] || homedir(), '.evomap');
+    return join(evomapHome, 'proxy', 'mailbox.db');
+}
+function setOptionalStoreState(store, key, value) {
+    store.setState(key, value ?? '');
+}
+function persistRotatedNodeSecret(secret, version, env, legacyDir) {
+    const storePath = recipeProxyStorePath(env);
+    const store = new mailbox.MailboxStore({ path: storePath });
+    try {
+        store.setState('node_secret', secret);
+        store.setState('node_secret_source', 'hub_rotate');
+        setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+    }
+    finally {
+        store.close();
+    }
+    persistLegacyNodeSecret(secret, version, legacyDir);
+}
+function persistNodeSecretVersion(version, env, legacyDir) {
+    const storePath = recipeProxyStorePath(env);
+    const store = new mailbox.MailboxStore({ path: storePath });
+    try {
+        setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+    }
+    finally {
+        store.close();
+    }
+    persistLegacyNodeSecretVersion(version, legacyDir);
+}
+function readLegacyNodeSecret(evomapDir) {
+    const secret = readTrimmedFile(join(evomapDir, 'node_secret'));
+    return secret && isNodeSecret(secret) ? secret : undefined;
+}
+function readLegacyNodeSecretVersion(evomapDir) {
+    return parseNodeSecretVersion(readTrimmedFile(join(evomapDir, 'node_secret_version')));
+}
+function readLegacyNodeId(evomapDir) {
+    return readTrimmedFile(join(evomapDir, 'node_id'));
+}
+function persistLegacyNodeSecret(secret, version, evomapDir) {
+    if (!isNodeSecret(secret))
+        return;
+    try {
+        mkdirSync(evomapDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(evomapDir, 'node_secret'), secret, { encoding: 'utf8', mode: 0o600 });
+        writeLegacyNodeSecretVersion(version, evomapDir);
+    }
+    catch {
+        // Mailbox persistence above is authoritative for v2; legacy file persistence is best effort.
+    }
+}
+function persistLegacyNodeSecretVersion(version, evomapDir) {
+    try {
+        mkdirSync(evomapDir, { recursive: true, mode: 0o700 });
+        writeLegacyNodeSecretVersion(version, evomapDir);
+    }
+    catch {
+        // Mailbox persistence above is authoritative for v2; legacy file persistence is best effort.
+    }
+}
+function writeLegacyNodeSecretVersion(version, evomapDir) {
+    const versionPath = join(evomapDir, 'node_secret_version');
+    if (version !== undefined) {
+        writeFileSync(versionPath, String(version), { encoding: 'utf8', mode: 0o600 });
+        return;
+    }
+    if (existsSync(versionPath))
+        unlinkSync(versionPath);
+}
+function readTrimmedFile(path) {
+    try {
+        if (!existsSync(path))
+            return undefined;
+        const value = readFileSync(path, 'utf8').trim();
+        return value.length > 0 ? value : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function recipeUsage() {
+    return [
+        'Recipe subcommands:',
+        '  evolver recipe build --title <title> --genes <asset_id,...> [--description <text>] [--price <n>] [--publish]',
+        '      Creates a draft recipe by default. --publish is explicit.',
+        '  evolver recipe reuse --id <recipe_id> [--input <json-object>] [--json]',
+    ].join('\n');
+}

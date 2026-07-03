@@ -1,0 +1,1 @@
+export declare function resolveIpcPort(env: Record<string, string | undefined>): number | undefined;

@@ -1,0 +1,1 @@
+export declare function resolveProxyStorePath(env?: NodeJS.ProcessEnv, homeDir?: string): string;
