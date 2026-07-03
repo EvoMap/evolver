@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-mcp",
-  "version": "2.0.0-beta.0",
+  "version": "2.0.0-beta.1",
   "private": false,
   "type": "module",
   "description": "Evolver MCP server (agent 工具发现入口)",
@@ -20,7 +20,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.0",
+    "@evomap/evolver-core": "2.0.0-beta.1",
     "smol-toml": "^1.6.1"
   },
   "publishConfig": {

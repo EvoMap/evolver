@@ -1,9 +1,19 @@
 import { createRequire } from 'node:module';
 import { correlateToolNames, isMetaText } from './types.js';
-// node:sqlite is a recent Node built-in exposed only as `node:sqlite` (no bare `sqlite` alias). Load it through
-// createRequire so bundlers (vitest/vite) don't statically strip the prefix and fail resolution — mirrors the
-// pattern already used by evolver-core/src/mailbox/store.ts.
 const nodeRequire = createRequire(import.meta.url);
+function isBunRuntime() {
+    return typeof process.versions === 'object' && typeof process.versions.bun === 'string';
+}
+function openReadOnlySqliteDatabase(path) {
+    if (isBunRuntime()) {
+        const { Database } = nodeRequire('bun:sqlite');
+        return new Database(path, { readonly: true });
+    }
+    // node:sqlite is exposed only as `node:sqlite` (no bare `sqlite` alias). Load it through createRequire so
+    // bundlers do not statically strip the prefix and break Vitest/Vite or Bun standalone builds.
+    const { DatabaseSync } = nodeRequire('node:sqlite');
+    return new DatabaseSync(path, { readOnly: true });
+}
 // ── Cursor state.vscdb conversation extraction ───────────────────────────────
 //
 // VERIFICATION STATUS / COVERAGE (honest scope — read before extending):
@@ -151,8 +161,7 @@ function composerToSession(composer, composerId, readBubble) {
 export function parseCursorStateVscdb(dbPath) {
     let db;
     try {
-        const { DatabaseSync } = nodeRequire('node:sqlite');
-        db = new DatabaseSync(dbPath, { readOnly: true });
+        db = openReadOnlySqliteDatabase(dbPath);
         const composerRows = db
             .prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
             .all();

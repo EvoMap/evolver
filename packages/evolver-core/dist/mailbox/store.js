@@ -3,10 +3,20 @@ import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { ulid as makeUlid } from 'ulid';
 import { createEnvelope } from './envelope.js';
-// node:sqlite 是较新内建，只暴露 `node:sqlite`（无 `sqlite` 裸别名）。
-// 经 createRequire 动态加载，避免打包器静态剥前缀成 `sqlite` 后解析失败（vitest/vite）。
 const nodeRequire = createRequire(import.meta.url);
-const { DatabaseSync } = nodeRequire('node:sqlite');
+function isBunRuntime() {
+    return typeof process.versions === 'object' && typeof process.versions.bun === 'string';
+}
+function openSqliteDatabase(path) {
+    if (isBunRuntime()) {
+        const { Database } = nodeRequire('bun:sqlite');
+        return new Database(path);
+    }
+    // node:sqlite is exposed only as `node:sqlite` (no bare `sqlite` alias). Load it through createRequire so
+    // bundlers do not statically strip the prefix and break Vitest/Vite or Bun standalone builds.
+    const { DatabaseSync } = nodeRequire('node:sqlite');
+    return new DatabaseSync(path);
+}
 export const MAX_ATTEMPTS = 5;
 export const DEFAULT_IMPORT_JSONL_MAX_LINE_BYTES = 16 * 1024 * 1024;
 const JSONL_READ_CHUNK_BYTES = 64 * 1024;
@@ -95,7 +105,7 @@ export class MailboxStore {
     db;
     constructor(opts) {
         mkdirSync(dirname(opts.path), { recursive: true });
-        this.db = new DatabaseSync(opts.path);
+        this.db = openSqliteDatabase(opts.path);
         this.db.exec('PRAGMA journal_mode = WAL');
         // PRAGMA can't be parameterized, so the value is string-interpolated — sanitize to a non-negative integer
         // first so a non-numeric busyTimeoutMs can never become SQL injection (defense-in-depth; #196).
