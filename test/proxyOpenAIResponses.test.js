@@ -228,7 +228,7 @@ describe('EvoMapProxy._proxyOpenAIResponses', () => {
     const unsafeProxy = new EvoMapProxy({ logger: { log: () => {}, warn: () => {}, error: () => {} } });
     await assert.rejects(
       () => unsafeProxy._proxyOpenAIResponses('/responses', { model: 'gpt-5.5', input: 'hi' }, { inboundHeaders: {} }),
-      /EVOMAP_OPENAI_BASE_URL must be an OpenAI https/,
+      /EVOMAP_OPENAI_BASE_URL must be an OpenAI or known OpenAI-compatible https \/v1 endpoint/,
     );
   });
 
@@ -245,12 +245,16 @@ describe('EvoMapProxy._proxyOpenAIResponses', () => {
       const unsafeProxy = new EvoMapProxy({ logger: { log: () => {}, warn: () => {}, error: () => {} } });
       await assert.rejects(
         () => unsafeProxy._proxyOpenAIResponses('/responses', { model: 'gpt-5.5', input: raw }, { inboundHeaders: {} }),
-        /EVOMAP_OPENAI_BASE_URL must be an OpenAI https/,
+        /EVOMAP_OPENAI_BASE_URL must be an OpenAI or known OpenAI-compatible https \/v1 endpoint/,
       );
     }
   });
 
   it('accepts OpenAI regional HTTPS base URLs from environment', () => {
     assert.equal(resolveOpenAIBaseUrl('https://us.api.openai.com/v1/'), 'https://us.api.openai.com/v1');
+  });
+
+  it('accepts the MiniMax OpenAI-compatible base URL from environment', () => {
+    assert.equal(resolveOpenAIBaseUrl('https://api.minimax.io/v1/'), 'https://api.minimax.io/v1');
   });
 });

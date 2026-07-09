@@ -29,6 +29,9 @@ const TRACE_BACKFILL_RUNTIME_DRAIN_MAX_MS = 50;
 function _defaultDataDir() { return getEvomapPath('mailbox'); }
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+const OPENAI_COMPATIBLE_BASE_URLS = Object.freeze({
+  minimax: 'https://api.minimax.io/v1',
+});
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com';
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 
@@ -47,16 +50,19 @@ function resolveOpenAIBaseUrl(raw, { trustedOverride = false } = {}) {
   } catch {
     throw new Error('[proxy] EVOMAP_OPENAI_BASE_URL is not a valid URL');
   }
+
+  const canonicalValue = `${parsed.origin}${parsed.pathname}`;
+  const allowedCompatibleUrl = Object.values(OPENAI_COMPATIBLE_BASE_URLS).includes(canonicalValue);
   if (
     parsed.protocol !== 'https:'
-    || !isAllowedOpenAIHostname(parsed.hostname)
+    || (!isAllowedOpenAIHostname(parsed.hostname) && !allowedCompatibleUrl)
     || parsed.pathname !== '/v1'
     || parsed.username
     || parsed.password
     || parsed.search
     || parsed.hash
   ) {
-    throw new Error('[proxy] EVOMAP_OPENAI_BASE_URL must be an OpenAI https://*.api.openai.com/v1 endpoint');
+    throw new Error('[proxy] EVOMAP_OPENAI_BASE_URL must be an OpenAI or known OpenAI-compatible https /v1 endpoint');
   }
   return value;
 }
@@ -1392,4 +1398,5 @@ module.exports = {
   planAssetSearch,
   parseRetryAfterMs,
   resolveOpenAIBaseUrl,
+  OPENAI_COMPATIBLE_BASE_URLS,
 };

@@ -293,10 +293,10 @@ describe('POST /v1/responses — OpenAI upstream diagnostics', () => {
     assert.equal(res.status, 502);
     const body = JSON.parse(res.body);
     assert.match(body.error, /^openai upstream request failed:/);
-    assert.match(body.error, /EVOMAP_OPENAI_BASE_URL must be an OpenAI https/);
+    assert.match(body.error, /EVOMAP_OPENAI_BASE_URL must be an OpenAI or known OpenAI-compatible https \/v1 endpoint/);
 
     const logText = logs.map((entry) => entry.map(String).join(' ')).join('\n');
-    assert.match(logText, /EVOMAP_OPENAI_BASE_URL must be an OpenAI https/);
+    assert.match(logText, /EVOMAP_OPENAI_BASE_URL must be an OpenAI or known OpenAI-compatible https \/v1 endpoint/);
     assert.doesNotMatch(logText, new RegExp(token));
     assert.doesNotMatch(logText, new RegExp(inboundKey));
     assert.doesNotMatch(logText, new RegExp(openAIKey));
