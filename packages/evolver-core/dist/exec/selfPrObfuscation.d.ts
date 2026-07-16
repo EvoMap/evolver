@@ -9,7 +9,8 @@ export declare function resetObfuscatedCache(reader?: ReadManifest): void;
 /**
  * Load the obfuscated-file set from the manifest. Returns a normalized Set, or null when the manifest is
  * missing / unreadable / structurally invalid (NOT an `obfuscate` array of literal string paths). null is the
- * fail-closed signal: the caller must then reject all files. Result is cached per reader.
+ * fail-closed signal: the caller must then reject all files. Success is cached per reader; failures retry briefly
+ * so startup-time transient filesystem errors do not disable self-PR until process restart.
  */
 export declare function loadObfuscatedFiles(readManifest: ReadManifest): Set<string> | null;
 /**

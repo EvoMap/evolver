@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { events, mailbox } from '@evomap/evolver-core';
-import { AtpHubClient, ATP_PROOF_STATUSES, ATP_ROLES, ATP_ROUTING_MODES, ATP_VERIFY_ACTIONS, ATP_VERIFY_MODES, connectPublicHub, globalFetchLike, } from '@evomap/evolver-adapter-public';
+import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { AtpHubClient, ATP_PROOF_STATUSES, ATP_ROLES, ATP_ROUTING_MODES, ATP_VERIFY_ACTIONS, ATP_VERIFY_MODES, connectPublicHub, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 export function parseBuyArgs(args) {
     if (args.length === 0)
         return { ok: false, error: 'buy requires <capabilities>: comma-separated list (e.g. code_review,bug_fix)' };
@@ -226,7 +227,8 @@ export async function runAtpCommand(argv) {
     return (await runAtp(parsed.opts)).exitCode;
 }
 export function createAtpClientFromEnv(env = process.env) {
-    const hubUrl = env['EVOMAP_HUB_URL'] ?? 'https://evomap.ai';
+    loadEnvFileFromEnv(env);
+    const hubUrl = resolveHubUrl(env);
     const evomapDir = resolveAtpHome(env);
     const resolvedSenderId = resolveAtpSenderId(env);
     const senderId = () => resolvedSenderId;

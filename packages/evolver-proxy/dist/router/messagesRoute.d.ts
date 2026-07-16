@@ -112,6 +112,19 @@ export interface MessagesResponse {
 }
 export declare function captureTraceMetadata(value: unknown, env?: NodeJS.ProcessEnv): unknown;
 export declare function resolveTierModels(env?: NodeJS.ProcessEnv): Partial<Record<Tier, string>>;
+export type TierConfigWarningReason = 'missing_tier_models' | 'duplicate_tier_models' | 'all_tier_models_same';
+export interface TierConfigWarning {
+    event: 'router_config_warning';
+    reason: TierConfigWarningReason;
+    message: string;
+    configured_tiers: Tier[];
+    missing_tiers?: Tier[];
+    duplicate_models?: Array<{
+        model: string;
+        tiers: Tier[];
+    }>;
+}
+export declare function detectTierModelConfigWarnings(models: Partial<Record<Tier, string>>): TierConfigWarning[];
 interface ClaudeId {
     family: string;
     major: number;

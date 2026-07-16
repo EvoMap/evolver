@@ -17,6 +17,7 @@ export declare class MaterialStore {
     private putLocked;
     get(materialId: string): Material | undefined;
     readAll(): Material[];
+    readRange(start: number, count: number): Material[];
     iterate(opts?: {
         consumerGroup?: string;
         since?: string;

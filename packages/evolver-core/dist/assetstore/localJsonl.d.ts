@@ -2,15 +2,22 @@ import { type AssetKind, type AssetRecord, type AssetStoreProvider, type PutResu
 /**
  * 本地 jsonl 资产库(M3-2, 移植 v1 src/gep/assetStore.js 单写锁).
  * 每 kind 一文件(genes/capsules/events.jsonl); append-only; O_EXCL 文件锁防并发写撕裂;
- * 内存索引(asset_id→record)供 get/search; 同 asset_id 去重(内容寻址天然幂等).
+ * 内存索引(asset_id→record)供 get/search; 文件指纹变化时在共享锁内重建索引，保证多个
+ * CLI/daemon 进程之间可见; 写入也在锁内刷新后再按 asset_id 去重(内容寻址天然幂等).
  */
 export declare class LocalJsonlProvider implements AssetStoreProvider {
     readonly baseDir: string;
     private readonly index;
     private readonly lockPath;
+    private fileState;
     private loaded;
     constructor(baseDir: string);
-    private ensureLoaded;
+    private captureFileState;
+    private stateChanged;
+    private rebuildIndex;
+    private refreshUnderLock;
+    private ensureFresh;
+    private updateFileStateAfterWrite;
     put(asset: AssetRecord): Promise<PutResult>;
     /**
      * 迁移专用(M8-2): 以**冻结 asset_id** 原样写入, 不经 normalizeForPut 重算/校验.

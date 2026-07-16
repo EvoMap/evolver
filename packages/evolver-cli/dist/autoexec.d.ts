@@ -1,8 +1,9 @@
 import { events, assetstore, algo, exec, hooks, material as materialNs, verify, hub as hubNs } from '@evomap/evolver-core';
 import { type Beat } from './daemonLoop.js';
 import { connectPublicHub, ReuseCache } from '@evomap/evolver-adapter-public';
-import type { FetchLike, OfflinePermitStore, OutcomeReport, OutcomeReceipt } from '@evomap/evolver-adapter-public';
+import type { FetchLike, MemoryGraphEventReceipt, MemoryGraphEventReport, OfflinePermitStore, OutcomeReport, OutcomeReceipt } from '@evomap/evolver-adapter-public';
 import { type EvolverProxyClient } from '@evomap/evolver-mcp';
+import { type MemoryEventMirrorWiring } from './memoryEventMirror.js';
 import { resolveDistillObserver } from './distillObserver.js';
 import { type AutoDistillLlmResult, type LlmDistillRunner } from './autoDistillLlm.js';
 import { type AutoDistillAntiGeneMode, type AutoDistillAntiGeneResult } from './autoDistillAntiGene.js';
@@ -62,6 +63,7 @@ export declare function makeInjectEmitter(ingestor?: events.Ingestor): {
 /** A hub the link can report outcomes to. Structural (not the concrete class) so tests can fake it. */
 export type OutcomeReportingHub = hubNs.HubCapability & {
     recordOutcome(report: OutcomeReport): Promise<OutcomeReceipt>;
+    recordMemoryEvent?(report: MemoryGraphEventReport): Promise<MemoryGraphEventReceipt>;
     recordReuseResult?(report: hubNs.ReuseResultReport): Promise<hubNs.ReuseResultReceipt>;
 };
 /** The composed hub wiring: the reuse seam plus the matching outcome reporter that closes the loop. */
@@ -133,6 +135,7 @@ export declare function makeHubLink(cap: OutcomeReportingHub, ingestor?: events.
  */
 export declare function resolveHubLink(env?: NodeJS.ProcessEnv, ingestor?: events.Ingestor, connectHub?: PublicHubConnector): HubLink | undefined;
 export declare function resolveHubQuestionLink(env?: NodeJS.ProcessEnv, connectHub?: PublicHubConnector): HubQuestionLink | undefined;
+export declare function resolveMemoryEventMirror(env?: NodeJS.ProcessEnv, connectHub?: PublicHubConnector): MemoryEventMirrorWiring;
 export declare function offlinePermitDir(env?: NodeJS.ProcessEnv): string;
 export declare function makeOfflineSolidifyPermitGate(permits: Pick<OfflinePermitStore, 'consumeOfflinePermit'>): algo.SolidifyPermitGate;
 export declare function resolveSolidifyPermitGate(env?: NodeJS.ProcessEnv, connectHub?: PublicHubPermitConnector, opts?: SolidifyPermitResolverOptions): algo.SolidifyPermitGate | undefined;

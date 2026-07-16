@@ -5,8 +5,15 @@ import { dirname, join } from 'node:path';
 export function defaultProxySettingsPath(homeDir = homedir()) {
     return join(homeDir, '.evolver', 'settings.json');
 }
+export function resolveProxySettingsPath(env = {}, homeDir = homedir()) {
+    const explicit = env['EVOLVER_PROXY_SETTINGS_FILE']?.trim();
+    if (explicit)
+        return explicit;
+    const settingsDir = env['EVOLVER_SETTINGS_DIR']?.trim() || join(homeDir, '.evolver');
+    return join(settingsDir, 'settings.json');
+}
 export function publishProxySettings(options) {
-    const settingsPath = options.settingsPath ?? defaultProxySettingsPath(options.homeDir);
+    const settingsPath = options.settingsPath ?? resolveProxySettingsPath(options.env, options.homeDir);
     const record = options.record;
     if (!record.token.trim())
         return false;

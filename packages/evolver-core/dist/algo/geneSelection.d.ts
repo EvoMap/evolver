@@ -4,6 +4,7 @@ import { type GeneHealth } from './geneHealth.js';
 import type { GeneLearningView } from '../assetstore/learningHistory.js';
 import type { AssetRecord } from '../assetstore/provider.js';
 import { type ExplorationInput } from './exploration.js';
+import type { GenerationSource } from '../wire/index.js';
 /** 一个候选 gene 的选择期素材. */
 export interface GeneCandidateInput {
     geneId: string;
@@ -43,6 +44,11 @@ export interface GeneCandidateInput {
      * effect, so the factor is dormant until a caller injects the signal (default-off).
      */
     reuseAdjust?: number;
+    /**
+     * Authoritative provenance tag from Gene.generation_meta.source. The legacy `gene_distilled_` prefix remains a
+     * fallback only for old candidates that do not carry this field.
+     */
+    generationSource?: GenerationSource;
 }
 export interface SelectionInput {
     signals: readonly string[];

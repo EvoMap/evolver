@@ -96,8 +96,31 @@ export function scrubAgentEnv(env, opts = {}) {
     for (const [k, v] of Object.entries(env)) {
         if (v === undefined)
             continue;
+        // Windows treats env keys case-insensitively, but plain JS objects can contain both PATH and Path. Package
+        // runners such as pnpm may prepend their bins to PATH while the inherited user executables remain in Path.
+        // Canonicalize those aliases below so the whitelist does not silently discard either half.
+        if (process.platform === 'win32' && k.toLowerCase() === 'path')
+            continue;
         if (allowKeys.has(k) || allowPrefixes.some((p) => k.startsWith(p)))
             out[k] = v;
+    }
+    if (process.platform === 'win32') {
+        const pathValues = Object.entries(env)
+            .filter(([key, value]) => key.toLowerCase() === 'path' && value !== undefined)
+            .sort(([a], [b]) => a === 'PATH' ? -1 : b === 'PATH' ? 1 : 0)
+            .map(([, value]) => value);
+        const seen = new Set();
+        const merged = pathValues.flatMap((value) => value.split(';')).filter((entry) => {
+            if (!entry)
+                return false;
+            const key = entry.toLowerCase();
+            if (seen.has(key))
+                return false;
+            seen.add(key);
+            return true;
+        });
+        if (merged.length > 0)
+            out['PATH'] = merged.join(';');
     }
     return out;
 }

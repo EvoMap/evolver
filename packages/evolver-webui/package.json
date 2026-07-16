@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-webui",
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0-beta.2",
   "private": false,
   "type": "module",
   "description": "保活/可视化 WebUI",
@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.1"
+    "@evomap/evolver-core": "2.0.0-beta.2"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +21,7 @@
   },
   "files": [
     "dist/",
+    "assets/",
     "README.md",
     "package.json"
   ]

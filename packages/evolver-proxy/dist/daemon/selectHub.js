@@ -1,3 +1,4 @@
+import { resolveHubUrl as resolvePublicHubUrl } from '@evomap/evolver-adapter-public';
 /** 据 EVOMAP_HUB_MODE 选 hub 实现(public|private). 缺省 public. bin 据此挂对应 adapter. */
 export function resolveHubMode(env) {
     const m = (env['EVOMAP_HUB_MODE'] ?? 'public').toLowerCase();
@@ -6,7 +7,22 @@ export function resolveHubMode(env) {
     return m;
 }
 export function resolveHubUrl(env) {
-    return env['EVOMAP_HUB_URL'] ?? 'https://dev.evomap.ai';
+    if ((env['EVOMAP_HUB_MODE'] ?? 'public').toLowerCase() === 'private')
+        return resolvePrivateHubUrl(env);
+    return resolvePublicHubUrl(env);
+}
+function resolvePrivateHubUrl(env) {
+    return trimmed(env['EVOMAP_HUB_URL'])
+        ?? trimmed(env['A2A_HUB_URL'])
+        ?? trimmed(env['EVOLVER_DEFAULT_HUB_URL'])
+        ?? resolvePublicHubUrl({});
+}
+function trimmed(value) {
+    const v = value?.trim();
+    if (!v)
+        return undefined;
+    const normalized = v.replace(/\/+$/, '');
+    return normalized || undefined;
 }
 /**
  * Actionable hint for a hub AUTH failure (401/403), tailored to the hub's error code so it does NOT misdirect

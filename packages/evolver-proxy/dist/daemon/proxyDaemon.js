@@ -6,6 +6,7 @@ import { executeForceUpdate } from '../selfUpdate/executor.js';
 import { reportPendingSelfUpdateLastUpdate, reportSelfUpdateLastUpdate } from '../selfUpdate/lastUpdate.js';
 import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
 import { hubAuthFailureHint } from './selectHub.js';
+import { CollaborationFacade } from './collaborationFacade.js';
 export const DEFAULT_IPC_PORT = 19820;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_PROXY_TICK_ERROR_LENGTH = 2_000;
@@ -28,6 +29,7 @@ export class ProxyDaemon {
     reuseResultReporter;
     validator;
     atp;
+    collaborationFacade;
     ipc;
     now;
     random;
@@ -93,9 +95,20 @@ export class ProxyDaemon {
             pumpHandlers: ['core'], // proxy 出站归 SyncEngine, 不在此双 claim
             ...(deps.lockPath ? { lockPath: deps.lockPath } : {}),
         });
+        this.collaborationFacade = new CollaborationFacade({
+            store: this.store,
+            hub: hubToUse,
+            now: this.now,
+            notifyOutbound: () => this.notifyNewOutbound(),
+            ...(deps.runtimeNamespace ? { runtimeNamespace: deps.runtimeNamespace } : {}),
+            ...(deps.collaborationOperationTimeoutMs !== undefined ? { operationTimeoutMs: deps.collaborationOperationTimeoutMs } : {}),
+        });
         this.sync = new SyncEngine({
             store: this.store, hub: hubToUse, proxyHandler, now: this.now,
             ...(deps.runtimeNamespace ? { runtimeNamespace: deps.runtimeNamespace } : {}),
+            onOutboundSucceeded: (envelope, result) => this.collaborationFacade.handleOutboundSucceeded(envelope, result),
+            onOutboundTerminal: (envelope, error) => this.collaborationFacade.handleOutboundTerminal(envelope, error),
+            normalizeInboundEnvelope: (envelope) => this.collaborationFacade.normalizeInboundEnvelope(envelope),
             ...(deps.traceBackfill ? { onOutboundFlushed: () => { this.drainProxyTraceBackfill(); } } : {}),
         });
         this.lifecycle = new LifecycleManager({
@@ -555,6 +568,8 @@ export class ProxyDaemon {
         return Number.isFinite(n) && n > 0 ? n : null;
     }
     async handleProxyRoute(ctx) {
+        if (await this.collaborationFacade.handle(ctx))
+            return true;
         const handledAtp = await this.handleAtpRoute(ctx);
         if (handledAtp)
             return true;
@@ -711,6 +726,60 @@ export class ProxyDaemon {
             ctx.json(200, { ...distill, queued: submission !== null, submission });
             return true;
         }
+        if (ctx.route === 'POST /agent/search') {
+            const body = asRecord(await ctx.readJson());
+            const directory = this.deps.hub.agentDirectory ?? hubNs.unsupportedAgentDirectoryCapability();
+            const parsed = parseAgentSearchRequest(body);
+            if (!parsed.ok) {
+                respondAgentDirectory(ctx, parsed);
+                return true;
+            }
+            const result = await directory.search(parsed.value);
+            respondAgentDirectory(ctx, result);
+            return true;
+        }
+        if (ctx.route === 'POST /agent/profile') {
+            const body = asRecord(await ctx.readJson());
+            const directory = this.deps.hub.agentDirectory ?? hubNs.unsupportedAgentDirectoryCapability();
+            let agentId;
+            let timeoutMs;
+            try {
+                agentId = hubNs.normalizeAgentId(typeof body['agent_id'] === 'string' ? body['agent_id'] : '');
+                timeoutMs = hubNs.normalizeAgentDirectoryTimeout(typeof body['timeout_ms'] === 'number' ? body['timeout_ms'] : undefined);
+            }
+            catch (error) {
+                respondAgentDirectory(ctx, invalidAgentDirectoryRequest(error));
+                return true;
+            }
+            const result = await directory.getProfile(agentId, { timeoutMs });
+            respondAgentDirectory(ctx, result);
+            return true;
+        }
+        if (ctx.route === 'POST /agent/discover') {
+            const body = asRecord(await ctx.readJson());
+            const directory = this.deps.hub.agentDirectory ?? hubNs.unsupportedAgentDirectoryCapability();
+            let request;
+            try {
+                request = hubNs.normalizeAgentTaskDiscoveryRequest({
+                    title: typeof body['title'] === 'string' ? body['title'] : '',
+                    ...(typeof body['description'] === 'string' ? { description: body['description'] } : {}),
+                    ...(Array.isArray(body['signals']) ? { signals: body['signals'] } : {}),
+                    ...(typeof body['availability'] === 'string' ? { availability: body['availability'] } : {}),
+                    ...(typeof body['sort'] === 'string' ? { sort: body['sort'] } : {}),
+                    ...(typeof body['order'] === 'string' ? { order: body['order'] } : {}),
+                    ...(typeof body['cursor'] === 'string' ? { cursor: body['cursor'] } : {}),
+                    ...(typeof body['limit'] === 'number' ? { limit: body['limit'] } : {}),
+                    ...(typeof body['timeout_ms'] === 'number' ? { timeoutMs: body['timeout_ms'] } : {}),
+                });
+            }
+            catch (error) {
+                respondAgentDirectory(ctx, invalidAgentDirectoryRequest(error));
+                return true;
+            }
+            const result = await directory.discoverForTask(request);
+            respondAgentDirectory(ctx, result);
+            return true;
+        }
     }
     async searchAssets(query) {
         const limit = Math.max(1, Math.min(Number(query.limit ?? 5), 25));
@@ -861,6 +930,48 @@ function assetKind(value) {
 }
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function respondAgentDirectory(ctx, result) {
+    if (result.ok) {
+        ctx.json(200, result);
+        return;
+    }
+    const status = {
+        invalid_request: 400,
+        permission_denied: 403,
+        capability_unavailable: 501,
+        invalid_response: 502,
+        hub_unavailable: 503,
+        timeout: 504,
+    }[result.error.code];
+    ctx.json(status, result);
+}
+function parseAgentSearchRequest(body) {
+    try {
+        return { ok: true, value: hubNs.normalizeAgentSearchRequest({
+                ...(typeof body['query'] === 'string' ? { query: body['query'] } : {}),
+                ...(Array.isArray(body['signals']) ? { signals: body['signals'] } : {}),
+                ...(typeof body['availability'] === 'string' ? { availability: body['availability'] } : {}),
+                ...(typeof body['sort'] === 'string' ? { sort: body['sort'] } : {}),
+                ...(typeof body['order'] === 'string' ? { order: body['order'] } : {}),
+                ...(typeof body['cursor'] === 'string' ? { cursor: body['cursor'] } : {}),
+                ...(typeof body['limit'] === 'number' ? { limit: body['limit'] } : {}),
+                ...(typeof body['timeout_ms'] === 'number' ? { timeoutMs: body['timeout_ms'] } : {}),
+            }) };
+    }
+    catch (error) {
+        return invalidAgentDirectoryRequest(error);
+    }
+}
+function invalidAgentDirectoryRequest(error) {
+    return {
+        ok: false,
+        error: {
+            code: 'invalid_request',
+            retryable: false,
+            message: error instanceof Error ? error.message.slice(0, 120) : 'invalid_request',
+        },
+    };
 }
 function stringBody(body, key) {
     const v = body[key];

@@ -3,6 +3,7 @@ export declare const claudeCodeAdapter: SessionLogAdapter;
 export declare const cursorAdapter: SessionLogAdapter;
 export declare const codexAdapter: SessionLogAdapter;
 export declare const geminiAdapter: SessionLogAdapter;
+export declare const antigravityAdapter: SessionLogAdapter;
 export declare const genericChatAdapter: SessionLogAdapter;
 export declare const kimiAdapter: SessionLogAdapter;
 export declare const ADAPTERS: readonly SessionLogAdapter[];

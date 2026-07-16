@@ -1,4 +1,4 @@
-import { parseJsonlLines, extractContent, isMetaText, correlateToolNames } from './types.js';
+import { parseJsonlLines, extractContent, isMetaText, correlateToolNames, stripUtf8Bom } from './types.js';
 function isRecord(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -24,7 +24,7 @@ function firstString(record, keys) {
 function parseJsonish(value) {
     if (typeof value !== 'string')
         return value;
-    const trimmed = value.trim();
+    const trimmed = stripUtf8Bom(value).trim();
     if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('[')))
         return value;
     try {
@@ -142,9 +142,9 @@ function withSourceMetadata(turns, source) {
 }
 // VERIFICATION BAR: an adapter only ships once its parse() is checked against a REAL session log from that tool
 // — a trimmed, sanitized sample + a golden test (see the golden tests in adapters.test.ts). A guessed schema is
-// worse than no adapter: it silently yields 0 turns on real logs while looking supported. Today: claude-code +
-// codex + cursor are verified (codex against codex-cli 0.137.0 rollout logs; cursor against real
-// ~/.cursor/projects/*/agent-transcripts/*.jsonl). opencode/kiro stay removed until each has a real-log golden test.
+// worse than no adapter: it silently yields 0 turns on real logs while looking supported. Today: claude-code,
+// codex, cursor, Gemini, and Antigravity are verified against trimmed sanitized real-log samples. opencode/kiro
+// stay removed until each has a real-log golden test.
 // claude-code AND cursor share the Anthropic content-block transcript shape: one JSONL record per turn,
 // { role|type: 'user'|'assistant', message: { content: [ {type:'text',text} | {type:'tool_use',name,id?} |
 // {type:'tool_result',...} ] } }. correlateToolNames backfills a tool_result's tool name from its tool_use id.
@@ -559,7 +559,7 @@ function geminiSessionFromValue(value) {
     };
 }
 function geminiSessions(chunk) {
-    const trimmed = chunk.trim();
+    const trimmed = stripUtf8Bom(chunk).trim();
     if (!trimmed)
         return [];
     // Gemini session files are a single JSON document. Tolerate JSONL-of-sessions too.
@@ -590,6 +590,192 @@ export const geminiAdapter = {
     parse: (chunk) => geminiSessions(chunk).flatMap((session) => session.turns),
     parseSession: (chunk) => geminiSessions(chunk)[0] ?? { turns: [] },
     parseSessions: geminiSessions,
+};
+// Antigravity persists one JSON record per event at
+// ~/.gemini/{antigravity,antigravity-ide}/brain/<uuid>/.system_generated/logs/transcript.jsonl.
+// Verified real records carry {type,status,source,step_index,created_at,content}; PLANNER_RESPONSE additionally
+// carries plaintext `thinking` and tool_calls: [{name,args}]. The file can append a newer snapshot of an earlier
+// step, so the last terminal record for each type + step_index is authoritative.
+const ANTIGRAVITY_TRANSCRIPT_PATH = /(?:^|[/\\])\.gemini[/\\](?:antigravity|antigravity-ide)[/\\]brain[/\\]([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})[/\\]\.system_generated[/\\]logs[/\\]transcript\.jsonl$/i;
+const ANTIGRAVITY_TERMINAL_STATUSES = new Set(['DONE', 'ERROR', 'CANCELED']);
+const ANTIGRAVITY_TOOL_RESULT_TYPES = new Set([
+    'ASK_QUESTION',
+    'CODE_ACTION',
+    'GENERIC',
+    'GREP_SEARCH',
+    'LIST_DIRECTORY',
+    'RUN_COMMAND',
+    'SEARCH_WEB',
+    'VIEW_FILE',
+]);
+function antigravityStatus(record) {
+    return typeof record['status'] === 'string' ? record['status'].toUpperCase() : '';
+}
+function antigravityRecords(chunk) {
+    const selected = new Map();
+    parseJsonlLines(chunk).forEach((record, rowIndex) => {
+        const type = typeof record['type'] === 'string' ? record['type'] : '';
+        const stepIndex = finiteNumber(record['step_index']);
+        const key = type && stepIndex !== undefined ? `${type}\u0000${stepIndex}` : `row\u0000${rowIndex}`;
+        const current = selected.get(key);
+        if (!current) {
+            selected.set(key, { record, rowIndex });
+            return;
+        }
+        const currentTerminal = ANTIGRAVITY_TERMINAL_STATUSES.has(antigravityStatus(current.record));
+        const nextTerminal = ANTIGRAVITY_TERMINAL_STATUSES.has(antigravityStatus(record));
+        if (!currentTerminal || nextTerminal) {
+            // Snapshot rows are partial: omitted tool_calls carry forward, while an explicit value (including []) wins.
+            // Keep the first logical position so a late terminal snapshot cannot move a tool call after its result.
+            const selectedRecord = type === 'PLANNER_RESPONSE'
+                && !hasOwn(record, 'tool_calls')
+                && hasOwn(current.record, 'tool_calls')
+                ? { ...record, tool_calls: current.record['tool_calls'] }
+                : record;
+            selected.set(key, { record: selectedRecord, rowIndex: current.rowIndex });
+        }
+    });
+    return [...selected.values()]
+        .sort((a, b) => a.rowIndex - b.rowIndex)
+        .map(({ record }) => record);
+}
+function antigravityRecordMetadata(record) {
+    const metadata = {};
+    for (const key of ['type', 'status', 'source', 'step_index', 'created_at']) {
+        if (record[key] !== undefined)
+            metadata[key] = record[key];
+    }
+    return metadata;
+}
+function antigravityRecordText(record, key = 'content') {
+    return typeof record[key] === 'string' ? record[key] : '';
+}
+function antigravityFailure(record) {
+    const type = typeof record['type'] === 'string' ? record['type'] : '';
+    const status = antigravityStatus(record);
+    if (type !== 'ERROR_MESSAGE' && status !== 'ERROR' && status !== 'CANCELED')
+        return undefined;
+    return antigravityRecordText(record, 'error')
+        || antigravityRecordText(record)
+        || `Antigravity ${type || 'record'} ${status || 'ERROR'}`;
+}
+function annotateAntigravityTurns(record, turns) {
+    const timestamp = typeof record['created_at'] === 'string' ? record['created_at'] : undefined;
+    const metadata = antigravityRecordMetadata(record);
+    const errorMessage = antigravityFailure(record);
+    return turns.map((turn) => ({
+        ...turn,
+        ...(timestamp ? { timestamp } : {}),
+        ...(errorMessage && !turn.errorMessage ? { errorMessage } : {}),
+        metadata,
+        sourceRecord: record,
+        rawRow: record,
+    }));
+}
+function antigravityResultTypeForTool(toolName) {
+    switch (toolName.toLowerCase()) {
+        case 'ask_question': return 'ASK_QUESTION';
+        case 'grep_search': return 'GREP_SEARCH';
+        case 'list_dir': return 'LIST_DIRECTORY';
+        case 'run_command': return 'RUN_COMMAND';
+        case 'search_web': return 'SEARCH_WEB';
+        case 'view_file': return 'VIEW_FILE';
+        case 'multi_replace_file_content':
+        case 'replace_file_content':
+        case 'write_to_file': return 'CODE_ACTION';
+        default: return 'GENERIC';
+    }
+}
+function antigravityFallbackToolName(resultType) {
+    switch (resultType) {
+        case 'ASK_QUESTION': return 'ask_question';
+        case 'CODE_ACTION': return 'code_action';
+        case 'GREP_SEARCH': return 'grep_search';
+        case 'LIST_DIRECTORY': return 'list_dir';
+        case 'RUN_COMMAND': return 'run_command';
+        case 'SEARCH_WEB': return 'search_web';
+        case 'VIEW_FILE': return 'view_file';
+        default: return 'generic';
+    }
+}
+function antigravityTranscriptFromRecords(records) {
+    const turns = [];
+    const pendingTools = [];
+    records.forEach((record, rowIndex) => {
+        const type = typeof record['type'] === 'string' ? record['type'] : '';
+        const content = antigravityRecordText(record);
+        const recordTurns = [];
+        if (type === 'USER_INPUT') {
+            recordTurns.push({ role: 'user', text: content, isMeta: isMetaText(content) });
+        }
+        else if (type === 'PLANNER_RESPONSE') {
+            const thinking = antigravityRecordText(record, 'thinking');
+            if (thinking)
+                recordTurns.push({ role: 'assistant', text: thinking, reasoning: true, isMeta: false });
+            if (content)
+                recordTurns.push({ role: 'assistant', text: content, isMeta: isMetaText(content) });
+            const toolCalls = Array.isArray(record['tool_calls']) ? record['tool_calls'] : [];
+            toolCalls.forEach((value, ordinal) => {
+                if (!isRecord(value))
+                    return;
+                const toolName = typeof value['name'] === 'string' && value['name'] ? value['name'] : 'antigravity_tool';
+                const stepIndex = finiteNumber(record['step_index']);
+                const toolUseId = `antigravity:${stepIndex ?? `row-${rowIndex}`}:${ordinal}`;
+                pendingTools.push({ toolName, toolUseId, resultType: antigravityResultTypeForTool(toolName) });
+                recordTurns.push({
+                    role: 'assistant',
+                    text: '',
+                    toolName,
+                    toolUseId,
+                    ...(hasOwn(value, 'args') ? { toolInput: value['args'] } : {}),
+                    isMeta: false,
+                });
+            });
+        }
+        else if (ANTIGRAVITY_TOOL_RESULT_TYPES.has(type)) {
+            const pendingIndex = pendingTools.findIndex((pending) => pending.resultType === type);
+            const pending = pendingIndex >= 0 ? pendingTools.splice(pendingIndex, 1)[0] : undefined;
+            recordTurns.push({
+                role: 'tool',
+                text: '',
+                toolName: pending?.toolName ?? antigravityFallbackToolName(type),
+                ...(pending ? { toolUseId: pending.toolUseId } : {}),
+                toolResult: content,
+                isMeta: false,
+            });
+        }
+        else if (type === 'ERROR_MESSAGE') {
+            const errorMessage = antigravityFailure(record);
+            recordTurns.push({ role: 'system', text: content || errorMessage, errorMessage, isMeta: true });
+        }
+        else if (type === 'SYSTEM_MESSAGE' || type === 'CONVERSATION_HISTORY' || type === 'CHECKPOINT') {
+            recordTurns.push({ role: 'system', text: content, isMeta: true });
+        }
+        turns.push(...annotateAntigravityTurns(record, recordTurns));
+    });
+    return turns;
+}
+function antigravitySession(chunk) {
+    const records = antigravityRecords(chunk);
+    const startedAt = records.find((record) => typeof record['created_at'] === 'string')?.['created_at'];
+    return {
+        turns: antigravityTranscriptFromRecords(records),
+        provider: 'antigravity',
+        clientSource: 'antigravity',
+        ...(typeof startedAt === 'string' ? { startedAt } : {}),
+        rawRows: records,
+    };
+}
+export const antigravityAdapter = {
+    agent: 'antigravity',
+    detect: (path) => ANTIGRAVITY_TRANSCRIPT_PATH.test(path),
+    sessionIdFromPath: (path) => ANTIGRAVITY_TRANSCRIPT_PATH.exec(path)?.[1],
+    parse: (chunk) => antigravitySession(chunk).turns,
+    parseSession: antigravitySession,
+    parseSessions: (chunk) => {
+        const session = antigravitySession(chunk);
+        return session.turns.length > 0 ? [session] : [];
+    },
 };
 // ── generic chat-transcript adapter ──────────────────────────────────────────
 // The per-tool adapters above are gated on a REAL private-log golden (a guessed private schema silently yields 0
@@ -935,7 +1121,7 @@ function applyGenericSessionMetadata(turns, metadata) {
  *  chat-completions request-body shape), or a SINGLE message object (incl. pretty-printed multi-line — which is
  *  not valid JSONL, so it must be handled here, not fall through). */
 function genericChatRecords(chunk) {
-    const trimmed = chunk.trim();
+    const trimmed = stripUtf8Bom(chunk).trim();
     if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
         try {
             const parsed = JSON.parse(trimmed);
@@ -970,7 +1156,7 @@ function genericChatSessionsFromValue(value) {
     return session.turns.length > 0 ? [session] : [];
 }
 function genericChatSessions(chunk) {
-    const trimmed = chunk.trim();
+    const trimmed = stripUtf8Bom(chunk).trim();
     if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
         try {
             const parsed = JSON.parse(trimmed);
@@ -1032,6 +1218,6 @@ export const kimiAdapter = {
     parseSessions: kimiSessions,
 };
 // Only verified adapters are registered. opencode/kiro live in git history — re-add with a real-log fixture.
-// genericChatAdapter is LAST so any tool-specific path (claude/cursor/codex/gemini/kimi) resolves first.
-export const ADAPTERS = [claudeCodeAdapter, codexAdapter, cursorAdapter, geminiAdapter, kimiAdapter, genericChatAdapter];
+// genericChatAdapter is LAST so any tool-specific path (claude/cursor/codex/gemini/antigravity/kimi) resolves first.
+export const ADAPTERS = [claudeCodeAdapter, codexAdapter, cursorAdapter, geminiAdapter, antigravityAdapter, kimiAdapter, genericChatAdapter];
 export function adapterForPath(path) { return ADAPTERS.find((a) => a.detect(path)); }

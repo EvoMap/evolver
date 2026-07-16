@@ -1,9 +1,11 @@
-import { assetstore, benchmark, events } from '@evomap/evolver-core';
+import { assetstore, benchmark, events, exec } from '@evomap/evolver-core';
 export interface AntiGeneRolloutCommandDeps {
     store?: assetstore.AssetStoreProvider;
     review?: assetstore.ReviewLedger;
     readEvents?: (eventsPath?: string) => events.ReportEvent[];
     makeExecute?: benchmark.AntiGeneRolloutExecuteFactory;
+    agent?: exec.AgentRunner;
+    git?: exec.GitRunner;
     now?: () => number;
     log?: (line: string) => void;
 }

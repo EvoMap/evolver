@@ -8,13 +8,13 @@ const RUNTIME_SESSION_ENABLE_ENV = 'EVOLVER_TRAJECTORY_RUNTIME_SESSIONS';
 const RUNTIME_SESSION_ENABLE_ENV_LEGACY = 'EVOLVER_TRAJECTORY_EXPORT_RUNTIME_SESSIONS';
 const RUNTIME_SESSION_DIRS_ENV = 'EVOLVER_TRAJECTORY_RUNTIME_SESSION_DIRS';
 const RUNTIME_SESSION_DIRS_ENV_LEGACY = 'EVOLVER_TRAJECTORY_EXPORT_RUNTIME_SESSION_DIRS';
-const RUNTIME_DISCOVERY_AGENTS = new Set(['codex', 'claude-code', 'cursor', 'gemini', 'kimi']);
+const RUNTIME_DISCOVERY_AGENTS = new Set(['codex', 'claude-code', 'cursor', 'gemini', 'antigravity', 'kimi']);
 // Agents whose session files carry NO per-file cwd/workspace marker (Gemini chat: only sessionId+projectHash;
-// Kimi wire.jsonl: raw wire log). The workspace-cwd gate (runtimeSessionBelongsToWorkspace) would reject every
+// Antigravity brain transcript; Kimi wire.jsonl: raw wire log). The workspace-cwd gate would reject every
 // such file because transcriptCwd() returns undefined -> silently dropping ALL real sessions. For these agents
 // we skip workspace scoping (the goal of this discovery is broad "采全" collection) and accept .json too, since
 // Gemini's older/common session format is `.json`, not `.jsonl`.
-const CWDLESS_DISCOVERY_AGENTS = new Set(['gemini', 'kimi']);
+const CWDLESS_DISCOVERY_AGENTS = new Set(['gemini', 'antigravity', 'kimi']);
 // Claude transcripts can carry several meta/preamble records before the first
 // record that names the cwd; a 5-line / 4KB window dropped whole sessions when
 // the preamble was one line longer than expected. Scan a wider window instead.
@@ -24,7 +24,7 @@ const TRANSCRIPT_CWD_MAX_LINES = 50;
 // marked it. evolver's SessionStart hook (`evolver inject session-start --hook-stdin`) stamps the runtime
 // `session_id` onto a `value.inject` root_event, so root_events.jsonl IS the registry of "sessions evolver
 // actively touched". A discovered runtime session is collected only when its session_id ∈ that set. Sessions
-// from tools with no hook installed (gemini/kimi), and history predating the hook install, carry no marker and
+// from tools with no SessionStart hook (gemini/antigravity/kimi), and history predating hook install, carry no marker and
 // are excluded — by design. `--include-unmarked` (or the env below) reopens the legacy "采全" behavior.
 const INCLUDE_UNMARKED_ENV = 'EVOLVER_TRAJECTORY_INCLUDE_UNMARKED';
 // Second gate (also strict by default): skip a discovered runtime session whose session_id the gateway already
@@ -208,12 +208,15 @@ function defaultRuntimeSessionDirs() {
     const home = runtimeHome();
     // ~/.gemini/tmp holds per-project <hash>/chats/session-*.{json,jsonl}; the gemini
     // adapter's detect() only matches those session files (never logs.json).
+    // Antigravity uses brain/<uuid>/.system_generated/logs/transcript.jsonl under either supported namespace.
     // Cursor's globalStorage holds state.vscdb (sqlite) — discovered via isCursorStateVscdbPath.
     // ~/.kimi holds Kimi CLI wire.jsonl logs (no per-file cwd) — discovered as a cwd-less agent.
     return [
         join(home, '.codex', 'sessions'),
         join(home, '.claude', 'projects'),
         join(home, '.gemini', 'tmp'),
+        join(home, '.gemini', 'antigravity'),
+        join(home, '.gemini', 'antigravity-ide'),
         join(home, '.kimi'),
         ...cursorGlobalStorageDirs(home),
     ];
@@ -447,7 +450,7 @@ function collectRuntimeSessionInputFiles(dirs) {
                 out.push({ path, kind: 'cursor-vscdb', fromRuntimeDiscovery: true });
                 continue;
             }
-            // Resolve the adapter first so cwd-less agents (gemini/kimi) can be accepted as .json and bypass the
+            // Resolve the adapter first so cwd-less agents (gemini/antigravity/kimi) can bypass the
             // workspace-cwd gate that would otherwise silently drop every one of their files.
             const adapter = adapterForPath(path);
             const cwdless = adapter !== undefined && CWDLESS_DISCOVERY_AGENTS.has(adapter.agent);
@@ -615,10 +618,13 @@ function gatewayCapturedSessionIds(tracesDir, readOpts) {
     return out;
 }
 /** Resolve the session_id a discovered runtime session file will be keyed on, WITHOUT a full parse — mirrors
- *  recall.ts/sessionMetadata: codex names the id inside session_meta.payload.id, every other transcript is named
- *  `<session_id>.<ext>` so the basename (minus extension) is the id. cursor-vscdb is special-cased by the caller
+ *  recall.ts/sessionMetadata: adapters may derive an id from their path (Antigravity uses brain/<uuid>), codex
+ *  names the id inside session_meta.payload.id, and other transcripts use their basename. cursor-vscdb is special-cased by the caller
  *  (its session_id is per-composer, resolved at parse time), so it never reaches here. */
 function runtimeSessionIdForFile(file) {
+    const pathSessionId = file.adapter?.sessionIdFromPath?.(file.path)?.trim();
+    if (pathSessionId)
+        return pathSessionId;
     if (file.adapter?.agent === 'codex') {
         try {
             const head = readFileHead(file.path, TRANSCRIPT_CWD_HEAD_BYTES);
@@ -661,10 +667,14 @@ function passesRuntimeGates(sessionId, marked, gatewayCaptured, flags) {
     }
     return { collect: true };
 }
-function sessionMetadata(file, chunk, sourceAgent) {
+function sessionMetadata(file, chunk, adapter) {
     const rows = parseJsonlLines(chunk);
     const started = rows.find((row) => typeof row['timestamp'] === 'string')?.['timestamp'];
-    if (sourceAgent === 'codex') {
+    const pathSessionId = adapter.sessionIdFromPath?.(file)?.trim();
+    if (pathSessionId) {
+        return { sessionId: pathSessionId, ...(typeof started === 'string' ? { startedAt: started } : {}) };
+    }
+    if (adapter.agent === 'codex') {
         const meta = rows.find((row) => row['type'] === 'session_meta' && row['payload'] && typeof row['payload'] === 'object');
         const payload = meta?.['payload'];
         const id = payload && typeof payload['id'] === 'string' ? payload['id'] : undefined;
@@ -683,8 +693,9 @@ function parseRuntimeSessions(adapter, chunk) {
 function usage() {
     return [
         '用法: evolver trajectory-export [--input <trace-or-session-file-or-dir>] [--output <jsonl>] [--allow-partial]',
-        '  --input <path>               支持 llm-trace JSONL，以及 Claude/Codex/Cursor session JSONL',
+        '  --input <path>               支持 llm-trace JSONL，以及 Claude/Codex/Cursor/Antigravity session JSONL',
         '  --runtime-sessions           同时扫描本机 ~/.codex/sessions、~/.claude/projects、~/.gemini/tmp、~/.kimi 与 Cursor state.vscdb（仅本地导出，不上传 Hub）',
+        '                               Antigravity roots: ~/.gemini/antigravity and ~/.gemini/antigravity-ide',
         '  --runtime-session-dir <dir>  额外扫描一个明确的本机 runtime session 目录；可重复',
         '  --include-unmarked           关闭“标记闸门”：默认严格模式只采 evolver 主动标记过的会话（root_events.jsonl 的 value.inject 事件里有该 sessionId）；',
         '                               加此开关恢复旧的“采全”行为。等价 env EVOLVER_TRAJECTORY_INCLUDE_UNMARKED=1。仅作用于 runtime-session 发现链路。',
@@ -823,7 +834,7 @@ export async function runTrajectoryExport(argv) {
                 }
                 continue;
             }
-            // Marker/gateway gates for file-per-session runtime discovery (claude/codex/cursor-jsonl/gemini/kimi).
+            // Marker/gateway gates for file-per-session runtime discovery (claude/codex/cursor-jsonl/gemini/antigravity/kimi).
             // Resolved from the session_id without a full parse (basename / codex session_meta.payload.id).
             if (file.fromRuntimeDiscovery) {
                 const gate = passesRuntimeGates(runtimeSessionIdForFile(file), marked, gatewayCaptured, gateFlags);
@@ -850,7 +861,7 @@ export async function runTrajectoryExport(argv) {
             stats.rowsScanned += parseStats.rowsScanned;
             stats.rowsRead += parseStats.rowsRead;
             stats.invalidJson += parseStats.invalidJson;
-            const metadata = sessionMetadata(file.path, chunk, adapter.agent);
+            const metadata = sessionMetadata(file.path, chunk, adapter);
             for (const parsedSession of parseRuntimeSessions(adapter, chunk)) {
                 const { turns, ...adapterMetadata } = parsedSession;
                 sessionTurnCount += turns.length;

@@ -259,7 +259,7 @@ export function asGeneCandidate(value) {
         ...(isRecord(value['constraints']) ? {
             constraints: {
                 ...(typeof value['constraints']['max_files'] === 'number' ? { max_files: value['constraints']['max_files'] } : {}),
-                // Only carry a NON-EMPTY forbidden_paths through. intakeGene defaults the field with `?? DEFAULT`,
+                // Only carry a NON-EMPTY forbiddenPaths through. intakeGene defaults the field with `?? DEFAULT`,
                 // and nullish-coalescing does NOT replace an empty array — so an LLM-supplied `[]` would drop the
                 // default `.git`/`node_modules` guard on an autonomously-stored gene. Omit it so the default kicks in. (V1 parity.)
                 ...(Array.isArray(value['constraints']['forbidden_paths']) && value['constraints']['forbidden_paths'].length > 0
@@ -267,6 +267,9 @@ export function asGeneCandidate(value) {
             },
         } : {}),
         ...(Array.isArray(value['validation']) ? { validation: value['validation'].map(String) } : {}),
+        // An LLM-distilled gene is distilled from prior capsule/session evidence (not a verified fail→pass trajectory,
+        // not a human-taught gene) → `distilled` per V1 #302 classifyProvenance. intakeGene normalizes + validates it.
+        generation_meta: { source: 'distilled' },
     };
 }
 export function jaccardDuplicate(candidate, existing, threshold = DEFAULT_DUP_JACCARD) {

@@ -1,3 +1,6 @@
+export function stripUtf8Bom(value) {
+    return value.replace(/^\uFEFF/, '');
+}
 export const META_MARKERS = ['HEARTBEAT_OK', 'NO_REPLY', 'NO_RESPONSE_NEEDED', '[META]'];
 export function isMetaText(text) {
     const t = text.trim();
@@ -7,11 +10,12 @@ export function parseJsonlLinesWithStats(chunk) {
     const out = [];
     const stats = { rowsScanned: 0, rowsRead: 0, invalidJson: 0 };
     for (const l of chunk.split('\n')) {
-        if (!l.trim())
+        const line = stats.rowsScanned === 0 ? stripUtf8Bom(l) : l;
+        if (!line.trim())
             continue;
         stats.rowsScanned += 1;
         try {
-            const o = JSON.parse(l);
+            const o = JSON.parse(line);
             if (o && typeof o === 'object') {
                 out.push(o);
                 stats.rowsRead += 1;

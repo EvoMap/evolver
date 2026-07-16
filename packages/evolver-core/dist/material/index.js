@@ -1,4 +1,5 @@
 export * from './materialStore.js';
+export * from './materialArchive.js';
 export * from './watermark.js';
 export * from './sources.js';
 export * from './consumer.js';

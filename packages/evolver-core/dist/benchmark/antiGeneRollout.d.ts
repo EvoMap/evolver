@@ -3,6 +3,7 @@ import { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { ReportEvent } from '../events/reports.js';
 import { type CycleInput } from '../algo/cycleEngine.js';
 import type { GepCategory } from '../wire/index.js';
+import { type AntiGeneOverblockSummary } from './antiGeneImpact.js';
 export type AntiGeneRolloutArm = 'baseline' | 'antiGene';
 export type AntiGeneRolloutVerdict = 'anti_gene_better' | 'no_clear_improvement' | 'anti_gene_worse' | 'insufficient_samples';
 export interface AntiGeneRolloutTask {
@@ -50,6 +51,7 @@ export interface AntiGeneRolloutReport {
     antiGene: AntiGeneRolloutArmMetrics;
     missingExpectedWarnings: number;
     overblocked: number;
+    overblockedAntiGenes: AntiGeneOverblockSummary[];
     failureDelta: number;
     verdict: AntiGeneRolloutVerdict;
     taskResults: AntiGeneRolloutTaskResult[];

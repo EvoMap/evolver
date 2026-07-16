@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { inspect, format } from 'node:util';
 import { assetstore, events, hub, wire } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
 const REUSE_CONTRACT = 'reuse.v1';
@@ -570,7 +570,7 @@ async function withMachineJsonConsole(enabled, deps, fn) {
 function createDefaultTransport(deps) {
     const env = deps.env ?? process.env;
     loadEnvFileFromEnv(env);
-    const hubUrl = env['EVOMAP_HUB_URL'] ?? 'https://evomap.ai';
+    const hubUrl = resolveHubUrl(env);
     const evomapDir = resolveAtpHome(env);
     const sender = resolveAtpSenderId(env);
     const senderId = () => sender ?? env['A2A_NODE_ID']?.trim();
@@ -591,6 +591,8 @@ function createDefaultTransport(deps) {
         catch (err) {
             if (err instanceof AuthError)
                 return { ok: false, status: err.status };
+            if (isAuthLikeError(err))
+                return { ok: false, status: 401 };
             if (err instanceof HubClientError)
                 return { ok: false, status: err.status, body: err.body };
             return { ok: false, status: 0 };
@@ -601,6 +603,10 @@ function createDefaultTransport(deps) {
         validate: (bundle) => call('/a2a/validate', 'validate', bundle),
         publish: (bundle) => call('/a2a/publish', 'publish', bundle),
     };
+}
+function isAuthLikeError(err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return /oauth|login|credential|auth|401|403|node_secret/i.test(message);
 }
 function classifyError(err, command) {
     if (err instanceof ContractError)

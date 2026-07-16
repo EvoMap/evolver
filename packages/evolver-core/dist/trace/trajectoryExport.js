@@ -1558,7 +1558,7 @@ function runtimeSessionId(input) {
         return explicit;
     const sourcePath = stringValue(input.sourcePath);
     const base = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? '';
-    return base.replace(/\.jsonl?$/i, '') || 'unknown';
+    return redactString(base.replace(/\.jsonl?$/i, '')) || 'unknown';
 }
 function nativeCallHasField(call, key) {
     return Object.prototype.hasOwnProperty.call(call, key);
@@ -1704,7 +1704,7 @@ export function buildCodingTrajectoryFromSessionLog(input) {
         session_id: sessionId,
         source_kind: 'runtime_session',
         source_agent: sourceAgent,
-        source_path: sourcePath,
+        source_path: redactString(sourcePath),
         ...(sessionModel ? { session_model: sessionModel } : {}),
         ...(provider !== sourceAgent ? { session_provider: provider } : {}),
         ...(sessionTools !== undefined ? { session_tools: redactRuntimeStructuredValue(sessionTools) } : {}),

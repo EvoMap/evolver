@@ -122,6 +122,9 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         const gi = intakeGene({
             category: 'repair', signals_match: cycleSignals, strategy: [...task.strategy],
             summary: task.expectedEffect.slice(0, 80), ...(task.validationCmds ? { validation: [...task.validationCmds] } : {}),
+            // A task's seeded strategy is an execution-entry seed (the operator/daemon supplied a learned strategy to
+            // run/evolve), not a skill/session transcription → `evolved` per V1 #302 classifyProvenance.
+            generation_meta: { source: 'evolved' },
         });
         if (gi.ok && gi.gene) {
             await deps.store.put(gi.gene);

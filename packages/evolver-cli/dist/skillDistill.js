@@ -55,14 +55,14 @@ export async function recordSkillDistillation(skillMd, execution, deps, opts = {
     const { gene, capsule, capsuleDiagnostic } = reverseDistill(parsed, execution, opts);
     const diag = capsuleDiagnostic ? (capsuleDiagnostic.detail ?? capsuleDiagnostic.reason) : null;
     if (!gene)
-        return { geneId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: ['gene synthesis refused (strict mode or empty)'] };
+        return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: ['gene synthesis refused (strict mode or empty)'] };
     const existing = (await deps.store.list('Gene', 1000)).map((g) => ({
         id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
         signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
     }));
     const r = algo.intakeGene(gene, existing);
     if (!r.ok || !r.gene)
-        return { geneId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: r.errors };
+        return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: r.errors };
     const assetId = String(r.gene.asset_id);
     const geneId = typeof r.gene.id === 'string' ? r.gene.id : assetId;
     try {
@@ -95,11 +95,11 @@ export async function recordSkillDistillation(skillMd, execution, deps, opts = {
             capsuleId = pooledCapsule.id;
         }
         await deps.store.put(r.gene); // gene LAST = the commit point; until it lands, a retry re-runs the above
-        return { geneId, quarantined: true, capsuleId, capsuleDiagnostic: diag, errors: [] };
+        return { geneId, geneAssetId: assetId, quarantined: true, capsuleId, capsuleDiagnostic: diag, errors: [] };
     }
     catch (e) {
         // A write failed before the gene was committed → keep it recoverable: report the error so the caller retries.
-        return { geneId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: [e instanceof Error ? e.message : String(e)] };
+        return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: [e instanceof Error ? e.message : String(e)] };
     }
 }
 /** Resolve a `--skill` argument (a SKILL.md file OR a skill directory) to the SKILL.md path. */

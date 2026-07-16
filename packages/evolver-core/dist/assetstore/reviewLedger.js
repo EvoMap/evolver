@@ -118,4 +118,13 @@ export class ReviewLedger {
         const r = this.index.get(assetId);
         return r ? r.state === 'approved' : true;
     }
+    /**
+     * True only when a human approval record exists. Safety-sensitive consumers such as AntiGene warning
+     * injection must fail closed when review state is absent; unlike cycle/migrate-authored Genes, an unreviewed
+     * negative-memory asset must never inherit the ledger's backward-compatible "no record = eligible" default.
+     */
+    isExplicitlyApproved(assetId) {
+        this.load();
+        return this.index.get(assetId)?.state === 'approved';
+    }
 }

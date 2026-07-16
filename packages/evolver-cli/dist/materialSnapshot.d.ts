@@ -1,0 +1,30 @@
+import { schema } from '@evomap/evolver-core';
+import { type RuntimeSessionSource } from './runtimeSessionSource.js';
+export declare const MATERIAL_RUNTIME_SESSION_SNAPSHOT_SCHEMA = "evolver.material.runtime_session_snapshot.v1";
+interface SnapshotTurn {
+    role: RuntimeSessionSource['turns'][number]['role'];
+    text: string;
+    isMeta?: boolean;
+    toolName?: string;
+    errorMessage?: string;
+}
+interface SnapshotSource {
+    agent: string;
+    label: string;
+    sessionId?: string;
+    turns: SnapshotTurn[];
+}
+export interface RuntimeSessionMaterialSnapshotV1 {
+    schema: typeof MATERIAL_RUNTIME_SESSION_SNAPSHOT_SCHEMA;
+    sourceKind: 'runtime_session';
+    kind: 'session_log';
+    sources: SnapshotSource[];
+    truncated: boolean;
+    maxChars: number;
+}
+export declare function buildRuntimeSessionMaterialSnapshot(sources: readonly RuntimeSessionSource[], maxChars?: number): RuntimeSessionMaterialSnapshotV1;
+export declare function runtimeSessionSourcesFromMaterialPayload(payload: unknown): RuntimeSessionSource[];
+export declare function materialHasRuntimeSessionSnapshot(material: schema.Material): boolean;
+export declare function materialSourceAvailable(material: schema.Material): boolean;
+export declare function runtimeSessionSourcesForMaterial(material: schema.Material, readSource?: (path: string) => string): RuntimeSessionSource[];
+export {};

@@ -1,4 +1,4 @@
-import type { HubCapability, PublishReceipt, AgentEvent, TaskEvent, AuthProvider, HubQuery, AssetRecord } from './capability.js';
+import type { HubCapability, PublishReceipt, AgentEvent, TaskEvent, AuthProvider, HubQuery, AssetRecord, TaskCompleteContext } from './capability.js';
 export interface FakeHubOptions {
     /** 脚本化 publish gate: 返回 reject/quarantine 以测 PublishReceipt 终态路径. */
     publishGate?: (asset: AssetRecord) => Pick<PublishReceipt, 'status' | 'reason' | 'terminal'>;
@@ -20,8 +20,10 @@ export declare class FakeHubCapability implements HubCapability {
     readonly completed: Array<{
         claimId: string;
         result: unknown;
+        context?: TaskCompleteContext;
     }>;
     readonly auth: AuthProvider;
+    agentDirectory?: import('./agentDirectory.js').AgentDirectoryCapability;
     nextPollAfterMs: number | undefined;
     constructor(opts?: FakeHubOptions);
     /** 测试注入: 排一条 inbound 事件供 poll 拉. */
@@ -33,7 +35,7 @@ export declare class FakeHubCapability implements HubCapability {
         claim: (taskId: string) => Promise<{
             claimId: string;
         }>;
-        complete: (claimId: string, result: unknown) => Promise<{
+        complete: (claimId: string, result: unknown, context?: TaskCompleteContext) => Promise<{
             status: "completed";
         }>;
         subscribe: (filter: unknown) => AsyncIterable<TaskEvent>;

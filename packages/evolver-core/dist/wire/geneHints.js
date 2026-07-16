@@ -23,12 +23,21 @@ export const ROUTING_TIERS = ['cheap', 'mid', 'expensive'];
 export const REASONING_LEVELS = ['off', 'low', 'medium', 'high'];
 export const TOOL_POLICY_SEVERITIES = ['warn', 'block'];
 /**
+ * Provenance classification (V1 #302 classifyProvenance, aligned with TaskGenome Bench §3.1): a Gene's value
+ * depends on WHERE it came from, not on being short. The three tiers:
+ *   evolved   -- distilled from a real solve -> fail -> mutate -> pass trajectory; beats Skills (+8.7..+15.5pp)
+ *   distilled -- transcribed from reference/teacher text with no real failing trajectory; WORSE than Skills (-3.2..-11.2pp)
+ *   manual    -- pure human transcription, no execution evidence at all
+ * The high-value payload of an evolved Gene is the corrective_insight that flipped the outcome.
+ */
+export const GENERATION_SOURCES = ['evolved', 'distilled', 'manual'];
+/**
  * The v2-delta hint field names, in one place — the intake gate strips these before the gep-sdk schema check.
  * IMPORTANT: when a gep-sdk gene-schema bump makes one of these first-class, REMOVE it from this list in the
  * same change. Otherwise intakeGene keeps stripping a now-validated field before validateWire (fail-open — the
  * field's new schema constraints go unchecked at intake) while asset_id still commits it.
  */
-export const GENE_HINT_FIELDS = ['routing_hint', 'tool_policy'];
+export const GENE_HINT_FIELDS = ['routing_hint', 'tool_policy', 'generation_meta'];
 function includesEnum(set, v) {
     return typeof v === 'string' && set.includes(v);
 }
@@ -88,6 +97,48 @@ function cleanToolList(raw) {
         return undefined;
     const cleaned = raw.filter((x) => typeof x === 'string' && x.length > 0);
     return cleaned.length > 0 ? cleaned : undefined;
+}
+/**
+ * Normalize an arbitrary generation_meta fragment to a strict { source, quality_score?, quality_heuristics?,
+ * overcame_errors? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
+ * values are dropped (the whole block collapses to null — a generation_meta with no recognized source carries no
+ * usable provenance signal); quality_score is clamped to [0,1]; heuristics keeps only its numeric/boolean fields;
+ * overcame_errors keeps only non-empty strings. A block with a valid source but all-else-empty still survives (source
+ * alone is a meaningful provenance tag); only a missing/unknown source yields null.
+ */
+export function normalizeGenerationMeta(raw) {
+    if (!raw || typeof raw !== 'object')
+        return null;
+    const r = raw;
+    const source = r['source'];
+    if (!includesEnum(GENERATION_SOURCES, source))
+        return null;
+    const out = { source };
+    const qs = r['quality_score'];
+    if (typeof qs === 'number' && Number.isFinite(qs))
+        out.quality_score = Math.max(0, Math.min(1, qs));
+    const eh = r['quality_heuristics'];
+    if (eh && typeof eh === 'object') {
+        const h = eh;
+        const heuristics = {};
+        const numFields = [
+            'strategy_steps', 'avoid_count', 'validation_declared_count', 'validation_runnable_count',
+            'signals_extracted', 'preconditions_extracted', 'trajectory_depth',
+        ];
+        for (const k of numFields) {
+            const v = h[k];
+            if (typeof v === 'number' && Number.isFinite(v))
+                heuristics[k] = v;
+        }
+        if (typeof h['has_corrective_insight'] === 'boolean')
+            heuristics.has_corrective_insight = h['has_corrective_insight'];
+        if (Object.keys(heuristics).length > 0)
+            out.quality_heuristics = heuristics;
+    }
+    const errs = cleanToolList(r['overcame_errors']);
+    if (errs)
+        out.overcame_errors = errs;
+    return out;
 }
 /** Strip the v2-delta hint fields from a gene-shaped object (used to validate the gep-sdk-known core). */
 export function stripGeneHints(gene) {

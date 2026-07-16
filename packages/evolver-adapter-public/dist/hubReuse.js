@@ -12,7 +12,7 @@
 //   - search cache: signal-fingerprint → phase-1 metadata (short TTL). Repeat signal set → ZERO hub calls.
 //   - payload cache: assetId → phase-3 payload (content-addressed, long/permanent, bounded LRU). A cached
 //     payload → ZERO fetch. Both clocks are injected so TTL/eviction is deterministic and testable.
-import { hub } from '@evomap/evolver-core';
+import { hub, algo } from '@evomap/evolver-core';
 const { scoreSearchResults, decideReuse, DEFAULT_MIN_REUSE_SCORE, } = hub;
 const GENE_WIRE_KEYS = new Set([
     'type',
@@ -30,6 +30,7 @@ const GENE_WIRE_KEYS = new Set([
     'anti_patterns',
     'routing_hint',
     'tool_policy',
+    'generation_meta',
     'asset_id',
 ]);
 // ── Cache config (ported from v1 hubSearch.js) ───────────────────────────────
@@ -163,6 +164,7 @@ export function toGeneCandidate(rec) {
     const geneId = typeof r['id'] === 'string' ? r['id'] : assetId;
     const signalsMatch = strArr(r['signals_match'] ?? r['signalsMatch']) ?? [];
     const reuseCount = num(r['reuse_count'] ?? r['reuseCount']) ?? 0;
+    const generationSource = algo.geneGenerationSource(r, geneId);
     return {
         geneId,
         assetId,
@@ -173,6 +175,7 @@ export function toGeneCandidate(rec) {
         reuseCount,
         ...(typeof r['category'] === 'string' ? { category: r['category'] } : {}),
         ...(typeof r['summary'] === 'string' ? { summary: r['summary'] } : {}),
+        ...(generationSource ? { generationSource } : {}),
         hubAsset: stripHubPayloadMetadata(rec),
     };
 }

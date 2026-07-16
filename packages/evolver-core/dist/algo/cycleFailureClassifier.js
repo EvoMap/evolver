@@ -12,13 +12,17 @@
 import { isDistilledGeneId } from './geneIntake.js';
 // "[NO SESSION LOGS FOUND]" et al. — the host gave evolver nothing to evolve from.
 const HOST_NO_TRANSCRIPT_RE = /\[no session logs? found\]|no session log|no transcript/i;
+// Interactive runner gates can stop execution before the provider is invoked. They still belong to the
+// host_provider_error compatibility bucket because the local gene never had a chance to run.
+const HOST_RUNNER_ERR_RE = /Workspace Trust Required/i;
 // Host LLM-provider errors. None of these strings are emitted by evolver core (v1 #279 verified the same;
 // keeping the regex byte-for-byte equivalent), so their presence means the host Agent's provider call failed.
-const HOST_PROVIDER_ERR_RE = /\bLLM ERROR\b|\bMaxTokens\b|field MaxTokens|max_tokens[^\n]{0,24}invalid|insufficient_quota|invalid_api_key|\brate limit(?:ed| exceeded)?\b|quota exceeded|context length exceeded|maximum context length/i;
+const HOST_PROVIDER_ERR_RE = /\bLLM ERROR\b|\bMaxTokens\b|field MaxTokens|max_tokens[^\n]{0,24}invalid|insufficient_quota|invalid_api_key|\brate limit(?:ed| exceeded)?\b|quota exceeded|context length exceeded|maximum context length|disabled Claude subscription access|Use an Anthropic API key|not authenticated|authentication required|login required|not logged in/i;
 // Locality prefixes a "locally-generated" gene id can carry:
-//  - `gene_distilled_` — the ONLY prefix V2 actually mints (geneIntake.DISTILLED_ID_PREFIX,
-//    surfaced via isDistilledGeneId). Without this the whole `local_gene_no_blast` bucket never
-//    fired for real V2 genes (they all carry this prefix). Reuse the single-source-of-truth helper.
+//  - `gene_distilled_` — the namespace V2 mints for every intaken gene (geneIntake.DISTILLED_ID_PREFIX,
+//    surfaced via isDistilledGeneId). NB this is a NAMESPACE marker now, not a provenance tag: the authoritative
+//    source is generation_meta (V1 #302, read via geneGenerationSource), but this call site only has a gene id, so
+//    it falls back to the prefix. Without this the whole `local_gene_no_blast` bucket never fired for real V2 genes.
 //  - `gene_auto_` — V1-only legacy form (V2 never produces it); kept so V1-shaped inputs still match.
 //  - `sha256:` — a content asset_id (not a logical gene id); kept for back-compat / loose callers.
 function isLocalGeneratedGene(geneId) {
@@ -60,7 +64,11 @@ export function classifyCycleFailure(opts) {
     if (hasSessionLog && (!log.trim() || HOST_NO_TRANSCRIPT_RE.test(log))) {
         return { failureClass: 'host_no_transcript', reason: 'no session transcript to evolve from' };
     }
-    // (b) Host LLM-provider error surfaced in the transcript.
+    // (b) Host runner preflight or LLM-provider error surfaced in the transcript.
+    const runner = hasSessionLog ? log.match(HOST_RUNNER_ERR_RE) : null;
+    if (runner) {
+        return { failureClass: 'host_provider_error', reason: `host runner error: ${String(runner[0]).slice(0, 60)}` };
+    }
     const prov = hasSessionLog ? log.match(HOST_PROVIDER_ERR_RE) : null;
     if (prov) {
         return { failureClass: 'host_provider_error', reason: `host LLM-provider error: ${String(prov[0]).slice(0, 60)}` };

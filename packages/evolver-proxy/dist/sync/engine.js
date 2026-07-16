@@ -1,4 +1,5 @@
 import { mailbox, hub as hubNs } from '@evomap/evolver-core';
+import { HubClientError } from '@evomap/evolver-adapter-public';
 import { normalizeProxyTraceOutboundPayload } from '../llm/traceBackfill.js';
 import { applyTraceCollectionConfig } from '../llm/traceControl.js';
 import { hubAuthFailureHint } from '../daemon/selectHub.js';
@@ -15,8 +16,12 @@ const STATE = {
     lastError: 'sync:last_error',
     authStatus: 'hub:auth_status',
 };
-function isTerminal(err) {
-    return err instanceof hubNs.PublishRejectedError && err.terminal === true;
+function isTerminal(err, envelopeType) {
+    if (err instanceof hubNs.PublishRejectedError && err.terminal === true)
+        return true;
+    return (envelopeType === 'task_claim' || envelopeType === 'task_complete')
+        && err instanceof HubClientError
+        && (err.status === 404 || err.status === 409);
 }
 function isRetryableRejection(err) {
     return err instanceof hubNs.PublishRejectedError
@@ -27,9 +32,30 @@ function isHubUnreachable(err) {
     const e = err;
     return e?.name === 'HubUnreachableError' || e?.code === 'HUB_UNREACHABLE';
 }
+function isRetryableTransportError(err) {
+    if (isRetryableRejection(err) || isHubUnreachable(err)
+        || (err instanceof HubClientError && err.status === 429))
+        return true;
+    const e = err;
+    const rawStatus = e?.statusCode ?? e?.status;
+    const status = typeof rawStatus === 'number' ? rawStatus : Number(rawStatus);
+    if (Number.isFinite(status) && status >= 500 && status <= 599)
+        return true;
+    if (e?.retryable === true)
+        return true;
+    const signature = `${String(e?.name ?? '')} ${String(e?.code ?? '')} ${err instanceof Error ? err.message : ''}`;
+    return /\b5\d\d\b|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch/i.test(signature);
+}
 function retryAfterMs(err) {
+    const body = err instanceof HubClientError && err.body && typeof err.body === 'object' && !Array.isArray(err.body)
+        ? err.body
+        : undefined;
+    const bodyRetryMs = Number(body?.['retry_after_ms'] ?? body?.['retryAfterMs']);
+    const bodyRetrySeconds = Number(body?.['retry_after'] ?? body?.['retryAfter']);
     const retry = err?.retryAfterMs
-        ?? err?.details?.retryAfterMs;
+        ?? err?.details?.retryAfterMs
+        ?? (Number.isFinite(bodyRetryMs) ? bodyRetryMs : undefined)
+        ?? (Number.isFinite(bodyRetrySeconds) ? bodyRetrySeconds * 1_000 : undefined);
     return Math.max(1_000, typeof retry === 'number' && Number.isFinite(retry) ? retry : 60_000);
 }
 function errorMessage(err) {
@@ -74,6 +100,53 @@ function envelopeToAgentEvent(e) {
  * hub I/O 全走 HubCapability.mailbox(非裸 hubFetch). tick 方法纯逻辑(注入 now), 可对 FakeHubCapability 确定性测;
  * 定时器循环(start/stop)是薄包装, 由 M6-4 daemon 装配驱动.
  */
+function applyMailboxPushManyOutcomes(group, outcomes, deps) {
+    const byId = new Map(outcomes.map((outcome) => [outcome.id, outcome]));
+    const result = { sent: 0, failed: 0, terminal: 0, deferred: 0, completedDuplicates: 0 };
+    for (const pushed of group) {
+        const outcome = byId.get(pushed.event.id) ?? byId.get(pushed.original.id);
+        if (outcome?.status === 'failed') {
+            const msg = redactAndTruncate(outcome.reason ?? 'mailbox_push_rejected');
+            const authLike = isAuthError(msg);
+            result.firstFailure ??= msg;
+            const retryable = outcome.terminal !== true
+                && (outcome.retryable === true || (typeof outcome.retryAfterMs === 'number' && Number.isFinite(outcome.retryAfterMs)));
+            if (authLike || retryable) {
+                const nowAfterFailure = deps.now();
+                const retry = Math.max(1_000, typeof outcome.retryAfterMs === 'number' && Number.isFinite(outcome.retryAfterMs) ? outcome.retryAfterMs : 60_000);
+                result.deferredFailure ??= { msg, retryAfterMs: retry };
+                if (authLike) {
+                    result.authFailed = true;
+                    result.authErrorMessage ??= msg;
+                }
+                deps.store.defer(pushed.original.id, msg, nowAfterFailure, retry);
+                for (const duplicate of pushed.duplicates)
+                    deps.store.defer(duplicate.id, msg, nowAfterFailure, retry);
+                result.deferred += 1 + pushed.duplicates.length;
+            }
+            else {
+                const maxAttempts = outcome.terminal ? 1 : undefined;
+                deps.store.fail(pushed.original.id, msg, deps.now(), maxAttempts);
+                for (const duplicate of pushed.duplicates)
+                    deps.store.fail(duplicate.id, msg, deps.now(), maxAttempts);
+                if (outcome.terminal)
+                    result.terminal += 1 + pushed.duplicates.length;
+                else
+                    result.failed += 1 + pushed.duplicates.length;
+            }
+        }
+        else {
+            deps.store.complete(pushed.original.id, deps.now());
+            for (const duplicate of pushed.duplicates)
+                deps.store.complete(duplicate.id, deps.now());
+            if (pushed.dedupKey)
+                deps.store.markProcessed(pushed.dedupKey, { type: pushed.original.type }, deps.now());
+            result.sent += 1;
+            result.completedDuplicates += pushed.duplicates.length;
+        }
+    }
+    return result;
+}
 export class SyncEngine {
     deps;
     lastActivityAt;
@@ -133,57 +206,21 @@ export class SyncEngine {
                 try {
                     const result = await this.deps.hub.mailbox.pushMany(group.map((entry) => entry.event));
                     if (isMailboxPushManyResult(result)) {
-                        const byId = new Map(result.outcomes.map((outcome) => [outcome.id, outcome]));
-                        let firstFailure;
-                        let deferredFailure;
-                        for (const pushed of group) {
-                            const outcome = byId.get(pushed.event.id) ?? byId.get(pushed.original.id);
-                            if (outcome?.status === 'failed') {
-                                const msg = redactAndTruncate(outcome.reason ?? 'mailbox_push_rejected');
-                                const authLike = isAuthError(msg);
-                                firstFailure ??= msg;
-                                const retryable = outcome.terminal !== true
-                                    && (outcome.retryable === true || (typeof outcome.retryAfterMs === 'number' && Number.isFinite(outcome.retryAfterMs)));
-                                if (authLike || retryable) {
-                                    const nowAfterFailure = this.deps.now();
-                                    const retry = Math.max(1_000, typeof outcome.retryAfterMs === 'number' && Number.isFinite(outcome.retryAfterMs) ? outcome.retryAfterMs : 60_000);
-                                    deferredFailure ??= { msg, retryAfterMs: retry };
-                                    if (authLike) {
-                                        authFailed = true;
-                                        authErrorMessage ??= msg;
-                                    }
-                                    this.deps.store.defer(pushed.original.id, msg, nowAfterFailure, retry);
-                                    for (const duplicate of pushed.duplicates)
-                                        this.deps.store.defer(duplicate.id, msg, nowAfterFailure, retry);
-                                    deferred += 1 + pushed.duplicates.length;
-                                }
-                                else {
-                                    const maxAttempts = outcome.terminal ? 1 : undefined;
-                                    this.deps.store.fail(pushed.original.id, msg, this.deps.now(), maxAttempts);
-                                    for (const duplicate of pushed.duplicates)
-                                        this.deps.store.fail(duplicate.id, msg, this.deps.now(), maxAttempts);
-                                    if (outcome.terminal)
-                                        terminal += 1 + pushed.duplicates.length;
-                                    else
-                                        failed += 1 + pushed.duplicates.length;
-                                }
-                            }
-                            else {
-                                this.deps.store.complete(pushed.original.id, this.deps.now());
-                                for (const duplicate of pushed.duplicates)
-                                    this.deps.store.complete(duplicate.id, this.deps.now());
-                                if (pushed.dedupKey)
-                                    this.deps.store.markProcessed(pushed.dedupKey, { type: pushed.original.type }, this.deps.now());
-                                sent += 1;
-                                completedDuplicates += pushed.duplicates.length;
-                            }
-                        }
-                        if (firstFailure)
-                            this.markError(`outbound: ${firstFailure}`, isAuthError(firstFailure));
-                        if (deferredFailure) {
+                        const applied = applyMailboxPushManyOutcomes(group, result.outcomes, this.deps);
+                        sent += applied.sent;
+                        failed += applied.failed;
+                        terminal += applied.terminal;
+                        deferred += applied.deferred;
+                        completedDuplicates += applied.completedDuplicates;
+                        if (applied.authFailed)
+                            authFailed = true;
+                        authErrorMessage ??= applied.authErrorMessage;
+                        if (applied.firstFailure)
+                            this.markError(`outbound: ${applied.firstFailure}`, isAuthError(applied.firstFailure));
+                        if (applied.deferredFailure) {
                             const nowAfterFailure = this.deps.now();
                             for (const pending of batch.slice(j)) {
-                                this.deps.store.defer(pending.id, deferredFailure.msg, nowAfterFailure, deferredFailure.retryAfterMs);
+                                this.deps.store.defer(pending.id, applied.deferredFailure.msg, nowAfterFailure, applied.deferredFailure.retryAfterMs);
                                 deferred += 1;
                             }
                             break;
@@ -224,7 +261,7 @@ export class SyncEngine {
                         authErrorMessage ??= msg;
                         break;
                     }
-                    else if (isTerminal(err)) {
+                    else if (isTerminal(err, group[0].original.type)) {
                         for (const pushed of group) {
                             this.deps.store.fail(pushed.original.id, msg, this.deps.now(), 1);
                             for (const duplicate of pushed.duplicates)
@@ -233,7 +270,7 @@ export class SyncEngine {
                         }
                         i = j - 1;
                     }
-                    else if (isRetryableRejection(err) || isHubUnreachable(err)) {
+                    else if (isRetryableTransportError(err)) {
                         const nowAfterFailure = this.deps.now();
                         const retry = retryAfterMs(err);
                         for (const pushed of group) {
@@ -273,7 +310,8 @@ export class SyncEngine {
                 continue;
             }
             try {
-                await this.deps.proxyHandler(guard.envelope);
+                const handlerResult = await this.deps.proxyHandler(guard.envelope);
+                await this.deps.onOutboundSucceeded?.(e, handlerResult);
                 this.deps.store.complete(e.id, this.deps.now());
                 if (outboundDedupKey)
                     this.deps.store.markProcessed(outboundDedupKey, { type: e.type }, this.deps.now());
@@ -294,11 +332,15 @@ export class SyncEngine {
                     authErrorMessage ??= msg;
                     break;
                 }
-                else if (isTerminal(err)) {
+                else if (isTerminal(err, e.type)) {
+                    // A concurrent facade attempt may already have finalized this durable intent successfully.
+                    if (this.deps.store.getById(e.id)?.status === 'done')
+                        continue;
                     this.deps.store.fail(e.id, msg, this.deps.now(), 1); // maxAttempts=1 → 直进 DLQ, 不反复打经济端点
+                    await this.deps.onOutboundTerminal?.(e, err);
                     terminal += 1;
                 }
-                else if (isRetryableRejection(err) || isHubUnreachable(err)) {
+                else if (isRetryableTransportError(err)) {
                     const nowAfterFailure = this.deps.now();
                     const retry = retryAfterMs(err);
                     for (const pending of batch.slice(i)) {
@@ -347,7 +389,8 @@ export class SyncEngine {
                         this.deps.store.setState(CURSOR_KEY, ev.cursor);
                     continue;
                 }
-                const env = this.toEnvelope(ev);
+                const rawEnvelope = this.toEnvelope(ev);
+                const env = rawEnvelope ? (this.deps.normalizeInboundEnvelope?.(rawEnvelope) ?? rawEnvelope) : null;
                 if (env) {
                     this.deps.store.send(env);
                     this.deps.store.markProcessed(dedupKey, { type: ev.type }, this.deps.now());
@@ -450,6 +493,7 @@ export class SyncEngine {
         try {
             return mailbox.createEnvelope({
                 type: ev.type, payload: ev.payload, idempotencyKey: `inbound:${ev.id}`,
+                ...(ev.refId ? { replyTo: ev.refId } : {}),
                 ...(this.deps.runtimeNamespace ? { runtimeNamespace: this.deps.runtimeNamespace } : {}),
                 now: this.deps.now(),
             });

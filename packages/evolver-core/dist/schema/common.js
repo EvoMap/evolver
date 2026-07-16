@@ -13,5 +13,5 @@ export const artifactRef = z.object({
     size: z.number().int().nonnegative(),
 });
 /** runtime 来源 (D11). 'generic-chat' = 任何输出标准 OpenAI/Anthropic messages 的 AI(经 genericChatAdapter 接入). */
-export const sourceAgent = z.enum(['claude-code', 'codex', 'cursor', 'gemini', 'kimi', 'kiro', 'opencode', 'generic-chat']);
+export const sourceAgent = z.enum(['claude-code', 'codex', 'cursor', 'gemini', 'antigravity', 'kimi', 'kiro', 'opencode', 'generic-chat']);
 export const blastRadius = z.enum(['file', 'module', 'package', 'system']);

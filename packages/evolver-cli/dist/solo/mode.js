@@ -37,6 +37,11 @@ export function applySoloLockdown(env = process.env) {
         // Empty hub creds so any lower-level connector short-circuits.
         A2A_HUB_URL: '',
         EVOMAP_HUB_URL: '',
+        // MemoryGraph event mirror is hub telemetry too. Force it off even when a
+        // token.json remains on disk and the public adapter could fall back to the
+        // compiled default Hub URL.
+        MEMORY_GRAPH_SYNC_HUB: '0',
+        EVOLVER_MEMORY_GRAPH_SYNC_HUB: '0',
     };
     for (const [k, v] of Object.entries(forced))
         env[k] = v;

@@ -34,6 +34,58 @@ export function resolveTierModels(env = process.env) {
         out.expensive = env['EVOMAP_MODEL_EXPENSIVE'];
     return out;
 }
+const TIER_ORDER = ['cheap', 'mid', 'expensive'];
+export function detectTierModelConfigWarnings(models) {
+    const configuredTiers = TIER_ORDER.filter((tier) => {
+        const model = models[tier];
+        return typeof model === 'string' && model.length > 0;
+    });
+    if (configuredTiers.length === 0)
+        return [];
+    const warnings = [];
+    const missingTiers = TIER_ORDER.filter((tier) => !configuredTiers.includes(tier));
+    if (missingTiers.length > 0) {
+        warnings.push({
+            event: 'router_config_warning',
+            reason: 'missing_tier_models',
+            message: 'Router tier config is partial; unset tiers will pass the client model through.',
+            configured_tiers: configuredTiers,
+            missing_tiers: missingTiers,
+        });
+    }
+    const byModel = new Map();
+    for (const tier of configuredTiers) {
+        const model = models[tier];
+        if (!model)
+            continue;
+        byModel.set(model, [...(byModel.get(model) ?? []), tier]);
+    }
+    const duplicateModels = Array.from(byModel.entries())
+        .filter(([, tiers]) => tiers.length > 1)
+        .map(([model, tiers]) => ({ model, tiers }));
+    const allSame = configuredTiers.length === TIER_ORDER.length
+        && duplicateModels.length === 1
+        && duplicateModels[0].tiers.length === TIER_ORDER.length;
+    if (allSame) {
+        warnings.push({
+            event: 'router_config_warning',
+            reason: 'all_tier_models_same',
+            message: 'All router tiers resolve to the same model; routing will still run but cannot change cost/latency tiers.',
+            configured_tiers: configuredTiers,
+            duplicate_models: duplicateModels,
+        });
+    }
+    else if (duplicateModels.length > 0) {
+        warnings.push({
+            event: 'router_config_warning',
+            reason: 'duplicate_tier_models',
+            message: 'Multiple router tiers resolve to the same model; routing will still run but tier separation is degraded.',
+            configured_tiers: configuredTiers,
+            duplicate_models: duplicateModels,
+        });
+    }
+    return warnings;
+}
 export function parseClaudeId(modelId) {
     if (typeof modelId !== 'string')
         return null;
@@ -386,6 +438,10 @@ export function buildMessagesHandler(opts) {
     const log = opts.logger ?? console;
     const env = opts.env ?? process.env;
     const enabled = typeof opts.routerEnabled === 'boolean' ? opts.routerEnabled : env['EVOMAP_ROUTER_ENABLED'] === '1';
+    if (enabled) {
+        for (const warning of detectTierModelConfigWarnings(resolveTierModels(env)))
+            log.warn?.(j(warning));
+    }
     // Native body capture defaults to v1-compatible full trace mode. Operators that need metadata-only rows must
     // explicitly disable it (a compliance decision; see bodyCapture.ts and docs/trace-body-capture.md).
     const captureBodies = captureBodiesEnabled(env);

@@ -2,7 +2,7 @@ import { aggregateLearningHistory } from '../assetstore/learningHistory.js';
 import { reuseSentiment } from '../ops/reuseOutcomes.js';
 import { tagOverlapScore } from '../signals/expand.js';
 import { bannedGenesFromFailures } from './bans.js';
-import { isDistilledGeneId } from './geneIntake.js';
+import { geneGenerationSource } from './geneIntake.js';
 function asStrings(v) {
     return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
 }
@@ -18,10 +18,10 @@ function candidateIds(geneId, assetId) {
 function isBannedCandidate(banned, geneId, assetId) {
     return candidateIds(geneId, assetId).some((id) => banned.has(id));
 }
-function passesInjectedCandidateGates(candidate, opts) {
+function passesInjectedCandidateGates(candidate, opts, provenance) {
     const assetId = candidate.assetId;
     if (opts.provenance && !opts.includeUntrusted) {
-        if (!assetId || opts.provenance.get(assetId)?.trusted !== true)
+        if (!assetId || provenance?.get(assetId)?.trusted !== true)
             return false;
     }
     if (opts.review) {
@@ -79,13 +79,14 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
     const genes = await store.list('Gene', limit);
     const banned = await computeBans(store, signals, limit);
     const sigSet = new Set(signals);
+    const provenance = opts.provenance?.snapshot();
     const out = [];
     const distilledFallback = [];
     const antiWarnings = [];
     for (const g of genes) {
         // Trust-first (#30): untrusted (e.g. hub-ingested) genes are excluded from the candidate pool by default;
         // they enter only with includeUntrusted or after an explicit promotion. Provenance is keyed by asset_id.
-        if (opts.provenance && !opts.includeUntrusted && !opts.provenance.isTrusted(String(g.asset_id)))
+        if (opts.provenance && !opts.includeUntrusted && provenance?.get(String(g.asset_id))?.trusted === false)
             continue;
         // Review-first (#89/#91): auto-distilled drafts land quarantined until a human approves; rejected drafts stay
         // out too. No record → eligible (cycle/migrate genes). Symmetric to the provenance trust-first filter above.
@@ -104,18 +105,20 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
         const literal = signalsMatch.some((m) => sigSet.has(m));
         const relevant = literal || tagOverlapScore(signals, { signalsMatch, geneId, category, summary }) > 0;
         if (!relevant) {
-            // #97: a trusted, approved, non-banned distilled gene that doesn't match the live signals is not a normal
-            // candidate, but it IS eligible as a last-resort fallback (selection uses it only when nothing clears the
-            // floor). NB in v2 "distilled" = any intaken gene (intakeGene tags them all gene_distilled_), not just skill-
-            // derived as in v1 — eligibility here is gated by trust/review/ban, not by skill provenance.
+            // #97: a trusted, approved, non-banned distilled (or evolved) gene that doesn't match the live signals is not
+            // a normal candidate, but it IS eligible as a last-resort fallback (selection uses it only when nothing clears
+            // the floor). Eligibility here is gated by trust/review/ban, not by skill provenance. Provenance is read from
+            // generation_meta (V1 #302); a legacy gene without it falls back to the `gene_distilled_` id namespace.
             // Lightweight: no learning-history aggregation — it is picked first-match, not ranked by health.
-            if (isDistilledGeneId(geneId)) {
+            const gsrc = geneGenerationSource(g, geneId);
+            if (gsrc === 'distilled' || gsrc === 'evolved') {
                 distilledFallback.push({
                     geneId,
                     assetId,
                     signalsMatch,
                     view: emptyLearningView(geneId),
                     reuseCount: 0,
+                    generationSource: gsrc,
                     ...(category ? { category } : {}),
                     ...(summary ? { summary } : {}),
                 });
@@ -145,7 +148,7 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
     if (opts.hubCandidates && opts.hubCandidates.length > 0) {
         const localIds = new Set(out.map((c) => c.geneId));
         for (const h of opts.hubCandidates) {
-            if (!passesInjectedCandidateGates(h, opts))
+            if (!passesInjectedCandidateGates(h, opts, provenance))
                 continue;
             if (localIds.has(h.geneId))
                 continue; // a trusted local gene already covers this id
@@ -160,7 +163,10 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
         }
     }
     for (const a of await store.list('AntiGene', limit)) {
-        if (opts.review && !opts.review.isApproved(String(a.asset_id)))
+        // AntiGene is negative memory that changes an autonomous prompt. Unlike legacy/cycle-authored Genes, it must
+        // never inherit ReviewLedger's backward-compatible "no record = approved" default: no ledger, no record,
+        // quarantined, and rejected all fail closed. Only an explicit human approval can enable warning injection.
+        if (!opts.review?.isExplicitlyApproved(String(a.asset_id)))
             continue;
         const trigger = asStrings(a['trigger']);
         const avoid = asStrings(a['avoid']);

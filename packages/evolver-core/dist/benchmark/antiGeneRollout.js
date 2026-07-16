@@ -8,6 +8,7 @@ import { LineTooLargeError } from '../events/eventStore.js';
 import { CycleEngine } from '../algo/cycleEngine.js';
 import { runEvolutionCycle } from '../algo/orchestrator.js';
 import { makeGeneSelectionPoint } from '../algo/geneSelection.js';
+import { parseOverblockedAntiGenes, summarizeOverblockedAntiGenes } from './antiGeneImpact.js';
 const ALL_ASSETS_LIMIT = Number.MAX_SAFE_INTEGER;
 const ASSET_KINDS = ['Gene', 'Capsule', 'EvolutionEvent', 'AntiGene'];
 function buildProblem(task, now) {
@@ -163,6 +164,7 @@ function buildReport(suite, rawTaskResults, minSamples, minFailureDelta) {
         antiGene,
         missingExpectedWarnings: taskResults.reduce((sum, r) => sum + r.antiGene.missingExpectedWarnings.length, 0),
         overblocked: antiGene.overblocked,
+        overblockedAntiGenes: summarizeOverblockedAntiGenes(taskResults),
         failureDelta: baseline.failureRate - antiGene.failureRate,
         taskResults,
     };
@@ -240,13 +242,23 @@ function isReportPayload(value) {
         && typeof value.tasks === 'number'
         && typeof value.verdict === 'string';
 }
+function normalizeReportPayload(value) {
+    const parsed = parseOverblockedAntiGenes(value.overblockedAntiGenes);
+    const taskResults = normalizeTaskResults(value.taskResults ?? []);
+    const truncated = typeof value.taskResultsTruncated === 'number' && value.taskResultsTruncated > 0;
+    return {
+        ...value,
+        taskResults,
+        overblockedAntiGenes: parsed ?? (truncated ? [] : summarizeOverblockedAntiGenes(taskResults)),
+    };
+}
 export function antiGeneRolloutReportsFromEvents(events) {
     const out = [];
     for (const event of events) {
         if (event.type !== 'anti_gene.rollout_result')
             continue;
         if (isReportPayload(event.payload))
-            out.push(event.payload);
+            out.push(normalizeReportPayload(event.payload));
     }
     return out;
 }

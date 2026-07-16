@@ -1,3 +1,4 @@
+import type { ConversationCapabilityHit } from './conversationSniffer.js';
 /** The "five-question shape" of a capability proposal (ported verbatim from v1). */
 export interface FiveQuestionShape {
     title: string;
@@ -30,6 +31,7 @@ export interface ExtractCandidatesInput {
     toolCalls?: readonly string[];
     signals?: readonly string[];
     failedCapsules?: readonly FailedCapsuleLike[];
+    conversationHits?: readonly ConversationCapabilityHit[];
 }
 /**
  * Mine capability candidates from three sources (ported v1): repeated tool calls (>=3), active opportunity

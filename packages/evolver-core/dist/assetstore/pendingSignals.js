@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { LocalJsonlProvider } from './localJsonl.js';
 const MAX_SIGNAL_LENGTH = 200;
@@ -33,6 +33,8 @@ function findRepoRoot(start) {
     while (current) {
         if (existsSync(join(current, '.git')))
             return current;
+        if (basename(current) === 'node_modules')
+            return null;
         const parent = dirname(current);
         if (parent === current)
             return null;

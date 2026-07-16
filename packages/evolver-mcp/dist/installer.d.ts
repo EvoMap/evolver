@@ -37,6 +37,15 @@ export interface InstallOptions {
     genes?: readonly CursorGene[];
     /** Cursor only: cap on genes rendered into the always-on rules body (token-tax bound). */
     maxGenes?: number;
+    /** Antigravity only: override the user home used to resolve ~/.gemini config roots. Intended for hermetic
+     *  embedding/tests; normal callers omit it. configRoot and scope do not affect Antigravity's user config. */
+    homeDir?: string;
+}
+export interface UninstallOptions {
+    configRoot: string;
+    scope?: InstallScope;
+    /** Antigravity only: override the user home used to resolve ~/.gemini config roots. */
+    homeDir?: string;
 }
 export interface InstallResult {
     ok: boolean;
@@ -60,14 +69,14 @@ export declare class SymlinkRefusedError extends Error {
  * .mcp.json/.claude/settings.json are evolver-owned, so their lenient fresh-start behavior stays unchanged.
  */
 export declare class UnparseableConfigError extends Error {
-    constructor(label: string, path: string);
+    constructor(label: string, path: string, owner?: string);
 }
 /**
  * Thrown when a SHARED user config exists but is empty or whitespace-only. Claude Code writes these files with a
  * truncating write, so present-empty can be a concurrent-write window rather than a fresh config.
  */
 export declare class EmptySharedConfigError extends Error {
-    constructor(label: string, path: string);
+    constructor(label: string, path: string, owner?: string);
 }
 type SharedConfigRaceHook = (path: string, attempt: number) => void;
 export declare function _setSharedConfigRaceHookForTest(hook?: SharedConfigRaceHook): void;
@@ -90,6 +99,8 @@ export declare function stripManaged(data: Record<string, unknown>): {
  *    (delegated to codexInstaller; TOML, not JSON). Same hybrid value (tool discovery + session-start injection).
  *  - cursor (cursor-rules): renders top genes into <root>/.cursor/rules/evolver.mdc (alwaysApply:true) — gene
  *    memory injection, not MCP tool discovery (delegated to cursorRulesInstaller). The daemon keeps it fresh.
+ *  - antigravity (mcp-config): writes mcpServers.evolver to every existing user-level Antigravity config root,
+ *    or the canonical root when none exists. MCP tool discovery only; no SessionStart hook is installed.
  * Idempotent + symlink-safe; passive runtimes (kiro/opencode) return ok:false (nothing to inject).
  */
 export declare function installInjection(plan: InjectionPlan, opts: InstallOptions): InstallResult;
@@ -97,10 +108,7 @@ export declare function installInjection(plan: InjectionPlan, opts: InstallOptio
  *  Pass the SAME scope used at install: 'user' cleans ~/.claude.json + ~/.claude/settings.json; 'project'
  *  (default) cleans <configRoot>/.mcp.json + <configRoot>/.claude/settings.json. stripManaged only removes
  *  the mcpServers.evolver entry (and any evolver-owned hooks/marker), so it is safe on the shared ~/.claude.json. */
-export declare function uninstallInjection(runtime: RuntimeId, opts: {
-    configRoot: string;
-    scope?: InstallScope;
-}): InstallResult;
+export declare function uninstallInjection(runtime: RuntimeId, opts: UninstallOptions): InstallResult;
 /** Convenience: plan + install in one call for a runtime. */
 export declare function setupRuntime(runtime: RuntimeId, opts: InstallOptions): InstallResult;
 export {};

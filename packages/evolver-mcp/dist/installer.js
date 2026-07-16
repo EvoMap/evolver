@@ -22,6 +22,7 @@ import { installCodex, uninstallCodex } from './codexInstaller.js';
 // cursor injection is a different mechanism again (a project rules file, not a config/MCP writer): it renders
 // top genes into .cursor/rules/evolver.mdc. It plugs into the same install/uninstall dispatch below.
 import { installCursorRules, uninstallCursorRules } from './cursorRulesInstaller.js';
+import { installAntigravity, uninstallAntigravity } from './antigravityInstaller.js';
 /** Marks a config file as containing evolver-managed entries, so uninstall only removes what we added. */
 export const MANAGED_MARKER = '_evolver_managed';
 /** A hook entry is evolver-owned if any of its commands mention this — used to replace-not-duplicate on reinstall. */
@@ -49,8 +50,8 @@ export class SymlinkRefusedError extends Error {
  * .mcp.json/.claude/settings.json are evolver-owned, so their lenient fresh-start behavior stays unchanged.
  */
 export class UnparseableConfigError extends Error {
-    constructor(label, path) {
-        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists and is non-empty but is not valid JSON. This is Claude Code's own shared config; merging into it would replace the whole file and could wipe its contents (projects/oauthAccount/userID/history/settings). Fix or remove the corrupt file, then rerun.`);
+    constructor(label, path, owner = 'Claude Code') {
+        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists and is non-empty but is not valid JSON. This is ${owner}'s own shared config; merging into it would replace the whole file and could wipe its contents. Fix or remove the corrupt file, then rerun.`);
         this.name = 'UnparseableConfigError';
     }
 }
@@ -59,8 +60,8 @@ export class UnparseableConfigError extends Error {
  * truncating write, so present-empty can be a concurrent-write window rather than a fresh config.
  */
 export class EmptySharedConfigError extends Error {
-    constructor(label, path) {
-        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists but is empty or contains only whitespace. Claude Code may be in the middle of a truncating write, and treating it as fresh config could wipe shared config data. Fix the empty file or retry after Claude Code finishes writing it.`);
+    constructor(label, path, owner = 'Claude Code') {
+        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists but is empty or contains only whitespace. ${owner} may be in the middle of a truncating write, and treating it as fresh config could wipe shared config data. Fix the empty file or retry after ${owner} finishes writing it.`);
         this.name = 'EmptySharedConfigError';
     }
 }
@@ -386,6 +387,8 @@ function claudeCodeTargets(scope, configRoot) {
  *    (delegated to codexInstaller; TOML, not JSON). Same hybrid value (tool discovery + session-start injection).
  *  - cursor (cursor-rules): renders top genes into <root>/.cursor/rules/evolver.mdc (alwaysApply:true) — gene
  *    memory injection, not MCP tool discovery (delegated to cursorRulesInstaller). The daemon keeps it fresh.
+ *  - antigravity (mcp-config): writes mcpServers.evolver to every existing user-level Antigravity config root,
+ *    or the canonical root when none exists. MCP tool discovery only; no SessionStart hook is installed.
  * Idempotent + symlink-safe; passive runtimes (kiro/opencode) return ok:false (nothing to inject).
  */
 export function installInjection(plan, opts) {
@@ -398,9 +401,12 @@ export function installInjection(plan, opts) {
     if (plan.runtime === 'cursor') {
         return installCursorRules({ configRoot: opts.configRoot, genes: opts.genes ?? [], ...(opts.maxGenes !== undefined ? { maxGenes: opts.maxGenes } : {}) });
     }
+    if (plan.runtime === 'antigravity') {
+        return installAntigravity(plan, opts);
+    }
     if (plan.runtime !== 'claude-code') {
         // kiro/opencode are passive (handled above); any other active runtime is not yet ported.
-        return { ok: false, runtime: plan.runtime, mode: plan.mode, files: [], error: `installer not yet implemented for ${plan.runtime} (supported: claude-code, codex, cursor)` };
+        return { ok: false, runtime: plan.runtime, mode: plan.mode, files: [], error: `installer not yet implemented for ${plan.runtime} (supported: claude-code, codex, cursor, antigravity)` };
     }
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
     const scope = opts.scope ?? 'project';
@@ -477,6 +483,9 @@ export function uninstallInjection(runtime, opts) {
     }
     if (runtime === 'cursor') {
         return uninstallCursorRules(opts);
+    }
+    if (runtime === 'antigravity') {
+        return uninstallAntigravity(runtime, opts);
     }
     if (runtime !== 'claude-code') {
         return { ok: false, runtime, mode: 'n/a', files: [], error: `uninstall not implemented for ${runtime}` };

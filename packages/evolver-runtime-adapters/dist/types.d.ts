@@ -70,6 +70,8 @@ export interface NormalizedSession {
 export interface SessionLogAdapter {
     readonly agent: string;
     detect(path: string): boolean;
+    /** Derive a stable runtime session id when the transcript itself does not carry one. */
+    sessionIdFromPath?(path: string): string | undefined;
     parse(rawChunk: string): NormalizedTurn[];
     parseSession?(rawChunk: string): NormalizedSession;
     parseSessions?(rawChunk: string): NormalizedSession[];
@@ -79,6 +81,7 @@ export interface JsonlParseStats {
     rowsRead: number;
     invalidJson: number;
 }
+export declare function stripUtf8Bom(value: string): string;
 export declare const META_MARKERS: string[];
 export declare function isMetaText(text: string): boolean;
 export declare function parseJsonlLinesWithStats(chunk: string): {

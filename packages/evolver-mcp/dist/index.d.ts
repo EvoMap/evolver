@@ -9,4 +9,5 @@ export * from './manualWiring.js';
 export * from './serviceGuidance.js';
 export * from './codexInstaller.js';
 export * from './cursorRulesInstaller.js';
+export * from './antigravityInstaller.js';
 export * from './envFile.js';

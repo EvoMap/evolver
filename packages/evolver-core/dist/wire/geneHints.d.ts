@@ -35,12 +35,44 @@ export interface GeneToolPolicy {
     severity?: ToolPolicySeverity;
 }
 /**
+ * Provenance classification (V1 #302 classifyProvenance, aligned with TaskGenome Bench §3.1): a Gene's value
+ * depends on WHERE it came from, not on being short. The three tiers:
+ *   evolved   -- distilled from a real solve -> fail -> mutate -> pass trajectory; beats Skills (+8.7..+15.5pp)
+ *   distilled -- transcribed from reference/teacher text with no real failing trajectory; WORSE than Skills (-3.2..-11.2pp)
+ *   manual    -- pure human transcription, no execution evidence at all
+ * The high-value payload of an evolved Gene is the corrective_insight that flipped the outcome.
+ */
+export declare const GENERATION_SOURCES: readonly ["evolved", "distilled", "manual"];
+export type GenerationSource = (typeof GENERATION_SOURCES)[number];
+export interface GeneGenerationHeuristics {
+    strategy_steps?: number;
+    avoid_count?: number;
+    validation_declared_count?: number;
+    validation_runnable_count?: number;
+    signals_extracted?: number;
+    preconditions_extracted?: number;
+    trajectory_depth?: number;
+    has_corrective_insight?: boolean;
+}
+/**
+ * The full provenance + quality metadata block (V1 `gene._source`). Lives on Gene as the v2-delta field
+ * `generation_meta`. `source` is the only required key; the rest is descriptive for reviewers / future
+ * governance. `quality_score` is a coarse [0,1] tier-anchored score (evolved 0.7 / distilled 0.4 / manual 0.3
+ * baseline + bonuses); `overcame_errors` is the mutation_log copy that the trajectory overcame.
+ */
+export interface GenerationMeta {
+    source: GenerationSource;
+    quality_score?: number;
+    quality_heuristics?: GeneGenerationHeuristics;
+    overcame_errors?: string[];
+}
+/**
  * The v2-delta hint field names, in one place — the intake gate strips these before the gep-sdk schema check.
  * IMPORTANT: when a gep-sdk gene-schema bump makes one of these first-class, REMOVE it from this list in the
  * same change. Otherwise intakeGene keeps stripping a now-validated field before validateWire (fail-open — the
  * field's new schema constraints go unchecked at intake) while asset_id still commits it.
  */
-export declare const GENE_HINT_FIELDS: readonly ["routing_hint", "tool_policy"];
+export declare const GENE_HINT_FIELDS: readonly ["routing_hint", "tool_policy", "generation_meta"];
 /**
  * Normalize an arbitrary routing_hint fragment to a strict { tier?, reasoning_level? } object, or null.
  * Unknown enum values are dropped (a stray tier would fail the consumer's exhaustive match and route as if
@@ -60,5 +92,14 @@ export declare function normalizeRoutingHint(raw: unknown): GeneRoutingHint | nu
  * defaults to 'warn' when a list is present; the whole object collapses to null when neither list survives.
  */
 export declare function normalizeToolPolicy(raw: unknown): GeneToolPolicy | null;
+/**
+ * Normalize an arbitrary generation_meta fragment to a strict { source, quality_score?, quality_heuristics?,
+ * overcame_errors? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
+ * values are dropped (the whole block collapses to null — a generation_meta with no recognized source carries no
+ * usable provenance signal); quality_score is clamped to [0,1]; heuristics keeps only its numeric/boolean fields;
+ * overcame_errors keeps only non-empty strings. A block with a valid source but all-else-empty still survives (source
+ * alone is a meaningful provenance tag); only a missing/unknown source yields null.
+ */
+export declare function normalizeGenerationMeta(raw: unknown): GenerationMeta | null;
 /** Strip the v2-delta hint fields from a gene-shaped object (used to validate the gep-sdk-known core). */
 export declare function stripGeneHints(gene: Record<string, unknown>): Record<string, unknown>;

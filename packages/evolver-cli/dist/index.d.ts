@@ -1,5 +1,6 @@
 import { events, ops } from '@evomap/evolver-core';
 import { assetstore, material as materialNs } from '@evomap/evolver-core';
+import { type NonGitWorkspaceNoticeOptions } from './nonGitWorkspaceNotice.js';
 /**
  * Composition seam for ingest's substrate dependencies. The CLI is the composition layer that wires the
  * MaterialStore (M1 raw-material substrate) + the watermark cursor (file-level re-ingest dedup) + the AE
@@ -16,6 +17,7 @@ export interface SessionIngestTickResult {
     sourceAgents: string[];
     signalKinds: string[];
     signalStrengths: string[];
+    invalidJsonRows?: number;
 }
 export declare const PACKAGE = "@evomap/evolver-cli";
 export interface RebuildOptions {
@@ -111,7 +113,7 @@ export declare function promoteHint(v: assetstore.GeneLearningView): string;
  * gene); `--approve`/`--reject <id>` is the audited human act that lifts an auto-distilled draft out of (or
  * confirms it out of) quarantine. Approval is what lets a distilled gene's strategy be embedded into a real run
  * (the gate lives in makeTrustedGeneResolver, #45+review). The id may be a logical id or an asset_id.
- * Usage: evolver review [limit] | evolver review --approve <id> [reason…] | evolver review --reject <id> [reason…]
+ * Usage: evolver review [limit] | evolver review --approve <id> [--allow-weak-evidence] [reason…] | evolver review --reject <id> [reason…]
  */
 export declare function runReview(argv: readonly string[], store?: assetstore.AssetStoreProvider, review?: assetstore.ReviewLedger, deps?: IngestDeps): Promise<number>;
 /** Injection seam for `value` (#113): tests point these at temp paths / a fixed clock; defaults are the live home.
@@ -139,6 +141,7 @@ export interface RetentionDeps {
     rootEventsPath?: string;
     materialStorePath?: string;
     materialCursorPath?: string;
+    materialCursorPaths?: readonly string[];
     now?: () => number;
 }
 export declare function formatRetentionReport(report: events.RetentionReport): string;
@@ -172,6 +175,8 @@ export interface InjectDeps {
     readHookInput?: () => string | undefined;
     /** Test seam for the hook-time proxy daemon recovery path. Default is maybeAutoRestartProxyForSessionStart. */
     ensureProxyAutostart?: () => Promise<void>;
+    /** Test seam for the non-git workspace notice. Production uses cwd + ~/.evomap throttle state. */
+    nonGitNotice?: NonGitWorkspaceNoticeOptions;
 }
 /**
  * `evolver inject session-start`: the SessionStart hook entrypoint (the command every installer registers).

@@ -6,6 +6,7 @@ import { LegacyAuthShim } from './auth/legacyShim.js';
 import { PublicOAuthProvider } from './auth/oauthDeviceToken.js';
 import { createOAuthHttpTransport } from './auth/oauthHttpTransport.js';
 import { KeypairProvider } from './auth/keypair.js';
+import { resolveWorkspaceId, resolveWorkspaceRootForIdentity } from './auth/workspaceKeychain.js';
 /** 选址装配公版 hub(M6-7): 按 authMode 组 AuthProvider(M6-5) + PublicHubCapability(M6-6). */
 export function connectPublicHub(opts) {
     const dir = opts.evomapDir ?? join(homedir(), '.evomap');
@@ -34,5 +35,18 @@ export function connectPublicHub(opts) {
             throw new Error(`未知 authMode: ${String(_x)}`);
         }
     }
-    return { hub: new PublicHubCapability({ baseUrl: opts.hubUrl, auth, fetchFn, senderId: opts.senderId, antiAbuse: opts.antiAbuse }), auth };
+    return { hub: new PublicHubCapability({ baseUrl: opts.hubUrl, auth, fetchFn, senderId: opts.senderId, antiAbuse: withWorkspaceIdResolver(opts.antiAbuse) }), auth };
+}
+function withWorkspaceIdResolver(antiAbuse) {
+    if (antiAbuse?.workspaceId || antiAbuse?.workspaceIdResolver)
+        return antiAbuse;
+    const env = antiAbuse?.env ?? process.env;
+    let workspaceRoot;
+    return {
+        ...(antiAbuse ?? {}),
+        workspaceIdResolver: () => {
+            workspaceRoot ??= resolveWorkspaceRootForIdentity({ env });
+            return resolveWorkspaceId({ env, workspaceRoot });
+        },
+    };
 }

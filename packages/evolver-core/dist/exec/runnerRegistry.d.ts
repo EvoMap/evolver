@@ -20,20 +20,21 @@ export declare class UnboundedSkipPermissionsError extends Error {
 export declare class UnsupportedCursorSkipPermissionsError extends Error {
     constructor();
 }
-/** Thrown when Cursor's built-in runner is requested on Windows before its launcher path is run-verified. */
+/** Thrown when Cursor's Windows installation cannot be reduced to a shell-free node.exe + index.js launch. */
 export declare class UnsupportedCursorWindowsRunnerError extends Error {
     constructor();
 }
-export declare function assertCursorRunnerPlatformSupported(platform?: NodeJS.Platform): void;
+export declare function assertCursorRunnerPlatformSupported(platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv): void;
 /**
  * Make a bare command name spawnable shell-free on Windows. `spawn(shell:false)` cannot execute an npm CLI
  * shim (a `.cmd`/`.bat`), and routing through a shell would expose the prompt arg to cmd.exe quoting
  * (injection). npm shims are node wrappers, so we resolve the bare name on PATH and, when it's a node shim,
- * run `node <entry.js>` directly (shell-free, args passed safely). A native `.exe` (claude) resolves to itself.
- * No-op on POSIX and for any command that is already a path or has an extension. Surfaced by codex on Windows
- * (codex is `codex.cmd`, while claude is `claude.exe`), #66.
+ * run `node <entry.js>` directly. Cursor's installer uses a PowerShell shim around a bundled
+ * `versions/<version>/node.exe + index.js`; that known layout is resolved directly too, without invoking
+ * cmd.exe or PowerShell. A native `.exe` (claude) resolves to itself. No-op on POSIX and for any command that
+ * is already a path or has an extension. Surfaced by codex/cursor-agent on Windows (#66).
  */
-export declare function resolveSpawnCommand(cmd: string, args: readonly string[], env?: NodeJS.ProcessEnv): {
+export declare function resolveSpawnCommand(cmd: string, args: readonly string[], env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): {
     cmd: string;
     args: string[];
 };
@@ -49,6 +50,7 @@ export declare function spawnCapture(cmd: string, args: readonly string[], opts:
     timeoutMs: number;
     input?: string;
     env?: NodeJS.ProcessEnv;
+    resolvePlatform?: NodeJS.Platform;
 }): Promise<{
     code: number | null;
     stdout: string;

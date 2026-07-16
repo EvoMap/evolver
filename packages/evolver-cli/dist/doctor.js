@@ -86,6 +86,13 @@ const ENV_CATALOG_DEFINITIONS = [
         requiredFor: 'hub sync, PHub runtime, live smoke',
     },
     {
+        name: 'EVOLVER_DEFAULT_HUB_URL',
+        group: 'hub-runtime',
+        purpose: 'Deployment-time default Hub URL override used when A2A_HUB_URL and EVOMAP_HUB_URL are unset.',
+        requiredFor: 'release/deployment default Hub selection',
+        defaultValue: 'https://evomap.ai',
+    },
+    {
         name: 'EVOMAP_PRIVATE_ADAPTER_MODULE',
         group: 'hub-runtime',
         purpose: 'Optional private adapter module override.',
@@ -688,9 +695,9 @@ function privateRuntimeChecks(env, envFile, envFileReadiness) {
     else {
         checks.push({ name: 'phub-mode', status: 'fail', detail: `EVOMAP_HUB_MODE=${redact(mode)}; expected private for PHub runtime` });
     }
-    const hubUrl = privateValue(env, envFile, 'EVOMAP_HUB_URL');
+    const hubUrl = privateHubUrlValue(env, envFile);
     if (!hubUrl) {
-        checks.push({ name: 'phub-url', status: 'fail', detail: 'EVOMAP_HUB_URL is missing; point it at the PHub test-env URL' });
+        checks.push({ name: 'phub-url', status: 'fail', detail: 'Hub URL is missing; set EVOMAP_HUB_URL in EVOLVER_ENV_FILE, or use A2A_HUB_URL / EVOLVER_DEFAULT_HUB_URL for explicit compatibility' });
     }
     else if (isProductionLikeHubUrl(hubUrl)) {
         checks.push({ name: 'phub-url', status: 'warn', detail: `${redact(hubUrl)} does not look like a test-env URL; do not run live smoke against production PHub` });
@@ -771,7 +778,7 @@ function privateLiveSmokeCheck(env, envFile, essentials) {
     if (essentials.mode !== 'private')
         missing.push('EVOMAP_HUB_MODE=private');
     if (!essentials.hubUrl)
-        missing.push('EVOMAP_HUB_URL');
+        missing.push('EVOMAP_HUB_URL|A2A_HUB_URL|EVOLVER_DEFAULT_HUB_URL');
     if (essentials.tokenCount === 0)
         missing.push(`one of ${PRIVATE_TOKEN_KEYS.join('|')}`);
     if (missing.length > 0) {
@@ -826,6 +833,11 @@ function privateValue(env, envFile, key) {
         return envFile[key]?.trim();
     const fromEnv = env[key]?.trim();
     return fromEnv || undefined;
+}
+function privateHubUrlValue(env, envFile) {
+    return privateValue(env, envFile, 'EVOMAP_HUB_URL')
+        ?? privateValue(env, envFile, 'A2A_HUB_URL')
+        ?? privateValue(env, envFile, 'EVOLVER_DEFAULT_HUB_URL');
 }
 function isLoopbackProxyUrl(raw) {
     try {

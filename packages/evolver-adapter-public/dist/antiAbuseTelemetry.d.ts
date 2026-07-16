@@ -17,6 +17,7 @@ export interface AntiAbuseTelemetryOptions {
     evolverVersion?: string;
     taskMeta?: Record<string, unknown>;
     workspaceId?: string;
+    workspaceIdResolver?: () => string | null;
 }
 export interface IntegrityHashes {
     package_json_hash: string | null;

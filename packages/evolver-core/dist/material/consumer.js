@@ -11,9 +11,10 @@ export class ConsumerGroups {
         if (opts.path && existsSync(opts.path)) {
             try {
                 const o = JSON.parse(readFileSync(opts.path, 'utf8'));
-                for (const [k, v] of Object.entries(o))
-                    if (typeof v === 'number' && Number.isFinite(v))
+                for (const [k, v] of Object.entries(o)) {
+                    if (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0)
                         this.committed.set(k, v);
+                }
             }
             catch { /* corrupt cursor → start from 0 (idempotent re-claim) */ }
         }
@@ -21,16 +22,18 @@ export class ConsumerGroups {
     cur(group) { return this.committed.get(group) ?? 0; }
     /** 取下一批未 ack 的 (不推进 committed → 崩溃重启再 claim 拿到同批). */
     claim(group, batchSize) {
-        const all = this.opts.store.readAll();
-        return all.slice(this.cur(group), this.cur(group) + batchSize);
+        return this.opts.store.readRange(this.cur(group), batchSize);
     }
     /** ack: 把 committed 推过 acked 的连续前缀. */
     ack(group, materialIds) {
         const ackSet = new Set(materialIds);
-        const all = this.opts.store.readAll();
         let c = this.cur(group);
-        while (c < all.length && ackSet.has(all[c].materialId))
+        const claimed = this.opts.store.readRange(c, ackSet.size);
+        for (const record of claimed) {
+            if (!ackSet.has(record.materialId))
+                break;
             c += 1;
+        }
         this.committed.set(group, c);
         this.persist();
     }

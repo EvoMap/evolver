@@ -1,5 +1,6 @@
 export declare const PACKAGE = "@evomap/evolver-adapter-public";
 export * from './auth/machineId.js';
+export * from './auth/workspaceKeychain.js';
 export * from './auth/credentialStore.js';
 export * from './auth/keypair.js';
 export * from './auth/legacyShim.js';
@@ -8,9 +9,11 @@ export * from './auth/oauthHttpTransport.js';
 export * from './hubFetch.js';
 export * from './wireMap.js';
 export * from './hubCapability.js';
+export * from './agentDirectory.js';
 export * from './antiAbuseTelemetry.js';
 export * from './offlinePermit.js';
 export * from './hubReuse.js';
+export * from './hubUrl.js';
 export * from './atp.js';
 export * from './pricing/modelPrices.js';
 export * from './connect.js';

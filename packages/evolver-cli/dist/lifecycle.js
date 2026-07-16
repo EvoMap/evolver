@@ -216,15 +216,19 @@ export function lifecyclePaths(env = process.env) {
     const stateDir = env['EVOLVER_LIFECYCLE_STATE_DIR'] ?? join(home, 'lifecycle');
     const logDir = env['EVOLVER_LIFECYCLE_LOG_DIR'] ?? join(home, 'logs');
     const name = env['EVOLVER_LIFECYCLE_NAME'] ?? DEFAULT_DAEMON_NAME;
-    const settingsHome = env['EVOLVER_SETTINGS_DIR'] ?? join(homedir(), '.evolver');
+    const settingsHome = nonBlankEnv(env, 'EVOLVER_SETTINGS_DIR') ?? join(homedir(), '.evolver');
     return {
         home,
         stateDir,
         logDir,
         pidFile: env['EVOLVER_LIFECYCLE_PID_FILE'] ?? join(stateDir, `${name}.pid`),
         logFile: env['EVOLVER_LIFECYCLE_LOG_FILE'] ?? join(logDir, `${name}.log`),
-        settingsFile: env['EVOLVER_PROXY_SETTINGS_FILE'] ?? join(settingsHome, 'settings.json'),
+        settingsFile: nonBlankEnv(env, 'EVOLVER_PROXY_SETTINGS_FILE') ?? join(settingsHome, 'settings.json'),
     };
+}
+function nonBlankEnv(env, key) {
+    const value = env[key]?.trim();
+    return value ? value : undefined;
 }
 export function renderSystemdUnit(opts = {}) {
     return [

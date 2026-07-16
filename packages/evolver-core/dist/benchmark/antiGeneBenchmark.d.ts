@@ -2,6 +2,7 @@ import type { AssetStoreProvider } from '../assetstore/provider.js';
 import { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { ReportEvent } from '../events/reports.js';
 import type { GepCategory } from '../wire/index.js';
+import { type AntiGeneOverblockSummary } from './antiGeneImpact.js';
 export type AntiGeneBenchmarkArm = 'baseline' | 'antiGene';
 export type AntiGeneBenchmarkVerdict = 'anti_gene_better' | 'no_clear_improvement' | 'anti_gene_worse' | 'insufficient_samples';
 export interface AntiGeneBenchmarkOutcomeSpec {
@@ -58,6 +59,7 @@ export interface AntiGeneBenchmarkReport {
     antiGene: AntiGeneBenchmarkArmMetrics;
     missingExpectedWarnings: number;
     overblocked: number;
+    overblockedAntiGenes: AntiGeneOverblockSummary[];
     failureDelta: number;
     verdict: AntiGeneBenchmarkVerdict;
     taskResults: AntiGeneBenchmarkTaskResult[];

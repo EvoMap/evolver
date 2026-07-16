@@ -22,8 +22,22 @@ export declare class MailboxStore {
         status?: Status;
         handler?: string;
         runtimeNamespace?: string;
+        type?: string;
+        direction?: Envelope['direction'];
+        typeDirections?: readonly {
+            type: string;
+            direction: Envelope['direction'];
+        }[];
+        newestFirst?: boolean;
+        offset?: number;
         limit?: number;
     }): Envelope[];
+    countMessages(opts?: {
+        status?: Status;
+        runtimeNamespace?: string;
+        type?: string;
+        direction?: Envelope['direction'];
+    }): number;
     countByStatus(status: Status): number;
     /** pending 计数(可按 handler/runtimeNamespace 分区), 用于 agent wake 去抖. */
     countPending(handler?: string, runtimeNamespace?: string): number;

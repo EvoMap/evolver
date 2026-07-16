@@ -165,21 +165,130 @@ export function inferCategory(signals, description) {
         return 'innovate';
     return 'optimize';
 }
+// ── v1 #302: provenance classification + quality scoring (aligned with TaskGenome Bench §3.1) ────────────────
+// A Gene's value depends on WHERE it came from, not on being short. Evolved Genes (distilled from a verified
+// solve→fail→mutate→pass trajectory) beat Skills +8.7..+15.5pp; reference-distilled Genes are 3-11pp WORSE.
+/**
+ * Classify a Gene's provenance from its execution trace (faithful port of v1 #302 `classifyProvenance`). PURE,
+ * mechanical, reads only trajectory fields (status / blast_radius / rollouts / mutation_log / reference_distilled):
+ *   evolved   — a verified success that overcame a real failure (mutation_log non-empty, or rollouts went fail→pass)
+ *               with a non-zero blast radius. The corrective_insight that flipped the outcome is the payload.
+ *   distilled — has execution evidence (a status, rollouts, mutation_log, or an explicit reference_distilled flag)
+ *               but did NOT clear the evolved bar. A first-try success or a zero-blast success lands here.
+ *   manual    — no execution evidence at all (pure SKILL.md transcription).
+ */
+export function classifyProvenance(execution) {
+    const rollouts = Array.isArray(execution?.rollouts) ? execution.rollouts : [];
+    const mutationLog = Array.isArray(execution?.mutation_log) ? execution.mutation_log : [];
+    const status = execution?.status ? String(execution.status) : null;
+    const blast = execution?.blast_radius || null;
+    const hasBlast = blast !== null && (Number(blast.files || 0) > 0 || Number(blast.lines || 0) > 0);
+    const failedRollouts = rollouts.filter((r) => r && String(r.status) === 'failed').length;
+    const passedRollouts = rollouts.some((r) => r && String(r.status) === 'success');
+    const overcameFailure = mutationLog.length > 0 || (failedRollouts > 0 && (passedRollouts || status === 'success'));
+    if (status === 'success' && hasBlast && overcameFailure)
+        return 'evolved';
+    // Anything carrying real execution evidence but not meeting the evolved bar is "distilled" — it has evidence, just
+    // not a verified fail→pass-with-blast trajectory. A success with mutation_log but ZERO blast radius must therefore
+    // be distilled, not manual (otherwise a zero-blast success would masquerade as a no-evidence transcription).
+    if ((execution?.reference_distilled === true) || status !== null || rollouts.length > 0 || mutationLog.length > 0) {
+        return 'distilled';
+    }
+    return 'manual';
+}
+/**
+ * Build the corrective-insight strategy for an evolved Gene (v1 #302 `buildEvolvedStrategy`). The insight that
+ * flipped fail→pass goes FIRST (the case-study shape), then the Skill's own workflow steps. De-duped, length-bounded.
+ */
+function buildEvolvedStrategy(parsed, execution) {
+    const strategy = [];
+    const insight = execution?.corrective_insight ? String(execution.corrective_insight).trim() : '';
+    if (insight.length >= 5)
+        strategy.push(insight.length <= 300 ? insight : insight.slice(0, 297) + '...');
+    (parsed.strategy || []).forEach((s) => { if (strategy.indexOf(s) === -1)
+        strategy.push(s); });
+    return strategy;
+}
+/**
+ * Turn the error categories a trajectory overcame into verifiable preconditions (v1 #302 `preconditionsFromErrors`):
+ * "A prior attempt failed with X; verify this condition is handled before trusting the approach."
+ */
+function preconditionsFromErrors(execution) {
+    const mutationLog = Array.isArray(execution?.mutation_log) ? execution.mutation_log : [];
+    const out = [];
+    const seen = new Set();
+    for (const err of mutationLog) {
+        const e = String(err || '').trim();
+        if (!e || seen.has(e))
+            continue;
+        seen.add(e);
+        out.push(`A prior attempt failed with "${e.replace(/_/g, ' ')}"; verify this condition is handled before trusting the approach.`);
+        if (out.length >= 4)
+            break;
+    }
+    return out;
+}
+/**
+ * Quality score in [0,1] (v1 #302 `computeQualityScore`). Evolved trajectories with a recorded corrective insight
+ * score highest (0.7 baseline + bonuses); pure transcription with no evidence scores lowest (0.3).
+ */
+function computeQualityScore(source, parsed, execution) {
+    const ex = execution || {};
+    let score;
+    if (source === 'evolved') {
+        score = 0.7;
+        if (ex.corrective_insight && String(ex.corrective_insight).trim().length >= 5)
+            score += 0.15;
+        const depth = Array.isArray(ex.mutation_log) ? ex.mutation_log.length
+            : (Array.isArray(ex.rollouts) ? ex.rollouts.length - 1 : 0);
+        if (depth >= 1)
+            score += Math.min(0.15, depth * 0.05);
+    }
+    else if (source === 'distilled') {
+        score = 0.4;
+    }
+    else {
+        score = 0.3;
+    }
+    const strategySteps = (parsed.strategy || []).length;
+    if (strategySteps >= 4)
+        score += 0.05;
+    if ((parsed.avoid || []).length >= 1)
+        score += 0.05;
+    return Math.max(0, Math.min(1, Number(score.toFixed(3))));
+}
 /**
  * Assemble a draft GeneCandidate from a parsed skill + its execution trace (B2a — faithful port of v1
  * `synthesizeGene`'s Gene half, mapped onto v2 `GeneCandidate`; pool intake/dedup/asset_id is the caller's
- * `algo.intakeGene`). Signals merge skill + trace; strategy pads to ≥3 generic steps; validation keeps only the
- * allowed `node …` commands. STRICT mode + no allowed validation → refuse (errors, no gene); non-strict falls back
- * to `node --version` so Gene.validation is never empty (an empty validation would silently defeat the Capsule
- * coverage check in B2b). `avoid` / `_source` are dropped here (not on GeneCandidate) — re-added if the schema grows.
+ * `algo.intakeGene`). Signals merge skill + trace. Provenance is classified from the execution trace (v1 #302):
+ *   - evolved → corrective_insight leads strategy; mutation_log → verifiable preconditions.
+ *   - otherwise → Skill transcription (legacy behavior), tagged so consumers know it was not learned from a real run.
+ *
+ * Validation keeps only the allowed `node …` commands (v1 #302 DISTILL contract: do NOT inject a bogus
+ * `node --version` fallback — an empty validation list is the CORRECT outcome for a Gene with nothing runnable,
+ * not a near-trivial check that would silently pass). STRICT mode + no allowed validation → refuse (errors, no gene).
+ * `avoid` is dropped here (not on GeneCandidate); `generation_meta` carries the provenance + quality metadata.
  */
-export function synthesizeGene(parsed, execution, opts = {}) {
+export function synthesizeGene(parsed, execution = {}, opts = {}) {
     const traceSignals = Array.isArray(execution?.signals) ? execution.signals : [];
     // Trace signals come from the REAL execution (ground truth), so put them FIRST — the 8-slot cap below then never
     // starves them in favor of the skill's DECLARED signals. (Improves on v1's skill-first merge, which dropped
     // trace-only signals once the skill already filled 8 slots — Bugbot #141.)
     const mergedSignals = [...new Set([...traceSignals, ...(parsed.signals_match || [])])];
-    const strategy = [...(parsed.strategy || [])];
+    // ── v1 #302: classify provenance, then branch strategy/preconditions on it ────────────────────────────────
+    const source = classifyProvenance(execution);
+    let strategy;
+    let preconditions;
+    if (source === 'evolved') {
+        strategy = buildEvolvedStrategy(parsed, execution);
+        preconditions = preconditionsFromErrors(execution).concat(parsed.preconditions || []);
+    }
+    else {
+        strategy = [...(parsed.strategy || [])];
+        preconditions = (parsed.preconditions && parsed.preconditions.length > 0)
+            ? [...parsed.preconditions]
+            : [`Skill ${parsed.name || 'unknown'} has just been executed locally`];
+    }
     if (strategy.length < 3) {
         strategy.push('Identify the dominant trigger signals from the Skill description.');
         strategy.push('Apply the smallest targeted change that satisfies the Skill workflow.');
@@ -187,25 +296,49 @@ export function synthesizeGene(parsed, execution, opts = {}) {
     }
     const rawValidations = Array.isArray(parsed.validation) ? parsed.validation : [];
     const allowedValidations = rawValidations.map((v) => String(v || '').trim()).filter((v) => v && isValidationCommandAllowed(v));
-    const fallbackUsed = allowedValidations.length === 0;
-    if (opts.strict && fallbackUsed) {
-        return { gene: null, errors: ['strict mode: no allowed validation commands found in the Skill (GEP validation only permits "node " prefixes). Rewrite the Skill validation section, or drop strict.'] };
+    if (opts.strict && allowedValidations.length === 0) {
+        return {
+            gene: null,
+            errors: ['strict mode: no allowed validation commands found in the Skill (GEP validation only permits "node " prefixes). Rewrite the Skill validation section, or drop strict.'],
+            generation_meta: { source, quality_score: computeQualityScore(source, parsed, execution) },
+        };
     }
-    const validation = fallbackUsed ? ['node --version'] : allowedValidations;
+    // v1 #302 DISTILL contract: an empty validation list is correct when nothing runnable exists — do NOT inject a
+    // bogus `node --version` fallback. A trivially-passing check would silently defeat the Capsule coverage red line.
+    const validation = allowedValidations;
     const slug = slugify(parsed.name || opts.skillName || 'skill');
+    // Quality score + heuristics for the generation_meta block (v1 #302).
+    const qualityScore = computeQualityScore(source, parsed, execution);
+    const mutationLog = Array.isArray(execution?.mutation_log) ? execution.mutation_log : [];
+    const heuristics = {
+        strategy_steps: (parsed.strategy || []).length,
+        avoid_count: (parsed.avoid || []).length,
+        validation_declared_count: rawValidations.length,
+        validation_runnable_count: allowedValidations.length,
+        signals_extracted: (parsed.signals_match || []).length,
+        preconditions_extracted: (parsed.preconditions || []).length,
+        trajectory_depth: mutationLog.length > 0 ? mutationLog.length
+            : (Array.isArray(execution?.rollouts) ? Math.max(0, execution.rollouts.length - 1) : 0),
+        has_corrective_insight: Boolean(execution?.corrective_insight && String(execution.corrective_insight).trim().length >= 5),
+    };
+    const generation_meta = {
+        source,
+        quality_score: qualityScore,
+        quality_heuristics: heuristics,
+        ...(mutationLog.length > 0 ? { overcame_errors: [...mutationLog] } : {}),
+    };
     const gene = {
         id: SKILL2GEP_ID_PREFIX + slug,
         category: inferCategory(mergedSignals, parsed.description),
         signals_match: mergedSignals.slice(0, 8),
         strategy: strategy.slice(0, MAX_STRATEGY_STEPS),
         summary: (parsed.description || strategy[0] || 'Reusable strategy distilled from Skill').slice(0, 200),
-        preconditions: (parsed.preconditions && parsed.preconditions.length > 0)
-            ? parsed.preconditions
-            : [`Skill ${parsed.name || 'unknown'} has just been executed locally`],
+        preconditions,
         constraints: { max_files: opts.maxFiles ?? SKILL_MAX_FILES, forbidden_paths: ['.git', 'node_modules'] },
         validation,
+        generation_meta,
     };
-    return { gene, errors: [] };
+    return { gene, errors: [], generation_meta };
 }
 // ── B2b: Capsule from REAL execution evidence + the forgery / coverage red lines ─────────────────────────────
 /** Gene id prefix for skill-distilled capsules (v1 CAPSULE_ID_PREFIX). */

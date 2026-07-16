@@ -19,7 +19,7 @@ function envelopeToAgentEvent(e) {
     const stableId = e.type === 'proxy_trace' && e.idempotencyKey ? e.idempotencyKey : e.id;
     return {
         id: stableId,
-        type: e.type,
+        type: e.type === 'dm_outbound' ? 'dm' : e.type,
         payload: e.payload,
         priority: 'medium',
         createdAt: e.createdAt,
@@ -59,10 +59,17 @@ export function makeHubBindings(cap, options = {}) {
                             throw new PublishRejectedError(r.status, r.terminal ?? true, r.reason);
                         return r;
                     }
-                    case 'task_claim': return cap.task.claim(String(e.payload.taskId ?? ''));
+                    case 'task_claim': {
+                        const p = e.payload;
+                        return cap.task.claim(firstString(p.taskId, p.task_id) ?? '');
+                    }
                     case 'task_complete': {
                         const p = e.payload;
-                        return cap.task.complete(String(p.claimId ?? ''), p.result);
+                        const taskId = firstString(p.taskId, p.task_id);
+                        const assetId = firstString(p.assetId, p.asset_id);
+                        const claimId = firstString(p.claimId, p.claim_id) ?? taskId ?? '';
+                        const context = taskId && assetId ? { taskId, assetId } : undefined;
+                        return cap.task.complete(claimId, p.result, context);
                     }
                     default:
                         // 其余 outbound(atp_*/heartbeat/...) 走 mailbox.push
@@ -87,4 +94,7 @@ export function makeHubBindings(cap, options = {}) {
             };
         },
     };
+}
+function firstString(...values) {
+    return values.find((value) => typeof value === 'string' && value.length > 0);
 }

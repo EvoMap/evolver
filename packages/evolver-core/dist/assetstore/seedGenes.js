@@ -1,0 +1,134 @@
+import { computeAssetId, SCHEMA_VERSION } from '../wire/index.js';
+const HARNESS_SEED_GENE_DRAFTS = [
+    {
+        id: 'gene_seed_publish_feishu_doc',
+        category: 'innovate',
+        signals_match: [
+            'publish_markdown_to_feishu',
+            'create_feishu_doc',
+            'export_report_to_feishu',
+            'publish_results_to_lark_doc',
+            'feishu_doc',
+            'lark_doc',
+        ],
+        preconditions: [
+            'lark-cli is installed and available on PATH.',
+            'lark-cli auth status reports a ready user or bot identity.',
+        ],
+        strategy: [
+            'Run lark-cli doctor and require an ok result before publishing.',
+            'Use the Docs v2 API and avoid deprecated Docs v1 flags.',
+            'Write long Markdown content to a temporary file and pass it as an @file input.',
+            'Create or update the document with the intended user or bot identity, then return the document URL.',
+            'Never overwrite local lark-cli credential files while preparing the document.',
+        ],
+        constraints: { max_files: 2, forbidden_paths: ['.git', 'node_modules', '~/.lark-cli/config.json'] },
+        validation: ['node --version'],
+        summary: 'Publish Markdown content as a Feishu/Lark document through the official CLI, using file-backed content and Docs v2.',
+    },
+    {
+        id: 'gene_seed_conventional_git_commit',
+        category: 'optimize',
+        signals_match: [
+            'git_commit',
+            'create_commit',
+            'commit_changes',
+            'conventional_commit',
+            'stage_and_commit',
+            'write_commit_message',
+        ],
+        preconditions: ['A git repository has staged or unstaged changes that should become one logical commit.'],
+        strategy: [
+            'Inspect git status plus the staged or unstaged diff before choosing a commit shape.',
+            'Pick a Conventional Commits type and optional scope from the actual changed files.',
+            'Stage only the intended logical files and never stage credentials or unrelated changes.',
+            'Write a present-tense imperative subject under 72 characters, with body or footer when needed.',
+            'Do not amend, force-push, hard-reset, or bypass hooks without explicit operator approval.',
+        ],
+        constraints: { max_files: 50, forbidden_paths: ['.git', 'node_modules'] },
+        validation: ['node --version'],
+        summary: 'Create a focused Conventional Commits-style git commit from the real diff while avoiding secrets and unrelated changes.',
+    },
+    {
+        id: 'gene_seed_poll_bugbot_review',
+        category: 'optimize',
+        signals_match: [
+            'poll_bugbot',
+            'bugbot_review',
+            'wait_for_ci_review',
+            'pr_review_gate',
+            'cursor_bugbot',
+            'pr_opened',
+        ],
+        preconditions: ['An open GitHub PR exists and Cursor Bugbot is expected to review it.'],
+        strategy: [
+            'Poll the Cursor Bugbot check by name until it reaches a terminal conclusion or the operator timeout is reached.',
+            'Treat SUCCESS as mergeable only when required checks are green and there are no unresolved Bugbot comments.',
+            'Treat NEUTRAL as not passed; fetch and summarize Cursor Bugbot inline comments for the operator.',
+            'On FAILURE or ACTION_REQUIRED, surface the findings and do not merge automatically.',
+            'Only squash-merge when the operator explicitly asked for merge and the review gate is clean.',
+        ],
+        constraints: { max_files: 1, forbidden_paths: ['.git', 'node_modules'] },
+        validation: ['node --version'],
+        summary: 'Wait for Cursor Bugbot on a GitHub PR and gate merge decisions on the actual check conclusion and comments.',
+    },
+    {
+        id: 'gene_seed_gateway_timeout_recovery',
+        category: 'repair',
+        signals_match: [
+            'gateway_timeout',
+            'upstream_timeout',
+            'http_524',
+            'http_504',
+            'request_timed_out',
+            'retry_on_timeout',
+        ],
+        preconditions: ['A tool call, fetch, subagent request, or long command returned a gateway-class timeout.'],
+        strategy: [
+            'Treat gateway timeout as transient or size-driven until one bounded recovery attempt proves otherwise.',
+            'Retry the exact same operation once, then stop retrying the monolithic call.',
+            'If the retry also times out, split the work by file, directory, endpoint, record, section, or time window.',
+            'Run independent slices in parallel when safe and merge the results.',
+            'Apply the same decomposition recursively only to the slice that still times out.',
+        ],
+        constraints: { max_files: 1, forbidden_paths: ['.git', 'node_modules'] },
+        validation: ['node --version'],
+        summary: 'Recover from gateway or upstream timeouts by retrying once, then decomposing the work instead of looping the same large call.',
+    },
+    {
+        id: 'gene_seed_github_webhook_listener',
+        category: 'innovate',
+        signals_match: [
+            'github_webhook_listener',
+            'bugbot_webhook',
+            'passive_pr_notifications',
+            'notify_when_bugbot_finishes',
+            'webhook_tunnel',
+            'github_pr_inbox',
+        ],
+        preconditions: ['A developer machine can run a local listener and an outbound tunnel for GitHub webhook delivery.'],
+        strategy: [
+            'Use an HMAC-validated local listener for GitHub webhook payloads and deduplicate delivery ids.',
+            'Expose the listener through an outbound-only tunnel rather than an inbound public port.',
+            'Write vetted notifications into a local inbox with restrictive permissions; never execute webhook payloads.',
+            'On session start, re-fetch PR state through GitHub before surfacing any inbox item.',
+            'Rotate webhook secrets periodically and immediately after suspected exposure.',
+        ],
+        constraints: { max_files: 20, forbidden_paths: ['.git', 'node_modules'] },
+        validation: ['node --version'],
+        summary: 'Deploy a local HMAC-validated GitHub webhook listener that turns PR and Bugbot events into safe operator notifications.',
+    },
+];
+function materializeSeedGene(draft) {
+    const gene = {
+        type: 'Gene',
+        schema_version: SCHEMA_VERSION,
+        ...draft,
+        asset_id: '',
+    };
+    return { ...gene, asset_id: computeAssetId(gene) ?? '' };
+}
+export const BUNDLED_HARNESS_SEED_GENES = Object.freeze(HARNESS_SEED_GENE_DRAFTS.map((gene) => Object.freeze(materializeSeedGene(gene))));
+export function bundledHarnessSeedGenesJsonl() {
+    return `${BUNDLED_HARNESS_SEED_GENES.map((gene) => JSON.stringify(gene)).join('\n')}\n`;
+}

@@ -8,13 +8,16 @@ import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
 import { draftGeneCandidate } from './distillPrimitives.js';
 import { emitSessionRecall } from './autoRecall.js';
-import { isRuntimeSessionSourcePath, parseRuntimeSessionSources } from './runtimeSessionSource.js';
+import { isRuntimeSessionSourcePath, parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { importV1 } from './migrate/v1Import.js';
 import { explicitRecipeHomes } from './recipe.js';
 import { maybeAutoRestartProxyForSessionStart, sessionStartHookVerboseEnabled } from './lifecycle.js';
+import { formatAntiGeneEvidenceAction, formatAntiGeneEvidenceSummary, summarizeAntiGeneEvidence } from './antiGeneEvidence.js';
+import { buildRuntimeSessionMaterialSnapshot } from './materialSnapshot.js';
+import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
 /**
  * Material consumer group for ingest: the cycle is the downstream that claims material → signals. Kept in
  * one place so the recorded Material and any future cycle consumer agree on the group name.
@@ -252,6 +255,9 @@ export async function runDistill(argv, store, deps = {}) {
         signals_match: splitList(f['signals'], /,/),
         strategy: splitList(f['strategy'], /[;\n]/),
         ...(f['summary'] ? { summary: f['summary'] } : {}),
+        // `evolver distill` is a human teaching the system a gene (actor.kind = human, see the audit below) →
+        // `manual` per V1 #302 classifyProvenance.
+        generation_meta: { source: 'manual' },
     };
     if (candidate.signals_match.length === 0 || candidate.strategy.length === 0) {
         process.stderr.write('用法: evolver distill --category <c> --signals <s1,s2> --strategy "<step1; step2>" [--summary <t>]\n');
@@ -299,7 +305,7 @@ function printTraceSignals(file, turnCount, sigs) {
     }
 }
 /** The runtime agents Material.sourceAgent can represent (closed enum on the schema). */
-const MATERIAL_SOURCE_AGENTS = new Set(['claude-code', 'codex', 'cursor', 'gemini', 'kimi', 'kiro', 'opencode', 'generic-chat']);
+const MATERIAL_SOURCE_AGENTS = new Set(['claude-code', 'codex', 'cursor', 'gemini', 'antigravity', 'kimi', 'kiro', 'opencode', 'generic-chat']);
 /** Narrow an adapter's free-string agent to the Material source enum (undefined → not recordable). */
 function toMaterialSourceAgent(agent) {
     return MATERIAL_SOURCE_AGENTS.has(agent) ? agent : undefined;
@@ -329,12 +335,12 @@ function materialExistsFor(store, sourcePath, wm) {
  * no new material and emits no event (scanFile reports `changed: false` against the persisted cursor).
  * Returns whether new material landed + its materialId so the caller can report it.
  */
-async function recordSessionMaterial(sourceAgent, absPath, signalCount, d, recordCount = 1) {
+async function recordSessionMaterial(sourceAgent, absPath, signalCount, d, recordCount = 1, payload, diagnostics) {
     const prev = d.watermarkStore.get(absPath);
     const scan = materialNs.scanFile(absPath, prev);
     // Unchanged source already recorded once → idempotent skip (no duplicate material, no duplicate event).
     if (prev && !scan.changed)
-        return { recorded: false };
+        return { recorded: false, emitted: false };
     const m = materialNs.buildMaterial({
         sourceAgent,
         sourceKind: 'runtime_session',
@@ -342,22 +348,30 @@ async function recordSessionMaterial(sourceAgent, absPath, signalCount, d, recor
         kind: 'session_log',
         watermark: scan.watermark,
         consumerGroup: INGEST_CONSUMER_GROUP,
+        ...(payload ? { payload } : {}),
     });
     // Crash-retry idempotency (#100): if a prior run already put this file's material but threw before the
     // watermark advanced, don't append a duplicate row — reuse it and only (re-)emit the lost event below.
     const isNew = !materialExistsFor(d.materialStore, absPath, scan.watermark);
     if (isNew)
         await d.materialStore.put(m);
+    const parseDiagnostics = diagnostics && diagnostics.invalidJson > 0
+        ? { rowsScanned: diagnostics.rowsScanned, rowsRead: diagnostics.rowsRead, invalidJson: diagnostics.invalidJson }
+        : undefined;
     await d.ingestor.ingest({
         type: 'material.batch_ready',
-        payload: { source: absPath, recordCount, signalCount },
-        human: { title: `material 已落地: ${sourceAgent} session`, severity: 'info' },
+        payload: { source: absPath, recordCount, signalCount, ...(parseDiagnostics ? { parseDiagnostics } : {}) },
+        human: {
+            title: `material 已落地: ${sourceAgent} session`,
+            ...(parseDiagnostics ? { detail: `skipped ${parseDiagnostics.invalidJson} invalid JSONL row(s)` } : {}),
+            severity: 'info',
+        },
         actor: { kind: 'machine' },
     });
     // Watermark LAST — only after BOTH the put and its batch_ready event succeed. If ingest throws, the watermark
     // stays unset so a re-run re-emits the event; the content check above keeps that retry from duplicating the row.
     d.watermarkStore.set(absPath, scan.watermark);
-    return { recorded: isNew, materialId: m.materialId };
+    return { recorded: isNew, emitted: true, materialId: m.materialId };
 }
 /**
  * Record a proxy LLM-trace file as Material on the M1 substrate (#95). A trace is agent-agnostic gateway
@@ -434,18 +448,23 @@ export async function runSessionIngestTick(dirs, deps = {}) {
     const sourceAgents = new Set();
     const signalKinds = new Set();
     const signalStrengths = new Set();
+    let invalidJsonRows = 0;
     // #274 auto-recall (default OFF): observe which injected genes were actually used, from the transcript, so the
     // experience loop is fed by observation instead of a self-reported tool call agents skip. Best-effort + idempotent
     // (one value.recall set per session); off → zero extra work. auto-OBSERVE only — it never quarantines.
     const autoRecallOn = process.env['EVOLVER_AUTO_RECALL'] === '1';
     for (const file of scanSessionDirs(dirs)) {
         try {
-            const parsedSources = parseRuntimeSessionSources(file);
+            const parsed = parseRuntimeSessionSourcesWithDiagnostics(file);
+            const parsedSources = parsed.sources;
             const agent = parsedSources[0] ? toMaterialSourceAgent(parsedSources[0].agent) : undefined;
             if (parsedSources.length === 0 || !agent)
                 continue; // not a recognized, schema-recordable runtime-session source
             const sigsBySource = parsedSources.map((source) => signals.extractSignals(source.turns));
-            const r = await recordSessionMaterial(agent, file, sigsBySource.reduce((sum, sigs) => sum + sigs.length, 0), d, parsedSources.length);
+            const snapshot = buildRuntimeSessionMaterialSnapshot(parsedSources);
+            const r = await recordSessionMaterial(agent, file, sigsBySource.reduce((sum, sigs) => sum + sigs.length, 0), d, parsedSources.length, snapshot, parsed.diagnostics);
+            if (r.emitted)
+                invalidJsonRows += parsed.diagnostics.invalidJson;
             if (r.recorded) {
                 recorded += 1;
                 sourceAgents.add(agent);
@@ -469,6 +488,7 @@ export async function runSessionIngestTick(dirs, deps = {}) {
         sourceAgents: sortedStrings(sourceAgents),
         signalKinds: sortedStrings(signalKinds),
         signalStrengths: sortedStrings(signalStrengths),
+        ...(invalidJsonRows > 0 ? { invalidJsonRows } : {}),
     };
 }
 /**
@@ -566,8 +586,11 @@ export async function runIngest(argv, store, deps = {}, review) {
     if (TRACE_FILE_RE.test(path))
         return ingestTraceFiles([resolve(path)], distill, deps);
     let parsedSources;
+    let parseDiagnostics;
     try {
-        parsedSources = parseRuntimeSessionSources(path);
+        const parsed = parseRuntimeSessionSourcesWithDiagnostics(path);
+        parsedSources = parsed.sources;
+        parseDiagnostics = parsed.diagnostics;
     }
     catch (e) {
         process.stderr.write(`ingest: cannot read ${path}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -585,6 +608,9 @@ export async function runIngest(argv, store, deps = {}, review) {
         return 1;
     }
     const sourceSignalPairs = parsedSources.map((source) => ({ source, sigs: signals.extractSignals(source.turns) }));
+    if (parseDiagnostics && parseDiagnostics.invalidJson > 0) {
+        process.stderr.write(`ingest: skipped ${parseDiagnostics.invalidJson} invalid JSONL row(s) in ${path}\n`);
+    }
     for (const { source, sigs } of sourceSignalPairs) {
         process.stdout.write(`ingest [${source.label}] ${path}: ${source.turns.length} turn(s) → ${sigs.length} signal(s)\n`);
         for (const s of sigs) {
@@ -600,7 +626,8 @@ export async function runIngest(argv, store, deps = {}, review) {
     if (sourceAgent) {
         const d = resolveIngestDeps(deps);
         const signalCount = sourceSignalPairs.reduce((sum, pair) => sum + pair.sigs.length, 0);
-        const r = await recordSessionMaterial(sourceAgent, resolve(path), signalCount, d, parsedSources.length);
+        const snapshot = buildRuntimeSessionMaterialSnapshot(parsedSources);
+        const r = await recordSessionMaterial(sourceAgent, resolve(path), signalCount, d, parsedSources.length, snapshot, parseDiagnostics);
         if (r.recorded)
             process.stdout.write(`  → recorded as material ${r.materialId} (material.batch_ready)\n`);
         else
@@ -694,22 +721,22 @@ function stringArrayField(value) {
 function optionalStringField(value) {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
-function countField(value) {
-    return Array.isArray(value) ? String(value.length) : '0';
-}
-function numberField(value) {
-    return typeof value === 'number' && Number.isFinite(value) ? String(value) : '-';
+function antiGeneReviewState(rev, assetId) {
+    return rev.get(assetId)?.state ?? 'unreviewed';
 }
 function antiGeneReviewLine(asset, rev) {
     const assetId = String(asset.asset_id);
     const id = optionalStringField(asset['id']) ?? assetId;
-    const state = rev.get(assetId)?.state ?? 'approved';
+    const state = antiGeneReviewState(rev, assetId);
     const severity = optionalStringField(asset['severity']) ?? '-';
     const trigger = stringArrayField(asset['trigger']).slice(0, 6).join(',') || '-';
     const avoid = stringArrayField(asset['avoid']).slice(0, 2).join(' | ') || '-';
-    const evidence = `failures=${numberField(asset['failure_count'])} clusters=${countField(asset['source_clusters'])} evidence=${countField(asset['evidence_capsules'])}`;
-    const next = state === 'quarantined'
-        ? `next: evolver review --approve ${id} <reason> | evolver review --reject ${id} <reason>`
+    const summary = summarizeAntiGeneEvidence(asset);
+    const evidence = `${formatAntiGeneEvidenceSummary(summary)} ${formatAntiGeneEvidenceAction(summary, state)}`;
+    const next = state === 'quarantined' || state === 'unreviewed'
+        ? summary.strength === 'weak'
+            ? `next: reject/defer, or override with evolver review --approve ${id} --allow-weak-evidence <reason>`
+            : `next: approve after manual guardrail review with evolver review --approve ${id} <reason> | reject with evolver review --reject ${id} <reason>`
         : state === 'approved'
             ? 'next: approved guardrail can be injected when signals match'
             : state === 'rejected'
@@ -745,12 +772,12 @@ async function runAntiGeneReview(store, rev) {
         process.stdout.write('(no anti-genes)\n');
         return 0;
     }
-    const counts = { approved: 0, quarantined: 0, rejected: 0 };
+    const counts = { approved: 0, quarantined: 0, rejected: 0, unreviewed: 0 };
     for (const asset of antiGenes) {
-        const state = rev.get(String(asset.asset_id))?.state ?? 'approved';
+        const state = antiGeneReviewState(rev, String(asset.asset_id));
         counts[state] += 1;
     }
-    process.stdout.write(`anti-gene review queue: ${antiGenes.length} AntiGene asset(s); approved=${counts.approved} quarantined=${counts.quarantined} rejected=${counts.rejected}\n`);
+    process.stdout.write(`anti-gene review queue: ${antiGenes.length} AntiGene asset(s); approved=${counts.approved} quarantined=${counts.quarantined} rejected=${counts.rejected} unreviewed=${counts.unreviewed}\n`);
     for (const asset of antiGenes)
         process.stdout.write(`${antiGeneReviewLine(asset, rev)}\n`);
     return 0;
@@ -760,7 +787,7 @@ async function runAntiGeneReview(store, rev) {
  * gene); `--approve`/`--reject <id>` is the audited human act that lifts an auto-distilled draft out of (or
  * confirms it out of) quarantine. Approval is what lets a distilled gene's strategy be embedded into a real run
  * (the gate lives in makeTrustedGeneResolver, #45+review). The id may be a logical id or an asset_id.
- * Usage: evolver review [limit] | evolver review --approve <id> [reason…] | evolver review --reject <id> [reason…]
+ * Usage: evolver review [limit] | evolver review --approve <id> [--allow-weak-evidence] [reason…] | evolver review --reject <id> [reason…]
  */
 export async function runReview(argv, store, review, deps = {}) {
     const s = store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
@@ -770,10 +797,12 @@ export async function runReview(argv, store, review, deps = {}) {
     // Audited approve/reject: resolve the gene (by logical id or asset_id) to its asset_id and record the act.
     const verb = argv.includes('--approve') ? 'approve' : argv.includes('--reject') ? 'reject' : null;
     if (verb) {
+        const allowWeakEvidence = argv.includes('--allow-weak-evidence');
         const flagIdx = argv.indexOf(verb === 'approve' ? '--approve' : '--reject');
         const target = argv[flagIdx + 1];
         if (!target || target.startsWith('--')) {
-            process.stderr.write(`用法: evolver review --${verb} <id> [reason…]\n`);
+            const approveExtra = verb === 'approve' ? ' [--allow-weak-evidence]' : '';
+            process.stderr.write(`用法: evolver review --${verb} <id>${approveExtra} [reason…]\n`);
             return 1;
         }
         // An asset_id resolves directly via store.get, so a reviewable asset past the bounded list() window is still
@@ -794,6 +823,12 @@ export async function runReview(argv, store, review, deps = {}) {
         const assetId = String(g.asset_id);
         const geneId = typeof g['id'] === 'string' ? String(g['id']) : assetId;
         const assetType = g.type;
+        const evidence = assetType === 'AntiGene' ? summarizeAntiGeneEvidence(g) : null;
+        const explicitlyApproved = rev.isExplicitlyApproved(assetId);
+        if (verb === 'approve' && assetType === 'AntiGene' && evidence?.strength === 'weak' && !explicitlyApproved && !allowWeakEvidence) {
+            process.stderr.write(`review --approve: AntiGene ${geneId} has weak evidence (${evidence.weakReasons.join('+')}); use --allow-weak-evidence only after manual verification or reject/defer it.\n`);
+            return 1;
+        }
         const by = operatorActorId();
         const reason = argv.slice(flagIdx + 2).filter((a) => !a.startsWith('--')).join(' ') || `${verb}d via CLI`;
         if (verb === 'approve')
@@ -803,7 +838,21 @@ export async function runReview(argv, store, review, deps = {}) {
         const { ingestor } = resolveIngestDeps(deps);
         await ingestor.ingest({
             type: verb === 'approve' ? 'actor.human.review.approve' : 'actor.human.review.reject',
-            payload: { geneId, assetId, assetType, reason },
+            payload: {
+                geneId,
+                assetId,
+                assetType,
+                reason,
+                ...(evidence
+                    ? {
+                        evidenceQuality: evidence.strength,
+                        weakReasons: evidence.weakReasons,
+                        failureCount: evidence.failureCount,
+                        sourceClusterCount: evidence.sourceClusterCount,
+                        evidenceCapsuleCount: evidence.evidenceCapsuleCount,
+                    }
+                    : {}),
+            },
             human: { title: `${verb} ${assetType} ${geneId}`, severity: 'info' },
             actor: { kind: 'human', id: by },
         });
@@ -898,11 +947,177 @@ export function runNarrative(argv, deps = {}) {
     }
     return 0;
 }
+function formatRootEventArchive(result) {
+    if (result.mode === 'preview') {
+        return `retention archive-root: mode=preview active=${result.activeRecords} keep=${result.keepEvents} wouldArchive=${result.wouldArchive} retained=${result.retainedRecords} archiveId=${result.archiveId ?? '-'}\n`;
+    }
+    return `retention archive-root: mode=write activeBefore=${result.activeRecordsBefore} keep=${result.keepEvents} archived=${result.archivedRecords} retained=${result.retainedRecords} archiveId=${result.archiveId ?? '-'} reused=${result.reusedSegment}\n`;
+}
+function formatMaterialArchive(result) {
+    if (result.mode === 'preview') {
+        return `retention archive-material: mode=preview active=${result.activeRecords} archive=${result.archiveRecords} history=${result.historyRecords} keep=${result.keepRecords} minCursor=${result.minCursor} wouldArchive=${result.wouldArchive} retained=${result.retainedRecords} archiveId=${result.archiveId ?? '-'}\n`;
+    }
+    return `retention archive-material: mode=write activeBefore=${result.activeRecordsBefore} archived=${result.archivedRecords} archive=${result.archiveRecords} history=${result.historyRecords} keep=${result.keepRecords} minCursor=${result.minCursor} retained=${result.retainedRecords} recoveredOverlap=${result.recoveredOverlap} archiveId=${result.archiveId ?? '-'}\n`;
+}
+function archiveFailureCode(error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code ?? '')
+        : '';
+    if (code === 'ROOT_EVENT_ARCHIVE_INVALID_LOG')
+        return 'root_event_archive_invalid_log';
+    if (code === 'ROOT_EVENT_ARCHIVE_INVALID_ARCHIVE')
+        return 'root_event_archive_invalid_archive';
+    if (code === 'ROOT_EVENT_HISTORY_GAP')
+        return 'root_event_archive_history_gap';
+    if (code === 'ROOT_EVENT_ARCHIVE_SEGMENT_CONFLICT')
+        return 'root_event_archive_conflict';
+    if (code === 'LOCK_TIMEOUT')
+        return 'root_event_archive_locked';
+    return 'root_event_archive_failed';
+}
+function materialArchiveFailureCode(error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code ?? '')
+        : '';
+    if (code === 'MATERIAL_ARCHIVE_INVALID_LOG')
+        return 'material_archive_invalid_log';
+    if (code === 'MATERIAL_ARCHIVE_INVALID_ARCHIVE')
+        return 'material_archive_invalid_archive';
+    if (code === 'MATERIAL_ARCHIVE_RANGE_INVALID')
+        return 'material_archive_range_invalid';
+    if (code === 'MATERIAL_ARCHIVE_SEGMENT_CONFLICT')
+        return 'material_archive_conflict';
+    if (code === 'MATERIAL_ARCHIVE_CURSOR_INVALID')
+        return 'material_archive_cursor_invalid';
+    if (code === 'LOCK_TIMEOUT')
+        return 'material_archive_locked';
+    return 'material_archive_failed';
+}
+function parseRootArchiveArgs(argv) {
+    const parsed = { help: false, json: false, write: false };
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg === '--help')
+            parsed.help = true;
+        else if (arg === '--json')
+            parsed.json = true;
+        else if (arg === '--write')
+            parsed.write = true;
+        else if (arg === '--keep-events') {
+            const value = argv[index + 1];
+            const keepEvents = parsePositiveInt(value);
+            if (value === undefined || value.startsWith('--') || keepEvents === undefined) {
+                parsed.error = 'invalid_keep_events';
+                return parsed;
+            }
+            parsed.keepEvents = keepEvents;
+            index += 1;
+        }
+        else {
+            parsed.error = 'invalid_arguments';
+            return parsed;
+        }
+    }
+    return parsed;
+}
+function runRootEventArchive(argv, deps) {
+    const parsed = parseRootArchiveArgs(argv);
+    if (parsed.help) {
+        process.stdout.write('usage: evolver retention archive-root [--keep-events N] [--write] [--json]\n');
+        return 0;
+    }
+    if (parsed.error !== undefined) {
+        process.stderr.write(`retention archive-root: ${parsed.error}\n`);
+        return 2;
+    }
+    const options = {
+        path: deps.rootEventsPath ?? events.rootEventsPath(),
+        ...(parsed.keepEvents !== undefined ? { keepEvents: parsed.keepEvents } : {}),
+    };
+    try {
+        const result = parsed.write
+            ? events.archiveRootEvents(options)
+            : events.planRootEventArchive(options);
+        if (parsed.json)
+            process.stdout.write(`${JSON.stringify({ ok: true, group: 'retention.archive_root', ...result })}\n`);
+        else
+            process.stdout.write(formatRootEventArchive(result));
+        return 0;
+    }
+    catch (error) {
+        process.stderr.write(`retention archive-root: ${archiveFailureCode(error)}\n`);
+        return 1;
+    }
+}
+function parseMaterialArchiveArgs(argv) {
+    const parsed = { help: false, json: false, write: false };
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg === '--help')
+            parsed.help = true;
+        else if (arg === '--json')
+            parsed.json = true;
+        else if (arg === '--write')
+            parsed.write = true;
+        else if (arg === '--keep-records') {
+            const value = argv[index + 1];
+            const keepRecords = parsePositiveInt(value);
+            if (value === undefined || value.startsWith('--') || keepRecords === undefined) {
+                parsed.error = 'invalid_keep_records';
+                return parsed;
+            }
+            parsed.keepRecords = keepRecords;
+            index += 1;
+        }
+        else {
+            parsed.error = 'invalid_arguments';
+            return parsed;
+        }
+    }
+    return parsed;
+}
+function runMaterialArchive(argv, deps) {
+    const parsed = parseMaterialArchiveArgs(argv);
+    if (parsed.help) {
+        process.stdout.write('usage: evolver retention archive-material [--keep-records N] [--write] [--json]\n');
+        return 0;
+    }
+    if (parsed.error !== undefined) {
+        process.stderr.write(`retention archive-material: ${parsed.error}\n`);
+        return 2;
+    }
+    const path = deps.materialStorePath ?? events.materialStorePath();
+    const cursorPaths = deps.materialCursorPaths
+        ?? (deps.materialCursorPath !== undefined
+            ? [deps.materialCursorPath]
+            : [join(dirname(path), 'cycle-consumer.json'), join(dirname(path), 'distill-consumer.json')]);
+    const options = {
+        path,
+        cursorPaths,
+        ...(parsed.keepRecords !== undefined ? { keepRecords: parsed.keepRecords } : {}),
+    };
+    try {
+        const result = parsed.write
+            ? materialNs.archiveMaterialStore(options)
+            : materialNs.planMaterialArchive(options);
+        if (parsed.json) {
+            process.stdout.write(`${JSON.stringify({ ok: true, group: 'retention.archive_material', ...result })}\n`);
+        }
+        else {
+            process.stdout.write(formatMaterialArchive(result));
+        }
+        return 0;
+    }
+    catch (error) {
+        process.stderr.write(`retention archive-material: ${materialArchiveFailureCode(error)}\n`);
+        return 1;
+    }
+}
 export function formatRetentionReport(report) {
     const lines = [
         `retention: mode=${report.mode} prune=${report.destructivePruneSupported ? 'enabled' : 'disabled'} generatedAt=${report.generatedAt}`,
-        `  root_events: state=${report.rootEvents.state} records=${report.rootEvents.records} bytes=${report.rootEvents.bytes} invalid=${report.rootEvents.invalidLines} firstSeq=${report.rootEvents.firstSeq ?? '-'} lastSeq=${report.rootEvents.lastSeq ?? '-'} protectTail=${report.rootEvents.protectTailEvents}`,
-        `  material: state=${report.material.state} records=${report.material.records} bytes=${report.material.bytes} invalid=${report.material.invalidLines} cursor=${report.material.cursor} effectiveCursor=${report.material.effectiveCursor} cursorValid=${report.material.cursorValid} cursorInRange=${report.material.cursorInRange} consumedPrefix=${report.material.consumedPrefix} pending=${report.material.pending}`,
+        `  root_events: state=${report.rootEvents.state} records=${report.rootEvents.records} bytes=${report.rootEvents.bytes} invalid=${report.rootEvents.invalidLines} archiveSegments=${report.rootEvents.archiveSegments} archiveRecords=${report.rootEvents.archiveRecords} archiveBytes=${report.rootEvents.archiveBytes} archiveInvalid=${report.rootEvents.archiveInvalidLines} historyRecords=${report.rootEvents.historyRecords} historyConflicts=${report.rootEvents.historyConflicts} historyGaps=${report.rootEvents.historyGaps} historyIntegrityErrors=${report.rootEvents.historyIntegrityErrors} firstSeq=${report.rootEvents.firstSeq ?? '-'} lastSeq=${report.rootEvents.lastSeq ?? '-'} protectTail=${report.rootEvents.protectTailEvents}`,
+        `  material: state=${report.material.state} records=${report.material.records} bytes=${report.material.bytes} invalid=${report.material.invalidLines} archiveSegments=${report.material.archiveSegments} archiveRecords=${report.material.archiveRecords} archiveBytes=${report.material.archiveBytes} archiveInvalid=${report.material.archiveInvalidLines} historyRecords=${report.material.historyRecords} cursorCount=${report.material.cursorCount} minCursor=${report.material.minCursor} cursor=${report.material.cursor} effectiveCursor=${report.material.effectiveCursor} cursorValid=${report.material.cursorValid} cursorInRange=${report.material.cursorInRange} consumedPrefix=${report.material.consumedPrefix} pending=${report.material.pending} archiveSafe=${report.material.archiveRotationSafe}`,
     ];
     if (report.warnings.length > 0) {
         lines.push('  warnings:');
@@ -918,11 +1133,16 @@ export function formatRetentionReport(report) {
     return `${lines.join('\n')}\n`;
 }
 export function runRetention(argv, deps = {}) {
+    if (argv[0] === 'archive-root')
+        return runRootEventArchive(argv.slice(1), deps);
+    if (argv[0] === 'archive-material')
+        return runMaterialArchive(argv.slice(1), deps);
     const f = parseFlags(argv);
     const report = buildRetentionReport({
         rootEventsPath: deps.rootEventsPath,
         materialStorePath: deps.materialStorePath,
         materialCursorPath: deps.materialCursorPath,
+        materialCursorPaths: deps.materialCursorPaths,
         now: deps.now,
         maxRootEvents: parsePositiveInt(f['max-root-events']),
         maxRootBytes: parsePositiveInt(f['max-root-bytes']),
@@ -1038,6 +1258,7 @@ export async function runInject(argv, deps = {}) {
                 process.stderr.write(`[evolver-session-start] proxy auto-restart failed: ${msg}\n`);
             }
         }
+        maybeEmitNonGitWorkspaceNotice(deps.nonGitNotice);
     }
     const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
     const ingestor = deps.ingestor ?? new events.Ingestor({ path: deps.eventsPath ?? events.rootEventsPath() });
@@ -1129,7 +1350,7 @@ export function runCli(argv) {
             return 0;
         }
         default:
-            process.stderr.write('用法: evolver [--version|-v] <status|cycles|cycle show <id>|cycle status [--json]|cycle recover [--limit N] [--json]|trigger|value [--window 7d|30d|all]|narrative [--limit N] [--json]|retention [--json]|trajectory-export [--input <trace-file-or-dir>] [--output <jsonl>]|gene-value [--gene <id>] [--json]|inject session-start|lifecycle <start|stop|restart|status|check|watch|install-service>|phub <init|doctor|status>|replay|rebuild-views|reset-local-secret|asset-log [kind] [limit]|distill ...|review [limit]|recipe build|reuse ...|publish ...|skill-distill --skill <path> [--execution <json|@file>]|skill-md-update --gene <id> --skill <path> [--dry-run]|autoexec [home]|setup-hooks [--runtime] [--root] [--uninstall]|buy|orders|verify|atp|recall <transcript> (--gene <id> ...|--from-inject)>\n');
+            process.stderr.write('用法: evolver [--version|-v] <status|cycles|cycle show <id>|cycle status [--json]|cycle recover [--limit N] [--json]|cycle watch --repo <path> [--state-file <path>] [--validation-cmd <cmd>] [--json]|trigger|value [--window 7d|30d|all]|narrative [--limit N] [--json]|retention [--json]|retention archive-root [--keep-events N] [--write] [--json]|retention archive-material [--keep-records N] [--write] [--json]|dashboard [--port N] [--no-open]|webui [--port N] [--no-open]|trajectory-export [--input <trace-file-or-dir>] [--output <jsonl>]|gene-value [--gene <id>] [--json]|login|logout|proxy-token [--settings <file>]|inject session-start|lifecycle <start|stop|restart|status|check|watch|install-service>|phub <init|doctor|status>|replay|rebuild-views|reset-local-secret|asset-log [kind] [limit]|distill ...|review [limit|--approve <id> [--allow-weak-evidence]|--reject <id>]|recipe build|from-skills|reuse ...|publish ...|sync [--write] [--force] [--scope all|purchased|published] [--export <file.gepx>|--import <file.gepx>] [--json]|material package-gene --material <id> [--write] [--json]|skill fetch ...|fetch (--skill <id>|-s <id>|<id>) [--out <dir>] [--force] [--json]|skill-distill --skill <path> [--execution <json|@file>]|skill-md-update --gene <id> --skill <path> [--dry-run]|autoexec [home]|run [-v|--verbose] [--loop|--mad-dog] [--json]|solidify [--dry-run] [--json]|setup-hooks [--runtime] [--root] [--uninstall]|buy|orders|verify|atp|recall <transcript> (--gene <id> ...|--from-inject)>\n');
             return cmd === undefined ? 0 : 1;
     }
 }

@@ -21,7 +21,7 @@ export type Watermark = z.infer<typeof watermark>;
 export declare const material: z.ZodEffects<z.ZodObject<{
     materialId: z.ZodString;
     /** Runtime agent that produced a session/tool source. Absent for agent-agnostic origins (proxy trace), #95. */
-    sourceAgent: z.ZodOptional<z.ZodEnum<["claude-code", "codex", "cursor", "gemini", "kimi", "kiro", "opencode", "generic-chat"]>>;
+    sourceAgent: z.ZodOptional<z.ZodEnum<["claude-code", "codex", "cursor", "gemini", "antigravity", "kimi", "kiro", "opencode", "generic-chat"]>>;
     /** Origin class: a runtime agent session, or the proxy gateway's LLM trace (agent-agnostic), #95.
      *  Defaults to runtime_session so pre-#95 records (which only ever held sessions) parse unchanged. */
     sourceKind: z.ZodDefault<z.ZodEnum<["runtime_session", "proxy_trace"]>>;
@@ -76,7 +76,7 @@ export declare const material: z.ZodEffects<z.ZodObject<{
     consumerGroup: string;
     feedsMaterial: boolean;
     extensions: Record<string, unknown>;
-    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
+    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "antigravity" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
     payloadRef?: {
         path: string;
         sha256: string;
@@ -95,7 +95,7 @@ export declare const material: z.ZodEffects<z.ZodObject<{
     };
     capturedAt: string;
     consumerGroup: string;
-    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
+    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "antigravity" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
     sourceKind?: "runtime_session" | "proxy_trace" | undefined;
     payloadRef?: {
         path: string;
@@ -120,7 +120,7 @@ export declare const material: z.ZodEffects<z.ZodObject<{
     consumerGroup: string;
     feedsMaterial: boolean;
     extensions: Record<string, unknown>;
-    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
+    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "antigravity" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
     payloadRef?: {
         path: string;
         sha256: string;
@@ -139,7 +139,7 @@ export declare const material: z.ZodEffects<z.ZodObject<{
     };
     capturedAt: string;
     consumerGroup: string;
-    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
+    sourceAgent?: "claude-code" | "codex" | "cursor" | "gemini" | "antigravity" | "kimi" | "kiro" | "opencode" | "generic-chat" | undefined;
     sourceKind?: "runtime_session" | "proxy_trace" | undefined;
     payloadRef?: {
         path: string;

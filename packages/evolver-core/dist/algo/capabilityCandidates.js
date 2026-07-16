@@ -80,6 +80,11 @@ export function extractCapabilityCandidates(inp) {
         const title = `Repeated tool usage: ${tool}`;
         out.push(candidate('transcript', stableHash(title), title, signals, `Observed ${count} occurrences of tool call ${tool}.`, signalTags));
     }
+    // A2. Conversation sniffer hits: a transcript explicitly proved a reusable capability.
+    for (const hit of inp.conversationHits ?? []) {
+        const hitSignals = [...new Set([...(hit.signals ?? []), ...signals].map((s) => String(s)).filter(Boolean))];
+        out.push(candidate('transcript', stableHash('conversation:' + hit.id), hit.title || 'Verified reusable conversation capability', hitSignals, hit.evidence.length > 0 ? hit.evidence.slice(0, 2).join('; ') : hit.summary, [...new Set([...signalTags, ...expandSignals(hitSignals)])]));
+    }
     // B. Signal-mapped candidates: predefined defensive/opportunity signals.
     for (const sc of SIGNAL_CANDIDATES) {
         if (!signals.some((s) => s === sc.signal || s.startsWith(sc.signal + ':')))

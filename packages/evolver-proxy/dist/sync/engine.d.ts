@@ -19,6 +19,12 @@ export interface SyncEngineDeps {
     now: () => number;
     runtimeNamespace?: string;
     leaseMs?: number;
+    /** Finalize durable facade state after the Hub accepted one outbound envelope. */
+    onOutboundSucceeded?: (envelope: Envelope, result: unknown) => void | Promise<void>;
+    /** Cache a durable facade terminal result after SyncEngine moved the envelope to DLQ. */
+    onOutboundTerminal?: (envelope: Envelope, error: unknown) => void | Promise<void>;
+    /** Canonicalize an inbound envelope before durable insertion. */
+    normalizeInboundEnvelope?: (envelope: Envelope) => Envelope;
     onOutboundFlushed?: (result: OutboundResult) => void | Promise<void>;
     env?: NodeJS.ProcessEnv;
 }
@@ -36,11 +42,6 @@ export interface InboundResult {
     nextPollAfterMs?: number;
     hasMore: boolean;
 }
-/**
- * SyncEngine(M6-2): proxy↔hub 双向同步. 移植 v1 sync/{engine,outbound,inbound} 到 TS,
- * hub I/O 全走 HubCapability.mailbox(非裸 hubFetch). tick 方法纯逻辑(注入 now), 可对 FakeHubCapability 确定性测;
- * 定时器循环(start/stop)是薄包装, 由 M6-4 daemon 装配驱动.
- */
 export declare class SyncEngine {
     private readonly deps;
     private lastActivityAt;

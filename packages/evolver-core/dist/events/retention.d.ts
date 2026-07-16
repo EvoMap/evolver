@@ -4,7 +4,7 @@ export declare const RETENTION_DEFAULT_MAX_ROOT_BYTES: number;
 export declare const RETENTION_DEFAULT_MAX_MATERIAL_RECORDS = 10000;
 export declare const RETENTION_DEFAULT_MAX_MATERIAL_BYTES: number;
 export declare const RETENTION_DEFAULT_WATCH_RATIO = 0.8;
-export declare const RETENTION_DEFAULT_ROOT_TAIL_EVENTS: number;
+export declare const RETENTION_DEFAULT_ROOT_TAIL_EVENTS = 10000;
 export interface RetentionThresholds {
     maxRecords: number;
     maxBytes: number;
@@ -22,6 +22,17 @@ export interface RootRetentionSnapshot {
     lastSeq: number | null;
     firstTs: string | null;
     lastTs: string | null;
+    archiveSegments: number;
+    archiveRecords: number;
+    archiveBytes: number;
+    archiveInvalidLines: number;
+    historyRecords: number;
+    historyBytes: number;
+    historyConflicts: number;
+    historyGaps: number;
+    historyIntegrityErrors: number;
+    archiveRotationSupported: true;
+    archiveRotationSafe: boolean;
     protectTailEvents: number;
     destructivePruneSafe: false;
     reason: string;
@@ -36,12 +47,22 @@ export interface MaterialRetentionSnapshot {
     thresholds: RetentionThresholds;
     firstCapturedAt: string | null;
     lastCapturedAt: string | null;
+    archiveSegments: number;
+    archiveRecords: number;
+    archiveBytes: number;
+    archiveInvalidLines: number;
+    historyRecords: number;
+    historyBytes: number;
+    cursorCount: number;
+    minCursor: number;
     cursorValid: boolean;
     cursorInRange: boolean;
     cursor: number;
     effectiveCursor: number;
     consumedPrefix: number;
     pending: number;
+    archiveRotationSupported: true;
+    archiveRotationSafe: boolean;
     destructivePruneSafe: false;
     reason: string;
 }
@@ -58,6 +79,7 @@ export interface RetentionReportOptions {
     rootEventsPath?: string;
     materialStorePath?: string;
     materialCursorPath?: string;
+    materialCursorPaths?: readonly string[];
     now?: () => number;
     maxRootEvents?: number;
     maxRootBytes?: number;
@@ -67,4 +89,5 @@ export interface RetentionReportOptions {
     protectRootTailEvents?: number;
 }
 export declare function defaultMaterialCursorPath(path?: string): string;
+export declare function defaultMaterialCursorPaths(path?: string): string[];
 export declare function buildRetentionReport(opts?: RetentionReportOptions): RetentionReport;

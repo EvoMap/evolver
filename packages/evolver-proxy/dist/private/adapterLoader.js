@@ -1,14 +1,21 @@
+import { hub as hubNs } from '@evomap/evolver-core';
 const DEFAULT_PRIVATE_ADAPTER_MODULE = '@evomap/evolver-adapter-private';
 export function resolvePrivateEnterpriseToken(env) {
     return firstEnv(env, 'EVOMAP_ENTERPRISE_TOKEN', 'EVOMAP_PRIVATE_HUB_TOKEN', 'PHUB_ENTERPRISE_TOKEN', 'PRIVATE_HUB_ENTERPRISE_TOKEN');
+}
+/** One-shot invitation token (evoinv_…), matching the hub's official onboarding script (A2A_INVITATION_TOKEN).
+ *  Preferred over the enterprise token for the default token_required enrollment mode. */
+export function resolvePrivateInvitationToken(env) {
+    return firstEnv(env, 'A2A_INVITATION_TOKEN');
 }
 export function resolvePrivateEnterpriseSubject(env) {
     return firstEnv(env, 'EVOMAP_ENTERPRISE_SUBJECT', 'EVOMAP_PRIVATE_SUBJECT', 'PHUB_ENTERPRISE_SUBJECT', 'USER') ?? 'evolver-proxy';
 }
 export async function connectPrivateProxyHub(opts) {
+    const invitationToken = resolvePrivateInvitationToken(opts.env);
     const token = resolvePrivateEnterpriseToken(opts.env);
-    if (!token) {
-        throw new Error('EVOMAP_HUB_MODE=private 需要 EVOMAP_ENTERPRISE_TOKEN（也兼容 EVOMAP_PRIVATE_HUB_TOKEN / PHUB_ENTERPRISE_TOKEN）');
+    if (!token && !invitationToken) {
+        throw new Error('EVOMAP_HUB_MODE=private 需要 A2A_INVITATION_TOKEN（推荐，对齐 PrivateHub onboarding）或 EVOMAP_ENTERPRISE_TOKEN（也兼容 EVOMAP_PRIVATE_HUB_TOKEN / PHUB_ENTERPRISE_TOKEN）');
     }
     const moduleName = opts.env['EVOMAP_PRIVATE_ADAPTER_MODULE']?.trim() || DEFAULT_PRIVATE_ADAPTER_MODULE;
     const connectPrivateHub = await loadConnectPrivateHub(moduleName, opts.importer ?? ((specifier) => import(specifier)));
@@ -21,11 +28,15 @@ export async function connectPrivateProxyHub(opts) {
         now,
         sso: {
             identity: () => ({ subject }),
-            exchange: async () => ({ token }),
+            exchange: async () => ({ token: token ?? '' }),
             now,
         },
+        ...(invitationToken ? { invitationToken } : {}),
     });
     assertPrivateLifecycle(hub, moduleName);
+    if (!hub.agentDirectory) {
+        hub.agentDirectory = hubNs.unsupportedAgentDirectoryCapability('private_hub_agent_directory_not_supported');
+    }
     return { hub, auth };
 }
 async function loadConnectPrivateHub(moduleName, importer) {

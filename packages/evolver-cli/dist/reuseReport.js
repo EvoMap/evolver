@@ -16,6 +16,7 @@
 // `--anti-gene` is the read-only operator view for #326: it surfaces local AntiGene assets, review state, shadow
 // observations, and whether approved warnings have actually appeared in selection decisions.
 import { events, ops, assetstore, algo } from '@evomap/evolver-core';
+import { formatAntiGeneEvidenceAction, formatAntiGeneEvidenceSummary, summarizeAntiGeneEvidence } from './antiGeneEvidence.js';
 function parseFlags(argv) {
     let quarantine = false, promote = false, antiGene = false, minNegative = 3, minUnsafe = 1;
     for (let i = 0; i < argv.length; i++) {
@@ -70,7 +71,7 @@ async function reportProbation(deps, log) {
     return 0;
 }
 function reviewState(review, assetId) {
-    return reviewRecord(review, assetId)?.state ?? 'approved';
+    return reviewRecord(review, assetId)?.state ?? 'unreviewed';
 }
 function reviewRecord(review, assetId) {
     return review?.get?.(assetId) ?? null;
@@ -80,12 +81,6 @@ function stringArray(value) {
 }
 function optionalString(value) {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-}
-function countLabel(value) {
-    return Array.isArray(value) ? String(value.length) : '0';
-}
-function numberLabel(value) {
-    return typeof value === 'number' && Number.isFinite(value) ? String(value) : '-';
 }
 function reviewAuditLabel(record) {
     if (!record)
@@ -146,26 +141,31 @@ async function reportAntiGenes(deps, log) {
         log('anti-gene: no AntiGene assets or shadow observations recorded yet.');
         return 0;
     }
-    const counts = { approved: 0, quarantined: 0, rejected: 0 };
+    const counts = { approved: 0, quarantined: 0, rejected: 0, unreviewed: 0 };
     for (const asset of assets)
         counts[reviewState(review, String(asset.asset_id))] += 1;
-    log(`anti-gene: ${assets.length} stored asset(s); review approved=${counts.approved} quarantined=${counts.quarantined} rejected=${counts.rejected}; shadow candidate=${shadowCandidates.length} declined=${shadowDeclines.length}`);
+    log(`anti-gene: ${assets.length} stored asset(s); review approved=${counts.approved} quarantined=${counts.quarantined} rejected=${counts.rejected} unreviewed=${counts.unreviewed}; shadow candidate=${shadowCandidates.length} declined=${shadowDeclines.length}`);
     for (const asset of assets) {
         const assetId = String(asset.asset_id);
         const id = typeof asset['id'] === 'string' ? String(asset['id']) : assetId;
         const record = reviewRecord(review, assetId);
-        const state = record?.state ?? 'approved';
+        const state = record?.state ?? 'unreviewed';
         const severity = optionalString(asset['severity']) ?? '-';
         const trigger = stringArray(asset['trigger']).slice(0, 6).join(',');
         const avoid = stringArray(asset['avoid']).slice(0, 2).join(' | ');
-        const evidence = `failures=${numberLabel(asset['failure_count'])} clusters=${countLabel(asset['source_clusters'])} evidence=${countLabel(asset['evidence_capsules'])}`;
         const audit = reviewAuditLabel(record);
         const injected = (injectedCounts.get(id) ?? 0) + (id === assetId ? 0 : injectedCounts.get(assetId) ?? 0);
-        const next = state === 'quarantined'
-            ? 'approve with evolver review --approve before warning injection'
-            : state === 'approved'
-                ? (injected > 0 ? `observed in ${injected} decision(s)` : 'approved; waiting for matching selection')
-                : 'rejected; withheld from warning injection';
+        const evidenceSummary = summarizeAntiGeneEvidence(asset, injected);
+        const evidence = `${formatAntiGeneEvidenceSummary(evidenceSummary)} ${formatAntiGeneEvidenceAction(evidenceSummary, state)}`;
+        const next = state === 'unreviewed' && injected > 0
+            ? `observed historically in ${injected} decision(s); explicit approval required`
+            : state === 'quarantined' || state === 'unreviewed'
+                ? evidenceSummary.strength === 'weak'
+                    ? `reject/defer, or approve with evolver review --approve ${id} --allow-weak-evidence before warning injection`
+                    : 'approve with evolver review --approve before warning injection'
+                : state === 'approved'
+                    ? (injected > 0 ? `observed in ${injected} decision(s)` : 'approved; waiting for matching selection')
+                    : 'rejected; withheld from warning injection';
         log(`  ${id}  {${state}} severity=${severity} trigger=${trigger || '-'} avoid=${avoid || '-'} ${evidence}${audit ? ` ${audit}` : ''}  ${next}`);
     }
     if (shadowCandidates.length > 0 || shadowDeclines.length > 0) {

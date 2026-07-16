@@ -28,8 +28,10 @@ export function defaultReadManifest(repoRoot) {
         }
     };
 }
+const MANIFEST_TRANSIENT_RETRY_MS = 5 * 60 * 1000;
 // Resettable cache keyed by the reader identity, so distinct readers (e.g. per test) don't bleed into each other.
-// `null` = a load was attempted and FAILED (fail-closed); a Set = the loaded obfuscate paths.
+// Success is cached permanently for the reader. Failures remain fail-closed, but transient reads retry for a
+// short window before stabilizing to null for the process lifetime.
 const cache = new WeakMap();
 /** Test/maintenance hook: drop any cached load for a reader (or all readers) so the load path re-runs. */
 export function resetObfuscatedCache(reader) {
@@ -40,11 +42,15 @@ export function resetObfuscatedCache(reader) {
 /**
  * Load the obfuscated-file set from the manifest. Returns a normalized Set, or null when the manifest is
  * missing / unreadable / structurally invalid (NOT an `obfuscate` array of literal string paths). null is the
- * fail-closed signal: the caller must then reject all files. Result is cached per reader.
+ * fail-closed signal: the caller must then reject all files. Success is cached per reader; failures retry briefly
+ * so startup-time transient filesystem errors do not disable self-PR until process restart.
  */
 export function loadObfuscatedFiles(readManifest) {
-    if (cache.has(readManifest))
-        return cache.get(readManifest) ?? null;
+    const cached = cache.get(readManifest);
+    if (cached?.kind === 'loaded')
+        return cached.files;
+    if (cached?.kind === 'failed' && cached.stable)
+        return null;
     let result;
     try {
         const raw = readManifest();
@@ -63,9 +69,16 @@ export function loadObfuscatedFiles(readManifest) {
         result = new Set(manifest.obfuscate.map((f) => normalizeManifestPath(f)).filter(Boolean));
     }
     catch {
-        result = null; // fail-closed: an unreadable/invalid manifest rejects everything
+        const now = Date.now();
+        const firstFailedAt = cached?.kind === 'failed' ? cached.firstFailedAt : now;
+        cache.set(readManifest, {
+            kind: 'failed',
+            firstFailedAt,
+            stable: now - firstFailedAt >= MANIFEST_TRANSIENT_RETRY_MS,
+        });
+        return null; // fail-closed: an unreadable/invalid manifest rejects everything
     }
-    cache.set(readManifest, result);
+    cache.set(readManifest, { kind: 'loaded', files: result });
     return result;
 }
 /**

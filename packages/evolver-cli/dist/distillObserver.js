@@ -13,7 +13,7 @@ import { assetstore, events, observers, signals, algo } from '@evomap/evolver-co
 import { readFileSync } from 'node:fs';
 import { draftGeneCandidate, assessDraftAdmission } from './distillPrimitives.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
-import { parseRuntimeSessionSources } from './runtimeSessionSource.js';
+import { runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
 /** Consumer group the distill drain claims under — independent cursor from any other material consumer. */
 export const DISTILL_CONSUMER_GROUP = 'distill';
 /** Drafts created per tick — bound the auto-draft rate so an idle daemon does not flood the human review queue. */
@@ -37,7 +37,7 @@ export function makeDistillDrain(c) {
             return { ack: true, drafted: 0 };
         let sources;
         try {
-            sources = parseRuntimeSessionSources(m.sourcePath, readSource);
+            sources = runtimeSessionSourcesForMaterial(m, readSource);
         }
         catch {
             return { ack: true, drafted: 0 }; // bad / missing / unparseable source — nothing to retry

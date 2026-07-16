@@ -7,11 +7,12 @@ import { readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, exists
 import { join, dirname } from 'node:path';
 import { events, assetstore, algo, exec, ops, observers, hooks, material as materialNs, util, verify, hub as hubNs, daemon as daemonNs, personality } from '@evomap/evolver-core';
 import { startResidentLoop } from './daemonLoop.js';
-import { connectPublicHub, createSolidifyPermitCheck, ReuseCache, reuseBeforeSolve } from '@evomap/evolver-adapter-public';
+import { connectPublicHub, createSolidifyPermitCheck, ReuseCache, reuseBeforeSolve, resolveConfiguredHubUrl, resolveHubUrl } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { resolveValueDigestObserver } from './valueDigest.js';
 import { resolveReflectionObserver } from './reflectionObserver.js';
 import { resolveCursorRewriteObserver } from './cursorRewrite.js';
+import { resolveMemoryEventMirrorObserver } from './memoryEventMirror.js';
 import { resolveDistillObserver } from './distillObserver.js';
 import { resolveAutoDistillLlm } from './autoDistillLlm.js';
 import { resolveAutoDistillAntiGene as resolveAntiGeneDistill } from './autoDistillAntiGene.js';
@@ -433,7 +434,7 @@ function resolvePublicHub(env = process.env, connectHub = connectPublicHub) {
     if (!existsSync(join(dir, 'token.json')))
         return undefined;
     try {
-        const hubUrl = env['EVOMAP_HUB_URL'] ?? 'https://evomap.ai';
+        const hubUrl = resolveHubUrl(env);
         const resolvedSenderId = resolveAtpSenderId(env);
         if (!resolvedSenderId)
             return undefined;
@@ -443,6 +444,9 @@ function resolvePublicHub(env = process.env, connectHub = connectPublicHub) {
     catch {
         return undefined;
     }
+}
+function hubMode(env) {
+    return String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase();
 }
 /**
  * Resolve the hub link (reuse seam + outcome reporter) from the environment, or undefined when reuse is
@@ -457,7 +461,7 @@ export function resolveHubLink(env = process.env, ingestor, connectHub = connect
         process.stderr.write(`[evolver-autoexec] failed to load EVOLVER_ENV_FILE: ${envFile.error}\n`);
     if (env['EVOLVER_REUSE_BEFORE_SOLVE'] !== '1')
         return undefined;
-    if (String(env['EVOMAP_HUB_MODE'] ?? 'public').toLowerCase() === 'private') {
+    if (hubMode(env) === 'private') {
         const proxy = proxyClientFromEnv(env);
         return proxy ? makeHubLink(makeProxyHubCapability(proxy), ingestor, env['EVOLVER_OUTCOME_REPORT'] !== '0') : undefined;
     }
@@ -477,6 +481,15 @@ export function resolveHubQuestionLink(env = process.env, connectHub = connectPu
     if (!hub.questions)
         return undefined;
     return makeHubQuestionLink(hub, { env });
+}
+export function resolveMemoryEventMirror(env = process.env, connectHub = connectPublicHub) {
+    if (hubMode(env) === 'private') {
+        return { enabled: false, reason: 'no_hub', observer: null };
+    }
+    const disabled = resolveMemoryEventMirrorObserver(env, null);
+    if (disabled.reason === 'disabled')
+        return disabled;
+    return resolveMemoryEventMirrorObserver(env, resolvePublicHub(env, connectHub));
 }
 function solidifyVerifyFlag(env) {
     const raw = env[SOLIDIFY_VERIFY_ENV]?.trim().toLowerCase();
@@ -505,7 +518,7 @@ export function resolveSolidifyPermitGate(env = process.env, connectHub = connec
     const flag = solidifyVerifyFlag(env);
     if (flag === 'off')
         return undefined;
-    const hubUrl = (env['EVOMAP_HUB_URL'] ?? env['A2A_HUB_URL'] ?? '').replace(/\/+$/, '');
+    const hubUrl = resolveConfiguredHubUrl(env) ?? (flag === 'on' ? resolveHubUrl(env) : undefined);
     if (!hubUrl) {
         if (flag === 'on')
             return () => ({ ok: false, reason: 'hub_solidify_verify_unavailable:no_hub_url' });
@@ -640,6 +653,8 @@ export function defaultSessionDirs(env = process.env) {
         join(h, '.cursor'),
         join(h, '.codex'),
         join(h, '.gemini', 'tmp'),
+        join(h, '.gemini', 'antigravity'),
+        join(h, '.gemini', 'antigravity-ide'),
         join(h, '.kimi'),
         join(h, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage'),
         join(h, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage'),
@@ -813,6 +828,9 @@ export async function runAutoExec(argv) {
     const reflection = resolveReflectionObserver(process.env, { ingestor });
     if (reflection.observer)
         bus.register(reflection.observer);
+    const memoryEventMirror = resolveMemoryEventMirror(process.env);
+    if (memoryEventMirror.observer)
+        bus.register(memoryEventMirror.observer);
     const personalityStore = createAutoExecPersonalityStore();
     const engine = new algo.CycleEngine({ ingestor, selection: algo.makeGeneSelectionPoint(), store, now: () => Date.now(), personality: personalityStore });
     // Reuse-before-solve (#110) + outcome report-back: wire the adapter's reuseBeforeSolve as the hub-reuse
@@ -884,7 +902,7 @@ export async function runAutoExec(argv) {
     const antiGeneDistill = resolveAutoDistillAntiGene(process.env, { store, review, ingestor });
     const transcriptDistill = resolveAutoDistillTranscript(process.env, { store, review, ingestor });
     const atpAutoDeliver = resolveAtpAutoDeliver(process.env);
-    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${hubLink ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
+    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${hubLink ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
     if (cfg.allowedRoots.length === 0)
         process.stdout.write('  (allowlist empty → deny-by-default: nothing runs until you add a repo to config.json)\n');
     // Single-instance lock (#106): a second daemon on the same home would double-process the queue. That is harmless

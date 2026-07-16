@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "version": "2.0.0-beta.2",
+  "releaseTag": "v2.0.0-beta.2",
+  "channel": "v2-beta",
+  "sourceRepo": "EvoMap/evolver-v2-private-dev",
+  "sourceSha": "ab9720a003ebf0fd442ea03260f26a40190a36e2"
+}

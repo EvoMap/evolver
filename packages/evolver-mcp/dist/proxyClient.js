@@ -31,6 +31,19 @@ export class EvolverProxyClient {
             ...(args.assetIds ? { asset_ids: args.assetIds } : {}),
         });
     }
+    searchAgents(args) {
+        return this.call('POST', '/agent/search', agentDirectoryBody(args));
+    }
+    getAgentProfile(agentId, timeoutMs) {
+        return this.call('POST', '/agent/profile', { agent_id: agentId, ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}) });
+    }
+    discoverAgentsForTask(args) {
+        return this.call('POST', '/agent/discover', {
+            title: args.title,
+            ...(args.description ? { description: args.description } : {}),
+            ...agentDirectoryBody(args),
+        });
+    }
     submitAsset(asset) {
         return this.call('POST', '/asset/submit', { assets: [asset] });
     }
@@ -106,6 +119,18 @@ export class EvolverProxyClient {
             : `evolver proxy ${result.status} ${path}`;
         return new Error(message);
     }
+}
+function agentDirectoryBody(args) {
+    return {
+        ...(args.query ? { query: args.query } : {}),
+        ...(args.signals && args.signals.length > 0 ? { signals: args.signals } : {}),
+        ...(args.availability ? { availability: args.availability } : {}),
+        ...(args.sort ? { sort: args.sort } : {}),
+        ...(args.order ? { order: args.order } : {}),
+        ...(args.cursor ? { cursor: args.cursor } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        ...(args.timeoutMs !== undefined ? { timeout_ms: args.timeoutMs } : {}),
+    };
 }
 export function proxyClientFromEnv(env = process.env) {
     const token = env['EVOLVER_IPC_TOKEN']?.trim();

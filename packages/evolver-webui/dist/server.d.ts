@@ -1,4 +1,5 @@
 import { events as ev, assetstore, mailbox as mb, ops } from '@evomap/evolver-core';
+import { type EventSnapshotSource } from './eventSnapshot.js';
 export interface WebUIServerDeps {
     eventsPath: string;
     ingestor?: ev.Ingestor;
@@ -11,12 +12,18 @@ export interface WebUIServerDeps {
     /** 人工操作记的 actor id. */
     actorId?: string;
     /** Bearer token required for all /api/* routes; auto-generated if absent. Loopback alone is not an
-     *  auth boundary on shared hosts. The launcher prints it; the console gets it via the ?token= URL param. */
+     *  auth boundary on shared hosts. The launcher passes it in a URL fragment; ?token= remains compatible. */
     token?: string;
+    /** One-time launcher ticket exchanged for an HttpOnly session cookie. */
+    launchTicket?: string;
     /** Value-card data provider (#113). Injected by the composition layer wired to ops.loadValueSummary over the
      *  proxy traces + root_events + the adapter's price table — the WebUI stays a THIN shell (it never prices or
      *  re-derives savings; M7 克制). Absent → /api/value reports an empty summary instead of failing. */
-    valueSummary?: (window: ops.SummaryWindow) => ops.ValueSummary;
+    valueSummary?: (window: ops.SummaryWindow, events: readonly ev.ReportEvent[]) => ops.ValueSummary;
+    /** Shared core retention report provider. Kept injectable so WebUI never owns filesystem policy or paths. */
+    retentionReport?: () => ev.RetentionReport;
+    /** Injectable file/source seam for versioned root-event snapshots. */
+    eventSource?: EventSnapshotSource;
 }
 /**
  * WebUI 控台(M7): 可观测 + 保活. node:http + 自包含 HTML, 仅绑 loopback.
@@ -31,10 +38,14 @@ export declare class WebUIServer {
     private readonly actorId;
     /** Review ledger backing the human-review queue. Undefined when no LocalJsonlProvider store is available. */
     private readonly review;
-    /** Token guarding /api/*; printed by the launcher, supplied by the browser via ?token= or Bearer. */
+    /** Token guarding /api/*; supplied by the browser via Bearer, with ?token= retained for compatibility. */
     readonly token: string;
+    readonly launchTicket: string;
+    private launchTicketAvailable;
+    private readonly eventSnapshots;
     constructor(deps: WebUIServerDeps);
     listen(port?: number): Promise<number>;
+    private listenOnce;
     close(): Promise<void>;
     private handle;
     private readJson;

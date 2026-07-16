@@ -45,6 +45,31 @@ export function mapV1Asset(kind, v1) {
             record['tool_policy'] = toolPolicy;
         else if (v1['tool_policy'] !== null && v1['tool_policy'] !== undefined)
             dropped['tool_policy'] = v1['tool_policy'];
+        // v1 #302 `_source` block (generation_source / quality_score / quality_heuristics / overcame_errors) → v2
+        // `generation_meta`. v1 #302 was never merged to HEAD, so real v1 genes lack `_source`; this maps it IF present
+        // (forward-compat for a repo that carried the #302 branch). A `_source` whose generation_source normalizes away
+        // (unknown enum) is NOT silently dropped — the raw `_source` stays in `dropped` for audit (it already landed there
+        // above as a non-schema field). `generation_meta` itself (if a v1 gene already carried the v2 field name) is a
+        // deltaKey so it was skipped above and is handled here by normalize, same as the hints.
+        if (v1['_source'] !== undefined && v1['_source'] !== null) {
+            const src = v1['_source'];
+            if (src && typeof src === 'object') {
+                const s = src;
+                const mapped = wire.normalizeGenerationMeta({
+                    source: s['generation_source'],
+                    quality_score: s['quality_score'],
+                    quality_heuristics: s['quality_heuristics'],
+                    overcame_errors: s['overcame_errors'],
+                });
+                if (mapped)
+                    record['generation_meta'] = mapped;
+            }
+        }
+        const generationMeta = wire.normalizeGenerationMeta(v1['generation_meta']);
+        if (generationMeta)
+            record['generation_meta'] = generationMeta;
+        else if (v1['generation_meta'] !== null && v1['generation_meta'] !== undefined)
+            dropped['generation_meta'] = v1['generation_meta'];
     }
     if (allowed.has('schema_version') && record['schema_version'] === undefined)
         record['schema_version'] = wire.SCHEMA_VERSION;

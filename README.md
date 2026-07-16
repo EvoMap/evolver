@@ -8,12 +8,17 @@ monorepo（pnpm workspaces）：
 - `@evomap/evolver-hub-conformance` — test-only HubCapability contract suite，public/private adapter 共用。
 - `evolver-proxy` `evolver-mcp` `evolver-cli` `evolver-runtime-adapters` `evolver-webui`。
 
+Runtime onboarding: [Antigravity MCP, ingest, and trajectory export](docs/antigravity.md).
+
 企业私有化不维护第二套 v2 产品线；`evolver-v2-enterprise-dev` 只持有 private protocol + private Hub adapter，
 并通过 `@evomap/evolver-hub-conformance` 证明它仍实现同一份 core contract。
 
 ```bash
-pnpm install && pnpm lint && pnpm typecheck && pnpm test && pnpm build
+corepack pnpm install
+corepack pnpm verify
 ```
+
+开发中的快速反馈可使用 `corepack pnpm verify:changed`；它不能替代提交前的完整 gate。详见 [本地开发验证](docs/development.md)。
 
 ## ATP manual commands
 v2 restores the v1 consumer-side ATP loop without putting economic wire details into core. Authenticate once,

@@ -103,10 +103,10 @@ export function buildHeartbeatAntiAbuseTelemetry(opts = {}) {
     const saltId = opts.saltId ?? env['EVOLVER_ANTI_ABUSE_SALT_ID'] ?? (salt ? 'env' : null);
     const pseudonymStatus = salt ? 'salt_configured' : 'salt_missing';
     const devicePseudonym = hmacPseudonym(fp.device, { salt, purpose: 'device' });
-    const workspacePseudonym = hmacPseudonym(opts.workspaceId ?? process.cwd(), { salt, purpose: 'workspace' });
+    const workspacePseudonym = salt ? hmacPseudonym(resolveTelemetryWorkspaceId(opts), { salt, purpose: 'workspace' }) : null;
     const unavailableFields = [
         ...(devicePseudonym ? [] : [unavailable('device_pseudonym', 'anti_abuse_salt_missing', 'signed_policy_or_env')]),
-        ...(workspacePseudonym ? [] : [unavailable('workspace_pseudonym', 'anti_abuse_salt_missing', 'signed_policy_or_env')]),
+        ...(workspacePseudonym ? [] : [unavailable('workspace_pseudonym', salt ? 'workspace_id_unavailable' : 'anti_abuse_salt_missing', salt ? 'workspace_keychain_or_filesystem' : 'signed_policy_or_env')]),
         unavailable('client_ip', 'server_observed_required', 'hub_edge'),
         unavailable('asn', 'server_observed_required', 'hub_edge'),
         unavailable('proxy_vpn_tor_datacenter_class', 'server_observed_required', 'hub_edge'),
@@ -212,6 +212,13 @@ function nowIso(now) {
     if (typeof now === 'string' && now.length > 0)
         return now;
     return new Date().toISOString();
+}
+function resolveTelemetryWorkspaceId(opts) {
+    if (opts.workspaceId)
+        return opts.workspaceId;
+    if (opts.workspaceIdResolver)
+        return opts.workspaceIdResolver();
+    return process.cwd();
 }
 function boolFromEnv(value) {
     const v = String(value ?? '').trim().toLowerCase();

@@ -1,3 +1,8 @@
+// Distill primitives (#117 A1) — the PURE session→gene-draft logic, extracted from runIngest so the one-shot
+// `evolver ingest --distill` and the live distillObserver reuse ONE copy (no forked distill logic). Zero behavior
+// change vs the inline version: same tokens, same step drafting, same candidate shape. No I/O — the caller parses
+// the session into turns + extracts signals; this turns them into a draft GeneCandidate (or null when too thin).
+import { algo } from '@evomap/evolver-core';
 // Map a strong signal's free-text to a SHORT, matchable token (so a gene's signals_match stays a few
 // keywords, not a dumped error blob). Deterministic + testable; unknown errors fall back to the tool name only.
 const SIGNAL_ERROR_CLASSES = [
@@ -100,13 +105,35 @@ export function draftStrategy(turns) {
 export function draftGeneCandidate(turns, sigs, agent) {
     const signals_match = signalTokens(sigs);
     const strategy = draftStrategy(turns);
-    if (signals_match.length === 0 || strategy.length === 0)
-        return null;
+    if (signals_match.length === 0 || strategy.length === 0) {
+        const hit = algo.sniffConversationCapabilities(turns)[0];
+        if (!hit)
+            return null;
+        const fallbackStrategy = hit.evidence;
+        if (fallbackStrategy.length === 0)
+            return null;
+        return {
+            category: 'innovate',
+            signals_match: hit.signals,
+            strategy: fallbackStrategy.slice(0, 6),
+            summary: `Auto-drafted verified capability from ${agent} session (UNPROVEN — curate via review): ${hit.summary}`,
+            preconditions: [
+                'A live agent conversation explicitly described a reusable capability.',
+                'The same conversation included validation or successful tool evidence.',
+            ],
+            validation: ['node --version'],
+            generation_meta: { source: 'distilled' },
+        };
+    }
     return {
         category: 'repair',
         signals_match,
         strategy,
         summary: `Auto-drafted from ${agent} session (UNPROVEN — curate via review): ${signals_match.slice(0, 3).join(', ')}`,
+        // A session-distilled gene has execution evidence (the session's turns) but no verified fail→pass-with-blast
+        // trajectory → `distilled` per V1 #302 classifyProvenance. Tagged so future governance/selection can grade it
+        // apart from evolved (solve→fail→mutate→pass) and manual (human-taught) genes.
+        generation_meta: { source: 'distilled' },
     };
 }
 /**

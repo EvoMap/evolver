@@ -1,9 +1,9 @@
 /** Every runtime in the setup matrix (#217), in a stable order — used for usage text and the unsupported reason. */
 export const SETUP_RUNTIMES = [
-    'claude-code', 'codex', 'cursor', 'opencode', 'kiro', 'openclaw', 'mcp-generic', 'http-agent', 'server',
+    'claude-code', 'codex', 'cursor', 'antigravity', 'opencode', 'kiro', 'openclaw', 'mcp-generic', 'http-agent', 'server',
 ];
-/** Runtimes v2 can write config/hooks for and verify. */
-const INSTALLED_RUNTIMES = new Set(['claude-code', 'codex', 'cursor']);
+/** Runtimes v2 can write config/hooks for and verify. Antigravity is MCP-config-only (no lifecycle hook). */
+const INSTALLED_RUNTIMES = new Set(['claude-code', 'codex', 'cursor', 'antigravity']);
 /** Runtimes with no v2 auto-installer but a real manual path. The reason is the short, honest "do it by hand"
  *  line; the precise wiring text is a separate concern (#217 slice 2), not hard-coded here. */
 const MANUAL_RUNTIMES = new Map([
@@ -59,6 +59,14 @@ export function planInjection(runtime, server) {
                 config: {},
                 note: 'cursor: 渲染静默 top-gene hints 进 .cursor/rules/evolver.mdc (alwaysApply:true); daemon 在 gene 集变化时重写',
             };
+        case 'antigravity':
+            return {
+                runtime, mode: 'mcp-config',
+                // Antigravity supports MCP tool discovery through its user-level JSON config. It has no verified
+                // SessionStart lifecycle contract, so this mode deliberately registers only the MCP server.
+                config: { mcpServers: { evolver: { command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}) } } },
+                note: 'antigravity: write mcpServers.evolver in the user-level MCP config; tool discovery only (no SessionStart hook)',
+            };
         case 'kiro':
         case 'opencode':
             return {
@@ -76,7 +84,7 @@ export function planInjection(runtime, server) {
  *  故不计入此处;passive runtime 也为 false. */
 export function injectsTools(runtime) {
     const mode = planInjection(runtime, { command: 'x' }).mode;
-    return mode === 'mcp-hooks' || mode === 'mcp-plugin';
+    return mode === 'mcp-hooks' || mode === 'mcp-plugin' || mode === 'mcp-config';
 }
 /** 是否为 active 注入(任何把 gene 价值推回 runtime 的方式:MCP 工具发现 或 cursor rules 记忆注入). */
 export function isActiveInjection(runtime) {

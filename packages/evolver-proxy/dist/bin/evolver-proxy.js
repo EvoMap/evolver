@@ -59,6 +59,7 @@ async function main() {
         if (!proxySettingsState.url)
             return;
         publishProxySettings({
+            env: process.env,
             record: {
                 url: proxySettingsState.url,
                 token: ipcToken,
@@ -103,6 +104,9 @@ export function proxyUsage() {
         '  EVOMAP_HUB_MODE=private',
         '  EVOMAP_HUB_URL=<private hub url>',
         '  EVOMAP_ENTERPRISE_TOKEN=<token>',
+        '',
+        'Hub URL precedence:',
+        '  A2A_HUB_URL -> EVOMAP_HUB_URL -> EVOLVER_DEFAULT_HUB_URL -> https://evomap.ai',
         '',
         'Useful options are configured through env or EVOLVER_ENV_FILE:',
         '  EVOLVER_IPC_PORT, EVOLVER_IPC_TOKEN, EVOLVER_PROXY_SETTINGS_FILE',

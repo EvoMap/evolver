@@ -6,5 +6,6 @@ export declare const ASYNC_COMMANDS: Readonly<Record<string, CommandHandler>>;
 export declare const SYNC_COMMANDS: readonly ["status", "cycles", "trigger", "value", "narrative", "retention", "gene-value", "replay", "rebuild-views", "reset-local-secret"];
 /** Every top-level verb `evolver` resolves to (async-dispatched ∪ runCli core). */
 export declare const ALL_COMMANDS: ReadonlySet<string>;
+export declare function v1TopLevelRunArgs(argv: readonly string[]): readonly string[] | undefined;
 /** Run a top-level argv against the registry: async handler if present, else the synchronous runCli core. */
 export declare function dispatch(argv: readonly string[]): Promise<number> | number;

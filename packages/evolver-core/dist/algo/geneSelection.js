@@ -88,6 +88,14 @@ function matchesScoredIdentity(a, b) {
 function withoutCandidateIdentity(scored, c) {
     return scored.filter((s) => !matchesCandidateIdentity(s, c));
 }
+function isReusableGenerationSource(source) {
+    return source === 'distilled' || source === 'evolved';
+}
+function isReusableFallbackCandidate(c) {
+    if (c.generationSource !== undefined)
+        return isReusableGenerationSource(c.generationSource);
+    return isDistilledGeneId(c.geneId);
+}
 function forcedSelection(input, scored, scoreForcedFallback, floor) {
     const forcedGeneId = input.forcedGeneId?.trim();
     if (!forcedGeneId)
@@ -116,7 +124,7 @@ function forcedSelection(input, scored, scoreForcedFallback, floor) {
         forcedFallback.reasons.push('forced gene rejected: epigenetic suppression');
         return { scoredForChoice: scoredCandidatesOnly, forceRejected: true };
     }
-    if (!isDistilledGeneId(fallback.geneId)) {
+    if (!isReusableFallbackCandidate(fallback)) {
         forcedFallback.reasons.push('forced gene rejected: suppressed fallback');
         return { scoredForChoice: scoredCandidatesOnly, forceRejected: true };
     }
@@ -141,15 +149,15 @@ export const engineHealthSelection = {
         let selectedAssetId = forced.selectedAssetId ?? chosen?.assetId;
         if (!selectedGeneId) {
             // Issue #97 (ported from v1 selector.js): no candidate matched any live signal (every gene scored <= 0). Rather
-            // than fall straight through to a blind innovate, reuse a *distilled* gene if one is available. NB the prefix
-            // does NOT mean "skill-derived" in v2 the way it did in v1: v1 tagged only skill genes gene_distilled_ (auto-
-            // evolved genes were gene_auto_), but v2's intakeGene tags EVERY intaken gene gene_distilled_ (autoExec even
-            // intakes task strategies that way) and has no gene_auto_. So this pool is "any trusted/approved/non-suppressed
-            // pooled gene that does not match", not specifically skill-derived — the safety rests on the upstream gates
-            // (trust #30 / review #89-91 / signal-ban / inert-ban #195) plus the epigenetic skip below, not on a skill-
-            // provenance low-blast-radius assumption. We skip any distilled fallback epigenetically suppressed in this env;
-            // v2's event-log-derived epigeneticPenalty is the analog of v1's asset-mark hard suppression (related band, not
-            // the identical predicate). No usable distilled fallback → stay null so the caller still innovates (the contract).
+            // than fall straight through to a blind innovate, reuse a *distilled* (or evolved) gene if one is available.
+            // The fallback pool is built by candidateAssembly, which now filters by generation_meta.source ∈ {distilled,
+            // evolved} (V1 #302), falling back to the `gene_distilled_` id namespace for legacy genes. The id-prefix check
+            // below is a defense-in-depth filter for callers that bypass candidateAssembly; the authoritative provenance
+            // lives on generation_meta (see geneGenerationSource). The safety rests on the upstream gates (trust #30 /
+            // review #89-91 / signal-ban / inert-ban #195) plus the epigenetic skip below, not on a skill-provenance
+            // low-blast-radius assumption. We skip any distilled fallback epigenetically suppressed in this env; v2's
+            // event-log-derived epigeneticPenalty is the analog of v1's asset-mark hard suppression (related band, not the
+            // identical predicate). No usable distilled fallback → stay null so the caller still innovates (the contract).
             //
             // v1 #97 parity: the distilled fallback is a *no-signal-match* last resort — it must fire only when NOTHING
             // scored above zero, NOT merely when nothing cleared a positive `floor`. Otherwise a real but weak signal match
@@ -157,7 +165,7 @@ export const engineHealthSelection = {
             // keeps such a match. When candidates scored > 0 but below floor, defer to V2's floor policy (innovate).
             const noSignalMatch = !forced.forceRejected && forced.scoredForChoice.every((s) => s.score <= 0);
             const fb = noSignalMatch
-                ? (input.distilledFallback ?? []).find((c) => isDistilledGeneId(c.geneId) && (c.epigeneticPenalty ?? 0) === 0)
+                ? (input.distilledFallback ?? []).find((c) => isReusableFallbackCandidate(c) && (c.epigeneticPenalty ?? 0) === 0)
                 : undefined;
             if (fb) {
                 const fbScored = scoreCandidate(input.signals, fb);

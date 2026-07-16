@@ -1,4 +1,5 @@
 export * from './capability.js';
+export * from './agentDirectory.js';
 export * from './fake.js';
 export * from './bindings.js';
 export * from './sanitize.js';

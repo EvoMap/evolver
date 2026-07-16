@@ -30,6 +30,32 @@ export interface OutcomeReceipt {
     recorded: boolean;
     reason?: string;
 }
+export type MemoryGraphEventKind = 'attempt' | 'validation' | 'skill_emit' | 'outcome' | 'mutation_draft' | 'solidify';
+export interface MemoryGraphEventReport {
+    kind: MemoryGraphEventKind;
+    event: Record<string, unknown>;
+}
+/** recordMemoryEvent never throws: failures come back as `recorded:false` + reason. */
+export interface MemoryGraphEventReceipt {
+    recorded: boolean;
+    reason?: string;
+}
+export type AccountAssetScope = 'purchased' | 'published';
+export type AccountAssetTypeFilter = 'Gene' | 'Capsule';
+export type AccountAssetStatusFilter = 'draft' | 'promoted' | 'all';
+export interface AccountAssetListOptions {
+    scope: AccountAssetScope;
+    type?: AccountAssetTypeFilter;
+    status?: AccountAssetStatusFilter;
+    limit?: number;
+    cursor?: string;
+}
+export interface AccountAssetListResult {
+    assets: hub.AssetRecord[];
+    count?: number;
+    hasMore: boolean;
+    nextCursor?: string;
+}
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
 export declare function gepEnvelope(messageType: string, payload: unknown): Record<string, unknown>;
 export interface PublicHubOptions {
@@ -117,6 +143,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
      * signals/id queries fall through to fetch. /a2a/fetch does NOT do semantic, so text must not go there.
      */
     search(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
+    agentDirectory: hub.AgentDirectoryCapability;
+    listAccountAssets(opts: AccountAssetListOptions): Promise<AccountAssetListResult>;
     /**
      * Report a cycle outcome to the hub's memory graph (POST /a2a/memory/record).
      * Unlike the protocol-message endpoints (publish/fetch), memory/record takes a
@@ -126,6 +154,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
      * Costs hub credits per the hub's memory pricing (caller gates on enablement).
      */
     recordOutcome(report: OutcomeReport): Promise<OutcomeReceipt>;
+    recordMemoryEvent(report: MemoryGraphEventReport): Promise<MemoryGraphEventReceipt>;
     recordReuseResult(report: hub.ReuseResultReport): Promise<hub.ReuseResultReceipt>;
     /**
      * Pre-publish dry-run (POST /a2a/validate). The hub runs the same hub-side quality +
@@ -146,7 +175,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
         claim: (taskId: string) => Promise<{
             claimId: string;
         }>;
-        complete: (claimId: string, result: unknown) => Promise<{
+        complete: (claimId: string, _result: unknown, context?: hub.TaskCompleteContext) => Promise<{
             status: "completed";
         }>;
         subscribe: (filter: unknown) => AsyncIterable<hub.TaskEvent>;

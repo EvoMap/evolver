@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver",
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0-beta.2",
   "private": false,
   "type": "module",
   "description": "Evolver v2 beta public distribution package.",
@@ -20,19 +20,20 @@
     "bin/",
     "index.js",
     "README.md",
+    "release-provenance.json",
     "package.json"
   ],
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "@evomap/evolver-cli": "2.0.0-beta.1",
-    "@evomap/evolver-mcp": "2.0.0-beta.1",
-    "@evomap/evolver-proxy": "2.0.0-beta.1",
-    "@evomap/evolver-core": "2.0.0-beta.1",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.1",
-    "@evomap/evolver-runtime-adapters": "2.0.0-beta.1",
-    "@evomap/evolver-webui": "2.0.0-beta.1"
+    "@evomap/evolver-cli": "2.0.0-beta.2",
+    "@evomap/evolver-mcp": "2.0.0-beta.2",
+    "@evomap/evolver-proxy": "2.0.0-beta.2",
+    "@evomap/evolver-core": "2.0.0-beta.2",
+    "@evomap/evolver-adapter-public": "2.0.0-beta.2",
+    "@evomap/evolver-runtime-adapters": "2.0.0-beta.2",
+    "@evomap/evolver-webui": "2.0.0-beta.2"
   },
   "publishConfig": {
     "access": "public",

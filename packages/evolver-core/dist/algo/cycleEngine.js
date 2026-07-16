@@ -183,6 +183,8 @@ export class CycleEngine {
             // Locality must recognise V2's real gene prefix `gene_distilled_` (isDistilledGeneId), not just the
             // V1-only `gene_auto_` / content-hash `sha256:` forms — otherwise this gate stays shut for every real V2
             // gene and classifyCycleFailure never runs (mirror of isLocalGeneratedGene in cycleFailureClassifier.ts).
+            // NB the prefix is now a NAMESPACE marker, not a provenance tag (the authoritative source is generation_meta,
+            // V1 #302); this call site only has a gene id, so it falls back to the prefix.
             const localCurrentGene = current?.geneId !== undefined && (isDistilledGeneId(current.geneId) || /^sha256:/.test(current.geneId) || /^gene_auto_/.test(current.geneId));
             // Run classification when we have ANY host context (an exec transcript or an injected failureContext) OR a
             // local-gene blast to judge; otherwise stay default-open (unclassified, no payload).

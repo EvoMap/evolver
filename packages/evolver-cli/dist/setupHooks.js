@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { currentTopCursorGenes } from './cursorRewrite.js';
 import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
+import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
 const requireFromHere = createRequire(import.meta.url);
 function parseFlags(argv) {
     const out = {};
@@ -273,7 +274,7 @@ function appendAdapterNotes(text, hints) {
         ? `${text}\n\nAdapter notes:\n${hints.map((hint) => `  - ${hint}`).join('\n')}`
         : text;
 }
-export async function runSetupHooks(argv, store, review) {
+export async function runSetupHooks(argv, store, review, deps = {}) {
     const f = parseFlags(argv);
     const runtimeRaw = typeof f['runtime'] === 'string'
         ? f['runtime']
@@ -300,7 +301,7 @@ export async function runSetupHooks(argv, store, review) {
             process.stderr.write(`${support.reason}\n${USAGE}`);
         return 1;
     }
-    // installed class: claude-code / codex / cursor: v2 owns a real config writer + uninstaller for these.
+    // Installed runtimes have a real config writer + uninstaller (including Antigravity MCP config).
     const runtime = runtimeRaw;
     const configRoot = typeof f['root'] === 'string' ? f['root'] : process.cwd();
     // claude-code: user scope targets ~/.claude.json regardless of --root; project scope uses configRoot.
@@ -359,6 +360,8 @@ export async function runSetupHooks(argv, store, review) {
         return 0;
     }
     const server = buildServer(f, descriptor);
+    if (runtime === 'cursor')
+        (deps.emitNonGitWorkspaceNotice ?? maybeEmitNonGitWorkspaceNotice)({ cwd: configRoot });
     // cursor seeds .cursor/rules/evolver.mdc with the CURRENT top REVIEW-APPROVED genes so the file is useful
     // immediately (before the first daemon rewrite) without seeding an unapproved draft (A2a). The renderer thus
     // has a real production caller even without the daemon running.

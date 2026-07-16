@@ -52,4 +52,10 @@ export declare class ReviewLedger {
     records(): ReviewRecord[];
     /** No record → approved (default eligible); a record → approved only when its state is 'approved'. */
     isApproved(assetId: string): boolean;
+    /**
+     * True only when a human approval record exists. Safety-sensitive consumers such as AntiGene warning
+     * injection must fail closed when review state is absent; unlike cycle/migrate-authored Genes, an unreviewed
+     * negative-memory asset must never inherit the ledger's backward-compatible "no record = eligible" default.
+     */
+    isExplicitlyApproved(assetId: string): boolean;
 }

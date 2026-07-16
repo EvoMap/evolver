@@ -1,0 +1,12 @@
+import { type hub } from '@evomap/evolver-core';
+export declare const PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES: number;
+export declare function publicAgentSearchQuery(request: hub.AgentSearchRequest): Record<string, string | number | undefined>;
+export declare function unsupportedPublicAvailability(availability: hub.AgentAvailability | undefined): hub.AgentDirectoryResult<never> | undefined;
+export declare function unsupportedPublicSort(sort: hub.AgentDirectorySort | undefined): hub.AgentDirectoryResult<never> | undefined;
+export declare function publicTaskDiscoveryQuery(request: hub.AgentTaskDiscoveryRequest): Record<string, string | number | undefined>;
+export declare function parsePublicAgentPage(body: unknown): hub.AgentDirectoryResult<hub.AgentDirectoryPage>;
+export declare function paginatePublicAgentPage(page: hub.AgentDirectoryResult<hub.AgentDirectoryPage>, request: hub.AgentSearchRequest, maxOffset?: number): hub.AgentDirectoryResult<hub.AgentDirectoryPage>;
+export declare function mergePublicAgentPages(pages: readonly hub.AgentDirectoryResult<hub.AgentDirectoryPage>[]): hub.AgentDirectoryResult<hub.AgentDirectoryPage>;
+export declare function parsePublicAgentProfile(body: unknown): hub.AgentDirectoryResult<hub.AgentProfile | null>;
+export declare function agentDirectoryFailure(error: unknown): hub.AgentDirectoryResult<never>;
+export declare function withDirectoryTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T>;

@@ -375,6 +375,40 @@ export function buildEvolverTools(deps) {
     }
     if (deps.proxy) {
         tools.push({
+            name: 'evolver_agent_search',
+            description: '按自然语言 query 或 capability signals 搜索可协作 agent；结果来自 Hub，不代表实时可用，availability=unknown 时不得推断在线。',
+            inputSchema: agentDirectorySearchSchema(),
+            handler: async (a) => deps.proxy.searchAgents(agentSearchArgs(a)),
+        }, {
+            name: 'evolver_agent_profile',
+            description: '读取 Hub 授权返回的最小安全 agent profile；不返回凭证、node secret、workspace path 或设备指纹。',
+            inputSchema: {
+                type: 'object',
+                required: ['agentId'],
+                properties: {
+                    agentId: { type: 'string', minLength: 1, maxLength: hub.AGENT_DIRECTORY_MAX_AGENT_ID_LENGTH },
+                    timeoutMs: { type: 'integer', minimum: 100, maximum: hub.AGENT_DIRECTORY_MAX_TIMEOUT_MS },
+                },
+            },
+            handler: async (a) => deps.proxy.getAgentProfile(str(a['agentId']), typeof a['timeoutMs'] === 'number' ? a['timeoutMs'] : undefined),
+        }, {
+            name: 'evolver_agent_discover',
+            description: '按任务标题、描述和 capability signals 发现候选 agent；分页和排序由 Hub 执行。',
+            inputSchema: {
+                ...agentDirectorySearchSchema(),
+                required: ['title'],
+                properties: {
+                    ...agentDirectorySearchSchema()['properties'],
+                    title: { type: 'string', minLength: 1, maxLength: hub.AGENT_DIRECTORY_MAX_QUERY_LENGTH },
+                    description: { type: 'string', maxLength: hub.AGENT_DIRECTORY_MAX_QUERY_LENGTH },
+                },
+            },
+            handler: async (a) => deps.proxy.discoverAgentsForTask({
+                title: str(a['title']),
+                ...(typeof a['description'] === 'string' ? { description: a['description'] } : {}),
+                ...agentSearchArgs(a),
+            }),
+        }, {
             name: 'evolver_asset_validate',
             description: '通过本机 evolver-proxy 对 PHub 做发布前 dry-run 校验: 先执行与发布相同的本地脱敏/泄漏拦截, 再跑 hub 端质量门禁 + 内容安全扫描, 不落库、不计费. 返回 {valid, reason?}. 建议在 evolver_asset_publish 前调用. Capsule.gene 须非空或 ad-hoc.',
             inputSchema: {
@@ -398,4 +432,31 @@ export function buildEvolverTools(deps) {
         });
     }
     return tools;
+}
+function agentDirectorySearchSchema() {
+    return {
+        type: 'object',
+        properties: {
+            query: { type: 'string', minLength: 1, maxLength: hub.AGENT_DIRECTORY_MAX_QUERY_LENGTH },
+            signals: { type: 'array', maxItems: hub.AGENT_DIRECTORY_MAX_SIGNAL_COUNT, items: { type: 'string', minLength: 1, maxLength: hub.AGENT_DIRECTORY_MAX_SIGNAL_LENGTH } },
+            availability: { type: 'string', enum: ['online', 'busy', 'offline', 'unknown'] },
+            sort: { type: 'string', enum: ['relevance', 'reputation', 'recent', 'availability'] },
+            order: { type: 'string', enum: ['asc', 'desc'] },
+            cursor: { type: 'string', maxLength: hub.AGENT_DIRECTORY_MAX_CURSOR_LENGTH },
+            limit: { type: 'integer', minimum: 1, maximum: hub.AGENT_DIRECTORY_MAX_LIMIT },
+            timeoutMs: { type: 'integer', minimum: 100, maximum: hub.AGENT_DIRECTORY_MAX_TIMEOUT_MS },
+        },
+    };
+}
+function agentSearchArgs(args) {
+    return {
+        ...(typeof args['query'] === 'string' ? { query: args['query'] } : {}),
+        ...(Array.isArray(args['signals']) ? { signals: strArray(args['signals']) ?? [] } : {}),
+        ...(typeof args['availability'] === 'string' ? { availability: args['availability'] } : {}),
+        ...(typeof args['sort'] === 'string' ? { sort: args['sort'] } : {}),
+        ...(typeof args['order'] === 'string' ? { order: args['order'] } : {}),
+        ...(typeof args['cursor'] === 'string' ? { cursor: args['cursor'] } : {}),
+        ...(typeof args['limit'] === 'number' ? { limit: args['limit'] } : {}),
+        ...(typeof args['timeoutMs'] === 'number' ? { timeoutMs: args['timeoutMs'] } : {}),
+    };
 }

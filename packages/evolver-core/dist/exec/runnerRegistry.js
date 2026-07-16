@@ -5,7 +5,7 @@
 // nothing here spawns a real agent in tests except through spawnCapture, which the bridge injects fakes around.
 import { spawn } from 'node:child_process';
 import { join as joinPath, delimiter as pathDelimiter } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 export const DEFAULT_TIMEOUT_MS = 600_000;
 /** Thrown when permission bypass is requested without bounding the agent's tools (would be an unbounded autonomous agent). */
 export class UnboundedSkipPermissionsError extends Error {
@@ -21,29 +21,34 @@ export class UnsupportedCursorSkipPermissionsError extends Error {
         this.name = 'UnsupportedCursorSkipPermissionsError';
     }
 }
-/** Thrown when Cursor's built-in runner is requested on Windows before its launcher path is run-verified. */
+/** Thrown when Cursor's Windows installation cannot be reduced to a shell-free node.exe + index.js launch. */
 export class UnsupportedCursorWindowsRunnerError extends Error {
     constructor() {
-        super('cursor runner on Windows is not yet supported/run-verified due to cursor-agent shim spawn issue; use claude/codex or an injected cursor runner until the Windows launcher is run-verified');
+        super('cursor runner on Windows could not resolve the installed cursor-agent bundle shell-free; reinstall/update cursor-agent or use claude/codex until node.exe + index.js are available');
         this.name = 'UnsupportedCursorWindowsRunnerError';
     }
 }
-export function assertCursorRunnerPlatformSupported(platform = process.platform) {
-    if (platform === 'win32')
+export function assertCursorRunnerPlatformSupported(platform = process.platform, env = process.env) {
+    if (platform !== 'win32')
+        return;
+    if (resolveSpawnCommand('cursor-agent', [], env, platform).cmd === 'cursor-agent') {
         throw new UnsupportedCursorWindowsRunnerError();
+    }
 }
 /**
  * Make a bare command name spawnable shell-free on Windows. `spawn(shell:false)` cannot execute an npm CLI
  * shim (a `.cmd`/`.bat`), and routing through a shell would expose the prompt arg to cmd.exe quoting
  * (injection). npm shims are node wrappers, so we resolve the bare name on PATH and, when it's a node shim,
- * run `node <entry.js>` directly (shell-free, args passed safely). A native `.exe` (claude) resolves to itself.
- * No-op on POSIX and for any command that is already a path or has an extension. Surfaced by codex on Windows
- * (codex is `codex.cmd`, while claude is `claude.exe`), #66.
+ * run `node <entry.js>` directly. Cursor's installer uses a PowerShell shim around a bundled
+ * `versions/<version>/node.exe + index.js`; that known layout is resolved directly too, without invoking
+ * cmd.exe or PowerShell. A native `.exe` (claude) resolves to itself. No-op on POSIX and for any command that
+ * is already a path or has an extension. Surfaced by codex/cursor-agent on Windows (#66).
  */
-export function resolveSpawnCommand(cmd, args, env = process.env) {
-    if (process.platform !== 'win32' || /[\\/]/.test(cmd) || /\.[a-z0-9]+$/i.test(cmd))
+export function resolveSpawnCommand(cmd, args, env = process.env, platform = process.platform) {
+    if (platform !== 'win32' || /[\\/]/.test(cmd) || /\.[a-z0-9]+$/i.test(cmd))
         return { cmd, args: [...args] };
-    for (const dir of (env['PATH'] ?? '').split(pathDelimiter).filter(Boolean)) {
+    const delimiter = platform === 'win32' ? ';' : pathDelimiter;
+    for (const dir of (env['PATH'] ?? '').split(delimiter).filter(Boolean)) {
         for (const ext of ['.exe', '.cmd', '.bat']) {
             const full = joinPath(dir, cmd + ext);
             if (!existsSync(full))
@@ -58,6 +63,11 @@ export function resolveSpawnCommand(cmd, args, env = process.env) {
                     if (existsSync(js))
                         return { cmd: process.execPath, args: [js, ...args] };
                 }
+                if (cmd.toLowerCase() === 'cursor-agent' && /cursor-agent\.ps1/i.test(shim)) {
+                    const cursor = resolveCursorAgentBundle(dir, args);
+                    if (cursor)
+                        return cursor;
+                }
             }
             catch { /* unreadable shim — keep searching */ }
             // A .cmd/.bat whose node entry we can't extract is NOT runnable shell-free — DON'T return it (that would
@@ -65,6 +75,44 @@ export function resolveSpawnCommand(cmd, args, env = process.env) {
         }
     }
     return { cmd, args: [...args] };
+}
+function resolveCursorAgentBundle(dir, args) {
+    const direct = cursorBundleAt(dir, args);
+    if (direct)
+        return direct;
+    let versions;
+    try {
+        versions = readdirSync(joinPath(dir, 'versions'), { withFileTypes: true })
+            .filter((entry) => entry.isDirectory() && cursorVersionKey(entry.name) !== undefined)
+            .map((entry) => entry.name)
+            .sort((a, b) => cursorVersionKey(b).localeCompare(cursorVersionKey(a)));
+    }
+    catch {
+        return undefined;
+    }
+    for (const version of versions) {
+        const resolved = cursorBundleAt(joinPath(dir, 'versions', version), args);
+        if (resolved)
+            return resolved;
+    }
+    return undefined;
+}
+function cursorBundleAt(dir, args) {
+    const node = joinPath(dir, 'node.exe');
+    const entry = joinPath(dir, 'index.js');
+    return existsSync(node) && existsSync(entry) ? { cmd: node, args: [entry, ...args] } : undefined;
+}
+function cursorVersionKey(version) {
+    const match = /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:-(\d{1,2})-(\d{1,2})-(\d{1,2}))?-[a-f0-9]+$/i.exec(version);
+    if (!match)
+        return undefined;
+    const year = match[1];
+    const month = match[2];
+    const day = match[3];
+    const hour = match[4] ?? '0';
+    const minute = match[5] ?? '0';
+    const second = match[6] ?? '0';
+    return [year, month, day, hour, minute, second].map((part, index) => index === 0 ? part : part.padStart(2, '0')).join('');
 }
 /**
  * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
@@ -76,7 +124,7 @@ export function resolveSpawnCommand(cmd, args, env = process.env) {
 export function spawnCapture(cmd, args, opts) {
     return new Promise((resolve, reject) => {
         const detached = process.platform !== 'win32';
-        const r = resolveSpawnCommand(cmd, args, opts.env);
+        const r = resolveSpawnCommand(cmd, args, opts.env, opts.resolvePlatform ?? process.platform);
         const child = spawn(r.cmd, r.args, { cwd: opts.cwd, shell: false, detached, ...(opts.env ? { env: opts.env } : {}) });
         let stdout = '';
         let stderr = '';
@@ -185,10 +233,10 @@ export function makeCodexHeadlessRunner(opts = {}) {
 //   - `--model <model>` exists (e.g. gpt-5, sonnet-4, sonnet-4-thinking); `--list-models` enumerates.
 //   - auth: `CURSOR_API_KEY` or `--api-key` (the spec's envAllow prefix is CURSOR_).
 //   - cursor has its OWN `--sandbox enabled|disabled` and `-w/--worktree`; we still wrap with our git worktree.
-// STILL NOT run-verified end to end (needs an authed cursor-agent; claude/codex were each run-verified). Two known
-// gaps surfaced while testing: (1) on Windows `cursor-agent.cmd` is a powershell shim, NOT an npm node-shim, so
-// resolveSpawnCommand cannot rewrite it; the built-in runner fail-fasts there instead of surfacing ENOENT;
-// (2) the installed launcher's version-discovery regex rejects the real version dir name (Cursor's own bug).
+// STILL NOT run-verified end to end (needs an authed cursor-agent; claude/codex were each run-verified). The
+// Windows launcher is a PowerShell shim and its own version regex rejects the current timestamped version-dir
+// shape. resolveSpawnCommand therefore bypasses both scripts and runs the newest verified node.exe + index.js
+// bundle directly, shell-free. If that known bundle layout cannot be found, the runner still fail-fasts.
 //
 // SAFETY: `-p --force --trust` auto-approves shell+write with no verified per-run allowlist/sandbox mapping.
 // Until Cursor can really map agentOptions into per-run permissions, skipPermissions is refused outright. The
@@ -215,9 +263,14 @@ export function cursorRunnerArgs(opts = {}) {
 export function makeCursorHeadlessRunner(opts = {}, platform = process.platform) {
     const args = cursorRunnerArgs(opts);
     return async (prompt, ctx) => {
-        assertCursorRunnerPlatformSupported(platform);
+        assertCursorRunnerPlatformSupported(platform, ctx.env ?? process.env);
         try {
-            const r = await spawnCapture('cursor-agent', [...args, prompt], { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS, ...(ctx.env ? { env: ctx.env } : {}) });
+            const r = await spawnCapture('cursor-agent', [...args, prompt], {
+                cwd: ctx.cwd,
+                timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                resolvePlatform: platform,
+                ...(ctx.env ? { env: ctx.env } : {}),
+            });
             return r.code === 0 ? { ok: true, output: r.stdout } : { ok: false, output: r.stdout, error: r.stderr || `exit ${r.code}` };
         }
         catch (e) {

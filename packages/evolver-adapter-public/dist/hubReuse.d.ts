@@ -1,5 +1,4 @@
-import { hub } from '@evomap/evolver-core';
-import type { algo } from '@evomap/evolver-core';
+import { hub, algo } from '@evomap/evolver-core';
 type HubMetadata = hub.HubMetadata;
 type ReuseDecision = hub.ReuseDecision;
 type GeneCandidateInput = algo.GeneCandidateInput;

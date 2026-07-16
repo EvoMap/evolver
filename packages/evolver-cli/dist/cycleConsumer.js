@@ -1,10 +1,22 @@
-import { dirname, join, resolve } from 'node:path';
-import { assetstore, algo, events, exec, material as materialNs, personality, schema, signals, util } from '@evomap/evolver-core';
-import { parseRuntimeSessionSources } from './runtimeSessionSource.js';
+import { accessSync, constants, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { assetstore, algo, events, exec, material as materialNs, personality, schema, signals, util, verify } from '@evomap/evolver-core';
+import { materialHasRuntimeSessionSnapshot, materialSourceAvailable, runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
 import { signalTokens } from './distillPrimitives.js';
 import { readEvents, showCycle } from './commands.js';
 const CYCLE_GROUP = 'cycle';
 const DEFAULT_LIMIT = 5;
+const DEFAULT_WATCH_IDLE_MS = 1000;
+const DEFAULT_WATCH_MAX_IDLE_MS = 30_000;
+const DEFAULT_WATCH_BACKOFF = 2;
+const CYCLE_USAGE = 'usage: evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor] [--validation-cmd <cmd>] [--timeout-ms N]\n';
+const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
+class CycleWatchStateWriteError extends Error {
+    constructor() {
+        super('cycle watch state file write failed');
+        this.name = 'CycleWatchStateWriteError';
+    }
+}
 function parseFlags(argv) {
     const out = {};
     for (let i = 0; i < argv.length; i++) {
@@ -22,11 +34,62 @@ function parseFlags(argv) {
     }
     return out;
 }
+function parseRepeatedFlag(argv, name) {
+    const values = [];
+    const flag = `--${name}`;
+    const flagEquals = `${flag}=`;
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg?.startsWith(flagEquals)) {
+            const value = arg.slice(flagEquals.length);
+            if (value.trim() === '')
+                return null;
+            values.push(value);
+            continue;
+        }
+        if (arg !== flag)
+            continue;
+        const value = argv[i + 1];
+        if (value === undefined || value.startsWith('--') || value.trim() === '')
+            return null;
+        values.push(value);
+        i++;
+    }
+    return values;
+}
+function makeCycleValidationHook(validationCmds, fallback, runSandboxedValidation = verify.runSandboxedValidation) {
+    if (validationCmds.length === 0)
+        return fallback;
+    let warnedNoIsolation = false;
+    return (task) => {
+        const fallbackHook = fallback?.(task);
+        return async (mutation, decision, cwd) => {
+            const fallbackResult = fallbackHook ? await fallbackHook(mutation, decision, cwd) : null;
+            if (fallbackResult && !fallbackResult.passed)
+                return fallbackResult;
+            const result = await runSandboxedValidation(task.validationCmds ?? validationCmds, cwd);
+            if (!result.isolated && !warnedNoIsolation) {
+                warnedNoIsolation = true;
+                process.stdout.write('  warning: validation runs WITHOUT network/FS isolation on this platform; non-namespace hardening still applies.\n');
+            }
+            return { passed: result.passed, score: result.score };
+        };
+    };
+}
 function parsePositiveInt(value, fallback) {
     if (value === undefined || value.trim() === '')
         return fallback;
     const n = Number(value);
     return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+function parseRequiredPositiveIntFlag(flags, name) {
+    if (!(name in flags))
+        return undefined;
+    const value = flags[name] ?? '';
+    if (value.trim() === '')
+        return null;
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : null;
 }
 function parseRunner(value) {
     return value === 'codex' || value === 'cursor' ? value : 'claude';
@@ -151,7 +214,7 @@ function fallbackSignalTokens(sigs) {
     return [...out];
 }
 function materialSignals(material) {
-    const sources = parseRuntimeSessionSources(material.sourcePath);
+    const sources = runtimeSessionSourcesForMaterial(material);
     const sigs = sources.flatMap((source) => signals.extractSignals(source.turns));
     const tokens = signalTokens(sigs);
     return {
@@ -250,6 +313,7 @@ async function processMaterial(material, opts, deps) {
             target: opts.target ?? '.',
             expectedEffect: opts.expectedEffect ?? 'evolve from consumed session material',
             signals: extracted.signals,
+            ...(opts.validationCmds ? { validationCmds: opts.validationCmds } : {}),
         };
         const safety = {
             allowedRoots: [repo],
@@ -263,6 +327,7 @@ async function processMaterial(material, opts, deps) {
             provenance: deps.provenance,
             review: deps.review,
             personality: deps.personality,
+            ...(opts.validate ? { validate: opts.validate } : {}),
             ...(opts.agent ? { agent: opts.agent } : {}),
             ...(opts.git ? { git: opts.git } : {}),
         }, task, safety);
@@ -294,6 +359,89 @@ export async function runMaterialCycleConsumer(opts, injectedDeps = {}) {
         items.push(await processMaterial(material, opts, deps));
     }
     return { claimed: claimed.length, processed: items.length, items };
+}
+function defaultSleep(ms) {
+    return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+function positiveNumber(value, fallback) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+function hasCycleWatchProgress(result, cursorBefore, cursorAfter) {
+    if (cursorAfter > cursorBefore)
+        return true;
+    return result.items.some((item) => (item.action === 'cycle'
+        || item.action === 'observe'
+        || item.action === 'fail'
+        || item.status === 'already_terminal'));
+}
+function watchFailedItemCount(items) {
+    return items.filter((item) => item.action === 'fail' || item.status === 'refused' || item.status === 'failed').length;
+}
+export async function runMaterialCycleWatch(opts, injectedDeps = {}, hooks = {}) {
+    const deps = resolveMaterialCycleDeps(injectedDeps);
+    const sleep = injectedDeps.sleep ?? defaultSleep;
+    const idleBase = Math.floor(positiveNumber(opts.idleMs, DEFAULT_WATCH_IDLE_MS));
+    const idleMax = Math.floor(Math.max(idleBase, positiveNumber(opts.maxIdleMs, DEFAULT_WATCH_MAX_IDLE_MS)));
+    const backoff = Math.max(1, positiveNumber(opts.backoffMultiplier, DEFAULT_WATCH_BACKOFF));
+    const maxIdle = opts.maxIdle !== undefined && opts.maxIdle > 0 ? Math.floor(opts.maxIdle) : undefined;
+    const maxIterations = opts.maxIterations !== undefined && opts.maxIterations > 0 ? Math.floor(opts.maxIterations) : undefined;
+    let nextDelayMs = idleBase;
+    let iterations = 0;
+    let idleIterations = 0;
+    let totalClaimed = 0;
+    let totalProcessed = 0;
+    let totalFailedItems = 0;
+    for (;;) {
+        iterations += 1;
+        const cursorBefore = deps.consumer.position(CYCLE_GROUP);
+        const result = await runMaterialCycleConsumer(opts, deps);
+        const cursorAfter = deps.consumer.position(CYCLE_GROUP);
+        const progress = hasCycleWatchProgress(result, cursorBefore, cursorAfter);
+        const idle = !progress;
+        const iteration = {
+            ok: true,
+            group: 'cycle.watch',
+            iteration: iterations,
+            claimed: result.claimed,
+            processed: result.processed,
+            cursor: cursorAfter,
+            idle,
+            nextDelayMs: idle ? nextDelayMs : 0,
+            items: result.items,
+        };
+        totalClaimed += result.claimed;
+        totalProcessed += result.processed;
+        totalFailedItems += watchFailedItemCount(result.items);
+        hooks.onIteration?.(iteration);
+        if (idle)
+            idleIterations += 1;
+        else {
+            idleIterations = 0;
+            nextDelayMs = idleBase;
+        }
+        const stopped = maxIterations !== undefined && iterations >= maxIterations
+            ? 'max_iterations'
+            : maxIdle !== undefined && idleIterations >= maxIdle
+                ? 'max_idle'
+                : null;
+        if (stopped) {
+            return {
+                ok: true,
+                group: 'cycle.watch',
+                iterations,
+                claimed: totalClaimed,
+                processed: totalProcessed,
+                idleIterations,
+                failedItems: totalFailedItems,
+                cursor: deps.consumer.position(CYCLE_GROUP),
+                stopped,
+            };
+        }
+        if (idle) {
+            await sleep(nextDelayMs);
+            nextDelayMs = Math.min(idleMax, Math.max(idleBase, Math.ceil(nextDelayMs * backoff)));
+        }
+    }
 }
 async function recoverMaterialCycleAudit(material, deps) {
     const cycleId = cycleIdForMaterial(material.materialId);
@@ -394,12 +542,17 @@ function summarizeCycleConsumer(injectedDeps = {}) {
                 recoverLimit = index - cursor + 1;
         }
         if (index >= cursor && next.length < 5 && status !== 'consumed' && status !== 'observed') {
+            const sourceAvailable = materialSourceAvailable(material);
+            const hasSnapshot = materialHasRuntimeSessionSnapshot(material);
             next.push({
                 materialId: material.materialId,
                 sourceKind: material.sourceKind,
                 kind: material.kind,
                 capturedAt: material.capturedAt,
                 status,
+                sourceAvailable,
+                hasSnapshot,
+                recoverable: material.sourceKind === 'runtime_session' && (sourceAvailable || hasSnapshot),
             });
         }
     });
@@ -462,6 +615,82 @@ function printRecoverResult(result) {
         process.stdout.write(`  material=${item.materialId} action=${item.action} status=${item.status}${cycle}${reason}\n`);
     }
 }
+function printWatchIteration(iteration) {
+    process.stdout.write(`cycle watch: iteration=${iteration.iteration} claimed=${iteration.claimed} processed=${iteration.processed} cursor=${iteration.cursor} idle=${iteration.idle} nextDelayMs=${iteration.nextDelayMs}\n`);
+    for (const item of iteration.items) {
+        const cycle = item.cycleId ? ` cycle=${item.cycleId}` : '';
+        const reason = item.reason ? ' reason=details-redacted' : '';
+        process.stdout.write(`  material=${item.materialId} action=${item.action} status=${item.status}${cycle}${reason}\n`);
+    }
+}
+function printWatchResult(result) {
+    process.stdout.write(`cycle watch stopped: reason=${result.stopped} iterations=${result.iterations} claimed=${result.claimed} processed=${result.processed} idleIterations=${result.idleIterations} failedItems=${result.failedItems} cursor=${result.cursor}\n`);
+}
+function redactedCycleItem(item) {
+    return item.reason ? { ...item, reason: 'details-redacted' } : item;
+}
+function redactedWatchIteration(iteration) {
+    return { ...iteration, items: iteration.items.map(redactedCycleItem) };
+}
+function prepareWatchStateFile(path) {
+    const trimmed = path?.trim();
+    if (!trimmed)
+        return null;
+    try {
+        const stat = lstatSync(trimmed);
+        if (!stat.isFile() || stat.isSymbolicLink())
+            return null;
+        accessSync(trimmed, constants.W_OK);
+    }
+    catch (error) {
+        if (error.code !== 'ENOENT')
+            return null;
+    }
+    try {
+        mkdirSync(dirname(trimmed), { recursive: true, mode: 0o700 });
+        return probeWatchStateFile(trimmed) ? trimmed : null;
+    }
+    catch {
+        return null;
+    }
+}
+function writeWatchStateFile(path, state) {
+    const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+    writeFileSync(tmp, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+}
+function probeWatchStateFile(path) {
+    const dir = dirname(path);
+    const base = basename(path);
+    const probe = join(dir, `.${base}.${process.pid}.probe`);
+    const renamed = `${probe}.renamed`;
+    try {
+        writeFileSync(probe, '', { encoding: 'utf8', mode: 0o600 });
+        renameSync(probe, renamed);
+        unlinkSync(renamed);
+        return true;
+    }
+    catch {
+        try {
+            unlinkSync(probe);
+        }
+        catch { /* best effort */ }
+        try {
+            unlinkSync(renamed);
+        }
+        catch { /* best effort */ }
+        return false;
+    }
+}
+function tryWriteWatchStateFile(path, state, writer = writeWatchStateFile) {
+    try {
+        writer(path, state);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 function hasFailedItem(item) {
     return item.action === 'fail'
         || item.status === 'refused'
@@ -501,18 +730,166 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
             printRecoverResult(result);
         return 0;
     }
+    if (argv[0] === 'watch') {
+        const flags = parseFlags(argv.slice(1));
+        const validationCmds = parseRepeatedFlag(argv.slice(1), 'validation-cmd');
+        const repo = flags['repo'];
+        if (!repo) {
+            process.stderr.write(WATCH_USAGE);
+            return 1;
+        }
+        if (validationCmds === null) {
+            process.stderr.write(WATCH_USAGE);
+            return 1;
+        }
+        const validate = makeCycleValidationHook(validationCmds, injectedDeps.validate, injectedDeps.runSandboxedValidation);
+        const maxIdle = parseRequiredPositiveIntFlag(flags, 'max-idle');
+        const maxIterations = parseRequiredPositiveIntFlag(flags, 'max-iterations');
+        const timeoutMs = parseRequiredPositiveIntFlag(flags, 'timeout-ms');
+        if (maxIdle === null || maxIterations === null || timeoutMs === null) {
+            process.stderr.write(WATCH_USAGE);
+            return 1;
+        }
+        const stateFile = prepareWatchStateFile(flags['state-file']);
+        if ('state-file' in flags && !stateFile) {
+            process.stderr.write(WATCH_USAGE);
+            return 1;
+        }
+        const json = 'json' in flags;
+        let stateClaimed = 0;
+        let stateProcessed = 0;
+        let stateIdleIterations = 0;
+        let stateFailedItems = 0;
+        let lastIteration;
+        const writeState = injectedDeps.watchStateWriter ?? writeWatchStateFile;
+        let result;
+        try {
+            result = await runMaterialCycleWatch({
+                repo,
+                limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
+                target: flags['target'] || '.',
+                expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
+                runner: parseRunner(flags['runner']),
+                ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+                ...(validationCmds.length > 0 ? { validationCmds } : {}),
+                ...(validate ? { validate } : {}),
+                ...(injectedDeps.safety ? { safety: injectedDeps.safety } : {}),
+                ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
+                ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
+                idleMs: parsePositiveInt(flags['idle-ms'], DEFAULT_WATCH_IDLE_MS),
+                maxIdleMs: parsePositiveInt(flags['max-idle-ms'], DEFAULT_WATCH_MAX_IDLE_MS),
+                ...(maxIdle !== undefined ? { maxIdle } : {}),
+                ...(maxIterations !== undefined ? { maxIterations } : {}),
+            }, injectedDeps, {
+                onIteration: (iteration) => {
+                    const safeIteration = redactedWatchIteration(iteration);
+                    if (json)
+                        process.stdout.write(`${JSON.stringify(safeIteration)}\n`);
+                    else
+                        printWatchIteration(iteration);
+                    stateClaimed += iteration.claimed;
+                    stateProcessed += iteration.processed;
+                    stateFailedItems += watchFailedItemCount(iteration.items);
+                    stateIdleIterations = iteration.idle ? stateIdleIterations + 1 : 0;
+                    lastIteration = safeIteration;
+                    if (stateFile && !tryWriteWatchStateFile(stateFile, {
+                        ok: true,
+                        group: 'cycle.watch.state',
+                        updatedAt: new Date().toISOString(),
+                        running: true,
+                        iteration: iteration.iteration,
+                        cursor: iteration.cursor,
+                        claimed: stateClaimed,
+                        processed: stateProcessed,
+                        idleIterations: stateIdleIterations,
+                        failedItems: stateFailedItems,
+                        lastIteration: safeIteration,
+                    }, writeState)) {
+                        throw new CycleWatchStateWriteError();
+                    }
+                },
+            });
+        }
+        catch (error) {
+            if (!(error instanceof CycleWatchStateWriteError))
+                throw error;
+            if (stateFile) {
+                tryWriteWatchStateFile(stateFile, {
+                    ok: true,
+                    group: 'cycle.watch.state',
+                    updatedAt: new Date().toISOString(),
+                    running: false,
+                    iteration: lastIteration?.iteration ?? 0,
+                    cursor: lastIteration?.cursor ?? 0,
+                    claimed: stateClaimed,
+                    processed: stateProcessed,
+                    idleIterations: stateIdleIterations,
+                    failedItems: stateFailedItems,
+                    ...(lastIteration ? { lastIteration } : {}),
+                    stopped: 'state_write_failed',
+                }, writeState);
+            }
+            process.stderr.write('cycle watch failed: state_write_failed\n');
+            return 1;
+        }
+        const finalState = {
+            ok: true,
+            group: 'cycle.watch.state',
+            updatedAt: new Date().toISOString(),
+            running: false,
+            iteration: result.iterations,
+            cursor: result.cursor,
+            claimed: result.claimed,
+            processed: result.processed,
+            idleIterations: result.idleIterations,
+            failedItems: result.failedItems,
+            ...(lastIteration ? { lastIteration } : {}),
+            stopped: result.stopped,
+        };
+        if (stateFile && !tryWriteWatchStateFile(stateFile, finalState, writeState)) {
+            tryWriteWatchStateFile(stateFile, {
+                ...finalState,
+                updatedAt: new Date().toISOString(),
+                stopped: 'state_write_failed',
+            }, writeState);
+            process.stderr.write('cycle watch failed: state_write_failed\n');
+            return 1;
+        }
+        if (json)
+            process.stdout.write(`${JSON.stringify(result)}\n`);
+        else
+            printWatchResult(result);
+        return 0;
+    }
     const flags = parseFlags(argv);
+    const validationCmds = parseRepeatedFlag(argv, 'validation-cmd');
     const repo = flags['repo'];
     if (!repo) {
-        process.stderr.write('usage: evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle --repo <path> [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor]\n');
+        process.stderr.write(CYCLE_USAGE);
         return 1;
     }
+    if (validationCmds === null) {
+        process.stderr.write(CYCLE_USAGE);
+        return 1;
+    }
+    const timeoutMs = parseRequiredPositiveIntFlag(flags, 'timeout-ms');
+    if (timeoutMs === null) {
+        process.stderr.write(CYCLE_USAGE);
+        return 1;
+    }
+    const validate = makeCycleValidationHook(validationCmds, injectedDeps.validate, injectedDeps.runSandboxedValidation);
     const result = await runMaterialCycleConsumer({
         repo,
         limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
         target: flags['target'] || '.',
         expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
         runner: parseRunner(flags['runner']),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(validationCmds.length > 0 ? { validationCmds } : {}),
+        ...(validate ? { validate } : {}),
+        ...(injectedDeps.safety ? { safety: injectedDeps.safety } : {}),
+        ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
+        ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
     }, injectedDeps);
     printResult(result);
     return materialCycleExitCode(result);

@@ -1,10 +1,10 @@
-export type RuntimeId = 'claude-code' | 'codex' | 'cursor' | 'kiro' | 'opencode';
-export type InjectionMode = 'mcp-hooks' | 'mcp-plugin' | 'cursor-rules' | 'passive';
+export type RuntimeId = 'claude-code' | 'codex' | 'cursor' | 'antigravity' | 'kiro' | 'opencode';
+export type InjectionMode = 'mcp-hooks' | 'mcp-plugin' | 'mcp-config' | 'cursor-rules' | 'passive';
 /**
  * Setup support contract (#217). A bootstrapper that delegates runtime onboarding to evolver v2 needs a
  * DETERMINISTIC answer for every runtime it might ask about — not just the ones v2 can write config for.
  * The three outcomes are the whole contract:
- *  - `installed`   v2 can write the runtime config/hooks and verify it (claude-code, codex, cursor today).
+ *  - `installed`   v2 can write the runtime config/hooks and verify it (claude-code, codex, cursor, antigravity).
  *  - `manual`      v2 cannot mutate this runtime's config, but the path is real: it prints precise MCP/HTTP
  *                  wiring the operator does by hand (opencode, openclaw, mcp-generic, http-agent, server).
  *  - `unsupported` v2 refuses with a clear reason (an unrecognized runtime id).

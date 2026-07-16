@@ -1,5 +1,6 @@
 import type { AssetRecord, AssetKind, SearchQuery, PutResult } from '../assetstore/provider.js';
 import type { Envelope } from '../mailbox/envelope.js';
+import type { AgentDirectoryCapability } from './agentDirectory.js';
 /** publish 投递回执. hub 侧做 gate(经济/治理/RBAC 全在 hub), core 只读 status+reason. */
 export interface PublishReceipt {
     /** hub 返回的回执 id(公版=AgentEvent/decision id; 私有=审计 id). */
@@ -33,6 +34,15 @@ export interface TaskEvent {
     payload: unknown;
     priority: 'high' | 'medium' | 'low';
     createdAt: number;
+}
+/**
+ * Explicit task identity needed by hubs whose completion wire does not use their
+ * adapter-specific claim handle. claimId remains opaque and must never be parsed
+ * to recover either field.
+ */
+export interface TaskCompleteContext {
+    taskId: string;
+    assetId: string;
 }
 /** Proactive Hub question that a runtime may submit for ecosystem help. */
 export interface HubQuestion {
@@ -153,7 +163,7 @@ export interface RecipeCapability {
     get(recipeId: string): Promise<RecipeFetchReceipt>;
     express(recipeId: string, request?: RecipeExpressRequest): Promise<RecipeExpressionReceipt>;
 }
-export type HubCapabilityName = 'publish' | 'fetch' | 'search' | 'task' | 'mailbox' | 'auth' | 'audit' | 'air_gap' | 'tenant_isolation' | 'marketplace' | 'economy' | 'questions' | 'recipes';
+export type HubCapabilityName = 'publish' | 'fetch' | 'search' | 'task' | 'mailbox' | 'auth' | 'audit' | 'air_gap' | 'tenant_isolation' | 'marketplace' | 'economy' | 'questions' | 'recipes' | 'agent_directory';
 /** hub 能力清单(可选). core 据此动态适配 UI/行为, "按需耦合". */
 export interface HubManifest {
     capabilities: HubCapabilityName[] | string[];
@@ -232,7 +242,7 @@ export interface HubCapability {
         claim(taskId: string): Promise<{
             claimId: string;
         }>;
-        complete(claimId: string, result: unknown): Promise<{
+        complete(claimId: string, result: unknown, context?: TaskCompleteContext): Promise<{
             status: 'completed';
         }>;
         subscribe(filter: unknown): AsyncIterable<TaskEvent>;
@@ -243,6 +253,8 @@ export interface HubCapability {
     };
     /** Optional recipe/DNA seam. Recipe creation is draft-first; publishing remains explicit. */
     recipes?: RecipeCapability;
+    /** Optional agent discovery seam. Missing means the adapter does not support directory/profile discovery. */
+    agentDirectory?: AgentDirectoryCapability;
     /** mailbox 队列. poll/ack/push/status 四端点解耦(公版 /a2a/mailbox/*). */
     mailbox: {
         poll(): Promise<MailboxPollResult>;

@@ -1,4 +1,4 @@
-import type { signals, algo } from '@evomap/evolver-core';
+import { algo, type signals } from '@evomap/evolver-core';
 import type { NormalizedTurn } from '@evomap/evolver-runtime-adapters';
 /** Short matchable signal tokens from the STRONG signals only (toolName + a known error class). Every strong
  *  signal yields ≥1 token: if it has no toolName and matches no known error class (e.g. `FAILED: …` or

@@ -1,4 +1,4 @@
-import { assetstore, type hub as hubNs } from '@evomap/evolver-core';
+import { assetstore, events, type hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
 export interface RecipeCliDeps {
     hub?: RecipeHub;
@@ -6,6 +6,8 @@ export interface RecipeCliDeps {
     env?: NodeJS.ProcessEnv;
     log?: (line: string) => void;
     err?: (line: string) => void;
+    ingestor?: events.Ingestor;
+    review?: assetstore.ReviewLedger;
     connectHub?: (opts: ConnectPublicOptions) => {
         hub: PublicHubCapability;
         auth: hubNs.AuthProvider;
@@ -42,7 +44,13 @@ export interface RecipeReuseOptions {
     inputPayload: Record<string, unknown>;
     jsonOut: boolean;
 }
-export type RecipeOptions = RecipeBuildOptions | RecipeReuseOptions;
+export interface RecipeFromSkillsOptions {
+    sub: 'from-skills';
+    manifestPath: string;
+    publish: boolean;
+    jsonOut: boolean;
+}
+export type RecipeOptions = RecipeBuildOptions | RecipeReuseOptions | RecipeFromSkillsOptions;
 export declare function runRecipeCommand(argv: readonly string[], deps?: RecipeCliDeps): Promise<number>;
 export declare function createRecipeHubFromEnv(env?: NodeJS.ProcessEnv, connectHub?: (opts: ConnectPublicOptions) => {
     hub: PublicHubCapability;

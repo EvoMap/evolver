@@ -41,6 +41,20 @@ export interface ProxyReuseResultArgs {
     timeSavedSeconds?: number;
     reason?: string;
 }
+export interface ProxyAgentSearchArgs {
+    query?: string;
+    signals?: string[];
+    availability?: string;
+    sort?: string;
+    order?: string;
+    cursor?: string;
+    limit?: number;
+    timeoutMs?: number;
+}
+export interface ProxyAgentDiscoverArgs extends ProxyAgentSearchArgs {
+    title: string;
+    description?: string;
+}
 export declare class EvolverProxyClient {
     private baseUrl;
     private token;
@@ -52,6 +66,9 @@ export declare class EvolverProxyClient {
     }): Promise<unknown>;
     search(args: ProxySearchArgs): Promise<unknown>;
     fetchAsset(args: ProxyFetchArgs): Promise<unknown>;
+    searchAgents(args: ProxyAgentSearchArgs): Promise<unknown>;
+    getAgentProfile(agentId: string, timeoutMs?: number): Promise<unknown>;
+    discoverAgentsForTask(args: ProxyAgentDiscoverArgs): Promise<unknown>;
     submitAsset(asset: unknown): Promise<unknown>;
     /** Pre-publish dry-run: the hub runs its quality + content-safety gate but stores nothing and charges no credits. */
     validateAsset(asset: unknown): Promise<unknown>;

@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-core",
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0-beta.2",
   "private": false,
   "type": "module",
   "description": "hub-无关核心: 算法引擎/原材料/mailbox/资产库/workflow",
@@ -23,6 +23,7 @@
   },
   "files": [
     "dist/",
+    "assets/",
     "README.md",
     "package.json"
   ]

@@ -1,8 +1,9 @@
-import { openSync, writeSync, fsyncSync, closeSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { openSync, writeSync, fsyncSync, closeSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { material } from '../schema/material.js';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { assertMaterialSource } from './boundary.js';
+import { readMaterialHistory, readMaterialRange } from './materialArchive.js';
 /** 原材料库 (append-only jsonl + single-writer + materialId 去重). */
 export class MaterialStore {
     path;
@@ -51,18 +52,10 @@ export class MaterialStore {
         return undefined;
     }
     readAll() {
-        if (!existsSync(this.path))
-            return [];
-        const out = [];
-        for (const l of readFileSync(this.path, 'utf8').split('\n')) {
-            if (!l)
-                continue;
-            try {
-                out.push(material.parse(JSON.parse(l)));
-            }
-            catch { /* skip */ }
-        }
-        return out;
+        return readMaterialHistory(this.path);
+    }
+    readRange(start, count) {
+        return readMaterialRange(this.path, start, count);
     }
     *iterate(opts = {}) {
         for (const m of this.readAll()) {

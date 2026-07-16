@@ -120,6 +120,7 @@ export class MailboxStore {
       schemaVersion TEXT, feedsMaterial INTEGER, dlq INTEGER DEFAULT 0, leasedUntil INTEGER, workerId TEXT, lastError TEXT)`);
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_status ON messages(status, handler)');
         this.db.exec('CREATE INDEX IF NOT EXISTS idx_corr ON messages(correlationId)');
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_message_view ON messages(runtimeNamespace,type,direction,status,createdAt)');
         this.db.exec('CREATE TABLE IF NOT EXISTS idempotency (key TEXT PRIMARY KEY, result TEXT, at INTEGER)');
         this.db.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)');
     }
@@ -157,7 +158,21 @@ export class MailboxStore {
             where.push('runtimeNamespace = ?');
             args.push(opts.runtimeNamespace);
         }
-        const sql = `SELECT * FROM messages ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY createdAt LIMIT ?`;
+        if (opts.type) {
+            where.push('type = ?');
+            args.push(opts.type);
+        }
+        if (opts.direction) {
+            where.push('direction = ?');
+            args.push(opts.direction);
+        }
+        if (opts.typeDirections && opts.typeDirections.length > 0) {
+            const selectors = opts.typeDirections.slice(0, 20);
+            where.push(`(${selectors.map(() => '(type = ? AND direction = ?)').join(' OR ')})`);
+            for (const selector of selectors)
+                args.push(selector.type, selector.direction);
+        }
+        const sql = `SELECT * FROM messages ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY createdAt ${opts.newestFirst ? 'DESC' : 'ASC'} LIMIT ?`;
         // Clamp the LIMIT bind. The IPC list route feeds this `?limit=` straight from an external query string, so a
         // non-finite value (NaN from `?limit=abc`, Infinity from `?limit=1e400`) would bind as null/error and a huge
         // finite value is an unbounded read (memory DoS) even on the token-authed endpoint. Finite + positive + capped.
@@ -165,7 +180,34 @@ export class MailboxStore {
             ? Math.min(Math.floor(opts.limit), 10_000)
             : 1000;
         args.push(lim);
-        return this.db.prepare(sql).all(...args).map(rowToEnvelope);
+        const offset = Number.isFinite(opts.offset) && opts.offset > 0
+            ? Math.min(Math.floor(opts.offset), 10_000)
+            : 0;
+        const pagedSql = `${sql} OFFSET ?`;
+        args.push(offset);
+        return this.db.prepare(pagedSql).all(...args).map(rowToEnvelope);
+    }
+    countMessages(opts = {}) {
+        const where = [];
+        const args = [];
+        if (opts.status) {
+            where.push('status = ?');
+            args.push(opts.status);
+        }
+        if (opts.runtimeNamespace) {
+            where.push('runtimeNamespace = ?');
+            args.push(opts.runtimeNamespace);
+        }
+        if (opts.type) {
+            where.push('type = ?');
+            args.push(opts.type);
+        }
+        if (opts.direction) {
+            where.push('direction = ?');
+            args.push(opts.direction);
+        }
+        const row = this.db.prepare(`SELECT COUNT(*) c FROM messages ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`).get(...args);
+        return Number(row['c']);
     }
     countByStatus(status) {
         return Number(this.db.prepare('SELECT COUNT(*) c FROM messages WHERE status = ?').get(status)['c']);

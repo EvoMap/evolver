@@ -56,6 +56,8 @@ export interface ProxyDaemonDeps {
         dir: string;
         env?: NodeJS.ProcessEnv;
     };
+    /** V1 collaboration task operations are synchronous; tests may shorten the Hub timeout. */
+    collaborationOperationTimeoutMs?: number;
 }
 export interface ProxyTickReport {
     outbound: OutboundResult;
@@ -118,6 +120,7 @@ export declare class ProxyDaemon {
     private readonly reuseResultReporter;
     private readonly validator;
     private readonly atp;
+    private readonly collaborationFacade;
     private ipc;
     private readonly now;
     private readonly random;

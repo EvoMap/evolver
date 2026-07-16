@@ -26,6 +26,7 @@ export interface SkillDistillDeps {
 }
 export interface SkillDistillResult {
     geneId: string | null;
+    geneAssetId: string | null;
     /** True when the gene landed in the pool QUARANTINED (awaiting human review). */
     quarantined: boolean;
     capsuleId: string | null;

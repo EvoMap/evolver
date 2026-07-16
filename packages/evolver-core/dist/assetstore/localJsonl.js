@@ -1,8 +1,22 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { normalizeForPut, } from './provider.js';
 const FILES = { Gene: 'genes.jsonl', Capsule: 'capsules.jsonl', EvolutionEvent: 'events.jsonl', AntiGene: 'anti-genes.jsonl' };
+function isErrno(error, code) {
+    return typeof error === 'object' && error !== null && error.code === code;
+}
+function fileFingerprint(path) {
+    try {
+        const stat = statSync(path, { bigint: true });
+        return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT'))
+            return 'missing';
+        throw error;
+    }
+}
 function signalsOf(a) {
     const out = [];
     for (const key of ['signals_match', 'signals', 'trigger', 'trigger_signals']) {
@@ -17,12 +31,14 @@ function signalsOf(a) {
 /**
  * 本地 jsonl 资产库(M3-2, 移植 v1 src/gep/assetStore.js 单写锁).
  * 每 kind 一文件(genes/capsules/events.jsonl); append-only; O_EXCL 文件锁防并发写撕裂;
- * 内存索引(asset_id→record)供 get/search; 同 asset_id 去重(内容寻址天然幂等).
+ * 内存索引(asset_id→record)供 get/search; 文件指纹变化时在共享锁内重建索引，保证多个
+ * CLI/daemon 进程之间可见; 写入也在锁内刷新后再按 asset_id 去重(内容寻址天然幂等).
  */
 export class LocalJsonlProvider {
     baseDir;
     index = new Map();
     lockPath;
+    fileState = new Map();
     loaded = false;
     // `baseDir` is public-readonly so callers that inject a store (e.g. the CLI under test) can co-locate sidecars
     // — the ReviewLedger/ProvenanceStore — in the SAME directory, instead of defaulting to the real ~/.evomap.
@@ -31,9 +47,24 @@ export class LocalJsonlProvider {
         mkdirSync(baseDir, { recursive: true });
         this.lockPath = join(baseDir, '.assetstore.lock');
     }
-    ensureLoaded() {
-        if (this.loaded)
-            return;
+    captureFileState() {
+        const state = new Map();
+        for (const [kind, file] of Object.entries(FILES)) {
+            state.set(kind, fileFingerprint(join(this.baseDir, file)));
+        }
+        return state;
+    }
+    stateChanged(next) {
+        if (!this.loaded || next.size !== this.fileState.size)
+            return true;
+        for (const [kind, fingerprint] of next) {
+            if (this.fileState.get(kind) !== fingerprint)
+                return true;
+        }
+        return false;
+    }
+    rebuildIndex(state) {
+        const next = new Map();
         for (const file of Object.values(FILES)) {
             const p = join(this.baseDir, file);
             if (!existsSync(p))
@@ -44,29 +75,50 @@ export class LocalJsonlProvider {
                 try {
                     const r = JSON.parse(line);
                     if (r.asset_id)
-                        this.index.set(r.asset_id, r);
+                        next.set(r.asset_id, r);
                 }
                 catch { /* skip 坏行 */ }
             }
         }
+        this.index.clear();
+        for (const [assetId, record] of next)
+            this.index.set(assetId, record);
+        this.fileState = state;
+        this.loaded = true;
+    }
+    refreshUnderLock() {
+        const state = this.captureFileState();
+        if (this.stateChanged(state))
+            this.rebuildIndex(state);
+    }
+    ensureFresh() {
+        const state = this.captureFileState();
+        if (!this.stateChanged(state))
+            return;
+        acquireLock(this.lockPath);
+        try {
+            this.refreshUnderLock();
+        }
+        finally {
+            releaseLock(this.lockPath);
+        }
+    }
+    updateFileStateAfterWrite() {
+        this.fileState = this.captureFileState();
         this.loaded = true;
     }
     async put(asset) {
-        this.ensureLoaded();
         const { record, verified } = normalizeForPut(asset);
-        if (this.index.has(record.asset_id))
-            return { asset_id: record.asset_id, stored: false, verified };
         const file = join(this.baseDir, FILES[record.type]);
         acquireLock(this.lockPath);
         try {
-            // 锁内复检(另一进程可能刚写)
-            if (!this.index.has(record.asset_id)) {
-                appendFileSync(file, `${JSON.stringify(record)}\n`);
-                this.index.set(record.asset_id, record);
-            }
-            else {
+            // Refresh under the shared lock so another process cannot append between reload and dedupe.
+            this.refreshUnderLock();
+            if (this.index.has(record.asset_id))
                 return { asset_id: record.asset_id, stored: false, verified };
-            }
+            appendFileSync(file, `${JSON.stringify(record)}\n`);
+            this.index.set(record.asset_id, record);
+            this.updateFileStateAfterWrite();
         }
         finally {
             releaseLock(this.lockPath);
@@ -78,18 +130,17 @@ export class LocalJsonlProvider {
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.
      */
     async putFrozen(record) {
-        this.ensureLoaded();
         if (!record.asset_id)
             throw new Error('putFrozen 需 record 自带冻结 asset_id');
-        if (this.index.has(record.asset_id))
-            return { asset_id: record.asset_id, stored: false, verified: false };
         const file = join(this.baseDir, FILES[record.type]);
         acquireLock(this.lockPath);
         try {
+            this.refreshUnderLock();
             if (this.index.has(record.asset_id))
                 return { asset_id: record.asset_id, stored: false, verified: false };
             appendFileSync(file, `${JSON.stringify(record)}\n`);
             this.index.set(record.asset_id, record);
+            this.updateFileStateAfterWrite();
         }
         finally {
             releaseLock(this.lockPath);
@@ -97,11 +148,11 @@ export class LocalJsonlProvider {
         return { asset_id: record.asset_id, stored: true, verified: false };
     }
     async get(assetId) {
-        this.ensureLoaded();
+        this.ensureFresh();
         return this.index.get(assetId) ?? null;
     }
     async list(kind, limit = 1000) {
-        this.ensureLoaded();
+        this.ensureFresh();
         const out = [];
         for (const r of this.index.values()) {
             if (!kind || r.type === kind)
@@ -112,7 +163,7 @@ export class LocalJsonlProvider {
         return out;
     }
     async search(q) {
-        this.ensureLoaded();
+        this.ensureFresh();
         const out = [];
         for (const r of this.index.values()) {
             if (q.kind && r.type !== q.kind)
@@ -148,9 +199,9 @@ export class LocalJsonlProvider {
      * the write lock. Returns kept/removed line counts.
      */
     async compact() {
-        this.ensureLoaded();
         acquireLock(this.lockPath);
         try {
+            this.refreshUnderLock();
             let kept = 0, removed = 0;
             for (const [kind, file] of Object.entries(FILES)) {
                 const p = join(this.baseDir, file);
@@ -173,6 +224,7 @@ export class LocalJsonlProvider {
                 kept += byId.size;
                 removed += lines.length - byId.size;
             }
+            this.rebuildIndex(this.captureFileState());
             return { kept, removed };
         }
         finally {

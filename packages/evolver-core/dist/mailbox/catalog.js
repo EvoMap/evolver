@@ -14,6 +14,7 @@ export const MESSAGE_CATALOG = {
     task_complete: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'default' },
     task_subscribe: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'control' },
     task_unsubscribe: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'control' },
+    dm_outbound: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'default' },
     atp_order: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'default' },
     atp_deliver: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'default' },
     atp_settle: { direction: 'outbound', handler: 'proxy', feedsMaterial: false, ttlClass: 'default' },
@@ -23,6 +24,8 @@ export const MESSAGE_CATALOG = {
     asset_publish_result: { direction: 'inbound', handler: 'core', feedsMaterial: false, ttlClass: 'default' }, // 拒绝进 Material 在 dispatch 决定
     pending_evomap_task: { direction: 'inbound', handler: 'agent', feedsMaterial: false, ttlClass: 'default' },
     task_available: { direction: 'inbound', handler: 'agent', feedsMaterial: false, ttlClass: 'default' },
+    task_claim_result: { direction: 'inbound', handler: 'agent', feedsMaterial: false, ttlClass: 'default' },
+    task_complete_result: { direction: 'inbound', handler: 'agent', feedsMaterial: false, ttlClass: 'default' },
     work_assigned: { direction: 'inbound', handler: 'agent', feedsMaterial: false, ttlClass: 'default' },
     dialog_message: { direction: 'inbound', handler: 'agent', feedsMaterial: true, ttlClass: 'default' },
     peer_review_request: { direction: 'inbound', handler: 'agent', feedsMaterial: true, ttlClass: 'default' },

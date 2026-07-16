@@ -3,11 +3,13 @@ import { AuthError, HubFetch, HubClientError, isHubUnreachableError } from './hu
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
+import { getWorkspaceKeychainMode } from './auth/workspaceKeychain.js';
+import { agentDirectoryFailure, parsePublicAgentPage, parsePublicAgentProfile, paginatePublicAgentPage, mergePublicAgentPages, publicAgentSearchQuery, publicTaskDiscoveryQuery, PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES, unsupportedPublicAvailability, unsupportedPublicSort, withDirectoryTimeout, } from './agentDirectory.js';
 export const INBOUND_LIMIT = 100;
 export const OUTBOUND_MAX_BATCH = 50;
 export const OUTBOUND_MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const PUBLIC_PROTOCOL_VERSION = 'gep-a2a/1.0.0';
-export const PUBLIC_HUB_CAPABILITIES = ['publish', 'fetch', 'search', 'task', 'mailbox', 'auth', 'marketplace', 'economy', 'questions', 'recipes'];
+export const PUBLIC_HUB_CAPABILITIES = ['publish', 'fetch', 'search', 'task', 'mailbox', 'auth', 'marketplace', 'economy', 'questions', 'recipes', 'agent_directory'];
 const QUESTION_SUBMIT_FAST_PATH_BYPASS_CONTENT_HASH = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
 const DRY_RUN_RECIPE_ID = 'dry-run-recipe';
 const HUB_DRY_RUN_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -194,7 +196,9 @@ export class PublicHubCapability {
                     evolverVersion: opts.evolverVersion,
                 });
             }
-            catch {
+            catch (err) {
+                if (getWorkspaceKeychainMode(antiAbuse.env) === 'force')
+                    throw err;
                 process.stderr.write('[anti-abuse] failed to build heartbeat telemetry; continuing without heartbeat meta\n');
             }
         }
@@ -241,6 +245,78 @@ export class PublicHubCapability {
         }
         return this.fetch(query);
     }
+    agentDirectory = {
+        search: async (request) => {
+            try {
+                const normalized = hubNs.normalizeAgentSearchRequest(request);
+                const unsupported = unsupportedPublicAvailability(normalized.availability) ?? unsupportedPublicSort(normalized.sort);
+                if (unsupported)
+                    return unsupported;
+                const body = await withDirectoryTimeout(this.http.call('GET', '/a2a/directory/search', undefined, publicAgentSearchQuery(normalized)), normalized.timeoutMs);
+                return paginatePublicAgentPage(parsePublicAgentPage(body), normalized);
+            }
+            catch (error) {
+                return agentDirectoryFailure(error);
+            }
+        },
+        getProfile: async (agentId, options) => {
+            try {
+                const normalizedId = hubNs.normalizeAgentId(agentId);
+                const timeoutMs = hubNs.normalizeAgentDirectoryTimeout(options?.timeoutMs);
+                const body = await withDirectoryTimeout(this.http.call('GET', `/a2a/directory/profile/${encodeURIComponent(normalizedId)}`), timeoutMs);
+                return parsePublicAgentProfile(body);
+            }
+            catch (error) {
+                if (error instanceof HubClientError && error.status === 404)
+                    return { ok: true, value: null };
+                return agentDirectoryFailure(error);
+            }
+        },
+        discoverForTask: async (request) => {
+            try {
+                const normalized = hubNs.normalizeAgentTaskDiscoveryRequest(request);
+                const unsupported = unsupportedPublicAvailability(normalized.availability) ?? unsupportedPublicSort(normalized.sort);
+                if (unsupported)
+                    return unsupported;
+                const taskQuery = [normalized.title, normalized.description].filter(Boolean).join('\n');
+                const searches = [
+                    this.http.call('GET', '/a2a/directory/search', undefined, publicAgentSearchQuery({
+                        query: taskQuery,
+                        ...(normalized.availability ? { availability: normalized.availability } : {}),
+                    })),
+                ];
+                if (normalized.signals && normalized.signals.length > 0) {
+                    searches.push(this.http.call('GET', '/a2a/directory/search', undefined, publicTaskDiscoveryQuery(normalized)));
+                }
+                const bodies = await withDirectoryTimeout(Promise.all(searches), normalized.timeoutMs);
+                return paginatePublicAgentPage(mergePublicAgentPages(bodies.map(parsePublicAgentPage)), normalized, searches.length > 1 ? PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES : hubNs.AGENT_DIRECTORY_MAX_LIMIT);
+            }
+            catch (error) {
+                return agentDirectoryFailure(error);
+            }
+        },
+    };
+    async listAccountAssets(opts) {
+        const path = opts.scope === 'purchased' ? '/a2a/assets/purchased' : '/a2a/assets/published-by-me';
+        const query = {
+            ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+            ...(opts.cursor ? { cursor: opts.cursor } : {}),
+            ...(opts.type ? { type: opts.type } : {}),
+            ...(opts.scope === 'published' && opts.status && opts.status !== 'all' ? { status: opts.status } : {}),
+        };
+        const body = await this.http.call('GET', path, undefined, query);
+        const payload = asRecord(body['payload']) ?? body;
+        const assets = accountAssetsFromPayload(payload);
+        const count = numberField(payload, 'count');
+        const nextCursor = stringField(payload, 'next_cursor') ?? stringField(payload, 'nextCursor');
+        const hasMore = booleanField(payload, 'has_more') ?? booleanField(payload, 'hasMore') ?? Boolean(nextCursor);
+        return {
+            assets,
+            ...(count !== undefined ? { count } : {}),
+            hasMore,
+            ...(nextCursor ? { nextCursor } : {}),
+        };
+    }
     /**
      * Report a cycle outcome to the hub's memory graph (POST /a2a/memory/record).
      * Unlike the protocol-message endpoints (publish/fetch), memory/record takes a
@@ -262,6 +338,24 @@ export class PublicHubCapability {
                 ...(report.score !== undefined ? { score: report.score } : {}),
                 ...(report.summary ? { summary: report.summary } : {}),
                 ...(usedAssetIds.length > 0 ? { used_asset_ids: usedAssetIds } : {}),
+            });
+            return { recorded: true };
+        }
+        catch (e) {
+            return { recorded: false, reason: e instanceof Error ? e.message : String(e) };
+        }
+    }
+    async recordMemoryEvent(report) {
+        const sender = this.opts.senderId()?.trim();
+        if (!sender)
+            return { recorded: false, reason: 'sender_id_required' };
+        const event = asRecord(report.event);
+        if (!event)
+            return { recorded: false, reason: 'event_required' };
+        try {
+            await this.http.call('POST', '/a2a/memory/event', {
+                sender_id: sender,
+                event: { ...event, kind: report.kind },
             });
             return { recorded: true };
         }
@@ -398,11 +492,31 @@ export class PublicHubCapability {
     }
     task = {
         claim: async (taskId) => {
-            await this.http.call('POST', '/a2a/mailbox/outbound', { messages: [{ id: `claim-${taskId}`, type: 'task_claim', payload: { taskId } }] });
-            return { claimId: `claim-${taskId}` };
+            const event = {
+                id: `claim-${taskId}`,
+                type: 'task_claim',
+                payload: { task_id: taskId },
+                priority: 'medium',
+                createdAt: Date.now(),
+            };
+            const body = await this.http.call('POST', '/a2a/mailbox/outbound', { messages: [{ id: event.id, type: event.type, payload: event.payload }] });
+            assertMailboxPushAccepted(mailboxPushResultFromBody(body, [event]).outcomes[0]);
+            return { claimId: event.id };
         },
-        complete: async (claimId, result) => {
-            await this.http.call('POST', '/a2a/mailbox/outbound', { messages: [{ id: `complete-${claimId}`, type: 'task_complete', payload: { claimId, result } }] });
+        complete: async (claimId, _result, context) => {
+            if (typeof context?.taskId !== 'string' || !context.taskId.trim()
+                || typeof context.assetId !== 'string' || !context.assetId.trim()) {
+                throw new hubNs.PublishRejectedError('invalid_task_completion', true, 'task completion requires explicit taskId and assetId', undefined, false);
+            }
+            const event = {
+                id: `complete-${claimId}`,
+                type: 'task_complete',
+                payload: { task_id: context.taskId, asset_id: context.assetId },
+                priority: 'medium',
+                createdAt: Date.now(),
+            };
+            const body = await this.http.call('POST', '/a2a/mailbox/outbound', { messages: [{ id: event.id, type: event.type, payload: event.payload }] });
+            assertMailboxPushAccepted(mailboxPushResultFromBody(body, [event]).outcomes[0]);
             return { status: 'completed' };
         },
         subscribe: (filter) => this.subscribeTasks(filter),
@@ -449,10 +563,7 @@ export class PublicHubCapability {
         ack: async (eventId) => { await this.http.call('POST', '/a2a/mailbox/ack', { message_ids: [eventId] }); },
         push: async (event) => {
             const result = await this.mailbox.pushMany([event]);
-            const outcome = result?.outcomes.find((item) => item.id === event.id);
-            if (outcome?.status !== 'failed')
-                return;
-            throw new hubNs.PublishRejectedError('mailbox_push_rejected', outcome.terminal ?? outcome.retryable !== true, outcome.reason ?? 'mailbox_push_rejected', outcome.retryAfterMs, outcome.retryable);
+            assertMailboxPushAccepted(result?.outcomes.find((item) => item.id === event.id));
         },
         pushMany: async (events) => {
             if (events.length === 0)
@@ -601,6 +712,19 @@ function assetsFromBody(body) {
     ];
     return candidates.filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)));
 }
+function accountAssetsFromPayload(payload) {
+    const candidates = [
+        payload['assets'],
+        payload['results'],
+        payload['items'],
+    ];
+    for (const candidate of candidates) {
+        if (!Array.isArray(candidate))
+            continue;
+        return candidate.filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)));
+    }
+    return [];
+}
 function assetMatchesId(asset, assetId) {
     return Boolean(asset && (asset.asset_id === assetId || stringField(asset, 'id') === assetId));
 }
@@ -666,6 +790,11 @@ function splitMailboxOutboundBatches(events) {
         out.push({ events: batch });
     return out;
 }
+function assertMailboxPushAccepted(outcome) {
+    if (outcome?.status !== 'failed')
+        return;
+    throw new hubNs.PublishRejectedError('mailbox_push_rejected', outcome.terminal ?? outcome.retryable !== true, outcome.reason ?? 'mailbox_push_rejected', outcome.retryAfterMs, outcome.retryable);
+}
 function mailboxPushResultFromBody(body, events) {
     const results = mailboxResultRows(body);
     if (results.length === 0) {
@@ -690,15 +819,31 @@ function mailboxPushOutcomeFromRow(eventId, results, index) {
         })();
     const retryable = booleanField(match, 'retryable');
     const terminal = booleanField(match, 'terminal');
+    const inferredTerminal = retryable === undefined && terminal === undefined
+        ? isKnownTerminalMailboxFailure(match, reason)
+        : undefined;
     return {
         id: eventId,
         status: 'failed',
         reason,
-        ...(retryable !== undefined ? { retryable } : {}),
-        ...(terminal !== undefined ? { terminal } : {}),
+        ...(retryable !== undefined ? { retryable } : inferredTerminal === false ? { retryable: true } : {}),
+        ...(terminal !== undefined ? { terminal } : inferredTerminal !== undefined ? { terminal: inferredTerminal } : {}),
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         raw: match,
     };
+}
+function isKnownTerminalMailboxFailure(row, reason) {
+    const status = stringField(row, 'status')?.toLowerCase() ?? '';
+    if (status.includes('reject') || status.includes('invalid') || status === 'quarantine')
+        return true;
+    const normalizedReason = reason.toLowerCase();
+    const alreadySubmittedCode = 'already_submitted_for_task';
+    if (normalizedReason === alreadySubmittedCode
+        || normalizedReason.startsWith(`${alreadySubmittedCode}:`)
+        || normalizedReason === 'orphan_node_not_allowed_for_bounty')
+        return true;
+    return /\binvalid[_ -]|validation[_ -]?error|payload[_ -]?too[_ -]?large|not[_ -]?found|expired|already[_ -]?(claimed|completed)|duplicate|conflict|not[_ -]?(task[_ -]?(owner|claimer)|asset[_ -]?owner|open|active|claimed|eligible)|asset[_ -]?(orphaned|not[_ -]?promoted)|task[_ -]?full|node[_ -]?(suspended|merging|dead)|insufficient[_ -]?(reputation|model[_ -]?tier)|task[_ -]?reserved[_ -]?for[_ -]?preferred[_ -]?merchant|atp[_ -]?requires[_ -]?evolver[_ -]?version|self[_ -]?funded[_ -]?bounty[_ -]?self[_ -]?claim/i
+        .test(reason);
 }
 // A 413 (payload too large) or 429 (rate-limited) can surface either as a JSON
 // HubClientError, OR — when an ingress/gateway (Envoy/nginx) emits a non-JSON

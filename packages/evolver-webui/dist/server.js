@@ -2,7 +2,16 @@ import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { events as ev, assetstore, mailbox as mb, ops } from '@evomap/evolver-core';
 import { CONSOLE_HTML } from './console.js';
+import { EventSnapshotCache, fileEventSnapshotSource } from './eventSnapshot.js';
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const DASHBOARD_COOKIE = 'evolver_dashboard';
+const BROWSER_BLOCKED_PORTS = new Set([
+    1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+    101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
+    389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
+    636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566,
+    6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
 /** The empty value summary (zero entries) — the shape /api/value returns when no provider is wired, so the card
  *  always gets a valid ValueSummary to render. Derived from core's aggregator to stay shape-identical. */
 const EMPTY_VALUE_SUMMARY = ops.valueSummary([]);
@@ -10,6 +19,15 @@ const EMPTY_VALUE_SUMMARY = ops.valueSummary([]);
 function tokenEq(a, b) {
     const ba = Buffer.from(a), bb = Buffer.from(b);
     return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+function cookieValue(header, name) {
+    for (const part of (header ?? '').split(';')) {
+        const at = part.indexOf('=');
+        if (at < 0 || part.slice(0, at).trim() !== name)
+            continue;
+        return part.slice(at + 1).trim();
+    }
+    return '';
 }
 function positiveIntParam(value) {
     if (value === null || value.trim() === '')
@@ -33,61 +51,136 @@ export class WebUIServer {
     actorId;
     /** Review ledger backing the human-review queue. Undefined when no LocalJsonlProvider store is available. */
     review;
-    /** Token guarding /api/*; printed by the launcher, supplied by the browser via ?token= or Bearer. */
+    /** Token guarding /api/*; supplied by the browser via Bearer, with ?token= retained for compatibility. */
     token;
+    launchTicket;
+    launchTicketAvailable = true;
+    eventSnapshots;
     constructor(deps) {
         this.deps = deps;
         this.host = deps.host ?? '127.0.0.1';
         this.now = deps.now ?? (() => Date.now());
         this.actorId = deps.actorId ?? 'console';
         this.token = deps.token ?? randomBytes(16).toString('hex');
+        this.launchTicket = deps.launchTicket ?? randomBytes(16).toString('hex');
+        this.eventSnapshots = new EventSnapshotCache(deps.eventSource ?? fileEventSnapshotSource(deps.eventsPath));
         this.ingestor = deps.ingestor ?? new ev.Ingestor({ path: deps.eventsPath });
         // Co-locate the review ledger with the store so the queue reads the same review.jsonl the CLI writes.
         this.review = deps.review ?? (deps.store instanceof assetstore.LocalJsonlProvider ? new assetstore.ReviewLedger(deps.store.baseDir) : undefined);
         this.server = createServer((req, res) => { void this.handle(req, res); });
     }
-    listen(port = 0) {
-        return new Promise((resolve) => this.server.listen(port, this.host, () => {
-            const a = this.server.address();
-            resolve(a && typeof a === 'object' ? a.port : port);
-        }));
+    async listen(port = 0) {
+        if (port !== 0 && BROWSER_BLOCKED_PORTS.has(port))
+            throw new Error('webui_port_blocked');
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const assigned = await this.listenOnce(port);
+            if (port !== 0 || !BROWSER_BLOCKED_PORTS.has(assigned))
+                return assigned;
+            await this.close();
+        }
+        throw new Error('webui_safe_port_unavailable');
     }
-    close() { return new Promise((res, rej) => this.server.close((e) => (e ? rej(e) : res()))); }
+    listenOnce(port) {
+        return new Promise((resolve, reject) => {
+            const onError = (error) => reject(error);
+            this.server.once('error', onError);
+            this.server.listen(port, this.host, () => {
+                this.server.removeListener('error', onError);
+                const a = this.server.address();
+                resolve(a && typeof a === 'object' ? a.port : port);
+            });
+        });
+    }
+    close() {
+        return new Promise((resolve, reject) => {
+            this.server.close((error) => (error ? reject(error) : resolve()));
+            this.server.closeAllConnections();
+        });
+    }
     async handle(req, res) {
         try {
             if (!LOOPBACK.has(req.socket.remoteAddress ?? ''))
                 return this.send(res, 403, 'text/plain', 'non-loopback');
             const url = new URL(req.url ?? '/', 'http://localhost');
             const p = url.pathname;
+            if (p === '/launch') {
+                if (req.method !== 'GET') {
+                    res.writeHead(405, { allow: 'GET', 'content-type': 'text/plain' });
+                    res.end('method not allowed');
+                    return;
+                }
+                const ticket = url.searchParams.get('ticket') ?? '';
+                if (!this.launchTicketAvailable || !tokenEq(ticket, this.launchTicket)) {
+                    return this.send(res, 401, 'text/plain', 'unauthorized');
+                }
+                this.launchTicketAvailable = false;
+                res.writeHead(302, {
+                    location: '/',
+                    'set-cookie': `${DASHBOARD_COOKIE}=${this.token}; HttpOnly; SameSite=Strict; Path=/`,
+                    'cache-control': 'no-store',
+                    'referrer-policy': 'no-referrer',
+                });
+                res.end();
+                return;
+            }
             // Root HTML is a static shell (no data) → served freely; it reads ?token= and authenticates the /api calls.
             if (p === '/' || p === '/index.html')
                 return this.send(res, 200, 'text/html; charset=utf-8', CONSOLE_HTML);
             // Everything else (all /api/*) requires the token — accepted via Bearer header or ?token= (browser convenience).
             const auth = req.headers['authorization'] ?? '';
-            const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : (url.searchParams.get('token') ?? '');
-            if (!tokenEq(supplied, this.token))
+            const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+            const queryToken = url.searchParams.get('token') ?? '';
+            const cookieToken = cookieValue(req.headers.cookie, DASHBOARD_COOKIE);
+            const bearerValid = tokenEq(bearer, this.token);
+            const queryValid = tokenEq(queryToken, this.token);
+            const cookieValid = tokenEq(cookieToken, this.token);
+            if (!bearerValid && !queryValid && !cookieValid) {
                 return this.send(res, 401, 'application/json', JSON.stringify({ error: 'unauthorized' }));
+            }
+            const stateChanging = req.method !== 'GET' && req.method !== 'HEAD';
+            if (stateChanging && cookieValid && !bearerValid && !queryValid) {
+                const expectedOrigin = req.headers.host ? `http://${req.headers.host}` : '';
+                if (!expectedOrigin || req.headers.origin !== expectedOrigin) {
+                    return this.send(res, 403, 'application/json', JSON.stringify({ error: 'same_origin_required' }));
+                }
+                if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+                    return this.send(res, 415, 'application/json', JSON.stringify({ error: 'json_required' }));
+                }
+            }
             if (p === '/api/status')
-                return this.json(res, ev.statusReport(ev.readEvents(this.deps.eventsPath)));
+                return this.json(res, ev.statusReport(this.eventSnapshots.read()));
             if (p === '/api/cycles')
-                return this.json(res, ev.listCycles(ev.readEvents(this.deps.eventsPath)));
+                return this.json(res, ev.listCycles(this.eventSnapshots.read()));
             if (p === '/api/cycle')
-                return this.json(res, ev.showCycle(ev.readEvents(this.deps.eventsPath), url.searchParams.get('id') ?? ''));
+                return this.json(res, ev.showCycle(this.eventSnapshots.read(), url.searchParams.get('id') ?? ''));
             if (p === '/api/narrative') {
-                return this.json(res, ev.buildNarrativeSnapshot(ev.readEvents(this.deps.eventsPath), { limit: positiveIntParam(url.searchParams.get('limit')) }));
+                return this.json(res, ev.buildNarrativeSnapshot(this.eventSnapshots.read(), { limit: positiveIntParam(url.searchParams.get('limit')) }));
             }
             if (p === '/api/triggers')
-                return this.json(res, ev.listTriggers(ev.readEvents(this.deps.eventsPath)));
+                return this.json(res, ev.listTriggers(this.eventSnapshots.read()));
             if (p === '/api/daily-summary') {
                 const day = url.searchParams.get('day') ?? new Date(this.now()).toISOString().slice(0, 10);
-                return this.json(res, ev.dailySummary(ev.readEvents(this.deps.eventsPath), day));
+                return this.json(res, ev.dailySummary(this.eventSnapshots.read(), day));
             }
             if (p === '/api/value') {
                 // Thin pass-through: the provider (composition layer) owns prices + traces; the server only scopes the
                 // window and serializes. No provider wired → an empty summary so the card renders "no savings yet".
                 const window = ops.windowFromSpec(url.searchParams.get('window') ?? undefined, this.now());
-                const summary = this.deps.valueSummary ? this.deps.valueSummary(window) : EMPTY_VALUE_SUMMARY;
+                const summary = this.deps.valueSummary ? this.deps.valueSummary(window, this.eventSnapshots.read()) : EMPTY_VALUE_SUMMARY;
                 return this.json(res, summary);
+            }
+            if (p === '/api/retention') {
+                if (!this.deps.retentionReport)
+                    return this.json(res, { available: false });
+                try {
+                    return this.json(res, { ...this.deps.retentionReport(), available: true });
+                }
+                catch {
+                    return this.send(res, 503, 'application/json', JSON.stringify({
+                        available: false,
+                        error: 'retention_unavailable',
+                    }));
+                }
             }
             if (p === '/api/mailbox') {
                 if (!this.deps.mailbox)
@@ -143,7 +236,7 @@ export class WebUIServer {
                 // record) are appended as context from a bounded list. Pending (quarantined) sorts first. Read-only here.
                 // Match the CLI's semantics exactly: only the unattended distill-observer counts as "auto-drafted"
                 // (manual `ingest --distill` / skill2gep emit gene.distilled with a different source and are NOT auto).
-                const autoDrafted = new Set(this.ingestor.readAll()
+                const autoDrafted = new Set(this.eventSnapshots.read()
                     .filter((e) => e.type === 'gene.distilled' && e.payload?.['source'] === 'distill-observer')
                     .map((e) => String(e.payload?.['assetId'] ?? ''))
                     .filter(Boolean));

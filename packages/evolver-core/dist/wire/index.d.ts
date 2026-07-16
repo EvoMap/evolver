@@ -2,12 +2,18 @@
  * 资产 wire 层. SSOT = @evomap/gep-sdk/schemas/*.schema.json (D19).
  * 字段一律 snake_case 锁定 (asset_id 跨实现契约); 本仓不发明 wire 字段, 只镜像 + 重导出工具.
  */
-import type { GeneRoutingHint, GeneToolPolicy } from './geneHints.js';
+import type { GeneRoutingHint, GeneToolPolicy, GenerationMeta } from './geneHints.js';
 export { SCHEMA_VERSION, canonicalize, computeAssetId, verifyAssetId } from '@evomap/gep-sdk';
 export type GepCategory = typeof import('@evomap/gep-sdk').GEP_GENE_CATEGORIES[number];
 export type OutcomeStatus = typeof import('@evomap/gep-sdk').GEP_OUTCOME_STATUSES[number];
 export type SourceType = typeof import('@evomap/gep-sdk').GEP_SOURCE_TYPES[number];
 export type RiskLevel = typeof import('@evomap/gep-sdk').GEP_RISK_LEVELS[number];
+export type CapsuleVisibility = typeof import('@evomap/gep-sdk').GEP_CAPSULE_VISIBILITIES[number];
+export type CapsuleCostTier = typeof import('@evomap/gep-sdk').GEP_CAPSULE_COST_TIERS[number];
+export interface CapsuleAuthor {
+    handle: string;
+    evox_install_id: string;
+}
 /** Gene = 基因型/方法论 (gene.schema.json). */
 export interface Gene {
     type: 'Gene';
@@ -28,6 +34,7 @@ export interface Gene {
     anti_patterns?: unknown[];
     routing_hint?: GeneRoutingHint | null;
     tool_policy?: GeneToolPolicy | null;
+    generation_meta?: GenerationMeta | null;
     asset_id: string;
 }
 /** Capsule = 表现型/纯进化产物 (capsule.schema.json). */
@@ -49,6 +56,11 @@ export interface Capsule {
     };
     resolution_status?: 'pending' | 'suppressed_observationally' | 'resolved_by_evidence' | 'regressed' | 'inconclusive';
     proof_of_work?: unknown;
+    visibility?: CapsuleVisibility | null;
+    scope?: string[] | null;
+    cost_tier?: CapsuleCostTier | null;
+    pack_of?: string[] | null;
+    author?: CapsuleAuthor | null;
     execution_trace?: unknown[];
     trigger_context?: unknown;
     asset_id: string;
@@ -88,4 +100,4 @@ export interface Mutation {
     risk_level: RiskLevel;
 }
 export { validateWire, schemaProperties, type WireValidation } from './schemaGate.js';
-export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, stripGeneHints, type RoutingTier, type ReasoningLevel, type ToolPolicySeverity, type GeneRoutingHint, type GeneToolPolicy, } from './geneHints.js';
+export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENERATION_SOURCES, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, stripGeneHints, type RoutingTier, type ReasoningLevel, type ToolPolicySeverity, type GenerationSource, type GeneRoutingHint, type GeneToolPolicy, type GeneGenerationHeuristics, type GenerationMeta, } from './geneHints.js';

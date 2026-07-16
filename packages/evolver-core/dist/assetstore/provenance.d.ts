@@ -16,10 +16,13 @@ export interface ProvenanceRecord {
 export declare class ProvenanceStore {
     private readonly now;
     private readonly path;
+    private readonly lockPath;
     private readonly index;
-    private loaded;
+    private fileState;
     constructor(baseDir: string, now?: () => number);
-    private load;
+    private rebuildIndex;
+    private refreshUnderLock;
+    private withFreshRead;
     /** Record provenance for an asset_id (append-only; the JSONL history is the audit trail). */
     mark(rec: Omit<ProvenanceRecord, 'at'> & {
         at?: string;
@@ -28,6 +31,8 @@ export declare class ProvenanceStore {
     get(assetId: string): ProvenanceRecord | null;
     /** No record → trusted (local default); a record → its trusted flag. */
     isTrusted(assetId: string): boolean;
+    /** One linearizable trust snapshot for bounded batch readers. */
+    snapshot(): ReadonlyMap<string, ProvenanceRecord>;
     /** Explicit, audited untrusted→trusted promotion. Appends a new trusted record carrying who/why. */
     promote(assetId: string, by: string, reason: string): ProvenanceRecord;
 }

@@ -19,6 +19,7 @@ export class FakeHubCapability {
     claims = [];
     completed = [];
     auth = fakeAuth;
+    agentDirectory;
     nextPollAfterMs;
     constructor(opts = {}) {
         this.opts = opts;
@@ -42,8 +43,8 @@ export class FakeHubCapability {
             this.claims.push({ taskId, claimId });
             return { claimId };
         },
-        complete: async (claimId, result) => {
-            this.completed.push({ claimId, result });
+        complete: async (claimId, result, context) => {
+            this.completed.push({ claimId, result, ...(context ? { context } : {}) });
             return { status: 'completed' };
         },
         subscribe: async function* () {

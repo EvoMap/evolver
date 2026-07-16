@@ -101,11 +101,23 @@ function readSuite(path) {
 function pct(value) {
     return `${(value * 100).toFixed(0)}%`;
 }
+function overblockSuspects(report) {
+    return report.overblockedAntiGenes
+        .map((row) => `${row.antiGeneId} count=${row.count} tasks=${row.taskIds.join(',')}`)
+        .join('; ');
+}
 function printReport(report, log) {
     log(`anti-gene-benchmark [${report.suite}]: ${report.tasks} task(s) -> ${report.verdict}`);
     log(`  baseline  failures=${report.baseline.failures}/${report.baseline.n} (${pct(report.baseline.failureRate)}) repeated=${report.baseline.repeatedFailures}`);
     log(`  antiGene  failures=${report.antiGene.failures}/${report.antiGene.n} (${pct(report.antiGene.failureRate)}) repeated=${report.antiGene.repeatedFailures} warnings=${report.antiGene.observedWarnings}`);
     log(`  delta failure=${(report.failureDelta * 100).toFixed(1)}pt missingWarnings=${report.missingExpectedWarnings} overblocked=${report.overblocked}`);
+    if (report.overblockedAntiGenes.length > 0) {
+        log(`  overblock suspects: ${overblockSuspects(report)}`);
+        log('  note: review these AntiGenes before broader rollout; downgrade or reject manually if overblock repeats.');
+    }
+    if (report.missingExpectedWarnings > 0) {
+        log('  note: expected AntiGene warnings are missing; check approved AntiGene review state, --assets/--review-dir, expectedAntiWarnings, and signal triggers.');
+    }
 }
 function jsonReplacer(_key, value) {
     return typeof value === 'number' && !Number.isFinite(value) ? String(value) : value;

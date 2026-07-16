@@ -69,7 +69,7 @@ export class MailboxIpcServer {
                     this.onAuthFailure?.();
                 }
                 catch { /* auth failure handling must never weaken fail-closed IPC auth */ }
-                return this.json(res, 401, { error: 'bad token' });
+                return this.json(res, 401, { error: 'Unauthorized', code: 'unauthorized' });
             }
             const url = new URL(req.url ?? '/', 'http://localhost');
             const route = `${req.method} ${url.pathname}`;
@@ -129,7 +129,7 @@ export class MailboxIpcServer {
             return this.json(res, 404, { error: 'unknown route' });
         }
         catch (e) {
-            return this.json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+            return this.json(res, 400, { error: e instanceof Error ? e.message : String(e), code: 'invalid_request' });
         }
     }
     readJson(req) {
