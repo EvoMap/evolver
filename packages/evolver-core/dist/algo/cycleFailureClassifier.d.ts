@@ -1,5 +1,5 @@
 /** Bucket the failure falls into. unclassified = default-open (treat as a real evolver bug worth filing).
- *  Bucket string matches V1 (EvoMap/evolver-private-dev#279 commit a89e123e) byte-for-byte so wire / UI
+ *  Bucket string matches V1 byte-for-byte so wire / UI
  *  consumers can branch on the same value regardless of producer. */
 export type CycleFailureClass = 'host_no_transcript' | 'host_provider_error' | 'local_gene_no_blast' | 'unclassified';
 /** Shape of a recent cycle event the classifier reads. Loose so callers can pass partial DTOs. */

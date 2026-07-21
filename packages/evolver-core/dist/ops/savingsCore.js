@@ -6,8 +6,7 @@
 // gate (it reads the vendored files at runtime, so this module stays free of cross-rootDir JSON
 // imports), and savings-core's daily drift-check locks the vendored copies to upstream. To change a
 // coefficient: change savings-core first, regenerate vectors there, bump spec_version, then
-// re-vendor here AND in evomap-hub / evomap-private / evox-online-deck / evomap-desktop / evox /
-// evolver-private-dev / evolver-v2-enterprise-dev.
+// re-vendor it into each consuming distribution.
 //
 // Core purity contract holds: no I/O, no Date.now/Math.random — pure functions over numbers.
 export const SAVINGS_SPEC_VERSION = '0.3.0';

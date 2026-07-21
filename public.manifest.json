@@ -7,8 +7,6 @@
   "releaseTag": "v2.0.0-beta.3",
   "releaseTitle": "Evolver v2 beta v2.0.0-beta.3",
   "prerelease": true,
-  "sourceRepo": "EvoMap/evolver-v2-private-dev",
-  "sourceSha": "d438cd63b0ef3dc9888b2ab300e30e30f489a5e9",
   "obfuscate": [],
   "workspacePackages": [
     "evolver-core",

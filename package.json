@@ -6,7 +6,7 @@
   "description": "Evolver v2 beta public distribution package.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EvoMap/evolver-v2-private-dev.git"
+    "url": "git+https://github.com/EvoMap/evolver.git"
   },
   "bin": {
     "evolver": "./bin/evolver.js",

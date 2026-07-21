@@ -5,13 +5,11 @@ Evolver v2 — hub-无关进化 core + 按需 hub 适配。设计见 `~/evolver-
 monorepo（pnpm workspaces）：
 - `@evomap/evolver-core` — hub 无关核心（算法/原材料/mailbox/资产库/workflow）。**边界铁律**：不得 import 任何 adapter/proxy。
 - `@evomap/evolver-adapter-public` — 公共 Hub adapter，负责 public economy/marketplace/auth wire。
-- `@evomap/evolver-hub-conformance` — test-only HubCapability contract suite，public/private adapter 共用。
 - `evolver-proxy` `evolver-mcp` `evolver-cli` `evolver-runtime-adapters` `evolver-webui`。
 
 Runtime onboarding: [Antigravity MCP, ingest, and trajectory export](docs/antigravity.md).
 
-企业私有化不维护第二套 v2 产品线；`evolver-v2-enterprise-dev` 只持有 private protocol + private Hub adapter，
-并通过 `@evomap/evolver-hub-conformance` 证明它仍实现同一份 core contract。
+Enterprise integrations use private protocol and Hub adapters while implementing the same core contract.
 
 ```bash
 corepack pnpm install
