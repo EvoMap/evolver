@@ -33,6 +33,36 @@ const path = require('node:path');
 
 const HOOKS_DIR = ${JSON.stringify(hooksDirAbsolute)};
 
+// opencode 1.18.x: Bun spawnSync with script files is unreliable (ETIMEDOUT on Windows).
+// Inline memory reading as fallback - pure fs+JSON, works in any JS runtime.
+function readEvolverMemoryInline() {
+  try {
+    var os = require("os");
+    var evolverRoot = process.env.EVOLVER_SETTINGS_DIR || (os.homedir() + "/.evolver");
+    var graphPath = evolverRoot + "/memory/evolution/memory_graph.jsonl";
+    if (!require("fs").existsSync(graphPath)) return null;
+    var raw = require("fs").readFileSync(graphPath, "utf8").trim();
+    if (!raw) return null;
+    var entries = raw.split("\n").map(function(l) { try { return JSON.parse(l); } catch(e) { return null; } }).filter(Boolean);
+    if (entries.length === 0) return null;
+    var recent = entries.slice(-5);
+    var sc = recent.filter(function(e) { return e.outcome && e.outcome.status === "success"; }).length;
+    var fc = recent.filter(function(e) { return e.outcome && e.outcome.status === "failed"; }).length;
+    var lines = recent.map(function(e) {
+      var t = e.timestamp || "unknown";
+      var s = e.score !== undefined ? e.score : (e.outcome && e.outcome.score) || "N/A";
+      var sig = e.signals || (e.outcome && e.outcome.signals) || [];
+      var n = e.outcome && e.outcome.note ? " " + e.outcome.note : "";
+      return "[+] " + t + " score=" + s + " signals=" + JSON.stringify(sig) + n;
+    });
+    return "[Evolution Memory] Recent " + recent.length + " outcomes (" + sc + " success, " + fc + " failed):\n" + lines.join("\n") + "\n\nUse successful approaches. Avoid repeating failed patterns.";
+  } catch(e) { return null; }
+}
+
+// DIAG: diagnostic markers (remove after verification)
+var evolverMarkPath = require("path").join(HOOKS_DIR, "..", ".evolver-diag.log");
+try { require("fs").appendFileSync(evolverMarkPath, new Date().toISOString() + " [A] module loaded\n"); } catch(e) {}
+
 function runHook(scriptName, payload, timeoutMs) {
   try {
     const result = spawnSync('node', [path.join(HOOKS_DIR, scriptName)], {
@@ -47,7 +77,36 @@ function runHook(scriptName, payload, timeoutMs) {
   }
 }
 
+var memoryInjected = false;
+
 const Evolver = async () => ({
+  // opencode 1.18.x: chat.message hook can inject memory into output.parts
+  // event hook signature is (input) => void, it cannot return values to LLM.
+  "chat.message": async (input, output) => {
+    if (memoryInjected) return;
+    memoryInjected = true;
+    // DIAG: mark handler entry
+    try { require("fs").appendFileSync(evolverMarkPath, new Date().toISOString() + " [C] chat.message\n"); } catch (e) {}
+    // Try spawnSync first (works on Claude Code / Cursor)
+    var result = runHook("evolver-session-start.js", {
+      session_id: input && input.sessionID,
+    }, 10000);
+    var text = result && (result.agent_message || result.additionalContext);
+    // DIAG: mark spawn result
+    try { require("fs").appendFileSync(evolverMarkPath, new Date().toISOString() + " [D] spawnSync text=" + (text ? text.length : 0) + "\n"); } catch (e) {}
+    // Fallback: inline memory reading (Bun spawnSync unreliable on Windows)
+    if (!text) {
+      text = readEvolverMemoryInline();
+      try { require("fs").appendFileSync(evolverMarkPath, new Date().toISOString() + " [D1] inline text=" + (text ? text.length : 0) + "\n"); } catch (e) {}
+    }
+    // DIAG: mark final inject
+    try { require("fs").appendFileSync(evolverMarkPath, new Date().toISOString() + " [E] inject text=" + (text ? text.length : 0) + "\n"); } catch (e) {}
+    if (text && output && Array.isArray(output.parts)) {
+      output.parts.unshift({ type: "text", text: text });
+    }
+  },
+
+  // Keep event hook for backward compatibility (older opencode versions)
   event: async ({ event }) => {
     if (!event || typeof event.type !== 'string') return;
     if (event.type === 'session.created') {
@@ -72,8 +131,9 @@ const Evolver = async () => ({
   },
 });
 
-module.exports = { Evolver };
-module.exports.default = Evolver;
+const evolverPluginModule = { id: "evolver", server: Evolver };
+module.exports = evolverPluginModule;
+module.exports.default = evolverPluginModule;
 `;
 }
 
@@ -220,7 +280,7 @@ function verify({ configRoot }) {
       // failure here is a guaranteed failure under opencode too.
       delete require.cache[require.resolve(pluginPath)];
       const mod = require(pluginPath);
-      const fn = mod && (mod.Evolver || mod.default);
+      const fn = mod && (mod.server || mod.Evolver || mod.default);
       pluginLoadable = typeof fn === 'function';
       if (!pluginLoadable) pluginLoadError = 'no Evolver/default function export';
     } catch (err) {
