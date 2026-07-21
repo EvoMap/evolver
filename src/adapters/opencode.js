@@ -33,6 +33,62 @@ const path = require('node:path');
 
 const HOOKS_DIR = ${JSON.stringify(hooksDirAbsolute)};
 
+// Require shared modules from hooks directory (side-effect-free, deployed by setup-hooks)
+var runtimePaths = require(path.join(HOOKS_DIR, '_runtimePaths'));
+var memoryFiltering = require(path.join(HOOKS_DIR, '_memoryFiltering'));
+
+// DIAG: temporary diagnostic markers (remove after maintainer verification)
+var evolverMarkPath = require('path').join(require('path').dirname(hooksDirAbsolute), '.evolver-diag.log');
+function evolverMark(id, data) {
+  try { require('fs').appendFileSync(evolverMarkPath, new Date().toISOString() + ' [' + id + '] ' + (data||'') + '\\n'); } catch(e) {}
+}
+evolverMark('A-module-loaded', 'Bun=' + (typeof Bun !== 'undefined'));
+
+// Read recent entries from jsonl tail (avoid full-file parse for large graphs)
+function readRecentEntries(graphPath, maxEntries) {
+  try {
+    var stat = require('fs').statSync(graphPath);
+    var tailBytes = Math.min(stat.size, 64 * 1024);
+    var fd = require('fs').openSync(graphPath, 'r');
+    var buf = Buffer.alloc(tailBytes);
+    require('fs').readSync(fd, buf, 0, tailBytes, Math.max(0, stat.size - tailBytes));
+    require('fs').closeSync(fd);
+    return buf.toString('utf8').trim().split('\\n').slice(-maxEntries).map(function(l) {
+      try { return JSON.parse(l); } catch(e) { return null; }
+    }).filter(Boolean);
+  } catch(e) { return []; }
+}
+
+// Format outcome with correct [+]/[-] prefix and score handling
+function formatOutcome(e) {
+  var ok = e.outcome && e.outcome.status === 'success';
+  var score = (e.outcome && e.outcome.score !== undefined && e.outcome.score !== null)
+    ? e.outcome.score
+    : (e.score !== undefined && e.score !== null ? e.score : 'N/A');
+  var signals = e.signals || (e.outcome && e.outcome.signals) || [];
+  var note = e.outcome && e.outcome.note ? ' ' + e.outcome.note : '';
+  return (ok ? '[+]' : '[-]') + ' ' + (e.timestamp || 'unknown') + ' score=' + score + ' signals=' + JSON.stringify(signals) + note;
+}
+
+// Inline memory reader using shared modules for workspace-aware filtering
+function readEvolverMemoryInline() {
+  try {
+    var evolverRoot = runtimePaths.findEvolverRoot();
+    if (!evolverRoot) return null;
+    var graphPath = runtimePaths.findMemoryGraph(evolverRoot);
+    if (!graphPath || !require('fs').existsSync(graphPath)) return null;
+    var currentDir = runtimePaths.resolveProjectDir();
+    var entries = readRecentEntries(graphPath, 20);
+    var filtered = memoryFiltering.filterRelevantOutcomes(entries);
+    if (!filtered || filtered.length === 0) return null;
+    var sc = filtered.filter(function(e) { return e.outcome && e.outcome.status === 'success'; }).length;
+    var fc = filtered.filter(function(e) { return !(e.outcome && e.outcome.status === 'success'); }).length;
+    return '[Evolution Memory] Recent ' + filtered.length + ' outcomes (' + sc + ' success, ' + fc + ' failed):\\n' +
+      filtered.map(formatOutcome).join('\\n') +
+      '\\n\\nUse successful approaches. Avoid repeating failed patterns.';
+  } catch(e) { return null; }
+}
+
 function runHook(scriptName, payload, timeoutMs) {
   try {
     const result = spawnSync('node', [path.join(HOOKS_DIR, scriptName)], {
@@ -47,33 +103,57 @@ function runHook(scriptName, payload, timeoutMs) {
   }
 }
 
+var memoryInjected = false;
+
 const Evolver = async () => ({
+  // Memory injection via chat.message (can mutate output.parts for the LLM)
+  "chat.message": async (input, output) => {
+    if (memoryInjected) return;
+    evolverMark('C-chat-message', 'parts=' + (output && output.parts ? output.parts.length : 'N/A'));
+    // 1) Inline read (0ms, workspace-aware via shared modules)
+    var text = readEvolverMemoryInline();
+    evolverMark('D-inline', 'text=' + (text ? text.length : 0));
+    // 2) Fallback: full spawnSync (for platforms where it works)
+    if (!text) {
+      var result = runHook('evolver-session-start.js', {
+        session_id: input && input.sessionID,
+      }, 10000);
+      text = result && (result.agent_message || result.additionalContext);
+      evolverMark('D1-spawnSync', 'text=' + (text ? text.length : 0));
+    } else {
+      // 3) Best-effort spawnSync for side effects (recordMarkedSession, daemon restart)
+      try { runHook('evolver-session-start.js', { session_id: input && input.sessionID }, 2000); } catch(e) {}
+    }
+    evolverMark('E-inject', 'text=' + (text ? text.length : 0));
+    if (text && output && Array.isArray(output.parts)) {
+      output.parts.unshift({ type: "text", text: text });
+      memoryInjected = true;
+      evolverMark('E1-injected', 'parts=' + output.parts.length);
+    }
+  },
+  // session.idle -> record outcome
   event: async ({ event }) => {
     if (!event || typeof event.type !== 'string') return;
-    if (event.type === 'session.created') {
-      runHook('evolver-session-start.js', {
-        session_id: event.properties && event.properties.info && event.properties.info.id,
-      }, 3000);
-      return;
-    }
     if (event.type === 'session.idle') {
       runHook('evolver-session-end.js', {
         session_id: event.properties && event.properties.sessionID,
-      }, 8000);
+      }, 10000);
     }
   },
   'tool.execute.after': async (input, output) => {
     if (!input || typeof input.tool !== 'string') return;
     if (input.tool !== 'write' && input.tool !== 'edit') return;
+    evolverMark('G-tool-after', 'tool=' + input.tool);
     runHook('evolver-signal-detect.js', {
       tool_input: (output && output.args) || {},
       tool_response: (output && output.output) || (output && output.result) || {},
-    }, 2000);
+    }, 5000);
   },
 });
 
-module.exports = { Evolver };
-module.exports.default = Evolver;
+const evolverPluginModule = { id: "evolver", server: Evolver };
+module.exports = evolverPluginModule;
+module.exports.default = evolverPluginModule;
 `;
 }
 
@@ -220,7 +300,7 @@ function verify({ configRoot }) {
       // failure here is a guaranteed failure under opencode too.
       delete require.cache[require.resolve(pluginPath)];
       const mod = require(pluginPath);
-      const fn = mod && (mod.Evolver || mod.default);
+      const fn = mod && (mod.server || mod.Evolver || mod.default);
       pluginLoadable = typeof fn === 'function';
       if (!pluginLoadable) pluginLoadError = 'no Evolver/default function export';
     } catch (err) {
