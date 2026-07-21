@@ -1,14 +1,14 @@
 {
   "package": "@evomap/evolver",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "channel": "v2-beta",
   "publicRepo": "EvoMap/evolver",
   "publicBranch": "v2-beta",
-  "releaseTag": "v2.0.0-beta.2",
-  "releaseTitle": "Evolver v2 beta v2.0.0-beta.2",
+  "releaseTag": "v2.0.0-beta.3",
+  "releaseTitle": "Evolver v2 beta v2.0.0-beta.3",
   "prerelease": true,
   "sourceRepo": "EvoMap/evolver-v2-private-dev",
-  "sourceSha": "ab9720a003ebf0fd442ea03260f26a40190a36e2",
+  "sourceSha": "d438cd63b0ef3dc9888b2ab300e30e30f489a5e9",
   "obfuscate": [],
   "workspacePackages": [
     "evolver-core",

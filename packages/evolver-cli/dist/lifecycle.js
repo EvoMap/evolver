@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } 
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { loadEnvFile, loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 const requireFromHere = createRequire(import.meta.url);
 const DEFAULT_DAEMON_NAME = 'evolver-proxy';
 const DEFAULT_LABEL = 'com.evomap.evolver-proxy';
@@ -66,8 +66,14 @@ async function runLifecycleCommandInner(argv, deps) {
         case 'watch':
             return runWatch(paths, env, flags, stdout, stderr);
         case 'install-service': {
+            const requestedEnvFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : undefined;
+            const envFileResult = requestedEnvFile
+                ? loadEnvFile(requestedEnvFile, env)
+                : loadEnvFileFromEnv(env);
+            if (envFileResult.error)
+                throw new Error('failed to load lifecycle environment file');
             const target = serviceTarget(flags);
-            const result = installService(target, flags, env, deps.argv1 ?? process.argv[1]);
+            const result = await installService(target, flags, env, deps.argv1 ?? process.argv[1]);
             stdout(`${JSON.stringify(result, null, 2)}\n`);
             return 0;
         }
@@ -130,7 +136,7 @@ export async function startLifecycle(paths, env = process.env) {
         cwd,
         detached: true,
         stdio: ['ignore', out, err],
-        env: { ...env },
+        env: oneShotChildEnv(env),
         windowsHide: true,
     });
     child.once('error', (err) => {
@@ -149,6 +155,11 @@ export async function startLifecycle(paths, env = process.env) {
         createdAt: new Date().toISOString(),
     });
     return { status: 'started', pid: child.pid, logFile: paths.logFile };
+}
+function oneShotChildEnv(env) {
+    const childEnv = { ...env };
+    delete childEnv['EVOLVER_SELF_UPDATE_SUPERVISOR'];
+    return childEnv;
 }
 export function stopLifecycle(paths, deps = {}) {
     const pidFile = readPidFile(paths.pidFile);
@@ -244,6 +255,13 @@ export function renderSystemdUnit(opts = {}) {
         'Type=simple',
         `WorkingDirectory=${opts.workingDirectory ?? '%h'}`,
         ...(opts.envFile ? [`Environment="EVOLVER_ENV_FILE=${escapeSystemdEnvValue(opts.envFile)}"`] : []),
+        'Environment="EVOLVER_SELF_UPDATE_SUPERVISOR=systemd"',
+        ...(opts.selfUpdateStateDir
+            ? [`Environment="EVOLVER_SELF_UPDATE_STATE_DIR=${escapeSystemdEnvValue(opts.selfUpdateStateDir)}"`]
+            : []),
+        ...(opts.selfUpdateTarget
+            ? [`Environment="EVOLVER_SELF_UPDATE_TARGET_PATH=${escapeSystemdEnvValue(opts.selfUpdateTarget)}"`]
+            : []),
         `ExecStart=${opts.execStart ?? defaultServiceExecStart()}`,
         'Restart=on-failure',
         'RestartSec=5s',
@@ -265,6 +283,7 @@ export function renderLaunchdPlist(opts = {}) {
     const workingDirectory = opts.workingDirectory ?? '/Users/YOU/your-project';
     const nodePath = opts.nodePath ?? '/usr/local/bin/node';
     const proxyBin = opts.proxyBin ?? '/Users/YOU/your-project/node_modules/@evomap/evolver-proxy/dist/bin/evolver-proxy.js';
+    const programArguments = opts.programArguments ?? [nodePath, proxyBin];
     const logDir = opts.logDir ?? '/Users/YOU/Library/Logs';
     const envFileBlock = opts.envFile ? `        <key>EVOLVER_ENV_FILE</key>\n        <string>${escapeXml(opts.envFile)}</string>\n` : '';
     return [
@@ -276,14 +295,23 @@ export function renderLaunchdPlist(opts = {}) {
         `    <string>${DEFAULT_LABEL}</string>`,
         '    <key>ProgramArguments</key>',
         '    <array>',
-        `        <string>${escapeXml(nodePath)}</string>`,
-        `        <string>${escapeXml(proxyBin)}</string>`,
+        ...programArguments.map((argument) => `        <string>${escapeXml(argument)}</string>`),
         '    </array>',
         '    <key>WorkingDirectory</key>',
         `    <string>${escapeXml(workingDirectory)}</string>`,
         '    <key>EnvironmentVariables</key>',
         '    <dict>',
         envFileBlock.trimEnd(),
+        '        <key>EVOLVER_SELF_UPDATE_SUPERVISOR</key>',
+        '        <string>launchd</string>',
+        ...(opts.selfUpdateStateDir ? [
+            '        <key>EVOLVER_SELF_UPDATE_STATE_DIR</key>',
+            `        <string>${escapeXml(opts.selfUpdateStateDir)}</string>`,
+        ] : []),
+        ...(opts.selfUpdateTarget ? [
+            '        <key>EVOLVER_SELF_UPDATE_TARGET_PATH</key>',
+            `        <string>${escapeXml(opts.selfUpdateTarget)}</string>`,
+        ] : []),
         '        <key>PATH</key>',
         '        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>',
         '    </dict>',
@@ -311,20 +339,23 @@ export function renderLaunchdPlist(opts = {}) {
         '',
     ].filter((line) => line !== '').join('\n');
 }
-export function renderWindowsInstaller() {
+export function renderWindowsInstaller(defaults = {}) {
+    const ps = (value) => `'${(value ?? '').replaceAll("'", "''")}'`;
     return String.raw `param(
   [switch]$Install,
   [switch]$Uninstall,
   [string]$TaskName = 'EvoMapEvolverProxyDaemon',
-  [string]$NodePath,
-  [string]$ProxyBin,
-  [string]$EnvFile
+  [string]$EvolverBin = ${ps(defaults.evolverBin)},
+  [string]$NodePath = ${ps(defaults.nodePath)},
+  [string]$ProxyBin = ${ps(defaults.proxyBin)},
+  [string]$EnvFile = ${ps(defaults.envFile)},
+  [string]$SelfUpdateStateDir = ${ps(defaults.selfUpdateStateDir)}
 )
 
 $ErrorActionPreference = 'Stop'
 
 if (-not ($Install -or $Uninstall)) {
-  Write-Host 'Usage: install-evolver-proxy-windows.ps1 -Install [-NodePath ...] [-ProxyBin ...] [-EnvFile ...]'
+  Write-Host 'Usage: install-evolver-proxy-windows.ps1 -Install [-EvolverBin ... | -NodePath ... -ProxyBin ...] [-EnvFile ...]'
   Write-Host '       install-evolver-proxy-windows.ps1 -Uninstall [-TaskName ...]'
   exit 1
 }
@@ -337,31 +368,94 @@ if ($Uninstall) {
   exit 0
 }
 
-if (-not $NodePath) {
-  $cmd = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $cmd) { Write-Error 'node.exe not on PATH; pass -NodePath explicitly.'; exit 1 }
-  $NodePath = $cmd.Source
+if (-not $EvolverBin) {
+  if (-not $NodePath) {
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $cmd) { Write-Error 'Pass -EvolverBin, or install node.exe / pass -NodePath.'; exit 1 }
+    $NodePath = $cmd.Source
+  }
+  if (-not $ProxyBin) { Write-Error 'Pass -EvolverBin, or -ProxyBin pointing at evolver-proxy.js.'; exit 1 }
+  if (-not (Test-Path $ProxyBin)) { Write-Error "Proxy bin not found at $ProxyBin"; exit 1 }
+} elseif (-not (Test-Path $EvolverBin)) {
+  Write-Error "Evolver binary not found at $EvolverBin"; exit 1
 }
-if (-not $ProxyBin) { Write-Error 'Pass -ProxyBin pointing at evolver-proxy.js.'; exit 1 }
-if (-not (Test-Path $ProxyBin)) { Write-Error "Proxy bin not found at $ProxyBin"; exit 1 }
+
+if ($EvolverBin) {
+  if (-not $SelfUpdateStateDir) { $SelfUpdateStateDir = $env:EVOLVER_SELF_UPDATE_STATE_DIR }
+  if (-not $SelfUpdateStateDir) {
+    $SelfUpdateStateDir = Join-Path (Split-Path -Parent $EvolverBin) '.evolver-update'
+  }
+}
+
+foreach ($launcherValue in @($EvolverBin, $NodePath, $ProxyBin, $EnvFile, $SelfUpdateStateDir)) {
+  if ($launcherValue -match "[\r\n]") {
+    Write-Error 'Launcher paths must not contain line breaks.'
+    exit 1
+  }
+}
+
+if ($EvolverBin) {
+  $EvolverBin = [System.IO.Path]::GetFullPath($EvolverBin)
+  $SelfUpdateStateDir = [System.IO.Path]::GetFullPath($SelfUpdateStateDir)
+  # Service installation is the explicit upgrade boundary for the stable controller.
+  $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if ($existingTask -and $existingTask.State -eq 'Running') {
+    Stop-ScheduledTask -TaskName $TaskName
+    $stopDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+      Start-Sleep -Milliseconds 100
+      $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    } while ($existingTask -and $existingTask.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
+    if ($existingTask -and $existingTask.State -eq 'Running') {
+      Write-Error 'Existing Evolver Scheduled Task did not stop; refusing to replace its recovery controller.'
+      exit 1
+    }
+  }
+  $env:EVOLVER_SELF_UPDATE_STATE_DIR = $SelfUpdateStateDir
+  $env:EVOLVER_SELF_UPDATE_TARGET_PATH = $EvolverBin
+  & $EvolverBin 'proxy' '--evolver-windows-recovery-controller-provision'
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error 'Failed to provision the stable Windows recovery controller.'
+    exit 1
+  }
+}
 
 $launcherDir = Join-Path $env:LOCALAPPDATA 'EvoMap'
 if (-not (Test-Path $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir | Out-Null }
 $launcherPath = Join-Path $launcherDir 'evolver-proxy-task-launcher.vbs'
 
-$nodeEsc = $NodePath.Replace('"', '""')
-$proxyEsc = $ProxyBin.Replace('"', '""')
+$nodeEsc = if ($NodePath) { $NodePath.Replace('"', '""') } else { '' }
+$proxyEsc = if ($ProxyBin) { $ProxyBin.Replace('"', '""') } else { '' }
+$evolverEsc = if ($EvolverBin) { $EvolverBin.Replace('"', '""') } else { '' }
 $envEsc = if ($EnvFile) { $EnvFile.Replace('"', '""') } else { '' }
+$stateDirEsc = if ($SelfUpdateStateDir) { $SelfUpdateStateDir.Replace('"', '""') } else { '' }
 
 $launcherBody = @"
 ' AUTO-GENERATED by install-evolver-proxy-windows.ps1 -- do not edit.
 ' wscript.exe is a Windows-subsystem host. WshShell.Run(..., 0, True)
 ' launches node.exe hidden and waits so Task Scheduler sees the exit code.
-Dim WshShell, env, cmd, rc
+Dim WshShell, env, fso, stateDir, pendingPath, updaterPath, controllerPath, controllerCmd, cmd, rc
 Set WshShell = CreateObject("WScript.Shell")
 Set env = WshShell.Environment("PROCESS")
+Set fso = CreateObject("Scripting.FileSystemObject")
 If "$envEsc" <> "" Then env("EVOLVER_ENV_FILE") = "$envEsc"
-cmd = """$nodeEsc"" ""$proxyEsc"""
+env("EVOLVER_SELF_UPDATE_SUPERVISOR") = "windows-scheduled-task"
+If "$evolverEsc" <> "" Then
+  stateDir = "$stateDirEsc"
+  env("EVOLVER_SELF_UPDATE_STATE_DIR") = stateDir
+  env("EVOLVER_SELF_UPDATE_TARGET_PATH") = "$evolverEsc"
+  pendingPath = stateDir & "\windows-updater\pending.json"
+  updaterPath = stateDir & "\windows-updater\updater.exe"
+  controllerPath = stateDir & "\windows-controller\evolver-recovery-controller.exe"
+  cmd = """$evolverEsc"" proxy"
+  If Not fso.FileExists(controllerPath) Then WScript.Quit 1
+  If fso.FileExists(pendingPath) And Not fso.FileExists(updaterPath) Then WScript.Quit 1
+  controllerCmd = """" & controllerPath & """ proxy --evolver-windows-recovery-controller"
+  rc = WshShell.Run(controllerCmd, 0, True)
+  WScript.Quit rc
+Else
+  cmd = """$nodeEsc"" ""$proxyEsc"""
+End If
 rc = WshShell.Run(cmd, 0, True)
 WScript.Quit rc
 "@
@@ -400,31 +494,86 @@ function serviceTarget(flags) {
         return value;
     throw new Error('missing or invalid --target (expected: launchd|systemd|windows)');
 }
-function installService(target, flags, env, argv1) {
+async function installService(target, flags, env, argv1) {
     const dryRun = flags['dry-run'] === true;
     const envFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : env['EVOLVER_ENV_FILE'];
+    const supervised = configuredSelfUpdateTarget(env)
+        ? resolveDaemonCommand(env, process.execPath, argv1)
+        : resolveSelfUpdatingExecutable(process.execPath, argv1);
+    const standaloneTarget = supervised?.args.length === 1 && supervised.args[0] === 'proxy'
+        ? supervised.command
+        : undefined;
+    let unixController;
+    let unixControllerStateDir;
+    if (target !== 'windows' && standaloneTarget) {
+        const { provisionStableUnixRecoveryController, stableUnixRecoveryControllerPathForTarget, UNIX_RECOVERY_CONTROLLER_ARG, } = await import('@evomap/evolver-proxy');
+        const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim() || undefined;
+        const controllerPath = dryRun
+            ? stableUnixRecoveryControllerPathForTarget(standaloneTarget, stateDir)
+            : await provisionStableUnixRecoveryController({
+                env: { ...env, EVOLVER_SELF_UPDATE_TARGET_PATH: standaloneTarget },
+                processExecPath: standaloneTarget,
+            });
+        unixController = {
+            command: controllerPath,
+            args: ['proxy', UNIX_RECOVERY_CONTROLLER_ARG],
+            display: `${controllerPath} proxy ${UNIX_RECOVERY_CONTROLLER_ARG}`,
+        };
+        unixControllerStateDir = dirname(dirname(controllerPath));
+    }
+    const serviceCommand = unixController ?? supervised;
     if (target === 'systemd') {
         const path = expandHome('~/.config/systemd/user/evolver-proxy.service');
-        const unit = renderSystemdUnit({ envFile, workingDirectory: typeof flags['cwd'] === 'string' ? flags['cwd'] : undefined });
+        const unit = renderSystemdUnit({
+            envFile,
+            workingDirectory: typeof flags['cwd'] === 'string' ? flags['cwd'] : undefined,
+            ...(serviceCommand
+                ? { execStart: [serviceCommand.command, ...serviceCommand.args].map(quoteSystemdArg).join(' ') }
+                : {}),
+            ...(standaloneTarget ? { selfUpdateTarget: standaloneTarget } : {}),
+            ...(unixControllerStateDir ? { selfUpdateStateDir: unixControllerStateDir } : {}),
+        });
         if (!dryRun)
             writeTextFile(path, unit, 0o644);
-        return { status: dryRun ? 'rendered' : 'installed', files: [path], service: 'systemd-user' };
+        return {
+            status: dryRun ? 'rendered' : 'installed',
+            files: [path, ...(unixController ? [unixController.command] : [])],
+            service: 'systemd-user',
+        };
     }
     if (target === 'launchd') {
         const path = expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
         const plist = renderLaunchdPlist({
             envFile,
             workingDirectory: typeof flags['cwd'] === 'string' ? flags['cwd'] : process.cwd(),
+            ...(serviceCommand
+                ? { programArguments: [serviceCommand.command, ...serviceCommand.args] }
+                : {}),
+            ...(standaloneTarget ? { selfUpdateTarget: standaloneTarget } : {}),
+            ...(unixControllerStateDir ? { selfUpdateStateDir: unixControllerStateDir } : {}),
             nodePath: resolveStableNodePath(),
             proxyBin: resolveProxyBinPath() ?? (argv1?.startsWith('/') ? argv1 : undefined) ?? '/ABSOLUTE/PATH/TO/evolver-proxy.js',
             logDir: join(homedir(), 'Library', 'Logs'),
         });
         if (!dryRun)
             writeTextFile(path, plist, 0o644);
-        return { status: dryRun ? 'rendered' : 'installed', files: [path], service: 'launchd' };
+        return {
+            status: dryRun ? 'rendered' : 'installed',
+            files: [path, ...(unixController ? [unixController.command] : [])],
+            service: 'launchd',
+        };
     }
     const path = expandHome('~/install-evolver-proxy-windows.ps1');
-    const script = renderWindowsInstaller();
+    const selfUpdateStateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim();
+    const standalone = standaloneTarget;
+    const script = renderWindowsInstaller({
+        ...(standalone ? { evolverBin: standalone } : {
+            nodePath: resolveStableNodePath(),
+            proxyBin: resolveProxyBinPath(),
+        }),
+        ...(envFile ? { envFile } : {}),
+        ...(selfUpdateStateDir ? { selfUpdateStateDir } : {}),
+    });
     if (!dryRun)
         writeTextFile(path, script, 0o644);
     return { status: dryRun ? 'rendered' : 'installed', files: [path], service: 'windows-scheduled-task' };
@@ -469,18 +618,62 @@ async function runWatch(paths, env, flags, stdout, stderr) {
     stdout(`[Watch] Supervisor running every ${Math.round(intervalMs / 1000)}s. Ctrl-C to stop.\n`);
     return new Promise(() => { });
 }
-function resolveDaemonCommand(env) {
+export function resolveDaemonCommand(env, execPath = process.execPath, argv1 = process.argv[1]) {
     const explicit = env['EVOLVER_LIFECYCLE_COMMAND']?.trim();
+    const selfUpdateTarget = configuredSelfUpdateTarget(env);
+    if (selfUpdateTarget) {
+        const supervised = standaloneProxyCommand(selfUpdateTarget);
+        if (explicit) {
+            const parsed = repairUnquotedWindowsExePath(explicit, parseCommandLine(explicit));
+            if (!matchesStandaloneProxyCommand(parsed, selfUpdateTarget)) {
+                throw new Error('EVOLVER_LIFECYCLE_COMMAND must invoke EVOLVER_SELF_UPDATE_TARGET_PATH with only the "proxy" argument; refusing mismatched self-update supervision');
+            }
+        }
+        return supervised;
+    }
     if (explicit) {
         const parsed = repairUnquotedWindowsExePath(explicit, parseCommandLine(explicit));
         if (parsed.length === 0)
             throw new Error('EVOLVER_LIFECYCLE_COMMAND is empty');
         return { command: parsed[0], args: parsed.slice(1), display: explicit };
     }
+    const selfExecutable = resolveSelfUpdatingExecutable(execPath, argv1);
+    if (selfExecutable)
+        return selfExecutable;
     const proxyBin = resolveProxyBinPath();
     if (proxyBin)
-        return { command: process.execPath, args: [proxyBin], display: `${process.execPath} ${proxyBin}` };
+        return { command: execPath, args: [proxyBin], display: `${execPath} ${proxyBin}` };
     return { command: DEFAULT_DAEMON_NAME, args: [], display: DEFAULT_DAEMON_NAME };
+}
+function configuredSelfUpdateTarget(env) {
+    const target = env['EVOLVER_SELF_UPDATE_TARGET_PATH']?.trim();
+    return target || undefined;
+}
+function standaloneProxyCommand(targetPath) {
+    return { command: targetPath, args: ['proxy'], display: `${targetPath} proxy` };
+}
+function matchesStandaloneProxyCommand(parsed, targetPath) {
+    return parsed.length === 2
+        && sameExecutablePath(parsed[0], targetPath)
+        && parsed[1] === 'proxy';
+}
+function sameExecutablePath(left, right) {
+    if (left === right)
+        return true;
+    if (process.platform !== 'win32')
+        return false;
+    const normalizeWindowsPath = (value) => value.replaceAll('/', '\\').toLowerCase();
+    return normalizeWindowsPath(left) === normalizeWindowsPath(right);
+}
+export function resolveSelfUpdatingExecutable(execPath, argv1) {
+    const executableName = basename(execPath).toLowerCase();
+    if (/^evolver(?:\.exe|-(?:darwin-(?:arm64|x64)|linux-(?:arm64|x64)|windows-x64\.exe))?$/.test(executableName)) {
+        return { command: execPath, args: ['proxy'], display: `${execPath} proxy` };
+    }
+    if (argv1 && basename(argv1).toLowerCase() === 'cli.js') {
+        return { command: execPath, args: [argv1, 'proxy'], display: `${execPath} ${argv1} proxy` };
+    }
+    return undefined;
 }
 export function resolveProxyBinPath() {
     try {

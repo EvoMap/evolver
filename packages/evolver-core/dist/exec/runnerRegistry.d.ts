@@ -2,6 +2,8 @@ export declare const DEFAULT_TIMEOUT_MS = 600000;
 export interface AgentRunContext {
     cwd: string;
     timeoutMs?: number;
+    /** Cooperative cancellation. The runner kills the whole spawned process tree when aborted. */
+    signal?: AbortSignal;
     /** Environment for the spawned agent. The bridge passes a scrubbed env here (see scrubAgentEnv); undefined → inherit. */
     env?: NodeJS.ProcessEnv;
 }
@@ -9,6 +11,8 @@ export interface AgentRunResult {
     ok: boolean;
     output: string;
     error?: string;
+    failureKind?: 'spawn_failed' | 'timeout' | 'cancelled' | 'permission_denied' | 'non_zero_exit' | 'invalid_output' | 'runtime_error';
+    exitCode?: number | null;
 }
 /** Run a coding agent against a working directory with the given instruction. */
 export type AgentRunner = (prompt: string, ctx: AgentRunContext) => Promise<AgentRunResult>;
@@ -18,6 +22,10 @@ export declare class UnboundedSkipPermissionsError extends Error {
 }
 /** Thrown when Cursor skipPermissions is requested before the runner can enforce per-run permissions. */
 export declare class UnsupportedCursorSkipPermissionsError extends Error {
+    constructor();
+}
+/** Thrown when Gemini permission options cannot be mapped to a verified bounded CLI contract. */
+export declare class UnsupportedGeminiPermissionOptionsError extends Error {
     constructor();
 }
 /** Thrown when Cursor's Windows installation cannot be reduced to a shell-free node.exe + index.js launch. */
@@ -38,24 +46,55 @@ export declare function resolveSpawnCommand(cmd: string, args: readonly string[]
     cmd: string;
     args: string[];
 };
-/**
- * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
- * On timeout the WHOLE process group is killed, not just the direct child (finding #39.5): an agent spawns
- * tool subprocesses (grandchildren) that would otherwise orphan and leak. On POSIX we spawn detached (the
- * child becomes its own group leader) and SIGKILL the group via the negative pid; Windows falls back to a
- * direct kill (different process-group semantics).
- */
-export declare function spawnCapture(cmd: string, args: readonly string[], opts: {
+export interface WindowsTreeKillCommand {
+    command: 'taskkill.exe';
+    args: ['/PID', string, '/T', '/F'];
+}
+export interface WindowsTreeKillChild {
+    once(event: 'error', listener: (error: Error) => void): this;
+    once(event: 'close', listener: (code: number | null) => void): this;
+    kill?(signal?: NodeJS.Signals | number): boolean;
+}
+export type WindowsTreeKillSpawn = (command: string, args: readonly string[], options: {
+    shell: false;
+    windowsHide: true;
+    stdio: 'ignore';
+}) => WindowsTreeKillChild;
+type WindowsProcessTreeKiller = (pid: number) => Promise<boolean>;
+/** Build the shell-free taskkill invocation used for Windows process-tree termination. */
+export declare function windowsTreeKillCommand(pid: number): WindowsTreeKillCommand;
+/** Run taskkill and report whether Windows accepted the process-tree termination request. */
+export declare function killWindowsProcessTree(pid: number, spawnCommand?: WindowsTreeKillSpawn, timeoutMs?: number): Promise<boolean>;
+export interface SpawnCaptureOptions {
     cwd: string;
     timeoutMs: number;
     input?: string;
     env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    /** Cleanup subprocesses can shield themselves from repeated SIGINT/SIGTERM instead of cancelling. */
+    processSignalMode?: 'cancel' | 'ignore';
     resolvePlatform?: NodeJS.Platform;
-}): Promise<{
+    /** Test seam for Windows process behavior; production callers should use the default. */
+    processPlatform?: NodeJS.Platform;
+    /** Test seam for the shell-free Windows taskkill invocation. */
+    windowsProcessTreeKiller?: WindowsProcessTreeKiller;
+}
+export interface SpawnCaptureResult {
     code: number | null;
     stdout: string;
     stderr: string;
-}>;
+    termination: 'exit' | 'timeout' | 'cancelled';
+}
+/**
+ * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
+ * On timeout the WHOLE process group is killed, not just the direct child (finding #39.5): an agent spawns
+ * tool subprocesses (grandchildren) that would otherwise orphan and leak. On POSIX we spawn detached (the
+ * child becomes its own group leader) and SIGKILL the group via the negative pid. Windows runs
+ * `taskkill.exe /PID <pid> /T /F` without a shell and waits for that command before resolving.
+ */
+export declare function spawnCapture(cmd: string, args: readonly string[], opts: SpawnCaptureOptions): Promise<SpawnCaptureResult>;
+/** Map the shared process result into the failure taxonomy used by plain-text runners. */
+export declare function classifyBasicRunnerResult(runner: 'claude' | 'codex' | 'cursor', result: SpawnCaptureResult, timeoutMs: number): AgentRunResult;
 /** Options for a built-in headless runner (claude / codex share the shape and the skip⇒bounded invariant). */
 export interface AgentRunnerOptions {
     /** Bypass permission prompts so the agent can edit autonomously (required for unattended use). Default off.
@@ -97,6 +136,10 @@ export declare const claudeHeadlessRunner: AgentRunner;
 export declare function codexRunnerArgs(opts?: AgentRunnerOptions): string[];
 /** Headless `codex exec` runner. Working root pinned with `--cd`; prompt is the trailing positional arg (shell:false). */
 export declare function makeCodexHeadlessRunner(opts?: AgentRunnerOptions): AgentRunner;
+/** Build verified Gemini CLI argv. The prompt is appended separately as one argv element with shell:false. */
+export declare function geminiRunnerArgs(opts?: AgentRunnerOptions): string[];
+/** Headless Gemini runner with structured failure classification; stdout text alone never proves execution success. */
+export declare function makeGeminiHeadlessRunner(opts?: AgentRunnerOptions): AgentRunner;
 /**
  * Build the `cursor-agent` argv (pure). Ground-truth from `cursor-agent --help` (#66): base `-p --output-format
  * text` (headless, write+shell access). `--model` is a real flag. skipPermissions is rejected until Cursor has a
@@ -110,7 +153,7 @@ export declare function cursorRunnerArgs(opts?: AgentRunnerOptions): string[];
  */
 export declare function makeCursorHeadlessRunner(opts?: AgentRunnerOptions, platform?: NodeJS.Platform): AgentRunner;
 /** A built-in coding-agent harness (#66). cursor is a SCAFFOLD — its runner is unverified (see cursorRunnerArgs). */
-export type RunnerName = 'claude' | 'codex' | 'cursor';
+export type RunnerName = 'claude' | 'codex' | 'cursor' | 'gemini';
 /** A harness runner: how to launch it + which env auth prefixes it (and ONLY it) may keep (#66). */
 export interface AgentRunnerSpec {
     name: RunnerName;
@@ -123,3 +166,4 @@ export interface AgentRunnerSpec {
 }
 /** Resolve a runner spec by name (default 'claude' — byte-identical to the pre-registry behavior). */
 export declare function getRunnerSpec(name?: RunnerName): AgentRunnerSpec;
+export {};

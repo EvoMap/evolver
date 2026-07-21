@@ -161,6 +161,15 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     // The forced pick still passes every hard gate downstream (candidate pool, ban, epigenetic
     // suppression), so this never bypasses trust/review/inert filtering.
     const cycleForcedGeneId = task.forcedGeneId ?? seededStrategyGeneId;
+    let memoryGraphAdvice;
+    if (deps.memoryGraph) {
+        try {
+            memoryGraphAdvice = await deps.memoryGraph.query({ workspace: task.repo, signals: cycleSignals });
+        }
+        catch {
+            memoryGraphAdvice = undefined;
+        }
+    }
     const res = await runEvolutionCycle(deps.engine, deps.store, {
         ...(deps.provenance ? { provenance: deps.provenance } : {}),
         ...(deps.review ? { review: deps.review } : {}),
@@ -169,6 +178,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(deps.solidifyPermit ? { solidifyPermit: deps.solidifyPermit } : {}),
         ...(deps.reuseOutcomes ? { reuseOutcomes: deps.reuseOutcomes } : {}),
         ...(deps.recallEvents ? { recallEvents: deps.recallEvents } : {}),
+        ...(memoryGraphAdvice ? { memoryGraphAdvice } : {}),
         ...(strategyName !== undefined ? { strategyName } : {}),
         ...(cycleForcedGeneId !== undefined ? { forcedGeneId: cycleForcedGeneId } : {}),
         cycleId,
@@ -184,6 +194,25 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     });
     const status = res.finalStage === 'solidified' ? 'solidified' : res.finalStage === 'failed' ? 'failed' : 'innovated';
     const cap = res.capsule;
+    if (deps.memoryGraph && res.decision?.selectedGeneId && (res.finalStage === 'solidified' || res.finalStage === 'failed')) {
+        const producedSuccess = res.finalStage === 'solidified' && res.producedValue === true;
+        try {
+            await deps.memoryGraph.recordOutcome({
+                workspace: task.repo,
+                signals: cycleSignals,
+                geneId: res.decision.selectedGeneId,
+                // MemoryGraph has no inert status yet, so record a no-op as conservative failed evidence instead of reward.
+                status: producedSuccess ? 'success' : 'failed',
+                score: res.finalStage === 'solidified' && !res.producedValue
+                    ? 0
+                    : cap?.outcome?.score ?? (producedSuccess ? 1 : 0),
+                at: new Date().toISOString(),
+            });
+        }
+        catch {
+            // Memory persistence is advisory and must never fail the autonomous task.
+        }
+    }
     const hubAssetIds = new Set(hubCandidates.map((c) => c.assetId).filter((id) => typeof id === 'string' && id.length > 0));
     const selectedAssetId = res.decision?.selectedAssetId;
     const usedAssetIds = selectedAssetId && hubAssetIds.has(selectedAssetId) ? [selectedAssetId] : [];
@@ -192,6 +221,8 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(res.reasons.length > 0 && status !== 'solidified' ? { reason: res.reasons.join('; ') } : {}),
         ...(cap?.outcome ? { outcome: cap.outcome } : {}),
         ...(cap?.proof_of_work ? { proofOfWork: cap.proof_of_work } : {}),
+        ...(res.failureKind !== undefined ? { failureKind: res.failureKind } : {}),
+        ...(res.exitCode !== undefined ? { exitCode: res.exitCode } : {}),
         ...(usedAssetIds.length > 0 ? { usedAssetIds } : {}),
     };
 }

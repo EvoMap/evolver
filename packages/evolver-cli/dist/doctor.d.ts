@@ -1,3 +1,4 @@
+import { type MemoryGraphOperatorStatus } from './localMemoryGraph.js';
 type DoctorStatus = 'pass' | 'warn' | 'fail';
 export interface DoctorCheck {
     name: string;
@@ -36,6 +37,7 @@ export interface DoctorDeps {
     statMode?: (p: string) => number | undefined;
     profile?: DoctorProfile;
     label?: string;
+    memoryGraphStatus?: (env: Record<string, string | undefined>) => MemoryGraphOperatorStatus;
 }
 export interface EnvCatalogResult {
     profile: DoctorProfile;

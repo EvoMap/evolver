@@ -1,7 +1,7 @@
 import { verify } from 'node:crypto';
 export const DEFAULT_TRACE_CONFIG_SIGNING_PUBLIC_KEY = [
     '-----BEGIN PUBLIC KEY-----',
-    'MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA7kJvWUP3HC4FJPQtkh74',
+    'MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA7kJvWUP3HC4FJPQtkh74', // gitleaks:allow -- public verification key, not a credential.
     'y75h9Rzc2NSZC9e4fiIWdax4iv+yWeMeIHGNsMr7YI8Ws7ck1BimJWt026gwRW8I',
     'c2A7h97oZQ0Z0zFcjEZ8FpYFSu++Yz/dGrARAV7uCQg289jvo89F5fWNdX2k+lTH',
     'hBoBm0G71vkiAYlbQEjq1xm1WzYf8CVXmbr+J1z+ydQf9jczcFL79u3eQZhIPs3R',

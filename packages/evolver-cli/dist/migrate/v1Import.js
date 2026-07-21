@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { existsSync, mkdirSync, appendFileSync, copyFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, unlinkSync, writeFileSync, writeSync, } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { assetstore } from '@evomap/evolver-core';
 import { mapV1Asset } from './fieldMap.js';
+import { LocalMemoryGraph, MemoryGraphBusyError, MemoryGraphImportStateRejectedError, resolveLocalMemoryUserId, } from '../localMemoryGraph.js';
 const FILES = { Gene: 'genes.jsonl', Capsule: 'capsules.jsonl', EvolutionEvent: 'events.jsonl' };
 const DEFAULT_IMPORT_JSONL_MAX_LINE_BYTES = 16 * 1024 * 1024;
+let migrationArchiveNonce = 0;
 function maxJsonlLineBytes() {
     const raw = Number(process.env['EVOLVER_IMPORT_JSONL_MAX_LINE_BYTES']);
     return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_IMPORT_JSONL_MAX_LINE_BYTES;
@@ -71,15 +74,11 @@ async function* readJsonl(path) {
     for (const record of finish())
         yield record;
 }
-/**
- * v1→v2 只读迁移(M8-2). 只读 v1(无双写); 冻结存量 asset_id; 非 schema 字段(avoid)落 sidecar;
- * memory_graph 不强转(语义不符)→ 归档只读; candidates 候选池不属 wire 资产 → 跳过.
- */
-export async function importV1(v1Dir, store, outDir) {
+export async function importV1(v1Dir, store, outDir, options = {}) {
     const sidecarPath = join(outDir, 'migration', 'v1_extensions.jsonl');
     const rep = {
         imported: { Gene: 0, Capsule: 0, EvolutionEvent: 0 }, frozen: 0, recomputed: 0, deduped: 0,
-        sidecarExtensions: 0, memoryGraphArchived: false, candidatesSkipped: false,
+        sidecarExtensions: 0, memoryGraphArchived: false, memoryGraphImported: 0, memoryGraphDeferred: false, candidatesSkipped: false,
     };
     const gepDir = join(v1Dir, 'assets', 'gep');
     for (const kind of ['Gene', 'Capsule', 'EvolutionEvent']) {
@@ -103,16 +102,138 @@ export async function importV1(v1Dir, store, outDir) {
             }
         }
     }
-    // memory_graph: 不迁移成 EvolutionEvent(缺 required + 无 intent/genes_used 语义, 强转=污染谱系). 归档只读.
+    // memory_graph remains a sidecar: never convert it into EvolutionEvent or mutate Gene/Capsule identity.
     const mg = join(v1Dir, 'memory', 'evolution', 'memory_graph.jsonl');
-    if (existsSync(mg)) {
+    if (secureRegularFileWithin(v1Dir, mg)) {
         const dest = join(outDir, 'migration', 'legacy_memory_graph.jsonl');
         mkdirSync(dirname(dest), { recursive: true });
-        copyFileSync(mg, dest);
+        archiveRegularFile(mg, dest);
         rep.memoryGraphArchived = true;
+        const workspace = options.workspace ? canonicalDirectory(options.workspace) : null;
+        if (!workspace) {
+            rep.memoryGraphDeferred = true;
+        }
+        else {
+            const source = realpathSync(mg);
+            const userId = options.userId ?? resolveLocalMemoryUserId();
+            const marker = scopedMemoryGraphMarker(outDir, workspace, userId, source);
+            if (!existsSync(marker)) {
+                const graph = new LocalMemoryGraph({ dir: join(outDir, 'evolution'), userId });
+                try {
+                    for await (const record of readJsonl(mg)) {
+                        if (graph.importV1Outcome(workspace, record, source))
+                            rep.memoryGraphImported += 1;
+                    }
+                }
+                catch (error) {
+                    if (!(error instanceof MemoryGraphImportStateRejectedError) && !(error instanceof MemoryGraphBusyError))
+                        throw error;
+                    rep.memoryGraphDeferred = true;
+                }
+                if (!rep.memoryGraphDeferred)
+                    writeFileSync(marker, `${rep.memoryGraphImported}\n`, { mode: 0o600 });
+            }
+        }
     }
     // candidates 候选池非 wire 资产 → 不迁移(留作 selection 输入)
     if (existsSync(join(gepDir, 'candidates.jsonl')))
         rep.candidatesSkipped = true;
     return rep;
+}
+function canonicalDirectory(path) {
+    try {
+        const absolute = resolve(path);
+        const stat = lstatSync(absolute);
+        return stat.isDirectory() && !stat.isSymbolicLink() ? realpathSync(absolute) : null;
+    }
+    catch {
+        return null;
+    }
+}
+function scopedMemoryGraphMarker(outDir, workspace, userId, source) {
+    const scope = createHash('sha256').update(JSON.stringify({ workspace, userId, source })).digest('hex');
+    return join(outDir, 'migration', `v1_memory_graph_import.${scope}.complete`);
+}
+function secureRegularFileWithin(root, path) {
+    try {
+        const absoluteRoot = resolve(root);
+        const absolutePath = resolve(path);
+        const rootStat = lstatSync(absoluteRoot);
+        const fileStat = lstatSync(absolutePath);
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !fileStat.isFile() || fileStat.isSymbolicLink())
+            return false;
+        const canonicalRoot = realpathSync(absoluteRoot);
+        const canonicalPath = realpathSync(absolutePath);
+        return canonicalPath.startsWith(canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`);
+    }
+    catch {
+        return false;
+    }
+}
+function archiveRegularFile(source, destination) {
+    if (existsSync(destination)) {
+        const existing = lstatSync(destination);
+        if (!existing.isFile() || existing.isSymbolicLink())
+            throw new Error('memory_graph_archive_path_rejected');
+        return;
+    }
+    const sourceFd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const temp = join(dirname(destination), `.${basename(destination)}.${process.pid}.${Date.now()}.${migrationArchiveNonce++}.tmp`);
+    let tempFd;
+    let copyError;
+    try {
+        if (!fstatSync(sourceFd).isFile())
+            throw new Error('memory_graph_source_path_rejected');
+        tempFd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        const buffer = Buffer.alloc(64 * 1024);
+        for (;;) {
+            const bytesRead = readSync(sourceFd, buffer, 0, buffer.length, null);
+            if (bytesRead === 0)
+                break;
+            let offset = 0;
+            while (offset < bytesRead)
+                offset += writeSync(tempFd, buffer, offset, bytesRead - offset);
+        }
+        fsyncSync(tempFd);
+    }
+    catch (error) {
+        copyError = error;
+    }
+    finally {
+        closeSync(sourceFd);
+        if (tempFd !== undefined)
+            closeSync(tempFd);
+    }
+    if (copyError !== undefined) {
+        try {
+            if (existsSync(temp))
+                unlinkSync(temp);
+        }
+        catch {
+            // Preserve the source/copy failure; cleanup is best-effort.
+        }
+        throw copyError;
+    }
+    try {
+        if (existsSync(destination)) {
+            const existing = lstatSync(destination);
+            if (!existing.isFile() || existing.isSymbolicLink())
+                throw new Error('memory_graph_archive_path_rejected');
+            unlinkSync(temp);
+            return;
+        }
+        // A same-directory hard link publishes without replacing a path created by a concurrent process.
+        linkSync(temp, destination);
+        unlinkSync(temp);
+    }
+    catch (error) {
+        try {
+            if (existsSync(temp))
+                unlinkSync(temp);
+        }
+        catch {
+            // Preserve the publication failure; cleanup is best-effort.
+        }
+        throw error;
+    }
 }

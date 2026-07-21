@@ -200,6 +200,10 @@ export class CycleEngine {
             });
             return r.reason ? { failure_class: r.failureClass, failure_class_reason: r.reason } : { failure_class: r.failureClass };
         };
+        const executionMetadata = (exec) => ({
+            ...(exec.failureKind !== undefined ? { failureKind: exec.failureKind } : {}),
+            ...(exec.exitCode !== undefined ? { exitCode: exec.exitCode } : {}),
+        });
         const strategy = resolveStrategy({ name: input.strategyName, signals: cycleSignals, cycleCount: historyCycleCount(ingestor, 1000, input.cycleId) });
         const cycleCategory = categoryForStrategy(input.category, strategy);
         let stage = 'none';
@@ -226,7 +230,7 @@ export class CycleEngine {
         if (!trig.trigger) {
             await ingestor.ingest({ type: 'cycle.aborted', human: { title: `cycle ${input.cycleId} 抑制` }, payload: { cycleId: input.cycleId, reasons: trig.reasons } });
             advance('aborted');
-            return { cycleId: input.cycleId, triggered: false, finalStage: stage, reasons: trig.reasons };
+            return { cycleId: input.cycleId, triggered: false, finalStage: stage, producedValue: false, reasons: trig.reasons };
         }
         // 选 gene(可解释决策). Exploration: when recent cycles plateau, enable drift to escape local optima.
         const recentOutcomes = recentCycleOutcomes(ingestor, 100);
@@ -297,11 +301,11 @@ export class CycleEngine {
             const epi = epigeneticPenaltyForIds(candidateIds(c), envKey, geneOutcomes);
             return epi > 0 ? { ...c, epigeneticPenalty: epi } : c;
         });
-        const decision = (await this.deps.selection.run({ signals: baseSignals, candidates, floor: input.selectionFloor, ...(input.forcedGeneId !== undefined ? { forcedGeneId: input.forcedGeneId } : {}), ...(exploration ? { exploration } : {}), ...(distilledFallback.length > 0 ? { distilledFallback } : {}), ...(input.antiWarnings && input.antiWarnings.length > 0 ? { antiWarnings: input.antiWarnings } : {}) }, { now, cycleId: input.cycleId, ...(this.deps.rng ? { rng: this.deps.rng } : {}) }));
+        const decision = (await this.deps.selection.run({ signals: baseSignals, candidates, floor: input.selectionFloor, ...(input.forcedGeneId !== undefined ? { forcedGeneId: input.forcedGeneId } : {}), ...(exploration ? { exploration } : {}), ...(distilledFallback.length > 0 ? { distilledFallback } : {}), ...(input.antiWarnings && input.antiWarnings.length > 0 ? { antiWarnings: input.antiWarnings } : {}), ...(input.memoryEvidence && input.memoryEvidence.length > 0 ? { memoryEvidence: input.memoryEvidence } : {}) }, { now, cycleId: input.cycleId, ...(this.deps.rng ? { rng: this.deps.rng } : {}) }));
         await ingestor.ingest({
             type: 'decision.gene_selected',
             human: { title: `选 gene ${decision.selectedGeneId ?? '(innovate)'}`, why: decision.candidates.map((c) => `${c.geneId}:${c.score.toFixed(3)}`).join(', ') || '无候选→innovate' },
-            payload: { cycleId: input.cycleId, selectedGeneId: decision.selectedGeneId, ...(decision.selectedAssetId ? { selectedAssetId: decision.selectedAssetId } : {}), candidates: decision.candidates, ...(decision.antiWarnings && decision.antiWarnings.length > 0 ? { antiWarnings: decision.antiWarnings } : {}), weightsVersion: decision.weightsVersion, strategy: decision.strategyName, strategyPreset: strategy.name, ...(plateau.active ? { plateau } : {}), ...(inertBanned.size > 0 ? { inertBanned: [...inertBanned] } : {}) },
+            payload: { cycleId: input.cycleId, selectedGeneId: decision.selectedGeneId, ...(decision.selectedAssetId ? { selectedAssetId: decision.selectedAssetId } : {}), ...(decision.selectedReason ? { selectedReason: decision.selectedReason } : {}), candidates: decision.candidates, ...(decision.antiWarnings && decision.antiWarnings.length > 0 ? { antiWarnings: decision.antiWarnings } : {}), ...(decision.memoryEvidence && decision.memoryEvidence.length > 0 ? { memoryEvidence: decision.memoryEvidence } : {}), weightsVersion: decision.weightsVersion, strategy: decision.strategyName, strategyPreset: strategy.name, ...(plateau.active ? { plateau } : {}), ...(inertBanned.size > 0 ? { inertBanned: [...inertBanned] } : {}) },
         });
         advance('gene_selected');
         const geneId = decision.selectedGeneId ?? 'ad-hoc';
@@ -331,7 +335,7 @@ export class CycleEngine {
             await ingestor.ingest({ type: 'cycle.failed', human: { title: `cycle ${input.cycleId} 执行抛错` }, payload: { cycleId: input.cycleId, error: msg, gene: geneId, env: envKey, ...failureClassPayload({ geneId }, msg) } });
             advance('failed');
             await recordPersonalityOutcome('failed', null);
-            return { cycleId: input.cycleId, triggered: true, finalStage: stage, decision, mutation, reasons: [...reasons, `执行异常: ${msg}`] };
+            return { cycleId: input.cycleId, triggered: true, finalStage: stage, producedValue: false, decision, mutation, reasons: [...reasons, `执行异常: ${msg}`] };
         }
         if (input.solidifyPermit) {
             let permit;
@@ -360,12 +364,13 @@ export class CycleEngine {
                         reason: permit.reason,
                         gene: geneId,
                         env: envKey,
+                        ...executionMetadata(exec),
                         ...failureClassPayload({ geneId }),
                     },
                 });
                 advance('failed');
                 await recordPersonalityOutcome('failed', null);
-                return { cycleId: input.cycleId, triggered: true, finalStage: stage, decision, mutation, reasons: [...reasons, reason] };
+                return { cycleId: input.cycleId, triggered: true, finalStage: stage, producedValue: false, decision, mutation, ...executionMetadata(exec), reasons: [...reasons, reason] };
             }
         }
         // solidify → Capsule
@@ -394,6 +399,7 @@ export class CycleEngine {
                     outcome: exec.outcome,
                     gene: geneId,
                     env: envKey,
+                    ...executionMetadata(exec),
                     // Only forward blast radius as a no-op signal when it was measured from a git_diff proof. solidify.ts
                     // forces blast to {0,0} for non-git_diff proofs (artifact_hash/external_receipt/tool_call_trace),
                     // where {0,0} means "blast unknown", NOT "no change" — forwarding it would mis-classify a productive
@@ -414,6 +420,6 @@ export class CycleEngine {
         }
         // 人格统计回写(用途②): 用本轮真实 outcome/score 回写当轮人格桶, 供下一轮自然选择靠拢. 未注入 ⇒ no-op.
         await recordPersonalityOutcome(exec.outcome.status, exec.outcome.score);
-        return { cycleId: input.cycleId, triggered: true, finalStage: stage, decision, mutation, capsule: sol.capsule, event, resolutionStatus: sol.resolutionStatus, reasons };
+        return { cycleId: input.cycleId, triggered: true, finalStage: stage, producedValue: sol.producedValue, decision, mutation, capsule: sol.capsule, event, resolutionStatus: sol.resolutionStatus, ...executionMetadata(exec), reasons };
     }
 }

@@ -16,7 +16,9 @@ export interface AssetSyncRecord {
 export declare class AssetSyncLedger {
     private readonly now;
     private readonly path;
+    private readonly lockPath;
     private readonly index;
+    private fileState;
     private loaded;
     constructor(baseDir: string, now?: () => number);
     append(rec: Omit<AssetSyncRecord, 'syncedAt'> & {
@@ -24,5 +26,7 @@ export declare class AssetSyncLedger {
     }): AssetSyncRecord;
     get(assetId: string): AssetSyncRecord | null;
     list(): AssetSyncRecord[];
-    private load;
+    private rebuildIndex;
+    private refreshUnderLock;
+    private withFreshRead;
 }

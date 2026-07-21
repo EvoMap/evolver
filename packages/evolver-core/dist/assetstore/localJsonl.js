@@ -1,22 +1,8 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
+import { appendUtf8Durable, assertAssetStoreDirectory, assertOptionalRegularFile, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
+import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { normalizeForPut, } from './provider.js';
-const FILES = { Gene: 'genes.jsonl', Capsule: 'capsules.jsonl', EvolutionEvent: 'events.jsonl', AntiGene: 'anti-genes.jsonl' };
-function isErrno(error, code) {
-    return typeof error === 'object' && error !== null && error.code === code;
-}
-function fileFingerprint(path) {
-    try {
-        const stat = statSync(path, { bigint: true });
-        return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-    }
-    catch (error) {
-        if (isErrno(error, 'ENOENT'))
-            return 'missing';
-        throw error;
-    }
-}
 function signalsOf(a) {
     const out = [];
     for (const key of ['signals_match', 'signals', 'trigger', 'trigger_signals']) {
@@ -44,13 +30,14 @@ export class LocalJsonlProvider {
     // — the ReviewLedger/ProvenanceStore — in the SAME directory, instead of defaulting to the real ~/.evomap.
     constructor(baseDir) {
         this.baseDir = baseDir;
-        mkdirSync(baseDir, { recursive: true });
+        ensureAssetStoreDirectory(baseDir);
         this.lockPath = join(baseDir, '.assetstore.lock');
     }
     captureFileState() {
+        assertAssetStoreDirectory(this.baseDir);
         const state = new Map();
-        for (const [kind, file] of Object.entries(FILES)) {
-            state.set(kind, fileFingerprint(join(this.baseDir, file)));
+        for (const [kind, file] of Object.entries(LOCAL_ASSET_FILES)) {
+            state.set(kind, regularFileFingerprint(join(this.baseDir, file)));
         }
         return state;
     }
@@ -65,11 +52,12 @@ export class LocalJsonlProvider {
     }
     rebuildIndex(state) {
         const next = new Map();
-        for (const file of Object.values(FILES)) {
+        for (const file of Object.values(LOCAL_ASSET_FILES)) {
             const p = join(this.baseDir, file);
-            if (!existsSync(p))
+            const raw = readUtf8Regular(p);
+            if (raw === null)
                 continue;
-            for (const line of readFileSync(p, 'utf8').split('\n')) {
+            for (const line of raw.split('\n')) {
                 if (!line.trim())
                     continue;
                 try {
@@ -95,6 +83,7 @@ export class LocalJsonlProvider {
         const state = this.captureFileState();
         if (!this.stateChanged(state))
             return;
+        assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             this.refreshUnderLock();
@@ -109,14 +98,15 @@ export class LocalJsonlProvider {
     }
     async put(asset) {
         const { record, verified } = normalizeForPut(asset);
-        const file = join(this.baseDir, FILES[record.type]);
+        const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
+        assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             // Refresh under the shared lock so another process cannot append between reload and dedupe.
             this.refreshUnderLock();
             if (this.index.has(record.asset_id))
                 return { asset_id: record.asset_id, stored: false, verified };
-            appendFileSync(file, `${JSON.stringify(record)}\n`);
+            appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
             this.index.set(record.asset_id, record);
             this.updateFileStateAfterWrite();
         }
@@ -132,13 +122,14 @@ export class LocalJsonlProvider {
     async putFrozen(record) {
         if (!record.asset_id)
             throw new Error('putFrozen 需 record 自带冻结 asset_id');
-        const file = join(this.baseDir, FILES[record.type]);
+        const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
+        assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             this.refreshUnderLock();
             if (this.index.has(record.asset_id))
                 return { asset_id: record.asset_id, stored: false, verified: false };
-            appendFileSync(file, `${JSON.stringify(record)}\n`);
+            appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
             this.index.set(record.asset_id, record);
             this.updateFileStateAfterWrite();
         }
@@ -150,6 +141,19 @@ export class LocalJsonlProvider {
     async get(assetId) {
         this.ensureFresh();
         return this.index.get(assetId) ?? null;
+    }
+    async findByLogicalId(id, limit = 2) {
+        this.ensureFresh();
+        const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(1_000, Math.floor(limit))) : 2;
+        const out = [];
+        for (const record of this.index.values()) {
+            if (record['id'] !== id)
+                continue;
+            out.push(record);
+            if (out.length >= boundedLimit)
+                break;
+        }
+        return out;
     }
     async list(kind, limit = 1000) {
         this.ensureFresh();
@@ -199,15 +203,17 @@ export class LocalJsonlProvider {
      * the write lock. Returns kept/removed line counts.
      */
     async compact() {
+        assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             this.refreshUnderLock();
             let kept = 0, removed = 0;
-            for (const [kind, file] of Object.entries(FILES)) {
+            for (const [kind, file] of Object.entries(LOCAL_ASSET_FILES)) {
                 const p = join(this.baseDir, file);
-                if (!existsSync(p))
+                const raw = readUtf8Regular(p);
+                if (raw === null)
                     continue;
-                const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim());
+                const lines = raw.split('\n').filter((l) => l.trim());
                 const byId = new Map(); // asset_id → raw line (last wins, matching load semantics)
                 for (const line of lines) {
                     try {
@@ -218,9 +224,7 @@ export class LocalJsonlProvider {
                     catch { /* drop corrupt line */ }
                 }
                 const out = byId.size ? `${[...byId.values()].join('\n')}\n` : '';
-                const tmp = `${p}.compact.tmp`;
-                writeFileSync(tmp, out);
-                renameSync(tmp, p); // atomic replace; a crash mid-compact leaves the original intact
+                replaceUtf8Durable(p, out);
                 kept += byId.size;
                 removed += lines.length - byId.size;
             }

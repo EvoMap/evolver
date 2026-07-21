@@ -67,7 +67,10 @@ export function makeHubBindings(cap, options = {}) {
                         const p = e.payload;
                         const taskId = firstString(p.taskId, p.task_id);
                         const assetId = firstString(p.assetId, p.asset_id);
-                        const claimId = firstString(p.claimId, p.claim_id) ?? taskId ?? '';
+                        const claimId = firstString(p.claimId, p.claim_id);
+                        if (!claimId) {
+                            throw new PublishRejectedError('invalid_task_complete', true, 'claim_id is required because task claim handles are opaque');
+                        }
                         const context = taskId && assetId ? { taskId, assetId } : undefined;
                         return cap.task.complete(claimId, p.result, context);
                     }
@@ -96,5 +99,12 @@ export function makeHubBindings(cap, options = {}) {
     };
 }
 function firstString(...values) {
-    return values.find((value) => typeof value === 'string' && value.length > 0);
+    for (const value of values) {
+        if (typeof value !== 'string')
+            continue;
+        const trimmed = value.trim();
+        if (trimmed)
+            return trimmed;
+    }
+    return undefined;
 }

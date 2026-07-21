@@ -10,11 +10,13 @@ import type { PersonalityStore } from '../personality/store.js';
 import { type ResolutionStatus } from './solidify.js';
 import type { ProofOfWork } from '../schema/proofOfWork.js';
 import { type ClassifyRecentEvent } from './cycleFailureClassifier.js';
+import type { MemoryGraphGeneEvidence } from './memoryGraph.js';
 export interface TriggerEval {
     trigger: boolean;
     reasons: string[];
     valueScore: number;
 }
+export type ExecutionFailureKind = 'spawn_failed' | 'timeout' | 'cancelled' | 'permission_denied' | 'non_zero_exit' | 'invalid_output' | 'runtime_error';
 export interface ExecutionResult {
     outcome: {
         status: 'success' | 'failed';
@@ -23,6 +25,9 @@ export interface ExecutionResult {
     };
     proofOfWork?: ProofOfWork;
     strongEvidence?: boolean;
+    /** Structured runner failure metadata. Safe to persist; unlike sessionLog it contains no transcript text. */
+    failureKind?: ExecutionFailureKind;
+    exitCode?: number | null;
     /**
      * The agent run's transcript (stdout, plus stderr when present), attached by the execution layer on a FAILED
      * outcome. It is the host-side context classifyCycleFailure needs to reach the host_no_transcript /
@@ -102,6 +107,8 @@ export interface CycleInput {
     distilledFallback?: readonly GeneCandidateInput[];
     /** Advisory-only AntiGene warnings matched upstream for this cycle's base signals. */
     antiWarnings?: readonly AntiWarning[];
+    /** Bounded structured outcome evidence for explainability and prompt enrichment. */
+    memoryEvidence?: readonly MemoryGraphGeneEvidence[];
     /**
      * Optional triage context for the cycle.failed event (PORT v1 #279 issue-reporter half). When the caller can
      * supply a session transcript or a list of recent failed cycles, classifyCycleFailure runs and the resulting
@@ -125,11 +132,15 @@ export interface CycleResult {
     cycleId: string;
     triggered: boolean;
     finalStage: CycleStage;
+    /** Real CycleEngine returns this on every path; optional keeps injected legacy engines source-compatible. */
+    producedValue?: boolean;
     decision?: GeneDecision;
     mutation?: Mutation;
     capsule?: Capsule;
     event?: EvolutionEvent;
     resolutionStatus?: ResolutionStatus;
+    failureKind?: ExecutionFailureKind;
+    exitCode?: number | null;
     reasons: string[];
 }
 /**

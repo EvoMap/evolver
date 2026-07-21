@@ -28,7 +28,13 @@ import { runCycleCommand } from './cycleConsumer.js';
 import { runProxyToken } from './proxyToken.js';
 import { runMaterialCommand } from './materialPackage.js';
 import { runDashboardCommand } from './dashboard.js';
+import { runAssetTrustCommand } from './assetTrust.js';
+import { runAssetHealthCommand } from './assetHealth.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat } from './v1Compat.js';
+export async function runProxyCommand(argv, importer = () => import('@evomap/evolver-proxy/bin/evolver-proxy')) {
+    const { runProxyCli } = await importer();
+    return runProxyCli({ argv: ['proxy', ...argv] });
+}
 /** Verbs dispatched asynchronously ahead of the synchronous runCli core. cli.ts drives its dispatch from this. */
 export const ASYNC_COMMANDS = {
     migrate: runMigrate,
@@ -65,6 +71,9 @@ export const ASYNC_COMMANDS = {
     'anti-gene-benchmark': runAntiGeneBenchmarkCommand,
     'anti-gene-rollout': runAntiGeneRolloutCommand,
     dashboard: runDashboardCommand,
+    'asset-trust': runAssetTrustCommand,
+    'asset-health': runAssetHealthCommand,
+    proxy: runProxyCommand,
     run: runV1RunCompat,
     solidify: runV1SolidifyCompat,
     fetch: runV1FetchCompat,

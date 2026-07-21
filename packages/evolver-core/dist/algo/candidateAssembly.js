@@ -18,14 +18,15 @@ function candidateIds(geneId, assetId) {
 function isBannedCandidate(banned, geneId, assetId) {
     return candidateIds(geneId, assetId).some((id) => banned.has(id));
 }
-function passesInjectedCandidateGates(candidate, opts, provenance) {
+function passesInjectedCandidateGates(candidate, opts, provenance, review) {
     const assetId = candidate.assetId;
     if (opts.provenance && !opts.includeUntrusted) {
         if (!assetId || provenance?.get(assetId)?.trusted !== true)
             return false;
     }
     if (opts.review) {
-        if (!assetId || !opts.review.isApproved(assetId))
+        const reviewRecord = assetId ? review?.get(assetId) : undefined;
+        if (!assetId || (reviewRecord !== undefined && reviewRecord.state !== 'approved'))
             return false;
     }
     return true;
@@ -80,6 +81,7 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
     const banned = await computeBans(store, signals, limit);
     const sigSet = new Set(signals);
     const provenance = opts.provenance?.snapshot();
+    const review = opts.review?.snapshot();
     const out = [];
     const distilledFallback = [];
     const antiWarnings = [];
@@ -92,8 +94,9 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
         // out too. No record → eligible (cycle/migrate genes). Symmetric to the provenance trust-first filter above.
         // Probation (#306): includeProbation lets a quarantined draft be TRIED so it can earn evidence; a rejected
         // draft is never tried. Off (default) keeps quarantined drafts out until approval.
-        if (opts.review && !opts.review.isApproved(String(g.asset_id))
-            && (!opts.includeProbation || opts.review.get(String(g.asset_id))?.state === 'rejected'))
+        const reviewRecord = review?.get(String(g.asset_id));
+        if (opts.review && reviewRecord !== undefined && reviewRecord.state !== 'approved'
+            && (!opts.includeProbation || reviewRecord.state === 'rejected'))
             continue;
         const geneId = typeof g['id'] === 'string' ? String(g['id']) : String(g.asset_id);
         const assetId = String(g.asset_id);
@@ -148,7 +151,7 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
     if (opts.hubCandidates && opts.hubCandidates.length > 0) {
         const localIds = new Set(out.map((c) => c.geneId));
         for (const h of opts.hubCandidates) {
-            if (!passesInjectedCandidateGates(h, opts, provenance))
+            if (!passesInjectedCandidateGates(h, opts, provenance, review))
                 continue;
             if (localIds.has(h.geneId))
                 continue; // a trusted local gene already covers this id
@@ -166,7 +169,7 @@ export async function assembleSelectionPool(store, signals, opts = {}) {
         // AntiGene is negative memory that changes an autonomous prompt. Unlike legacy/cycle-authored Genes, it must
         // never inherit ReviewLedger's backward-compatible "no record = approved" default: no ledger, no record,
         // quarantined, and rejected all fail closed. Only an explicit human approval can enable warning injection.
-        if (!opts.review?.isExplicitlyApproved(String(a.asset_id)))
+        if (review?.get(String(a.asset_id))?.state !== 'approved')
             continue;
         const trigger = asStrings(a['trigger']);
         const avoid = asStrings(a['avoid']);

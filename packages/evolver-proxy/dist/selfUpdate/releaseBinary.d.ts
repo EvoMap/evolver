@@ -11,8 +11,18 @@ export interface ReleaseBinaryOptions {
     targetPath?: string;
     processExecPath?: string;
     requireSignedManifest?: boolean;
+    maxPrimaryBinaryBytes?: number;
     maxExtractedTarballBytes?: number;
 }
+/**
+ * Hard ceiling for primary release binaries. The binary is buffered before its
+ * manifest hash is verified, so an unbounded response could exhaust memory
+ * before the verification gate runs. 128MiB leaves headroom above current
+ * single-platform binaries while bounding that pre-verification allocation.
+ */
+export declare const MAX_PRIMARY_BINARY_BYTES: number;
+/** Release metadata is untrusted and buffered before parsing or verification. */
+export declare const MAX_RELEASE_METADATA_BYTES: number;
 /**
  * Hard ceiling for Channel 1b tarball downloads. A compromised/corrupt release
  * could advertise a multi-GB tar.gz and OOM us because tarballBytes is buffered

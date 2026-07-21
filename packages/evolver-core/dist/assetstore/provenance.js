@@ -3,23 +3,12 @@
 // by asset_id, NOT a field on the asset: asset_id = sha256(canonicalize(asset)), and "how we got it" metadata
 // must not enter the content hash (#30.2), or it would break content-addressing. Trust-first by construction:
 // selection defaults to trusted-only; an untrusted asset is promoted to trusted only by an explicit, logged act.
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, mkdirSync, statSync, truncateSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { normalizeForPut } from './provider.js';
-function isErrno(error, code) {
-    return typeof error === 'object' && error !== null && error.code === code;
-}
-function fileFingerprint(path) {
-    try {
-        const stat = statSync(path, { bigint: true });
-        return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-    }
-    catch (error) {
-        if (isErrno(error, 'ENOENT'))
-            return 'missing';
-        throw error;
-    }
+import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, truncateUtf8SuffixDurable, withAssetStoreLock, } from './assetStoreStorage.js';
+import { assertTrustSidecarHealthy, parseProvenanceRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
+function immutableRecord(record) {
+    return Object.freeze({ ...record });
 }
 /**
  * Append-only JSONL sidecar (last-write-wins) at <baseDir>/provenance.jsonl. Default for an asset with NO
@@ -34,22 +23,18 @@ export class ProvenanceStore {
     fileState = null;
     constructor(baseDir, now = Date.now) {
         this.now = now;
+        ensureAssetStoreDirectory(baseDir);
         this.path = join(baseDir, 'provenance.jsonl');
         this.lockPath = join(baseDir, '.assetstore.lock');
     }
     rebuildIndex(state) {
         const next = new Map();
-        if (state !== 'missing') {
-            for (const line of readFileSync(this.path, 'utf8').split('\n')) {
-                if (!line.trim())
-                    continue;
-                try {
-                    const r = JSON.parse(line);
-                    if (r.assetId)
-                        next.set(r.assetId, r);
-                }
-                catch { /* skip corrupt line */ }
-            }
+        const raw = state === 'missing' ? null : readUtf8Regular(this.path);
+        if (raw !== null) {
+            const parsed = parseSidecarJsonl(raw, parseProvenanceRecord);
+            assertTrustSidecarHealthy('provenance', parsed);
+            for (const record of parsed.records)
+                next.set(record.assetId, immutableRecord(record));
         }
         this.index.clear();
         for (const [assetId, record] of next)
@@ -57,81 +42,48 @@ export class ProvenanceStore {
         this.fileState = state;
     }
     refreshUnderLock() {
-        const state = fileFingerprint(this.path);
+        const state = regularFileFingerprint(this.path);
         if (state !== this.fileState)
             this.rebuildIndex(state);
     }
     withFreshRead(read) {
-        mkdirSync(dirname(this.path), { recursive: true });
-        acquireLock(this.lockPath);
-        try {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
             this.refreshUnderLock();
             return read(this.index);
-        }
-        finally {
-            releaseLock(this.lockPath);
-        }
+        });
+    }
+    appendUnderLock(full) {
+        const stored = immutableRecord(full);
+        appendUtf8Durable(this.path, `${JSON.stringify(stored)}\n`);
+        this.index.set(stored.assetId, stored);
+        this.fileState = regularFileFingerprint(this.path);
+        return stored;
     }
     /** Record provenance for an asset_id (append-only; the JSONL history is the audit trail). */
     mark(rec) {
         const full = { ...rec, at: rec.at ?? new Date(this.now()).toISOString() };
-        mkdirSync(dirname(this.path), { recursive: true });
-        acquireLock(this.lockPath);
-        try {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
             this.refreshUnderLock();
-            appendFileSync(this.path, `${JSON.stringify(full)}\n`);
-            this.index.set(full.assetId, full);
-            this.fileState = fileFingerprint(this.path);
-        }
-        finally {
-            releaseLock(this.lockPath);
-        }
-        return full;
+            return this.appendUnderLock(full);
+        });
     }
     rollbackLast(rec) {
         const line = `${JSON.stringify(rec)}\n`;
-        const lineBytes = Buffer.byteLength(line, 'utf8');
-        let locked = false;
         try {
-            mkdirSync(dirname(this.path), { recursive: true });
-            acquireLock(this.lockPath);
-            locked = true;
-            if (!existsSync(this.path))
-                return;
-            const stat = statSync(this.path);
-            if (!stat.isFile() || stat.size < lineBytes)
-                return;
-            const offset = stat.size - lineBytes;
-            const buf = Buffer.alloc(lineBytes);
-            const fd = openSync(this.path, 'r');
-            try {
-                readSync(fd, buf, 0, lineBytes, offset);
-            }
-            finally {
-                closeSync(fd);
-            }
-            if (buf.toString('utf8') !== line) {
-                this.refreshUnderLock();
-                return;
-            }
-            truncateSync(this.path, offset);
-            this.rebuildIndex(fileFingerprint(this.path));
+            assertAssetStoreDirectory(dirname(this.path));
+            withAssetStoreLock(this.lockPath, () => {
+                if (!truncateUtf8SuffixDurable(this.path, line)) {
+                    this.refreshUnderLock();
+                    return;
+                }
+                this.rebuildIndex(regularFileFingerprint(this.path));
+            });
         }
         catch {
             this.index.clear();
             this.fileState = null;
-        }
-        finally {
-            if (locked) {
-                try {
-                    releaseLock(this.lockPath);
-                }
-                catch {
-                    // Rollback is best-effort and must not mask the store failure that triggered it.
-                    this.index.clear();
-                    this.fileState = null;
-                }
-            }
         }
     }
     get(assetId) {
@@ -145,10 +97,34 @@ export class ProvenanceStore {
     snapshot() {
         return this.withFreshRead((index) => new Map(index));
     }
+    /** Compare and append one trust decision under the same cross-process lock. */
+    changeTrust(assetId, trusted, by, reason) {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            const current = this.index.get(assetId) ?? null;
+            if (current?.trusted === trusted)
+                return { changed: false, record: current };
+            const full = {
+                assetId,
+                source: current?.source ?? 'local',
+                trusted,
+                at: new Date(this.now()).toISOString(),
+                decision: trusted ? 'promoted' : 'revoked',
+                decidedBy: by,
+                ...(trusted ? { promotedBy: by } : {}),
+                reason,
+            };
+            return { changed: true, record: this.appendUnderLock(full) };
+        });
+    }
     /** Explicit, audited untrusted→trusted promotion. Appends a new trusted record carrying who/why. */
     promote(assetId, by, reason) {
-        const cur = this.get(assetId);
-        return this.mark({ assetId, source: cur?.source ?? 'hub', trusted: true, promotedBy: by, reason });
+        return this.changeTrust(assetId, true, by, reason).record;
+    }
+    /** Explicit, audited trusted-to-untrusted revocation. A record-less asset is local by default. */
+    revoke(assetId, by, reason) {
+        return this.changeTrust(assetId, false, by, reason).record;
     }
 }
 /**

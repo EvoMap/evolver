@@ -5,6 +5,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { expandHomePath, parseEnvFile } from '@evomap/evolver-mcp';
+import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
 // Secrets that must live ONLY behind the EVOLVER_ENV_FILE pointer — never inlined into a runtime config (#217).
 const SECRET_KEYS = [
     'A2A_NODE_SECRET',
@@ -433,6 +434,12 @@ const ENV_CATALOG_DEFINITIONS = [
         requiredFor: 'self-update verification',
     },
     {
+        name: 'EVOLVER_SELF_UPDATE_SUPERVISOR',
+        group: 'self-update',
+        purpose: 'Attests that a generated durable service launcher owns relaunch.',
+        requiredFor: 'automatic self-update',
+    },
+    {
         name: 'EVOLVER_SELF_UPDATE_TARGET_PATH',
         group: 'self-update',
         purpose: 'Target path for self-update installation.',
@@ -567,6 +574,17 @@ export function runDoctorChecks(deps = {}) {
     }
     if (deps.profile === 'private-runtime') {
         checks.push(...privateRuntimeChecks(env, envFileValues, envFileReadiness));
+    }
+    try {
+        const status = (deps.memoryGraphStatus ?? loadMemoryGraphOperatorStatus)(effectiveEnv);
+        checks.push({
+            name: 'memory-graph',
+            status: status.recovery === 'degraded' ? 'warn' : 'pass',
+            detail: formatMemoryGraphOperatorStatus(status),
+        });
+    }
+    catch {
+        checks.push({ name: 'memory-graph', status: 'warn', detail: 'state=degraded corrupt=1 oversized_lines=0 oversized_files=0 archives=0' });
     }
     return checks;
 }

@@ -4,10 +4,13 @@ import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneStrategyInfo } from './prompt.js';
 import type { PersonalityStore } from '../personality/store.js';
 import { type AgentRunner, type AgentRunnerOptions, type RunnerName } from './runnerRegistry.js';
-export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, } from './runnerRegistry.js';
 export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, } from './runnerRegistry.js';
+export interface GitRunnerOptions {
+    processSignalMode?: 'cancel' | 'ignore';
+}
 /** Run a git subcommand in cwd and return its stdout. */
-export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>;
+export type GitRunner = (args: readonly string[], cwd: string, signal?: AbortSignal, options?: GitRunnerOptions) => Promise<string>;
 /** Resolve the selected gene's learned strategy (for prompt enrichment). */
 export type GeneResolver = (geneId: string) => Promise<GeneStrategyInfo | null> | GeneStrategyInfo | null;
 /** Decide success from the post-run working tree (e.g. run the gene's validation plan). */
@@ -57,6 +60,8 @@ export interface ExecBridgeOptions {
     requireTrustedGene?: boolean;
     /** Per-run agent timeout. Default 600_000ms (10 min). */
     timeoutMs?: number;
+    /** Cooperative cancellation propagated to the runner process tree. */
+    signal?: AbortSignal;
     /** Optional: enrich the prompt with the selected gene's strategy. */
     resolveGene?: GeneResolver;
     /** Optional: validation commands surfaced in the prompt's done-criteria. */

@@ -18,13 +18,17 @@ export interface ReviewRecord {
 export declare class ReviewLedger {
     private readonly now;
     private readonly path;
+    private readonly lockPath;
     private readonly index;
-    private sig;
+    private fileState;
     constructor(baseDir: string, now?: () => number);
     private static isHuman;
     /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
     private static keep;
-    private load;
+    private rebuildIndex;
+    private refreshUnderLock;
+    private withFreshRead;
+    private appendUnderLock;
     /** Record a review-state for an asset_id (append-only; the JSONL history is the audit trail). */
     mark(rec: Omit<ReviewRecord, 'at'> & {
         at?: string;
@@ -50,6 +54,8 @@ export declare class ReviewLedger {
      * asset list, so a draft awaiting approval is never missed behind a store-list cutoff.
      */
     records(): ReviewRecord[];
+    /** One linearizable review snapshot for bounded batch readers. */
+    snapshot(): ReadonlyMap<string, ReviewRecord>;
     /** No record → approved (default eligible); a record → approved only when its state is 'approved'. */
     isApproved(assetId: string): boolean;
     /**

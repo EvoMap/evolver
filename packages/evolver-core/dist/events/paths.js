@@ -1,8 +1,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 /** ~/.evomap, 可 EVOLVER_HOME/EVOMAP_HOME 覆盖. */
-export function evomapHome() {
-    return process.env['EVOLVER_HOME'] ?? process.env['EVOMAP_HOME'] ?? join(homedir(), '.evomap');
+export function evomapHome(env = process.env) {
+    return env['EVOLVER_HOME'] ?? env['EVOMAP_HOME'] ?? join(homedir(), '.evomap');
 }
 export function rootEventsPath() {
     return join(evomapHome(), 'evolution', 'root_events.jsonl');

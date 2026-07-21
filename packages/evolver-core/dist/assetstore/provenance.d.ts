@@ -1,12 +1,20 @@
 import { type AssetStoreProvider, type AssetRecord, type PutResult } from './provider.js';
 export type ProvenanceSource = 'local' | 'migrated' | 'hub';
+export type ProvenanceDecision = 'promoted' | 'revoked';
 export interface ProvenanceRecord {
     assetId: string;
     source: ProvenanceSource;
     trusted: boolean;
     at: string;
+    decision?: ProvenanceDecision;
+    decidedBy?: string;
+    /** Legacy promotion actor field kept for existing sidecar readers. */
     promotedBy?: string;
     reason?: string;
+}
+export interface ProvenanceTrustChange {
+    changed: boolean;
+    record: ProvenanceRecord;
 }
 /**
  * Append-only JSONL sidecar (last-write-wins) at <baseDir>/provenance.jsonl. Default for an asset with NO
@@ -23,6 +31,7 @@ export declare class ProvenanceStore {
     private rebuildIndex;
     private refreshUnderLock;
     private withFreshRead;
+    private appendUnderLock;
     /** Record provenance for an asset_id (append-only; the JSONL history is the audit trail). */
     mark(rec: Omit<ProvenanceRecord, 'at'> & {
         at?: string;
@@ -33,8 +42,12 @@ export declare class ProvenanceStore {
     isTrusted(assetId: string): boolean;
     /** One linearizable trust snapshot for bounded batch readers. */
     snapshot(): ReadonlyMap<string, ProvenanceRecord>;
+    /** Compare and append one trust decision under the same cross-process lock. */
+    changeTrust(assetId: string, trusted: boolean, by: string, reason: string): ProvenanceTrustChange;
     /** Explicit, audited untrusted→trusted promotion. Appends a new trusted record carrying who/why. */
     promote(assetId: string, by: string, reason: string): ProvenanceRecord;
+    /** Explicit, audited trusted-to-untrusted revocation. A record-less asset is local by default. */
+    revoke(assetId: string, by: string, reason: string): ProvenanceRecord;
 }
 /**
  * The sanctioned hub→local-pool landing: store the asset (store.put recomputes/normalizes the asset_id, so a

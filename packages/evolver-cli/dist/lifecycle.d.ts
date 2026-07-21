@@ -1,4 +1,9 @@
 import { spawn } from 'node:child_process';
+export interface DaemonCommand {
+    command: string;
+    args: string[];
+    display: string;
+}
 interface ProcessIdentity {
     executable?: string;
     parentPid?: number;
@@ -59,15 +64,28 @@ export declare function renderSystemdUnit(opts?: {
     envFile?: string;
     workingDirectory?: string;
     execStart?: string;
+    selfUpdateStateDir?: string;
+    selfUpdateTarget?: string;
 }): string;
 export declare function renderLaunchdPlist(opts?: {
     envFile?: string;
     workingDirectory?: string;
     nodePath?: string;
     proxyBin?: string;
+    programArguments?: readonly string[];
     logDir?: string;
+    selfUpdateStateDir?: string;
+    selfUpdateTarget?: string;
 }): string;
-export declare function renderWindowsInstaller(): string;
+export declare function renderWindowsInstaller(defaults?: {
+    evolverBin?: string;
+    nodePath?: string;
+    proxyBin?: string;
+    envFile?: string;
+    selfUpdateStateDir?: string;
+}): string;
+export declare function resolveDaemonCommand(env: NodeJS.ProcessEnv, execPath?: string, argv1?: string | undefined): DaemonCommand;
+export declare function resolveSelfUpdatingExecutable(execPath: string, argv1: string | undefined): DaemonCommand | undefined;
 export declare function resolveProxyBinPath(): string | undefined;
 export declare function resolveStableNodePath(): string;
 export declare function sessionStartHookVerboseEnabled(env?: NodeJS.ProcessEnv): boolean;

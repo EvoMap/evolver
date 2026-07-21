@@ -5,6 +5,7 @@ import type { GeneLearningView } from '../assetstore/learningHistory.js';
 import type { AssetRecord } from '../assetstore/provider.js';
 import { type ExplorationInput } from './exploration.js';
 import type { GenerationSource } from '../wire/index.js';
+import type { MemoryGraphGeneEvidence } from './memoryGraph.js';
 /** 一个候选 gene 的选择期素材. */
 export interface GeneCandidateInput {
     geneId: string;
@@ -35,6 +36,8 @@ export interface GeneCandidateInput {
      * set the hard gates already produced, so a high confidence can never resurrect a gene that was excluded.
      */
     confidence?: number;
+    /** Scoped local MemoryGraph outcome signal in [-1,1]. Data-only and never executable prompt content. */
+    memoryBoost?: number;
     /**
      * Cross-runtime reuse sentiment in [-1, 1] for this gene (#268 phase 1): the net of self-reported reuse
      * SUCCESSes vs negatives (failed/mismatched/stale/unsafe), computed upstream from reuse-outcome events
@@ -78,6 +81,8 @@ export interface SelectionInput {
      * for prompt rendering only; they never enter scoring, fallback, or forced selection.
      */
     antiWarnings?: readonly AntiWarning[];
+    /** Structured, scoped outcome evidence selected upstream. Contains no raw memory text or instructions. */
+    memoryEvidence?: readonly MemoryGraphGeneEvidence[];
 }
 export interface ScoredCandidate {
     geneId: string;
@@ -105,6 +110,10 @@ export interface GeneDecision {
     antiWarnings?: AntiWarning[];
     weightsVersion: string;
     strategyName: string;
+    /** Human-readable explanation for the winning candidate. */
+    selectedReason?: string;
+    /** Bounded structured outcome evidence for prompt enrichment. */
+    memoryEvidence?: MemoryGraphGeneEvidence[];
 }
 /**
  * Weight of the preferred-gene confidence factor (fourth factor, positive cross-cycle learning). Kept small so
@@ -118,12 +127,14 @@ export declare const CONFIDENCE_WEIGHT = 0.15;
  * ±REUSE_WEIGHT and can never dominate health/signal-match.
  */
 export declare const REUSE_WEIGHT = 0.1;
+/** Weight of scoped local MemoryGraph outcome evidence. */
+export declare const MEMORY_GRAPH_WEIGHT = 0.12;
 /**
  * Version of the full engine-health weight vector (health 0.6 + signal-match 0.4 − epigenetic penalty
  * + CONFIDENCE_WEIGHT × confidence + REUSE_WEIGHT × reuse-sentiment). Bumped whenever a factor is added so golden
  * weight snapshots track the change. Composed from the health-weights version so a change to either layer shows.
  */
-export declare const SELECTION_WEIGHTS_VERSION = "sel-3(gh-1,conf=0.15,reuse=0.1)";
+export declare const SELECTION_WEIGHTS_VERSION = "sel-4(gh-1,conf=0.15,memory=0.12,reuse=0.1)";
 /** 实现1: engine 健康分主导(health 0.6 + 信号匹配 0.4). */
 export declare const engineHealthSelection: Strategy<SelectionInput, GeneDecision>;
 /** 实现2: 纯信号匹配采样(忽略 health, 对照基线 — 经验主义要可对比). */

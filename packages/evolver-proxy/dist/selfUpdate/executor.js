@@ -4,7 +4,8 @@
 // shells out or touches a real install tree by accident.
 //
 // THE HARD GATE (verify-before-apply, non-negotiable): after download and BEFORE any filesystem write or restart,
-// the executor calls the PURE core verifyManifest. If verification fails — bad sha256, missing/invalid signature
+// the executor calls the PURE core verifySelectedManifestArtifact. If verification fails — bad sha256,
+// missing/invalid signature
 // when a key is configured, anything — the executor writes NOTHING, restarts NOTHING, and returns a structured
 // failure. The old version stays intact and runnable. A compromised hub cannot turn this channel into fleet RCE.
 //
@@ -12,7 +13,7 @@
 // once. The second caller short-circuits with `already_in_progress` and performs no I/O.
 import { ops } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES, classifySelfUpdateError, codeForDecisionReject, } from './failureCodes.js';
-const { decideUpdate, verifyManifest } = ops;
+const { decideUpdate, verifySelectedManifestArtifact } = ops;
 // Process-level mutex. Module scope is correct: there is one daemon per process, and v1's _forceUpdateInFlight had
 // the same lifetime. Guards against two force_update envelopes (or a heartbeat-driven + mailbox-driven trigger)
 // racing the same upgrade and replacing files twice / double-restarting.
@@ -38,7 +39,7 @@ function report(deps, result) {
  *  2. decideUpdate (pure): reject bad manifests, NOOP when already satisfied (no download, no restart).
  *  3. mutex: exactly one execution; concurrent callers get `already_in_progress` and touch no disk.
  *  4. download the staged release.
- *  5. verifyManifest (pure) — THE GATE. Fail → no write, no restart, `rejected_verification`.
+ *  5. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
  *  6. atomicReplace, then restart(). Only reached after verification passed.
  *
  * Never throws: every failure becomes a structured SelfUpdateResult so the daemon can report it and keep running
@@ -103,13 +104,29 @@ export async function executeForceUpdate(directive, deps) {
     }
     inFlight = true;
     const targetVersion = decision.targetVersion ?? manifest?.version ?? '';
+    let transaction;
     try {
+        if (deps.beginTransaction) {
+            try {
+                transaction = await deps.beginTransaction(targetVersion);
+            }
+            catch (err) {
+                const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED);
+                return report(deps, {
+                    outcome: classified.failureCode === SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED ? 'already_in_progress' : 'replace_failed',
+                    reason: classified.detail,
+                    failureCode: classified.failureCode,
+                    targetVersion,
+                });
+            }
+        }
         // 4. Download the staged release.
         let dl;
         try {
             dl = await deps.download(targetVersion, effectiveDirective);
         }
         catch (err) {
+            await transaction?.abort(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED).catch(() => { });
             const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED);
             return report(deps, {
                 outcome: 'download_failed',
@@ -118,9 +135,25 @@ export async function executeForceUpdate(directive, deps) {
                 targetVersion,
             });
         }
+        if (transaction) {
+            try {
+                dl = await transaction.adoptDownloaded(dl);
+            }
+            catch (err) {
+                await transaction.abort(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED).catch(() => { });
+                const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED);
+                return report(deps, {
+                    outcome: 'replace_failed',
+                    reason: classified.detail,
+                    failureCode: classified.failureCode,
+                    targetVersion,
+                });
+            }
+        }
         // 5. THE GATE: verify the downloaded bytes against the (optionally signed) manifest BEFORE any write.
-        const verification = verifyManifest(manifest, dl.artifacts, ...(deps.publicKey ? [deps.publicKey] : []));
+        const verification = verifySelectedManifestArtifact(manifest, dl.artifacts, ...(deps.publicKey ? [deps.publicKey] : []));
         if (!verification.ok) {
+            await transaction?.abort(SELF_UPDATE_FAILURE_CODES.REJECTED_VERIFICATION).catch(() => { });
             // Verification failed → write NOTHING, restart NOTHING. Old version stays intact and runnable.
             return report(deps, {
                 outcome: 'rejected_verification',
@@ -129,9 +162,25 @@ export async function executeForceUpdate(directive, deps) {
                 targetVersion,
             });
         }
+        try {
+            await transaction?.markVerified(dl.artifacts);
+        }
+        catch (err) {
+            await transaction?.abort(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED).catch(() => { });
+            const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED);
+            return report(deps, {
+                outcome: 'replace_failed',
+                reason: classified.detail,
+                failureCode: classified.failureCode,
+                targetVersion,
+            });
+        }
         // 6. Verified. Atomic replace, then signal restart. A replace failure leaves the old version intact.
         try {
-            await deps.atomicReplace(dl.stagedPath);
+            if (transaction)
+                await transaction.install();
+            else
+                await deps.atomicReplace(dl.stagedPath);
         }
         catch (err) {
             const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.COPY_FAILED);
@@ -147,12 +196,38 @@ export async function executeForceUpdate(directive, deps) {
             reason: 'verified_and_replaced',
             targetVersion,
             appliedVia: dl.appliedVia ?? 'binary',
+            ...(transaction ? { confirmationPending: true } : {}),
         };
         report(deps, result);
-        deps.restart(); // v1 convention: exit(78) → supervisor relaunches the new version.
+        try {
+            await transaction?.markRestartRequested();
+            await deps.restart(); // v1 convention: exit(78) → supervisor relaunches the new version.
+        }
+        catch (err) {
+            const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.RESTART_FAILED);
+            try {
+                await transaction?.rollback(classified.failureCode);
+            }
+            catch (rollbackError) {
+                const rollback = classifySelfUpdateError(rollbackError, SELF_UPDATE_FAILURE_CODES.ROLLBACK_FAILED);
+                return report(deps, {
+                    outcome: 'rollback_failed',
+                    reason: rollback.detail,
+                    failureCode: rollback.failureCode,
+                    targetVersion,
+                });
+            }
+            return report(deps, {
+                outcome: 'restart_failed',
+                reason: classified.detail,
+                failureCode: classified.failureCode,
+                targetVersion,
+            });
+        }
         return result;
     }
     finally {
+        await transaction?.release().catch(() => { });
         // Released so a later legitimate update (after a failed attempt) can proceed. On the success path the process
         // is exiting anyway; releasing is harmless and keeps the mutex honest if restart() is a test fake that returns.
         inFlight = false;

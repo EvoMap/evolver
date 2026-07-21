@@ -31,11 +31,13 @@ export function provenanceStoreForStore(store) {
 export async function listApprovedGenes(store, review, maxGenes, provenance = provenanceStoreForStore(store)) {
     const all = await store.list('Gene', GENE_SCAN_LIMIT);
     const trust = provenance.snapshot();
+    const reviewed = review.snapshot();
     const approved = [];
     for (const g of all) {
         if (trust.get(String(g.asset_id))?.trusted === false)
             continue; // hub-untrusted → withhold until promoted
-        if (!review.isApproved(String(g.asset_id)))
+        const reviewRecord = reviewed.get(String(g.asset_id));
+        if (reviewRecord !== undefined && reviewRecord.state !== 'approved')
             continue; // quarantined/rejected draft → withhold
         approved.push(g);
         if (approved.length >= maxGenes)

@@ -1,11 +1,29 @@
 import { events as ev, assetstore, mailbox as mb, ops } from '@evomap/evolver-core';
 import { type EventSnapshotSource } from './eventSnapshot.js';
+export interface MemoryGraphStatus {
+    recovery: 'healthy' | 'degraded' | 'recovered' | 'empty';
+    compactedRecords: number;
+    activeRecords: number;
+    corruptLines: number;
+    oversizedLines: number;
+    oversizedFiles: number;
+    archives: number;
+    selectionReason?: string;
+}
+export type MemoryGraphStatusResponse = ({
+    available: true;
+} & MemoryGraphStatus) | {
+    available: false;
+    error?: 'memory_graph_unavailable';
+};
 export interface WebUIServerDeps {
     eventsPath: string;
     ingestor?: ev.Ingestor;
     store?: assetstore.AssetStoreProvider;
     /** 人审队列用的 review ledger(#117 人审门）。缺省由 LocalJsonlProvider store 的 baseDir 推导。 */
     review?: assetstore.ReviewLedger;
+    /** Optional provenance sidecar; inferred for a LocalJsonlProvider when absent. */
+    provenance?: assetstore.ProvenanceStore;
     mailbox?: mb.MailboxStore;
     now?: () => number;
     host?: string;
@@ -22,8 +40,14 @@ export interface WebUIServerDeps {
     valueSummary?: (window: ops.SummaryWindow, events: readonly ev.ReportEvent[]) => ops.ValueSummary;
     /** Shared core retention report provider. Kept injectable so WebUI never owns filesystem policy or paths. */
     retentionReport?: () => ev.RetentionReport;
+    /** Read-only, already scoped MemoryGraph operator status. Re-read for every request; WebUI only exposes a sanitized allowlist. */
+    memoryGraphStatus?: () => MemoryGraphStatus;
     /** Injectable file/source seam for versioned root-event snapshots. */
     eventSource?: EventSnapshotSource;
+    /** Optional bounded diagnostics providers. Each source degrades independently. */
+    personalityDiagnostics?: () => unknown | Promise<unknown>;
+    logDiagnostics?: () => unknown | Promise<unknown>;
+    githubPrDiagnostics?: () => unknown | Promise<unknown>;
 }
 /**
  * WebUI 控台(M7): 可观测 + 保活. node:http + 自包含 HTML, 仅绑 loopback.
@@ -38,6 +62,7 @@ export declare class WebUIServer {
     private readonly actorId;
     /** Review ledger backing the human-review queue. Undefined when no LocalJsonlProvider store is available. */
     private readonly review;
+    private readonly provenance;
     /** Token guarding /api/*; supplied by the browser via Bearer, with ?token= retained for compatibility. */
     readonly token: string;
     readonly launchTicket: string;

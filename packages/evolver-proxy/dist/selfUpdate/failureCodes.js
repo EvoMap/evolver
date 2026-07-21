@@ -22,6 +22,12 @@ export const SELF_UPDATE_FAILURE_CODES = Object.freeze({
     FALLBACK_DOWNLOAD_FAILED: 'fallback_download_failed',
     FALLBACK_EXTRACT_FAILED: 'fallback_extract_failed',
     FALLBACK_MISSING_BINARY: 'fallback_missing_binary',
+    UPDATE_LOCKED: 'update_locked',
+    RECOVERY_REQUIRED: 'recovery_required',
+    UNSAFE_UPDATE_PATH: 'unsafe_update_path',
+    RESTART_FAILED: 'restart_failed',
+    READ_BACK_FAILED: 'read_back_failed',
+    ROLLBACK_FAILED: 'rollback_failed',
 });
 export class SelfUpdateFailureError extends Error {
     failureCode;

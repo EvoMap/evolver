@@ -25,6 +25,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
      */
     putFrozen(record: AssetRecord): Promise<PutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
+    findByLogicalId(id: string, limit?: number): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
     search(q: SearchQuery): Promise<AssetRecord[]>;
     /**

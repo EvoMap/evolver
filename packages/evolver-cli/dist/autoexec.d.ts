@@ -1,4 +1,4 @@
-import { events, assetstore, algo, exec, hooks, material as materialNs, verify, hub as hubNs } from '@evomap/evolver-core';
+import { events, assetstore, algo, exec, hooks, material as materialNs, util, verify, hub as hubNs } from '@evomap/evolver-core';
 import { type Beat } from './daemonLoop.js';
 import { connectPublicHub, ReuseCache } from '@evomap/evolver-adapter-public';
 import type { FetchLike, MemoryGraphEventReceipt, MemoryGraphEventReport, OfflinePermitStore, OutcomeReport, OutcomeReceipt } from '@evomap/evolver-adapter-public';
@@ -19,7 +19,7 @@ export interface AutoExecConfig {
     allowedRoots: string[];
     pollMs: number;
     timeoutMs: number;
-    runner: 'claude' | 'codex' | 'cursor';
+    runner: 'claude' | 'codex' | 'cursor' | 'gemini';
 }
 /** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
 export declare function ensureAutoExecDirs(base: string): AutoExecDirs;
@@ -113,6 +113,13 @@ export declare function verdictToOutcomeStatus(status: exec.AutoExecVerdict['sta
 export declare function questionGeneratorStatePath(home?: string): string;
 export declare function makeHubQuestionLink(cap: hubNs.HubCapability, options?: HubQuestionLinkOptions): HubQuestionLink;
 export declare function shouldSubmitProactiveQuestionsForTask(task: exec.AutoExecTask): boolean;
+export declare function autoexecLockFailureMessage(error: unknown): string;
+export declare function autoexecLockReleaseFailureMessage(error: unknown): string;
+export interface AutoexecLockReleaseDeps {
+    releaseLock?: (path: string) => util.ReleaseLockResult | void;
+    stderr?: (text: string) => void;
+}
+export declare function releaseAutoexecLock(lockPath: string, deps?: AutoexecLockReleaseDeps): boolean;
 export declare function urgentQuestionRuntimeWiringStatus(): typeof hubNs.URGENT_QUESTION_RUNTIME_WIRING_STATUS;
 export declare function submitDistillTickExplorationQuestion(questions: HubQuestionLink | undefined, source: DistillTickQuestionSource | undefined): Promise<HubQuestionSubmitResult>;
 export declare function scheduleAutoExecHubSideEffects(task: exec.AutoExecTask, verdict: exec.AutoExecVerdict, links: {

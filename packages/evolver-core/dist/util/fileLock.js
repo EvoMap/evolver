@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 export function syncSleep(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -7,11 +7,21 @@ export function syncSleep(ms) {
 const ownedLocks = new Map();
 export class LockTimeoutError extends Error {
     code = 'LOCK_TIMEOUT';
-    constructor(lockPath) {
-        super(`获取文件锁超时: ${lockPath}`);
+    constructor(_lockPath) {
+        super('获取文件锁超时');
         this.name = 'LockTimeoutError';
     }
 }
+export class UnsafeLockPathError extends Error {
+    reason;
+    code = 'UNSAFE_LOCK_PATH';
+    constructor(reason) {
+        super(`不安全的文件锁路径: ${reason}`);
+        this.reason = reason;
+        this.name = 'UnsafeLockPathError';
+    }
+}
+export const MAX_LOCK_OWNER_BYTES = 4096;
 function lockKey(lockPath) {
     return resolve(lockPath);
 }
@@ -23,6 +33,73 @@ function serializeOwner(owner) {
 }
 function isErrno(error, code) {
     return typeof error === 'object' && error !== null && error.code === code;
+}
+function noFollowFlag() {
+    return constants['O_NOFOLLOW'] ?? 0;
+}
+function assertRegularOwnerStat(stat) {
+    if (stat.isSymbolicLink())
+        throw new UnsafeLockPathError('symlink');
+    if (!stat.isFile())
+        throw new UnsafeLockPathError('not_regular_file');
+    if (stat.size > BigInt(MAX_LOCK_OWNER_BYTES))
+        throw new UnsafeLockPathError('owner_too_large');
+}
+function currentOwnerStat(path) {
+    try {
+        const stat = lstatSync(path, { bigint: true });
+        assertRegularOwnerStat(stat);
+        return stat;
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT'))
+            return null;
+        if (isErrno(error, 'EACCES') || isErrno(error, 'EPERM')) {
+            throw new UnsafeLockPathError('permission_denied');
+        }
+        throw error;
+    }
+}
+function readOwnerBounded(path) {
+    const before = currentOwnerStat(path);
+    if (before === null)
+        return null;
+    let fd;
+    try {
+        fd = openSync(path, constants.O_RDONLY | noFollowFlag());
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT'))
+            return null;
+        if (isErrno(error, 'ELOOP'))
+            throw new UnsafeLockPathError('symlink');
+        if (isErrno(error, 'EACCES') || isErrno(error, 'EPERM')) {
+            throw new UnsafeLockPathError('permission_denied');
+        }
+        throw error;
+    }
+    try {
+        const opened = fstatSync(fd, { bigint: true });
+        assertRegularOwnerStat(opened);
+        const current = currentOwnerStat(path);
+        if (current === null || current.dev !== opened.dev || current.ino !== opened.ino) {
+            throw new UnsafeLockPathError('path_changed');
+        }
+        const buffer = Buffer.alloc(MAX_LOCK_OWNER_BYTES + 1);
+        let total = 0;
+        while (total < buffer.length) {
+            const read = readSync(fd, buffer, total, buffer.length - total, total);
+            if (read === 0)
+                break;
+            total += read;
+        }
+        if (total > MAX_LOCK_OWNER_BYTES)
+            throw new UnsafeLockPathError('owner_too_large');
+        return buffer.subarray(0, total).toString('utf8');
+    }
+    finally {
+        closeSync(fd);
+    }
 }
 /** True if pid is a live process (cross-platform via signal 0; EPERM = exists but owned by another user). */
 function pidAlive(pid) {
@@ -73,10 +150,13 @@ function parseOwner(raw) {
 /** Owner recorded in the lock file; null if missing/unparseable. */
 function lockOwner(lockPath) {
     try {
-        return parseOwner(readFileSync(lockPath, 'utf8'));
+        const raw = readOwnerBounded(lockPath);
+        return raw === null ? null : parseOwner(raw);
     }
     catch (error) {
-        if (isErrno(error, 'ENOENT'))
+        // A valid owner can release and another waiter can acquire between lstat/open/fstat. Treat that snapshot as
+        // transiently unavailable: callers remain conservative (no steal/delete) and the acquire loop retries.
+        if (error instanceof UnsafeLockPathError && error.reason === 'path_changed')
             return null;
         throw error;
     }
@@ -100,17 +180,30 @@ function removeFileIfExists(path) {
     }
 }
 function createLockFile(lockPath, owner, trackOwnership) {
-    try {
-        writeFileSync(lockPath, serializeOwner(owner), { flag: 'wx', mode: 0o600 });
-        if (trackOwnership)
-            ownedLocks.set(lockKey(lockPath), owner);
-        return true;
+    for (let permissionAttempt = 0; permissionAttempt < 2; permissionAttempt++) {
+        try {
+            writeFileSync(lockPath, serializeOwner(owner), { flag: 'wx', mode: 0o600 });
+            if (trackOwnership)
+                ownedLocks.set(lockKey(lockPath), { owner, releasePending: false });
+            return true;
+        }
+        catch (error) {
+            if (isErrno(error, 'EEXIST'))
+                return false;
+            if (isErrno(error, 'EACCES') || isErrno(error, 'EPERM')) {
+                // Windows can report EPERM instead of EEXIST during contention. A regular owner is busy; if the owner
+                // disappeared before lstat, retry create once to distinguish that release race from a persistent ACL
+                // failure. Unsafe/inaccessible paths still throw from currentOwnerStat and remain fail closed.
+                if (currentOwnerStat(lockPath) !== null)
+                    return false;
+                if (permissionAttempt === 0)
+                    continue;
+                throw new UnsafeLockPathError('permission_denied');
+            }
+            throw error;
+        }
     }
-    catch (error) {
-        if (isErrno(error, 'EEXIST'))
-            return false;
-        throw error;
-    }
+    throw new UnsafeLockPathError('permission_denied');
 }
 function tryAcquireMutationGuard(lockPath) {
     const guardPath = mutationGuardPath(lockPath);
@@ -185,6 +278,12 @@ function reclaimStaleLock(lockPath) {
  * synchronous critical sections (append-only writes).
  */
 export function acquireLock(lockPath, opts = {}) {
+    const pending = ownedLocks.get(lockKey(lockPath));
+    if (pending?.releasePending) {
+        const released = releaseLock(lockPath);
+        if (!released.released)
+            throw new LockReleaseError(released.reason);
+    }
     const maxTries = opts.maxTries ?? 300;
     const waitMs = opts.waitMs ?? 10;
     for (let i = 0; i < maxTries; i++) {
@@ -200,28 +299,64 @@ export function acquireLock(lockPath, opts = {}) {
         }
         syncSleep(waitMs);
     }
-    throw new LockTimeoutError(lockPath);
+    throw new LockTimeoutError();
 }
 export function releaseLock(lockPath) {
     const key = lockKey(lockPath);
-    const owner = ownedLocks.get(key);
-    if (owner === undefined)
-        return;
+    const owned = ownedLocks.get(key);
+    if (owned === undefined)
+        return { released: true, reason: 'not_owned' };
+    const failed = (reason) => {
+        owned.releasePending = true;
+        return { released: false, reason };
+    };
+    // Release must not use lockOwner(): that helper intentionally folds path_changed into a conservative null
+    // for acquire retries. Here, an inconclusive read marks a pending release so the next acquire can retry or
+    // surface LOCK_RELEASE_FAILED instead of silently timing out behind this process's own PID.
+    let raw;
     try {
-        if (!sameOwner(lockOwner(lockPath), owner))
-            return;
-        const releasedPath = sidecarPath(lockPath, 'released');
-        try {
-            renameSync(lockPath, releasedPath);
+        raw = readOwnerBounded(lockPath);
+    }
+    catch (error) {
+        return failed(error instanceof UnsafeLockPathError ? error.reason : 'release_failed');
+    }
+    if (raw === null) {
+        ownedLocks.delete(key);
+        return { released: true, reason: 'missing' };
+    }
+    const current = parseOwner(raw);
+    if (current === null)
+        return failed('invalid_owner');
+    if (!sameOwner(current, owned.owner)) {
+        ownedLocks.delete(key);
+        return { released: true, reason: 'ownership_changed' };
+    }
+    const releasedPath = sidecarPath(lockPath, 'released');
+    try {
+        renameSync(lockPath, releasedPath);
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT')) {
+            ownedLocks.delete(key);
+            return { released: true, reason: 'missing' };
         }
-        catch (error) {
-            if (isErrno(error, 'ENOENT'))
-                return;
-            throw error;
-        }
+        return failed('release_failed');
+    }
+    ownedLocks.delete(key);
+    try {
         removeFileIfExists(releasedPath);
     }
-    finally {
-        ownedLocks.delete(key);
+    catch {
+        return { released: true, reason: 'released_with_cleanup_error' };
+    }
+    return { released: true, reason: 'released' };
+}
+export class LockReleaseError extends Error {
+    reason;
+    code = 'LOCK_RELEASE_FAILED';
+    constructor(reason) {
+        super(`文件锁释放未完成: ${reason}`);
+        this.reason = reason;
+        this.name = 'LockReleaseError';
     }
 }

@@ -2,13 +2,14 @@ import type { AssetStoreProvider } from '../assetstore/provider.js';
 import { type ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { GeneCandidateInput } from '../algo/geneSelection.js';
-import type { CycleEngine, SolidifyPermitGate } from '../algo/cycleEngine.js';
+import type { CycleEngine, ExecutionFailureKind, SolidifyPermitGate } from '../algo/cycleEngine.js';
 import { type AutonomousSafety } from './autonomousCycle.js';
 import type { GitRunner, ValidateHook } from './claudeBridge.js';
 import type { AgentRunner } from './runnerRegistry.js';
 import { type OpenPrLister } from './openPrRegistry.js';
 import type { ReuseOutcomeSummary, ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { PersonalityStore } from '../personality/store.js';
+import type { MemoryGraphProvider } from '../algo/memoryGraph.js';
 export interface AutoExecTask {
     id: string;
     repo: string;
@@ -39,6 +40,8 @@ export interface AutoExecVerdict {
         score: number;
     };
     proofOfWork?: unknown;
+    failureKind?: ExecutionFailureKind;
+    exitCode?: number | null;
     usedAssetIds?: readonly string[];
 }
 /**
@@ -97,6 +100,8 @@ export interface AutoExecDeps {
     /** Observed `value.recall` events (#274 slice 3): folded into the same soft re-order as reuseOutcomes (lower
      *  weight) so transcript-observed recall influences selection. Forwarded to runEvolutionCycle. Omit → none. */
     recallEvents?: readonly ReuseOutcomeEvent[];
+    /** Scoped local MemoryGraph seam. Queries and records structured outcome data only. */
+    memoryGraph?: MemoryGraphProvider;
     /** Optional daemon-level explicit strategy preset name, e.g. EVOLVE_STRATEGY. */
     strategyName?: string;
     /** Optional evolvable personality store shared with CycleEngine and the exec prompt. */

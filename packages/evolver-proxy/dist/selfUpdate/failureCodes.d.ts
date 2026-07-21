@@ -17,6 +17,12 @@ export declare const SELF_UPDATE_FAILURE_CODES: Readonly<{
     readonly FALLBACK_DOWNLOAD_FAILED: "fallback_download_failed";
     readonly FALLBACK_EXTRACT_FAILED: "fallback_extract_failed";
     readonly FALLBACK_MISSING_BINARY: "fallback_missing_binary";
+    readonly UPDATE_LOCKED: "update_locked";
+    readonly RECOVERY_REQUIRED: "recovery_required";
+    readonly UNSAFE_UPDATE_PATH: "unsafe_update_path";
+    readonly RESTART_FAILED: "restart_failed";
+    readonly READ_BACK_FAILED: "read_back_failed";
+    readonly ROLLBACK_FAILED: "rollback_failed";
 }>;
 export type SelfUpdateFailureCode = typeof SELF_UPDATE_FAILURE_CODES[keyof typeof SELF_UPDATE_FAILURE_CODES];
 export interface ClassifiedSelfUpdateError {

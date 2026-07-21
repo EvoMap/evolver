@@ -38,7 +38,18 @@ export async function runEvolutionCycle(engine, store, opts) {
         ...(opts.hubCandidates && opts.hubCandidates.length > 0 ? { hubCandidates: opts.hubCandidates } : {}),
         ...(reuseCounts.size > 0 ? { reuseCounts } : {}),
     };
-    const { candidates, distilledFallback, antiWarnings } = await assembleSelectionPool(store, signals, asmOpts);
+    const { candidates: assembledCandidates, distilledFallback, antiWarnings } = await assembleSelectionPool(store, signals, asmOpts);
+    const memoryByGene = new Map((opts.memoryGraphAdvice?.genes ?? []).map((evidence) => [evidence.geneId, evidence]));
+    const candidates = assembledCandidates.map((candidate) => {
+        const evidence = memoryByGene.get(candidate.geneId) ?? (candidate.assetId ? memoryByGene.get(candidate.assetId) : undefined);
+        return evidence ? { ...candidate, memoryBoost: evidence.boost } : candidate;
+    });
+    const memoryDistilledFallback = distilledFallback.map((candidate) => {
+        const evidence = memoryByGene.get(candidate.geneId) ?? (candidate.assetId ? memoryByGene.get(candidate.assetId) : undefined);
+        return evidence ? { ...candidate, memoryBoost: evidence.boost } : candidate;
+    });
+    const memoryEligible = [...candidates, ...memoryDistilledFallback];
+    const memoryEvidence = opts.memoryGraphAdvice?.genes.filter((evidence) => memoryEligible.some((candidate) => candidate.geneId === evidence.geneId || candidate.assetId === evidence.geneId)).slice(0, 3) ?? [];
     return engine.runCycle({
         cycleId: opts.cycleId,
         problem: opts.problem,
@@ -57,7 +68,8 @@ export async function runEvolutionCycle(engine, store, opts) {
         ...(opts.solidifyPermit ? { solidifyPermit: opts.solidifyPermit } : {}),
         // #97: forward the distilled-gene fallback pool so a no-signal-match cycle reuses a distilled strategy
         // (instead of a blind innovate) when nothing clears the floor.
-        ...(distilledFallback.length > 0 ? { distilledFallback } : {}),
+        ...(memoryDistilledFallback.length > 0 ? { distilledFallback: memoryDistilledFallback } : {}),
         ...(antiWarnings.length > 0 ? { antiWarnings } : {}),
+        ...(memoryEvidence.length > 0 ? { memoryEvidence } : {}),
     });
 }

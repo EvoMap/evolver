@@ -10,6 +10,8 @@ export const EVENT_TYPES = [
     'observer.quarantined', 'observer.dead_letter',
     'actor.human.nudge', 'actor.human.intervene', 'actor.human.teach', 'actor.human.observe',
     'actor.human.review.approve', 'actor.human.review.reject',
+    'actor.human.trust.promote', 'actor.human.trust.revoke',
+    'actor.human.sidecar.recover',
     'gene.distilled', 'gene.distill_shadowed',
     'anti_gene.distilled', 'anti_gene.distill_shadowed',
     'anti_gene.benchmark_result', 'anti_gene.rollout_result',

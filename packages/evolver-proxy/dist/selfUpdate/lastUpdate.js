@@ -86,6 +86,37 @@ export function reportPendingSelfUpdateLastUpdate(store, directive, opts = { fro
         ...(directive.directive_id ? { directive_id: String(directive.directive_id) } : {}),
     }, now);
 }
+export function finalizeSelfUpdateRecoveryLastUpdate(store, recovery, now = Date.now()) {
+    if (recovery.outcome !== 'confirmed'
+        && recovery.outcome !== 'rolled_back'
+        && recovery.outcome !== 'blocked')
+        return false;
+    const toVersion = concreteVersion(recovery.targetVersion);
+    const fromVersion = concreteVersion(recovery.fromVersion);
+    if (!toVersion)
+        return false;
+    const current = readPendingLastUpdate(store, now);
+    if (current && current.to_version !== toVersion)
+        return false;
+    const common = {
+        to_version: toVersion,
+        finished_at: Math.max(now, FINISHED_AT_MIN_MS),
+        ...(current?.directive_id ? { directive_id: current.directive_id } : {}),
+        ...(current?.from_version ? { from_version: current.from_version } : fromVersion ? { from_version: fromVersion } : {}),
+    };
+    if (recovery.outcome === 'confirmed') {
+        return writeLastUpdate(store, {
+            ...common,
+            status: 'success',
+            ...(current?.applied_via ? { applied_via: current.applied_via } : {}),
+        }, now);
+    }
+    return writeLastUpdate(store, {
+        ...common,
+        status: 'failed',
+        error: clampString(hubNs.redactString(`${recovery.failureCode ?? 'self_update_recovery_failed'}: ${recovery.outcome}`), LAST_UPDATE_ERROR_MAX),
+    }, now);
+}
 export function lastUpdateFromSelfUpdateResult(directive, result, opts) {
     if (result.outcome === 'already_in_progress' || result.outcome === 'disabled')
         return undefined;
@@ -94,11 +125,11 @@ export function lastUpdateFromSelfUpdateResult(directive, result, opts) {
         return undefined;
     const base = {
         to_version: toVersion,
-        status: statusForOutcome(result.outcome),
+        status: statusForResult(result),
         finished_at: Math.max(opts.now, FINISHED_AT_MIN_MS),
         ...(directive.directive_id ? { directive_id: String(directive.directive_id) } : {}),
     };
-    if (base.status === 'success') {
+    if (base.status === 'success' || base.status === 'pending') {
         return {
             ...base,
             from_version: clampString(opts.fromVersion, LAST_UPDATE_FROM_VERSION_MAX),
@@ -114,10 +145,10 @@ export function lastUpdateFromSelfUpdateResult(directive, result, opts) {
     }
     return base;
 }
-function statusForOutcome(outcome) {
-    if (outcome === 'applied')
-        return 'success';
-    if (outcome === 'noop')
+function statusForResult(result) {
+    if (result.outcome === 'applied')
+        return result.confirmationPending ? 'pending' : 'success';
+    if (result.outcome === 'noop')
         return 'skipped';
     return 'failed';
 }

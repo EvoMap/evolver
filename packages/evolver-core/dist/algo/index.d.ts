@@ -2,6 +2,7 @@ export * from './geneHealth.js';
 export * from './exploration.js';
 export * from './epigenetics.js';
 export * from './confidence.js';
+export * from './memoryGraph.js';
 export * from './capabilityCandidates.js';
 export * from './conversationSniffer.js';
 export * from './geneIntake.js';

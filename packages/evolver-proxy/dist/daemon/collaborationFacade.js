@@ -721,10 +721,10 @@ function classifyOperationError(error) {
     const candidate = error;
     const status = numberValue(candidate?.statusCode) ?? numberValue(candidate?.status);
     const signature = `${String(candidate?.name ?? '')} ${String(candidate?.code ?? '')}`;
-    if (status === 401 || /auth/i.test(signature))
-        return { status: 401, code: 'unauthorized', message: 'Hub authentication failed', retryable: false };
     if (status === 403 || /forbidden|permission/i.test(signature))
         return { status: 403, code: 'forbidden', message: 'Hub permission denied', retryable: false };
+    if (status === 401 || /auth/i.test(signature))
+        return { status: 401, code: 'unauthorized', message: 'Hub authentication failed', retryable: false };
     if (status === 404)
         return { status: 404, code: 'not_found', message: 'Task or claim not found', retryable: false };
     if (status === 409 || /conflict|already_claimed/i.test(signature))
@@ -741,7 +741,7 @@ function classifyOperationError(error) {
 function isDurablyRecoverableAuthError(error) {
     const candidate = error;
     const status = numberValue(candidate?.statusCode) ?? numberValue(candidate?.status);
-    return candidate?.name === 'AuthError' || status === 401;
+    return status === 401;
 }
 class FacadeTimeoutError extends Error {
 }

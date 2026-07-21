@@ -23,7 +23,7 @@ import { checkPolicy, summarizeViolations } from './policy/index.js';
 import { spawnCapture, getRunnerSpec, DEFAULT_TIMEOUT_MS } from './runnerRegistry.js';
 // Re-export the runner layer so existing importers of ./claudeBridge.js (and the `exec` namespace) keep their
 // surface after the #91-6 split — the registry simply has a clearer home now.
-export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, } from './runnerRegistry.js';
 export class ExecBridgeDisabledError extends Error {
     constructor() {
         super('exec bridge is disabled — set EVOLVE_EXEC_BRIDGE=1 or pass { enabled: true } to enable agent execution');
@@ -124,13 +124,38 @@ export function scrubAgentEnv(env, opts = {}) {
     }
     return out;
 }
+class ExecBridgeRunCancelledError extends Error {
+    constructor() {
+        super('exec bridge run cancelled');
+        this.name = 'ExecBridgeRunCancelledError';
+    }
+}
+function cancelledExecutionResult(run) {
+    return {
+        outcome: { status: 'failed', score: 0.1, reason: 'execution cancelled' },
+        strongEvidence: false,
+        failureKind: 'cancelled',
+        exitCode: run?.exitCode ?? null,
+        ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
+    };
+}
 /** Default git runner: spawn `git <args>` in cwd, return stdout (empty string on error). Env scrubbed — git never needs evolver/hub secrets. */
-export const defaultGitRunner = async (args, cwd) => {
+export const defaultGitRunner = async (args, cwd, signal, options) => {
     try {
-        const r = await spawnCapture('git', args, { cwd, timeoutMs: 30_000, env: scrubAgentEnv(process.env) });
+        const r = await spawnCapture('git', args, {
+            cwd,
+            timeoutMs: 30_000,
+            env: scrubAgentEnv(process.env),
+            ...(signal ? { signal } : {}),
+            ...(options?.processSignalMode ? { processSignalMode: options.processSignalMode } : {}),
+        });
+        if (r.termination === 'cancelled')
+            throw new ExecBridgeRunCancelledError();
         return r.stdout;
     }
-    catch {
+    catch (error) {
+        if (error instanceof ExecBridgeRunCancelledError)
+            throw error;
         return '';
     }
 };
@@ -154,7 +179,7 @@ export function makeClaudeExecBridge(opts) {
     //    path is refused by runnerRegistry, and the runner is an unverified scaffold (#66/#181), so we do not let
     //    default cursor touch the real tree until run-verified. (Bugbot High #181)
     // claude is exempt — its skip is bounded by --allowedTools (finding #80).
-    const needsIsolation = opts.runner === 'cursor'
+    const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini'
         || (opts.runner === 'codex' && opts.agentOptions?.skipPermissions === true);
     if (!opts.agent && needsIsolation && opts.isolation !== 'worktree') {
         throw new UnsandboxedFullAccessRequiresIsolationError();
@@ -183,25 +208,66 @@ export function makeClaudeExecBridge(opts) {
         // Isolation: run in a throwaway git worktree so the agent's edits never touch the real working tree.
         const isolate = opts.isolation === 'worktree';
         const workDir = isolate ? joinPath(tmpdir(), `evolver-wt-${mutation.id}`) : opts.cwd;
-        if (isolate)
-            await git(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd);
+        if (opts.signal?.aborted)
+            return cancelledExecutionResult(undefined);
+        let observedRun;
+        const proofGit = async (args, cwd) => {
+            if (opts.signal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+            const output = await git(args, cwd, opts.signal);
+            if (opts.signal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+            return output;
+        };
         try {
-            const run = await agent(prompt, { cwd: workDir, timeoutMs, ...(agentEnv ? { env: agentEnv } : {}) });
-            const stat = parseGitShortstat(await git(['diff', '--shortstat'], workDir));
+            if (isolate)
+                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd);
+            const run = await agent(prompt, {
+                cwd: workDir,
+                timeoutMs,
+                ...(agentEnv ? { env: agentEnv } : {}),
+                ...(opts.signal ? { signal: opts.signal } : {}),
+            });
+            observedRun = run;
+            if (run.failureKind === 'cancelled' || opts.signal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+            // A worktree can contain three independent change surfaces after the agent exits: staged tracked changes,
+            // unstaged tracked changes, and untracked files. `git diff` alone sees only the second. In an isolated
+            // worktree it is safe to mark untracked files intent-to-add temporarily, which makes one `git diff HEAD`
+            // snapshot cover all three without staging their contents or disturbing the agent's existing staged state.
+            // Reset only those temporary index entries before validation so hooks observe the state the agent left.
+            const untrackedFiles = isolate
+                ? (await proofGit(['ls-files', '--others', '--exclude-standard', '-z'], workDir)).split('\0').filter(Boolean)
+                : [];
+            if (untrackedFiles.length > 0)
+                await proofGit(['add', '--intent-to-add', '--', ...untrackedFiles], workDir);
+            let stat;
+            let changedFiles;
+            let numstat;
+            let patch = '';
+            try {
+                stat = parseGitShortstat(await proofGit(['diff', '--shortstat', 'HEAD'], workDir));
+                changedFiles = (await proofGit(['diff', '--name-only', 'HEAD'], workDir)).split('\n').map((s) => s.trim()).filter(Boolean);
+                numstat = await proofGit(['diff', '--numstat', 'HEAD'], workDir);
+                if (isolate && stat.files > 0)
+                    patch = await proofGit(['diff', '--binary', '--full-index', 'HEAD'], workDir);
+            }
+            finally {
+                if (untrackedFiles.length > 0)
+                    await git(['reset', '--quiet', '--', ...untrackedFiles], workDir);
+            }
             // ENFORCE policy against the ACTUAL diff (finding: prompt.ts only ADVISES the agent "touch at most N
             // file(s) / never modify X"; this is the hard gate). checkPolicy ALWAYS runs the global guards — the
             // system blast hard cap (EVOLVER_HARD_CAP_FILES/LINES), the critical-protected paths (.env, MEMORY.md,
             // package.json, the evolver skill, …), and destructive deletes of those paths — so a no-gene / no-
             // constraints run is no longer un-guarded. The gene's max_files/max_lines/forbidden_paths layer on top.
             // Any violation fails the cycle no matter what the agent did — even when validation would pass.
-            const changedFiles = (await git(['diff', '--name-only'], workDir)).split('\n').map((s) => s.trim()).filter(Boolean);
-            const numstat = await git(['diff', '--numstat'], workDir);
             const violations = checkPolicy({ stat, changedFiles, numstat, ...(gene?.constraints ? { constraints: gene.constraints } : {}) });
             let patchRef;
             if (isolate && stat.files > 0) {
                 // preserve the isolated edits as a patch (the worktree itself is removed); the real repo is untouched
                 patchRef = joinPath(tmpdir(), `evolver-patch-${mutation.id}.diff`);
-                writeFileSync(patchRef, await git(['diff'], workDir));
+                writeFileSync(patchRef, patch);
             }
             const proof = gitDiffProof(stat, patchRef);
             // Success: prefer the authoritative validation hook; otherwise "agent succeeded AND produced a diff".
@@ -209,8 +275,12 @@ export function makeClaudeExecBridge(opts) {
             let score = passed ? 0.7 : run.ok ? 0.4 : 0.1; // ran-but-no-change is weak, not a clean failure
             // Only validate a change that already respects the constraints — a constraint-violating diff is never
             // a success regardless of what its tests say.
-            if (run.ok && opts.validate && violations.length === 0) {
+            if (run.ok && stat.files > 0 && opts.validate && violations.length === 0) {
+                if (opts.signal?.aborted)
+                    throw new ExecBridgeRunCancelledError();
                 const v = await opts.validate(mutation, decision, workDir);
+                if (opts.signal?.aborted)
+                    throw new ExecBridgeRunCancelledError();
                 passed = v.passed;
                 score = v.score ?? (v.passed ? 0.9 : 0.2);
             }
@@ -224,16 +294,24 @@ export function makeClaudeExecBridge(opts) {
                 outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
                 proofOfWork: proof,
                 strongEvidence: passed && stat.files > 0,
+                ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
+                ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
                 // On a FAILED outcome, hand the agent transcript (stdout + stderr) to the cycle engine as host-side
                 // triage context (#279): an empty transcript -> host_no_transcript, a provider-error string ->
                 // host_provider_error. Omitted on success (failure-only context; never persisted).
                 ...(passed ? {} : { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output }),
             };
         }
+        catch (error) {
+            if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
+                return cancelledExecutionResult(observedRun);
+            }
+            throw error;
+        }
         finally {
             if (isolate) {
                 try {
-                    await git(['worktree', 'remove', '--force', workDir], opts.cwd);
+                    await git(['worktree', 'remove', '--force', workDir], opts.cwd, undefined, { processSignalMode: 'ignore' });
                 }
                 catch { /* best-effort cleanup */ }
             }

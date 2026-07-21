@@ -43,12 +43,16 @@ const CODEX_DEFAULT_AGENT_OPTIONS = {};
 // auto-approve shell+write, but Cursor has no verified per-run allowlist/sandbox mapping yet, so skipPermissions
 // is refused outright. Use default cursor with worktree isolation until the CLI is run-verified.
 const CURSOR_DEFAULT_AGENT_OPTIONS = {};
+// Gemini's verified safe default is `--approval-mode auto_edit`; shell remains gated and --yolo is refused.
+const GEMINI_DEFAULT_AGENT_OPTIONS = {};
 /** Per-runner safe default agent options — claude bypasses-with-bounds; codex + cursor stay non-bypassing (codex sandboxed; cursor skip refused, #66). */
 function defaultAgentOptions(runner) {
     if (runner === 'codex')
         return CODEX_DEFAULT_AGENT_OPTIONS;
     if (runner === 'cursor')
         return CURSOR_DEFAULT_AGENT_OPTIONS;
+    if (runner === 'gemini')
+        return GEMINI_DEFAULT_AGENT_OPTIONS;
     return CLAUDE_DEFAULT_AGENT_OPTIONS;
 }
 /**
@@ -70,6 +74,7 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         requireTrustedGene: safety.requireTrustedGene ?? true,
         agentOptions: safety.agentOptions ?? defaultAgentOptions(safety.runner),
         ...(safety.timeoutMs !== undefined ? { timeoutMs: safety.timeoutMs } : {}),
+        ...(safety.signal ? { signal: safety.signal } : {}),
         resolveGene: makeTrustedGeneResolver(store, opts.provenance, opts.review, opts.includeProbation ?? false),
         ...(opts.validate ? { validate: opts.validate } : {}),
         ...(opts.validationCmds ? { validationCmds: opts.validationCmds } : {}),

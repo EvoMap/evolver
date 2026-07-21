@@ -1,8 +1,9 @@
 import { ops } from '@evomap/evolver-core';
 import { type SelfUpdateFailureCode } from './failureCodes.js';
+import type { DurableSelfUpdateSession } from './transaction.js';
 type DownloadedArtifact = ops.DownloadedArtifact;
 /** Structured outcome codes — reported to telemetry; the hub sees WHY an update did/didn't apply. */
-export type SelfUpdateOutcome = 'applied' | 'noop' | 'rejected_decision' | 'rejected_verification' | 'download_failed' | 'replace_failed' | 'already_in_progress' | 'disabled';
+export type SelfUpdateOutcome = 'applied' | 'noop' | 'rejected_decision' | 'rejected_verification' | 'download_failed' | 'replace_failed' | 'restart_failed' | 'rollback_failed' | 'already_in_progress' | 'disabled';
 export interface SelfUpdateResult {
     outcome: SelfUpdateOutcome;
     reason: string;
@@ -13,13 +14,15 @@ export interface SelfUpdateResult {
     /**
      * Which download path produced the staged binary: `'binary'` is the normal
      * precompiled-asset happy path, `'tarball'` means the binary download failed
-     * and Channel 1b (release `.tar.gz`) fallback was used. The verifyManifest
+     * and Channel 1b (release `.tar.gz`) fallback was used. The selected-artifact
      * gate ran in BOTH cases, so apply-semantics are identical, but "tarball
      * used in production" is a useful CDN/rate-limit signal for the hub.
      * Persisted into `last_update.json` (lastUpdate.LastUpdatePayload.applied_via)
      * on success so the hub can observe the channel directly.
      */
     appliedVia?: 'binary' | 'tarball';
+    /** Durable installs are not successful until the relaunched daemon completes startup health checks. */
+    confirmationPending?: true;
 }
 /** The hub's force_update directive (inbound message payload). */
 export interface ForceUpdateDirective {
@@ -36,7 +39,7 @@ export interface ForceUpdateDirective {
 export interface DownloadResult {
     /** Where the new version was staged (e.g. a tmp dir). Passed to atomicReplace on success. */
     stagedPath: string;
-    /** The downloaded artifacts (bytes or precomputed sha256) for verifyManifest. */
+    /** Exactly one selected artifact (bytes or precomputed sha256) for verification. */
     artifacts: readonly DownloadedArtifact[];
     /**
      * Which channel actually produced the staged bytes — defaults to `'binary'`
@@ -63,8 +66,10 @@ export interface SelfUpdateDeps {
     download: (targetVersion: string, directive: ForceUpdateDirective) => Promise<DownloadResult>;
     /** Atomically replace the install tree with the staged path (preserving node_modules/.env/etc). Throws on fail. */
     atomicReplace: (stagedPath: string) => Promise<void>;
+    /** Optional durable transaction: cross-process lock + journal + backup + recovery-aware install. */
+    beginTransaction?: (targetVersion: string) => Promise<DurableSelfUpdateSession>;
     /** Signal a restart so the supervisor relaunches the new version. v1 convention: process.exit(78). */
-    restart: () => void;
+    restart: () => void | Promise<void>;
     /** Optional Ed25519 public key (PEM / raw base64). When set, an unsigned/badly-signed manifest is REJECTED. */
     publicKey?: string;
     /** Best-effort telemetry sink for the structured outcome (never throws into the update path). */
@@ -80,7 +85,7 @@ export declare function _resetSelfUpdateMutex(): void;
  *  2. decideUpdate (pure): reject bad manifests, NOOP when already satisfied (no download, no restart).
  *  3. mutex: exactly one execution; concurrent callers get `already_in_progress` and touch no disk.
  *  4. download the staged release.
- *  5. verifyManifest (pure) — THE GATE. Fail → no write, no restart, `rejected_verification`.
+ *  5. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
  *  6. atomicReplace, then restart(). Only reached after verification passed.
  *
  * Never throws: every failure becomes a structured SelfUpdateResult so the daemon can report it and keep running

@@ -8,8 +8,12 @@
 //
 // Default (no record) = approved/eligible: the only writer of quarantine records is `--distill`; cycle-self-
 // produced and v1-migrated genes are never quarantined, so the explore→prove loop is untouched for them.
-import { appendFileSync, existsSync, readFileSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, withAssetStoreLock, } from './assetStoreStorage.js';
+import { assertTrustSidecarHealthy, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
+function immutableRecord(record) {
+    return Object.freeze({ ...record });
+}
 /**
  * Append-only JSONL sidecar at <baseDir>/review.jsonl. Default for an asset with NO record = approved (eligible):
  * only auto-distilled drafts are quarantined here; everything else is eligible by default.
@@ -22,11 +26,14 @@ import { join, dirname } from 'node:path';
 export class ReviewLedger {
     now;
     path;
+    lockPath;
     index = new Map();
-    sig = ''; // `${mtimeMs}:${size}` of review.jsonl at the last index build; '' = never loaded / file absent
+    fileState = null;
     constructor(baseDir, now = Date.now) {
         this.now = now;
+        ensureAssetStoreDirectory(baseDir);
         this.path = join(baseDir, 'review.jsonl');
+        this.lockPath = join(baseDir, '.assetstore.lock');
     }
     static isHuman(s) { return s === 'approved' || s === 'rejected'; }
     /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
@@ -37,43 +44,50 @@ export class ReviewLedger {
             return r; // human decision always wins (and later human beats earlier)
         return ReviewLedger.isHuman(existing.state) ? existing : r; // a quarantine replaces only a prior quarantine
     }
-    // Reload-aware (not load-once): the resident `autoexec` daemon holds ONE ReviewLedger, yet an operator runs
-    // `evolver review --approve` in a SEPARATE process. Re-read review.jsonl whenever its mtime+size changed, so a
-    // live approval lifts a quarantined gene without restarting the daemon. The file is small and queried at most
-    // once per cycle, so a statSync per query is cheap. (mtime alone can collide within one ms → pair it with size.)
-    load() {
-        if (!existsSync(this.path)) {
-            this.index.clear();
-            this.sig = '';
-            return;
-        }
-        const st = statSync(this.path);
-        const sig = `${st.mtimeMs}:${st.size}`;
-        if (sig === this.sig)
-            return; // unchanged since last read → cached index is current
-        this.index.clear();
-        for (const line of readFileSync(this.path, 'utf8').split('\n')) {
-            if (!line.trim())
-                continue;
-            try {
-                const r = JSON.parse(line);
-                if (r.assetId)
-                    this.index.set(r.assetId, ReviewLedger.keep(this.index.get(r.assetId), r));
+    rebuildIndex(state) {
+        const next = new Map();
+        const raw = state === 'missing' ? null : readUtf8Regular(this.path);
+        if (raw !== null) {
+            const parsed = parseSidecarJsonl(raw, parseReviewRecord);
+            assertTrustSidecarHealthy('review', parsed);
+            for (const record of parsed.records) {
+                const frozen = immutableRecord(record);
+                next.set(record.assetId, ReviewLedger.keep(next.get(record.assetId), frozen));
             }
-            catch { /* skip corrupt line */ }
         }
-        this.sig = sig;
+        this.index.clear();
+        for (const [assetId, record] of next)
+            this.index.set(assetId, record);
+        this.fileState = state;
+    }
+    refreshUnderLock() {
+        const state = regularFileFingerprint(this.path);
+        if (state !== this.fileState)
+            this.rebuildIndex(state);
+    }
+    withFreshRead(read) {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            return read(this.index);
+        });
+    }
+    appendUnderLock(full) {
+        appendUtf8Durable(this.path, `${JSON.stringify(full)}\n`);
+        const frozen = immutableRecord(full);
+        this.index.set(full.assetId, ReviewLedger.keep(this.index.get(full.assetId), frozen));
+        this.fileState = regularFileFingerprint(this.path);
+        return this.index.get(full.assetId);
     }
     /** Record a review-state for an asset_id (append-only; the JSONL history is the audit trail). */
     mark(rec) {
-        this.load();
         const full = { ...rec, at: rec.at ?? new Date(this.now()).toISOString() };
-        mkdirSync(dirname(this.path), { recursive: true });
-        appendFileSync(this.path, `${JSON.stringify(full)}\n`);
-        this.index.set(full.assetId, ReviewLedger.keep(this.index.get(full.assetId), full));
-        const st = statSync(this.path); // single stat: two separate calls could straddle a concurrent same-ms append
-        this.sig = `${st.mtimeMs}:${st.size}`; // our own write is already indexed; don't force a re-read
-        return full;
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            this.appendUnderLock(full);
+            return immutableRecord(full);
+        });
     }
     /** Quarantine an auto-distilled draft: its strategy must not enter a real run until reviewed. */
     quarantine(assetId, reason = 'auto-distilled — review before use') {
@@ -87,9 +101,19 @@ export class ReviewLedger {
      * approval is inert. Returns the surviving record (the existing decision, or the new quarantine).
      */
     quarantineIfAbsent(assetId, reason = 'auto-distilled — review before use') {
-        this.load();
-        const existing = this.index.get(assetId);
-        return existing ?? this.quarantine(assetId, reason);
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            const existing = this.index.get(assetId);
+            if (existing)
+                return existing;
+            return this.appendUnderLock({
+                assetId,
+                state: 'quarantined',
+                reason,
+                at: new Date(this.now()).toISOString(),
+            });
+        });
     }
     /** Explicit, audited approval (who/why) — flips a draft to eligible. */
     approve(assetId, by, reason) {
@@ -100,8 +124,7 @@ export class ReviewLedger {
         return this.mark({ assetId, state: 'rejected', by, reason });
     }
     get(assetId) {
-        this.load();
-        return this.index.get(assetId) ?? null;
+        return this.withFreshRead((index) => index.get(assetId) ?? null);
     }
     /**
      * Every recorded review decision (resolved, reload-aware). The authoritative source of which assets are
@@ -109,14 +132,18 @@ export class ReviewLedger {
      * asset list, so a draft awaiting approval is never missed behind a store-list cutoff.
      */
     records() {
-        this.load();
-        return [...this.index.values()];
+        return [...this.snapshot().values()];
+    }
+    /** One linearizable review snapshot for bounded batch readers. */
+    snapshot() {
+        return this.withFreshRead((index) => new Map(index));
     }
     /** No record → approved (default eligible); a record → approved only when its state is 'approved'. */
     isApproved(assetId) {
-        this.load();
-        const r = this.index.get(assetId);
-        return r ? r.state === 'approved' : true;
+        return this.withFreshRead((index) => {
+            const r = index.get(assetId);
+            return r ? r.state === 'approved' : true;
+        });
     }
     /**
      * True only when a human approval record exists. Safety-sensitive consumers such as AntiGene warning
@@ -124,7 +151,6 @@ export class ReviewLedger {
      * negative-memory asset must never inherit the ledger's backward-compatible "no record = eligible" default.
      */
     isExplicitlyApproved(assetId) {
-        this.load();
-        return this.index.get(assetId)?.state === 'approved';
+        return this.withFreshRead((index) => index.get(assetId)?.state === 'approved');
     }
 }

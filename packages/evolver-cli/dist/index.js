@@ -3,6 +3,7 @@ import { readEvents, statusReport, listCycles, showCycle, listTriggers, buildNar
 import { runGeneValue } from './geneValue.js';
 import { assetstore, algo, signals, material as materialNs } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
+import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { makeInjectEmitter } from './autoexec.js';
 import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
@@ -197,16 +198,50 @@ export function rebuildViews(opts = {}) {
     replayer.rebuild(ing.readAll());
     return { rebuilt: events.DEFAULT_PROJECTORS.map((p) => p.name) };
 }
-/** migrate import-v1 <v1dir> [outDir]: v1→v2 只读迁移(异步, 由 cli.ts 调). */
+/** migrate import-v1 <v1dir> [outDir] --workspace <path>: v1→v2 read-only migration. */
 export async function runMigrate(argv) {
+    const usage = '用法: evolver migrate import-v1 <v1dir> [outDir] [--workspace <path>]\n';
     if (argv[0] !== 'import-v1' || !argv[1]) {
-        process.stderr.write('用法: evolver migrate import-v1 <v1dir> [outDir]\n');
+        process.stderr.write(usage);
         return 1;
     }
-    const outDir = argv[2] ?? process.cwd();
-    const store = new assetstore.LocalJsonlProvider(`${outDir}/assets`);
-    const rep = await importV1(argv[1], store, outDir);
-    process.stdout.write(`迁移完成: Gene=${rep.imported.Gene} Capsule=${rep.imported.Capsule} Event=${rep.imported.EvolutionEvent} (冻结${rep.frozen}/新算${rep.recomputed}/去重${rep.deduped}); sidecar=${rep.sidecarExtensions}; memory_graph 归档=${rep.memoryGraphArchived}\n`);
+    let outDir;
+    let workspace;
+    for (let index = 2; index < argv.length; index += 1) {
+        const arg = argv[index] ?? '';
+        if (arg === '--workspace') {
+            const value = argv[index + 1];
+            if (!value || value.startsWith('--')) {
+                process.stderr.write(usage);
+                return 1;
+            }
+            workspace = value;
+            index += 1;
+        }
+        else if (arg.startsWith('--workspace=')) {
+            workspace = arg.slice('--workspace='.length);
+            if (!workspace) {
+                process.stderr.write(usage);
+                return 1;
+            }
+        }
+        else if (arg.startsWith('--') || outDir !== undefined) {
+            process.stderr.write(usage);
+            return 1;
+        }
+        else {
+            outDir = arg;
+        }
+    }
+    const envFile = loadEnvFileFromEnv(process.env);
+    if (envFile.error) {
+        process.stderr.write('migrate: failed to load EVOLVER_ENV_FILE\n');
+        return 1;
+    }
+    const targetDir = outDir ?? events.evomapHome();
+    const store = new assetstore.LocalJsonlProvider(`${targetDir}/assets`);
+    const rep = await importV1(argv[1], store, targetDir, workspace ? { workspace } : {});
+    process.stdout.write(`迁移完成: Gene=${rep.imported.Gene} Capsule=${rep.imported.Capsule} Event=${rep.imported.EvolutionEvent} (冻结${rep.frozen}/新算${rep.recomputed}/去重${rep.deduped}); sidecar=${rep.sidecarExtensions}; memory_graph 归档=${rep.memoryGraphArchived} 可查询=${rep.memoryGraphImported} 延后=${rep.memoryGraphDeferred}\n`);
     return 0;
 }
 /** One-line summary of an asset for `asset-log` (pure, testable). */
@@ -1350,7 +1385,7 @@ export function runCli(argv) {
             return 0;
         }
         default:
-            process.stderr.write('用法: evolver [--version|-v] <status|cycles|cycle show <id>|cycle status [--json]|cycle recover [--limit N] [--json]|cycle watch --repo <path> [--state-file <path>] [--validation-cmd <cmd>] [--json]|trigger|value [--window 7d|30d|all]|narrative [--limit N] [--json]|retention [--json]|retention archive-root [--keep-events N] [--write] [--json]|retention archive-material [--keep-records N] [--write] [--json]|dashboard [--port N] [--no-open]|webui [--port N] [--no-open]|trajectory-export [--input <trace-file-or-dir>] [--output <jsonl>]|gene-value [--gene <id>] [--json]|login|logout|proxy-token [--settings <file>]|inject session-start|lifecycle <start|stop|restart|status|check|watch|install-service>|phub <init|doctor|status>|replay|rebuild-views|reset-local-secret|asset-log [kind] [limit]|distill ...|review [limit|--approve <id> [--allow-weak-evidence]|--reject <id>]|recipe build|from-skills|reuse ...|publish ...|sync [--write] [--force] [--scope all|purchased|published] [--export <file.gepx>|--import <file.gepx>] [--json]|material package-gene --material <id> [--write] [--json]|skill fetch ...|fetch (--skill <id>|-s <id>|<id>) [--out <dir>] [--force] [--json]|skill-distill --skill <path> [--execution <json|@file>]|skill-md-update --gene <id> --skill <path> [--dry-run]|autoexec [home]|run [-v|--verbose] [--loop|--mad-dog] [--json]|solidify [--dry-run] [--json]|setup-hooks [--runtime] [--root] [--uninstall]|buy|orders|verify|atp|recall <transcript> (--gene <id> ...|--from-inject)>\n');
+            process.stderr.write('用法: evolver [--version|-v] <status|cycles|cycle capabilities [--json]|cycle show <id>|cycle status [--json]|cycle recover [--limit N] [--json]|cycle watch --repo <path> [--state-file <path>] [--validation-cmd <cmd>] [--json]|trigger|value [--window 7d|30d|all]|narrative [--limit N] [--json]|retention [--json]|retention archive-root [--keep-events N] [--write] [--json]|retention archive-material [--keep-records N] [--write] [--json]|dashboard [--port N] [--no-open]|webui [--port N] [--no-open]|trajectory-export [--input <trace-file-or-dir>] [--output <jsonl>]|gene-value [--gene <id>] [--json]|login|logout|proxy|proxy-token [--settings <file>]|inject session-start|lifecycle <start|stop|restart|status|check|watch|install-service>|phub <init|doctor|status>|replay|rebuild-views|reset-local-secret|asset-log [kind] [limit]|asset-trust <list|show|promote|revoke>|asset-health [--json]|asset-health repair-sidecar --sidecar <kind> --replacement <file> [--write --acknowledge-corrupt-history] [--json]|distill ...|review [limit|--approve <id> [--allow-weak-evidence]|--reject <id>]|recipe build|from-skills|reuse ...|publish ...|sync [--write] [--force] [--scope all|purchased|published] [--export <file.gepx>|--import <file.gepx>] [--json]|material package-gene --material <id> [--write] [--json]|skill fetch ...|fetch (--skill <id>|-s <id>|<id>) [--out <dir>] [--force] [--json]|skill-distill --skill <path> [--execution <json|@file>]|skill-md-update --gene <id> --skill <path> [--dry-run]|autoexec [home]|run [-v|--verbose] [--loop|--mad-dog] [--json]|solidify [--dry-run] [--json]|setup-hooks [--runtime] [--root] [--uninstall]|buy|orders|verify|atp|recall <transcript> (--gene <id> ...|--from-inject)>\n');
             return cmd === undefined ? 0 : 1;
     }
 }

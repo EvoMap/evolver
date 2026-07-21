@@ -25,6 +25,8 @@ export interface SearchQuery {
 export interface AssetStoreProvider {
     put(asset: AssetRecord): Promise<PutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
+    /** Optional direct lookup for non-content-addressed logical ids. Callers must handle 0, 1, or multiple matches. */
+    findByLogicalId?(id: string, limit?: number): Promise<AssetRecord[]>;
     search(query: SearchQuery): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
 }

@@ -1,3 +1,4 @@
+import { type MemoryGraphOperatorStatus } from './localMemoryGraph.js';
 export interface DashboardServer {
     readonly token: string;
     readonly launchTicket: string;
@@ -5,11 +6,12 @@ export interface DashboardServer {
     close(): Promise<void>;
 }
 export interface DashboardDeps {
-    createServer?: () => DashboardServer;
+    createServer?: (memoryGraphStatus: () => MemoryGraphOperatorStatus) => DashboardServer;
     openUrl?: (url: string) => Promise<boolean>;
     waitForShutdown?: () => Promise<void>;
     stdout?: (text: string) => void;
     stderr?: (text: string) => void;
+    memoryGraphStatus?: () => MemoryGraphOperatorStatus;
 }
 export interface DashboardCommandOptions {
     eaddrinusePortAttempts?: number;

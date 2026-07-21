@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { daemon, hub as hubNs, mailbox } from '@evomap/evolver-core';
 import { AtpHubClient, connectPublicHub, globalFetchLike, isNodeSecret, parseNodeSecretVersion } from '@evomap/evolver-adapter-public';
@@ -14,88 +14,239 @@ import { connectPrivateProxyHub } from '../private/adapterLoader.js';
 import { createAtpOrderConsentGate } from '../daemon/atpConsent.js';
 import { resolveProxyStorePath } from './proxyStorePath.js';
 import { publishProxySettings } from './proxySettings.js';
-import { loadEnvFileFromEnv } from './envFile.js';
+import { expandHomePath, loadEnvFileFromEnv } from './envFile.js';
 import { resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
 import { getCurrentVersion } from '../selfUpdate/version.js';
 import { resolveSelfUpdatePolicy } from '../selfUpdate/policy.js';
-import { atomicReplaceExecutable, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, } from '../selfUpdate/releaseBinary.js';
-/** evolver-proxy 系统级 daemon 入口(M6-7). EVOMAP_HUB_MODE/URL/NODE_SECRET 选址. */
-async function main() {
+import { atomicReplaceExecutable, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, resolveSelfUpdateTarget, } from '../selfUpdate/releaseBinary.js';
+import { beginDurableSelfUpdate, confirmDurableSelfUpdate, recoverDurableSelfUpdate, rollbackDurableSelfUpdate, } from '../selfUpdate/transaction.js';
+import { SELF_UPDATE_FAILURE_CODES } from '../selfUpdate/failureCodes.js';
+import { maybeRunWindowsUpdaterWorkerFromArgv } from '../selfUpdate/windowsUpdater.js';
+import { maybeRunUnixRecoveryController } from '../selfUpdate/unixController.js';
+import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsController.js';
+import { finalizeSelfUpdateRecoveryLastUpdate } from '../selfUpdate/lastUpdate.js';
+export async function runProxyMain(options = {}) {
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
         process.stdout.write(proxyUsage());
         return;
     }
-    const envFile = loadEnvFileFromEnv(process.env);
-    if (envFile.error)
-        process.stderr.write(`[evolver-proxy] failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(envFile.error)}\n`);
-    const mode = resolveHubMode(process.env);
-    const hubUrl = resolveHubUrl(process.env);
-    const storePath = resolveProxyStorePath(process.env);
-    // `?.trim() ||` not `??`: an EMPTY/whitespace EVOLVER_IPC_TOKEN (e.g. a blank `.env` entry or `export
-    // EVOLVER_IPC_TOKEN=`) must be treated as unset and get a strong random token, never fall through as `''` —
-    // an empty token would authenticate any `Authorization: Bearer ` request and defeat the loopback IPC auth.
-    const ipcToken = process.env['EVOLVER_IPC_TOKEN']?.trim() || randomBytes(24).toString('hex');
-    const ipcPort = resolveIpcPort(process.env);
-    const store = new mailbox.MailboxStore({ path: storePath });
-    // Trim + treat blank as unset, preferring the first NON-EMPTY override so an
-    // empty `EVOMAP_NODE_ID=` (k8s configmap / `$(cat missing)`) neither shadows a
-    // valid A2A_NODE_ID nor suppresses the legacy recovery below. v1 parity:
-    // a2aProtocol trimmed the env id before use.
-    const configuredNodeId = (process.env['EVOMAP_NODE_ID']?.trim() || process.env['A2A_NODE_ID']?.trim()) || undefined;
-    // store node_id → env override → legacy ~/.evomap/node_id (PORT v1 #117): when
-    // the store is unprimed AND no env override is set, recover the id the legacy
-    // GEP path persisted before letting hello() mint a fresh A2ANode under the
-    // same owner. See lifecycle/legacyNodeId.ts for the duplicate-node rationale.
-    const senderId = () => resolveProxyNodeId({ storedNodeId: store.getState('node_id'), configuredNodeId });
-    // Read our own version for hello/heartbeat reporting and self-update decisions. EVOLVER_SELF_UPDATE defaults
-    // to off; prompt/auto opt into the daemon path, but the release download/replace seams still fail closed until
-    // a verified release implementation is wired.
-    const evolverVersion = getCurrentVersion();
-    const selfUpdatePolicy = resolveSelfUpdatePolicy(process.env);
-    const runtime = await connectHubRuntime({ mode, hubUrl, senderId, store });
-    const proxyStartedAt = new Date().toISOString();
+    if (!options.environmentPrepared) {
+        const envFile = loadProxyEnvFile(process.env);
+        if (envFile.error)
+            process.stderr.write(`[evolver-proxy] failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(envFile.error)}\n`);
+    }
+    // Recovery must run before any hub/store/runtime initialization. In particular,
+    // a broken store must not prevent a pending-health update from restoring the old binary.
+    const recovery = await recoverBoundDurableSelfUpdate({ env: process.env, processExecPath: process.execPath });
+    if (recovery.outcome === 'blocked') {
+        throw new Error(`self_update_recovery_blocked:${recovery.failureCode ?? 'unknown'}`);
+    }
+    if (recovery.restartRequired)
+        process.exit(78);
+    let storePath;
+    let store;
+    let proxyDaemon;
+    let confirmation;
+    let mode;
+    let hubUrl;
+    let port;
+    let evolverVersion;
+    let selfUpdatePolicy;
     const proxySettingsState = {};
-    const publishLocalProxySettings = () => {
-        if (!proxySettingsState.url)
-            return;
-        publishProxySettings({
-            env: process.env,
-            record: {
-                url: proxySettingsState.url,
-                token: ipcToken,
-                pid: process.pid,
-                started_at: proxyStartedAt,
-                version: evolverVersion,
+    let publishLocalProxySettings = () => { };
+    try {
+        mode = resolveHubMode(process.env);
+        hubUrl = resolveHubUrl(process.env);
+        storePath = resolveProxyStorePath(process.env);
+        store = new mailbox.MailboxStore({ path: storePath });
+        finalizeRecoveryTelemetry(store, recovery);
+        // `?.trim() ||` not `??`: an EMPTY/whitespace EVOLVER_IPC_TOKEN (e.g. a blank `.env` entry or `export
+        // EVOLVER_IPC_TOKEN=`) must be treated as unset and get a strong random token, never fall through as `''` —
+        // an empty token would authenticate any `Authorization: Bearer ` request and defeat the loopback IPC auth.
+        const ipcToken = process.env['EVOLVER_IPC_TOKEN']?.trim() || randomBytes(24).toString('hex');
+        const ipcPort = resolveIpcPort(process.env);
+        // Trim + treat blank as unset, preferring the first NON-EMPTY override so an
+        // empty `EVOMAP_NODE_ID=` (k8s configmap / `$(cat missing)`) neither shadows a
+        // valid A2A_NODE_ID nor suppresses the legacy recovery below. v1 parity:
+        // a2aProtocol trimmed the env id before use.
+        const configuredNodeId = (process.env['EVOMAP_NODE_ID']?.trim() || process.env['A2A_NODE_ID']?.trim()) || undefined;
+        // store node_id → env override → legacy ~/.evomap/node_id (PORT v1 #117): when
+        // the store is unprimed AND no env override is set, recover the id the legacy
+        // GEP path persisted before letting hello() mint a fresh A2ANode under the
+        // same owner. See lifecycle/legacyNodeId.ts for the duplicate-node rationale.
+        const senderId = () => resolveProxyNodeId({ storedNodeId: store.getState('node_id'), configuredNodeId });
+        evolverVersion = getCurrentVersion();
+        selfUpdatePolicy = resolveSelfUpdatePolicy(process.env);
+        const proxyStartedAt = new Date().toISOString();
+        publishLocalProxySettings = () => {
+            if (!proxySettingsState.url)
+                return;
+            publishProxySettings({
+                env: process.env,
+                record: {
+                    url: proxySettingsState.url,
+                    token: ipcToken,
+                    pid: process.pid,
+                    started_at: proxyStartedAt,
+                    version: evolverVersion,
+                },
+            });
+        };
+        const runtime = await connectHubRuntime({ mode, hubUrl, senderId, store });
+        proxyDaemon = new ProxyDaemon({
+            ...createProxyDaemonDeps({
+                runtime,
+                store,
+                ipcToken,
+                ...(ipcPort !== undefined ? { ipcPort } : {}),
+                evolverVersion,
+                selfUpdatePolicy,
+                env: process.env,
+            }),
+            onIpcListen: (listeningPort) => {
+                proxySettingsState.url = `http://127.0.0.1:${listeningPort}`;
+                publishLocalProxySettings();
             },
+            onIpcAuthFailure: publishLocalProxySettings,
         });
-    };
-    const daemon = new ProxyDaemon({
-        ...createProxyDaemonDeps({
-            runtime,
-            store,
-            ipcToken,
-            ...(ipcPort !== undefined ? { ipcPort } : {}),
-            evolverVersion,
-            selfUpdatePolicy,
-            env: process.env,
-        }),
-        onIpcListen: (port) => {
-            proxySettingsState.url = `http://127.0.0.1:${port}`;
-            publishLocalProxySettings();
-        },
-        onIpcAuthFailure: publishLocalProxySettings,
-    });
-    const port = await daemon.start();
+        port = await proxyDaemon.start();
+        if (recovery.outcome === 'pending_health') {
+            assertSelfUpdateProcessTargetBound({ env: process.env, processExecPath: process.execPath });
+            confirmation = await confirmDurableSelfUpdate({ env: process.env, processExecPath: process.execPath });
+            if (confirmation.outcome !== 'confirmed') {
+                throw new Error(`self_update_confirmation_failed:${confirmation.outcome}`);
+            }
+        }
+    }
+    catch (error) {
+        if (recovery.outcome === 'pending_health') {
+            const rollback = await rollbackPendingStartup({
+                ...(storePath ? { storePath } : {}),
+                ...(store ? { store } : {}),
+                ...(proxyDaemon ? { daemon: proxyDaemon } : {}),
+                startupError: error,
+                env: process.env,
+            });
+            process.stderr.write(`[evolver-proxy] self-update startup health check failed; ${rollback.outcome}: ${safeLoopErrorMessage(error)}\n`);
+            process.exit(startupRollbackExitCode(rollback));
+        }
+        await closeStartupResources({ store, daemon: proxyDaemon });
+        throw error;
+    }
+    if (confirmation)
+        finalizeRecoveryTelemetry(store, confirmation);
     proxySettingsState.url = `http://127.0.0.1:${port}`;
     publishLocalProxySettings();
     process.stdout.write(`[evolver-proxy] mode=${mode} hub=${hubUrl} ipc=127.0.0.1:${port} v=${evolverVersion} self-update=${selfUpdatePolicy}\n`);
-    await runProxyLoop(daemon, { logger: process.stderr });
+    await runProxyLoop(proxyDaemon, { logger: process.stderr });
+}
+export async function recoverBoundDurableSelfUpdate(options) {
+    return recoverDurableSelfUpdate({
+        ...options,
+        beforeJournalMutation: () => {
+            assertSelfUpdateProcessTargetBound(options);
+        },
+    });
+}
+export function loadProxyEnvFile(env) {
+    const supervisor = env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
+    const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR'];
+    const targetPath = env['EVOLVER_SELF_UPDATE_TARGET_PATH'];
+    const result = loadEnvFileFromEnv(env);
+    if (supervisor === undefined) {
+        delete env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
+    }
+    else {
+        env['EVOLVER_SELF_UPDATE_SUPERVISOR'] = supervisor;
+        if (stateDir !== undefined)
+            env['EVOLVER_SELF_UPDATE_STATE_DIR'] = stateDir;
+        if (targetPath !== undefined)
+            env['EVOLVER_SELF_UPDATE_TARGET_PATH'] = targetPath;
+    }
+    return result;
+}
+function finalizeRecoveryTelemetry(store, recovery) {
+    try {
+        finalizeSelfUpdateRecoveryLastUpdate(store, recovery);
+    }
+    catch (error) {
+        process.stderr.write(`[evolver-proxy] failed to persist self-update recovery telemetry: ${safeLoopErrorMessage(error)}\n`);
+    }
+}
+export async function rollbackPendingStartup(options) {
+    await closeStartupResources(options);
+    let rollback;
+    try {
+        const processExecPath = options.processExecPath ?? process.execPath;
+        assertSelfUpdateProcessTargetBound({ env: options.env ?? process.env, processExecPath }, true);
+        rollback = await (options.rollback ?? rollbackDurableSelfUpdate)({ env: options.env ?? process.env, processExecPath }, SELF_UPDATE_FAILURE_CODES.RESTART_FAILED);
+    }
+    catch (error) {
+        throw new Error(`self_update_recovery_blocked:${safeLoopErrorMessage(error)}`, {
+            cause: options.startupError,
+        });
+    }
+    if (options.storePath) {
+        let telemetryStore;
+        try {
+            telemetryStore = (options.openTelemetryStore ?? ((storePath) => (new mailbox.MailboxStore({ path: storePath }))))(options.storePath);
+            (options.persistTelemetry ?? ((openedStore, recovery) => {
+                finalizeRecoveryTelemetry(openedStore, recovery);
+            }))(telemetryStore, rollback);
+        }
+        catch {
+            (options.logger ?? process.stderr).write('[evolver-proxy] failed to reopen self-update telemetry store\n');
+        }
+        finally {
+            try {
+                telemetryStore?.close();
+            }
+            catch { /* rollback already completed; telemetry cleanup is best-effort */ }
+        }
+    }
+    return rollback;
+}
+async function closeStartupResources(options) {
+    let daemonStopped = false;
+    if (options.daemon) {
+        try {
+            await options.daemon.stop();
+            daemonStopped = true;
+        }
+        catch {
+            // Continue closing the directly-created store before rollback.
+        }
+    }
+    if (options.store && !daemonStopped) {
+        try {
+            options.store.close();
+        }
+        catch { /* rollback must not be blocked by resource cleanup */ }
+    }
+}
+export function startupRollbackExitCode(rollback) {
+    if (rollback.outcome === 'blocked') {
+        throw new Error(`self_update_recovery_blocked:${rollback.failureCode ?? 'unknown'}`);
+    }
+    if (rollback.outcome !== 'rollback_pending'
+        && rollback.outcome !== 'rolled_back'
+        && rollback.outcome !== 'confirmed') {
+        throw new Error(`self_update_recovery_blocked:unexpected_${rollback.outcome}`);
+    }
+    return 78;
 }
 export function proxyUsage() {
     return [
-        'usage: evolver-proxy',
+        'usage: evolver-proxy [options]',
         '',
         'Starts the local Evolver proxy daemon.',
+        '',
+        'Options (CLI overrides environment variables):',
+        '  --home <dir>       Root for assets, store, settings, and traces',
+        '  --store <path>     Mailbox store path (EVOLVER_PROXY_STORE)',
+        '  --settings <path>  Proxy settings file (EVOLVER_PROXY_SETTINGS_FILE)',
+        '  --env-file <path>  Environment file (EVOLVER_ENV_FILE)',
+        '  -h, --help         Show this help',
         '',
         'Required for public mode:',
         '  EVOMAP_NODE_SECRET or A2A_NODE_SECRET',
@@ -114,16 +265,109 @@ export function proxyUsage() {
         '',
     ].join('\n');
 }
-export function runProxyCli() {
-    const uninstallUnhandledRejectionGuard = daemon.installUnhandledRejectionWindow();
-    main().catch((e) => {
-        uninstallUnhandledRejectionGuard();
-        process.stderr.write(`[evolver-proxy] fatal: ${safeLoopErrorMessage(e)}\n`);
-        process.exit(1);
+const PROXY_PATH_FLAGS = new Map([
+    ['--home', 'home'],
+    ['--store', 'store'],
+    ['--settings', 'settings'],
+    ['--env-file', 'envFile'],
+]);
+export function parseProxyCliPathOptions(argv) {
+    const options = { help: false };
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg === '--help' || arg === '-h') {
+            options.help = true;
+            continue;
+        }
+        const equalsIndex = arg.indexOf('=');
+        const flag = equalsIndex >= 0 ? arg.slice(0, equalsIndex) : arg;
+        const key = PROXY_PATH_FLAGS.get(flag);
+        if (key) {
+            const value = equalsIndex >= 0 ? arg.slice(equalsIndex + 1) : argv[++index];
+            if (!value?.trim() || (equalsIndex < 0 && value.startsWith('-'))) {
+                throw new Error(`${flag} requires a path`);
+            }
+            options[key] = resolve(expandHomePath(value.trim()));
+            continue;
+        }
+        if (arg.startsWith('-'))
+            throw new Error(`unknown option: ${arg}`);
+    }
+    return options;
+}
+export function prepareProxyCliEnvironment(argv, env) {
+    const options = parseProxyCliPathOptions(argv);
+    if (options.envFile)
+        env['EVOLVER_ENV_FILE'] = options.envFile;
+    const envFile = loadProxyEnvFile(env);
+    if (options.home) {
+        env['EVOMAP_DIR'] = options.home;
+        env['EVOLVER_HOME'] = options.home;
+        env['EVOMAP_HOME'] = options.home;
+        env['EVOLVER_SETTINGS_DIR'] = options.home;
+        env['EVOLVER_PROXY_STORE'] = join(options.home, 'proxy', 'mailbox.db');
+        env['EVOLVER_PROXY_SETTINGS_FILE'] = join(options.home, 'settings.json');
+        env['EVOLVER_LLM_TRACE_DIR'] = join(options.home, 'proxy', 'traces');
+    }
+    if (options.store)
+        env['EVOLVER_PROXY_STORE'] = options.store;
+    if (options.settings)
+        env['EVOLVER_PROXY_SETTINGS_FILE'] = options.settings;
+    return { options, envFile };
+}
+export async function runProxyCli(options = {}) {
+    const argv = options.argv ?? process.argv.slice(2);
+    const env = options.env ?? process.env;
+    const unixControllerExitCode = await (options.runUnixRecoveryController ?? maybeRunUnixRecoveryController)({
+        argv,
+        env,
+        platform: options.platform ?? process.platform,
+        processExecPath: options.processExecPath ?? process.execPath,
     });
+    if (unixControllerExitCode !== undefined)
+        return unixControllerExitCode;
+    const windowsControllerExitCode = await (options.runWindowsRecoveryController ?? maybeRunWindowsRecoveryController)({
+        argv,
+        env,
+        platform: options.platform ?? process.platform,
+        processExecPath: options.processExecPath ?? process.execPath,
+    });
+    if (windowsControllerExitCode !== undefined)
+        return windowsControllerExitCode;
+    const workerExitCode = await (options.runWindowsUpdaterWorker ?? maybeRunWindowsUpdaterWorkerFromArgv)({
+        argv,
+        env,
+        platform: options.platform ?? process.platform,
+        processExecPath: options.processExecPath ?? process.execPath,
+    });
+    if (workerExitCode !== undefined)
+        return workerExitCode;
+    const uninstallUnhandledRejectionGuard = daemon.installUnhandledRejectionWindow();
+    try {
+        const cliOptions = parseProxyCliPathOptions(argv);
+        if (cliOptions.help) {
+            process.stdout.write(proxyUsage());
+            return 0;
+        }
+        const prepared = prepareProxyCliEnvironment(argv, env);
+        if (prepared.envFile.error) {
+            process.stderr.write(`[evolver-proxy] failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(prepared.envFile.error)}\n`);
+        }
+        await (options.runMain ?? (() => runProxyMain({ environmentPrepared: true })))();
+        return 0;
+    }
+    catch (error) {
+        process.stderr.write(`[evolver-proxy] fatal: ${safeLoopErrorMessage(error)}\n`);
+        return 1;
+    }
+    finally {
+        uninstallUnhandledRejectionGuard();
+    }
 }
 if (isDirectRun(import.meta.url, process.argv[1])) {
-    runProxyCli();
+    void runProxyCli().then((exitCode) => {
+        process.exitCode = exitCode;
+    });
 }
 export async function runProxyLoop(daemon, options = {}) {
     const minDelayMs = options.minDelayMs ?? 1_000;
@@ -339,23 +583,89 @@ function errorMessage(err) {
 export function createSelfUpdateDeps(policy, currentVersion, env = process.env, overrides = {}) {
     if (policy !== 'auto')
         return undefined;
+    const { supervisorAttested, restart, stagedBinaryProbe, processExecPath: _ignoredProcessExecPath, ...binaryOverrides } = overrides;
+    if (!supervisorAttested && !selfUpdateSupervisorAttested(env)) {
+        throw new Error('self_update_supervisor_required');
+    }
     const publicKey = env['EVOLVER_SELF_UPDATE_PUBLIC_KEY']?.trim();
     if (!publicKey)
         throw new Error('self_update_public_key_required');
     const releaseOpts = {
         env,
-        ...overrides,
+        ...binaryOverrides,
+        processExecPath: supervisorAttested?.processExecPath ?? process.execPath,
         requireSignedManifest: true,
     };
+    const assertBound = () => assertSelfUpdateProcessTargetBound(releaseOpts);
+    assertBound();
     return {
         policy,
         currentVersion,
-        resolveManifest: (directive) => resolveGithubReleaseManifest(directive, releaseOpts),
-        download: (targetVersion, directive) => downloadGithubReleaseArtifact(targetVersion, directive, releaseOpts),
-        atomicReplace: (stagedPath) => atomicReplaceExecutable(stagedPath, releaseOpts),
-        restart: overrides.restart ?? (() => { process.exit(78); }),
+        resolveManifest: (directive) => {
+            assertBound();
+            return resolveGithubReleaseManifest(directive, releaseOpts);
+        },
+        download: (targetVersion, directive) => {
+            assertBound();
+            return downloadGithubReleaseArtifact(targetVersion, directive, releaseOpts);
+        },
+        atomicReplace: (stagedPath) => {
+            assertBound();
+            return atomicReplaceExecutable(stagedPath, releaseOpts);
+        },
+        beginTransaction: async (targetVersion) => {
+            assertBound();
+            const transaction = await beginDurableSelfUpdate(targetVersion, {
+                ...releaseOpts,
+                currentVersion,
+                ...(stagedBinaryProbe ? { stagedBinaryProbe } : {}),
+            });
+            return {
+                ...transaction,
+                install: async () => {
+                    assertBound();
+                    await transaction.install();
+                },
+            };
+        },
+        restart: restart ?? (() => { process.exit(78); }),
         publicKey,
     };
+}
+export function assertSelfUpdateProcessTargetBound(options, allowUnresolvedTarget = false) {
+    let targetPath;
+    try {
+        targetPath = resolveSelfUpdateTarget(options).path;
+    }
+    catch {
+        if (allowUnresolvedTarget)
+            return;
+        throw new Error('self_update_process_target_mismatch');
+    }
+    const processExecPath = options.processExecPath ?? process.execPath;
+    try {
+        if (canonicalExecutablePath(processExecPath) !== canonicalExecutablePath(targetPath)) {
+            throw new Error('self_update_process_target_mismatch');
+        }
+    }
+    catch {
+        throw new Error('self_update_process_target_mismatch');
+    }
+}
+function canonicalExecutablePath(path) {
+    const canonical = realpathSync.native(path);
+    if (process.platform !== 'win32')
+        return resolve(canonical);
+    const withoutNamespace = canonical
+        .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+        .replace(/^\\\\\?\\/i, '');
+    return win32.normalize(withoutNamespace).toLowerCase();
+}
+function selfUpdateSupervisorAttested(env) {
+    const supervisor = env['EVOLVER_SELF_UPDATE_SUPERVISOR']?.trim();
+    return supervisor === 'systemd'
+        || supervisor === 'launchd'
+        || supervisor === 'windows-scheduled-task';
 }
 export function resolvePublicNodeSecret(deps) {
     const envNodeSecret = process.env['EVOMAP_NODE_SECRET'] ?? process.env['A2A_NODE_SECRET'];

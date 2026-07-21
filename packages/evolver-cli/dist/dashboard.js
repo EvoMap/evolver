@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
-import { assetstore, events, ops } from '@evomap/evolver-core';
+import { assetstore, events, ops, personality } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
-import { WebUIServer } from '@evomap/evolver-webui';
+import { createGithubPrDiagnosticsProvider, readLogDiagnostics, readPersonalityDiagnostics, WebUIServer, } from '@evomap/evolver-webui';
+import { lifecyclePaths } from './lifecycle.js';
+import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
 const USAGE = 'usage: evolver dashboard [--port N] [--no-open]\n';
 function parsePort(raw) {
     if (!/^\d+$/.test(raw))
@@ -43,11 +45,14 @@ function parseDashboardOptions(argv) {
     }
     return { ok: true, options };
 }
-function createDashboardServer() {
+function createDashboardServer(memoryGraphStatus) {
     const eventsPath = events.rootEventsPath();
     const tracesDir = events.tracesDir();
     const store = new assetstore.LocalJsonlProvider(events.assetsDir());
     const prices = loadPriceTable();
+    const personalityStore = new personality.PersonalityStore();
+    const logFile = lifecyclePaths().logFile;
+    const githubPrDiagnostics = createGithubPrDiagnosticsProvider({ cwd: process.cwd() });
     return new WebUIServer({
         eventsPath,
         store,
@@ -57,6 +62,10 @@ function createDashboardServer() {
             prices,
         }, window),
         retentionReport: () => events.buildRetentionReport(),
+        personalityDiagnostics: () => readPersonalityDiagnostics(() => personalityStore.load()),
+        logDiagnostics: () => readLogDiagnostics(logFile),
+        githubPrDiagnostics: () => githubPrDiagnostics.read(),
+        memoryGraphStatus,
     });
 }
 export function dashboardOpenCommand(url, platform = process.platform) {
@@ -127,11 +136,12 @@ export async function runDashboardCommand(argv, deps = {}, options = {}) {
         return 0;
     }
     const createServer = deps.createServer ?? createDashboardServer;
+    const memoryGraphStatus = deps.memoryGraphStatus ?? loadMemoryGraphOperatorStatus;
     const openUrl = deps.openUrl ?? openDashboardUrl;
     const waitForShutdown = deps.waitForShutdown ?? waitForShutdownSignal;
     let server;
     try {
-        server = createServer();
+        server = createServer(memoryGraphStatus);
     }
     catch {
         stderr('dashboard: dashboard_start_failed\n');
@@ -141,6 +151,14 @@ export async function runDashboardCommand(argv, deps = {}, options = {}) {
     try {
         const port = await listenWithPortFallback(server, parsed.options.port, options.eaddrinusePortAttempts ?? 1);
         listening = true;
+        let graphStatus;
+        try {
+            graphStatus = memoryGraphStatus();
+        }
+        catch {
+            graphStatus = { recovery: 'degraded', compactedRecords: 0, activeRecords: 0, corruptLines: 1, oversizedLines: 0, oversizedFiles: 0, archives: 0 };
+        }
+        stdout(`dashboard: memory-graph ${formatMemoryGraphOperatorStatus(graphStatus)}\n`);
         const baseUrl = `http://127.0.0.1:${port}/`;
         const launchUrl = `${baseUrl}launch?ticket=${encodeURIComponent(server.launchTicket)}`;
         if (parsed.options.noOpen) {

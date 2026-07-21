@@ -5,10 +5,12 @@
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { util } from '@evomap/evolver-core';
-/** Resolve EVOLVER's own version. Walks up from this module to the nearest package.json named @evomap/evolver-proxy. */
-export function getCurrentVersion() {
+/** Resolve EVOLVER's version from package/git metadata, then the standalone build-time version. */
+export function getCurrentVersion(options = {}) {
+    const buildVersion = (options.buildVersion ?? process.env.EVOLVER_CLI_VERSION)?.trim();
     return util.resolveRuntimeVersion({
-        startDir: dirname(fileURLToPath(import.meta.url)),
+        startDir: options.startDir ?? dirname(fileURLToPath(import.meta.url)),
         isPackage: (pkg) => pkg.name === '@evomap/evolver-proxy' || pkg.name === '@evomap/evolver',
+        ...(buildVersion && buildVersion !== '0.0.0' ? { fallback: buildVersion } : {}),
     });
 }

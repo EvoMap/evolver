@@ -1,83 +1,126 @@
 /** 3 栏主控台 HTML(自包含, 无构建步; 轮询 /api/* 渲染). 军杰 §9.5: Triggers｜Timeline｜Inspector. */
 export const CONSOLE_HTML = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Evolver 控台</title>
 <style>
-*{box-sizing:border-box}html{height:100%}body{min-height:100%;margin:0;font:13px/1.5 ui-monospace,Menlo,monospace;background:#0d1117;color:#c9d1d9;display:grid;grid-template-rows:auto auto auto auto minmax(320px,1fr);overflow:auto}
+*{box-sizing:border-box}html{height:100%}body{min-height:100%;margin:0;font:13px/1.5 ui-monospace,Menlo,monospace;background:#0d1117;color:#c9d1d9;display:grid;grid-template-rows:auto auto auto auto auto minmax(320px,1fr);overflow:auto}
 header{padding:8px 12px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:16px;align-items:center}
 header b{color:#58a6ff}.muted{color:#8b949e}
 .cols{display:grid;grid-template-columns:1fr 1fr 1.2fr;min-height:320px}
 .col{overflow:auto;border-right:1px solid #30363d;padding:8px}
 h2{font-size:12px;text-transform:uppercase;color:#8b949e;margin:4px 0 8px;letter-spacing:.05em}
-.row{padding:6px 8px;border:1px solid #30363d;border-radius:6px;margin-bottom:6px;cursor:pointer}
-.row:hover{border-color:#58a6ff}.tag{display:inline-block;padding:0 6px;border-radius:10px;font-size:11px}
+.row{padding:6px 8px;border:1px solid #30363d;border-radius:6px;margin-bottom:6px}
+.clickable{cursor:pointer}.clickable:hover,.row:hover{border-color:#58a6ff}.tag{display:inline-block;padding:0 6px;border-radius:10px;font-size:11px}
 .ok{background:#1a3d1a;color:#6fdd6f}.fail{background:#3d1a1a;color:#ff7b72}.warn{background:#3d3a1a;color:#e3b341}
-.act{display:flex;gap:6px;margin-top:8px}button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer}
-button:hover{border-color:#58a6ff}pre{white-space:pre-wrap;word-break:break-all;background:#161b22;padding:8px;border-radius:6px}
-.valuecard{padding:10px 14px;background:#11161d;border-bottom:1px solid #30363d;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.act{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer}
+button:hover{border-color:#58a6ff}button:disabled{cursor:default;opacity:.5}pre{white-space:pre-wrap;word-break:break-word;background:#161b22;padding:8px;border-radius:6px}
+a{color:#58a6ff;overflow-wrap:anywhere}.valuecard{padding:10px 14px;background:#11161d;border-bottom:1px solid #30363d;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
 .valuecard .big{font-size:18px;color:#6fdd6f;font-weight:600}.valuecard .est{color:#e3b341}.valuecard .lbl{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 #reviewqueue{max-height:156px;overflow:auto;align-items:flex-start}
-@media(max-width:760px){body{display:block;overflow:auto}.cols{display:block}.col{border-right:0;border-bottom:1px solid #30363d;min-height:240px}#reviewqueue{max-height:none}}
+#assetbar{max-height:190px;overflow:auto;align-items:flex-start}.assetgrid{display:flex;gap:6px;flex-wrap:wrap}.assetbutton{text-align:left;max-width:360px}.pager{display:flex;gap:6px;align-items:center}.lineage-section{margin-top:12px;scroll-margin-top:8px}.lineage-section h3{font-size:11px;color:#8b949e;text-transform:uppercase}.lineage-empty{color:#8b949e}
+.observability{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));background:#0d1117;border-bottom:1px solid #30363d}.surface{padding:10px 14px;min-height:150px;border-right:1px solid #30363d;border-top:1px solid #30363d;overflow:auto}.surface-head{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px}.surface-body{max-height:260px;overflow:auto}.surface h3{margin:0;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.05em}.metricgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}.metric{padding:6px;background:#161b22;border-radius:6px}.metric b{display:block;color:#8b949e;font-size:11px}.logview{max-height:220px;overflow:auto;margin:0}.relation-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.relation-card{padding:6px 8px;border:1px solid #30363d;border-radius:6px;min-width:180px}.section-nav{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+@media(max-width:760px){body{display:block;overflow:auto}.cols,.observability{display:block}.col{border-right:0;border-bottom:1px solid #30363d;min-height:240px}#reviewqueue{max-height:none}.surface{border-right:0}}
 </style></head><body>
 <header><b>EVOLVER</b> <span id="stat" class="muted">…</span><span id="daily" class="muted"></span></header>
 <div class="valuecard" id="valuecard"><span class="muted">价值 / value …</span></div>
 <div class="valuecard" id="reviewqueue"><span class="muted">review queue …</span></div>
 <div class="valuecard" id="retentionbar"><span class="muted">retention health …</span></div>
+<div class="diagnostics">
+ <div class="valuecard" id="assetbar"><span class="muted">asset lineage …</span></div>
+ <div class="observability" aria-label="deep observability">
+  <section class="surface"><div class="surface-head"><h3>Personality</h3><span id="personality-status" class="muted">…</span></div><div id="personality" class="surface-body"></div></section>
+  <section class="surface"><div class="surface-head"><h3>MemoryGraph</h3><span id="memorygraph-status" class="muted">…</span></div><div id="memorygraph" class="surface-body"></div></section>
+  <section class="surface"><div class="surface-head"><h3>Logs</h3><span id="logs-status" class="muted">…</span></div><div id="logs" class="surface-body"></div></section>
+  <section class="surface"><div class="surface-head"><h3>GitHub PR status</h3><span id="githubprs-status" class="muted">…</span></div><div id="githubprs" class="surface-body"></div></section>
+ </div>
+</div>
 <div class="cols">
  <div class="col"><h2>Triggers</h2><div id="triggers"></div></div>
  <div class="col"><h2>Now &amp; Timeline</h2><div id="cycles"></div></div>
  <div class="col"><h2>Inspector</h2><div id="inspector" class="muted">选一个 cycle 或事件</div>
-   <div class="act"><button onclick="act('observe')">Observe</button><button onclick="act('nudge')">Nudge</button><button onclick="act('intervene')">Intervene</button><button onclick="act('teach')">Teach</button></div>
+   <div class="act"><button id="act-observe">Observe</button><button id="act-nudge">Nudge</button><button id="act-intervene">Intervene</button><button id="act-teach">Teach</button></div>
  </div>
 </div>
 <script>
-let sel=null;
+let sel=null,assetPage=1,lineageCapsulePage=1,lineageEventPage=1,lineageId='';
 const FRAG=new URLSearchParams(location.hash.slice(1));
 const QUERY=new URLSearchParams(location.search);
 let STORED='';try{STORED=sessionStorage.getItem('evolver.dashboard.token')||''}catch{}
 const TOK=FRAG.get('token')||QUERY.get('token')||STORED;
 if(TOK)try{sessionStorage.setItem('evolver.dashboard.token',TOK)}catch{}
-if(FRAG.has('token')||QUERY.has('token')){QUERY.delete('token');const q=QUERY.toString();history.replaceState(null,'',location.pathname+(q?'?'+q:''))}
-async function j(u,o){o=o||{};o.headers=Object.assign({},o.headers||{});if(TOK)o.headers.authorization='Bearer '+TOK;o.credentials='same-origin';const r=await fetch(u,o);return r.json()}
-// XSS guards (#200): server data (gene summaries / event titles / payloads) is built from untrusted material —
-// never put it into innerHTML raw. esc() = HTML-text escape (numeric entities) for text positions; q() strips a
-// value to the content-addressed id charset for inline-handler string args so a malicious id cannot break the
-// attribute/JS string. Every dynamic value below goes through one of these before reaching innerHTML.
-const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
-const q=s=>String(s==null?'':s).replace(/[^a-zA-Z0-9:_.-]/g,'');
-const nf=n=>Math.round(Number(n)||0).toLocaleString('en-US');
-async function refresh(){
- const s=await j('/api/status');document.getElementById('stat').textContent='events='+s.totalEvents+' cycles='+s.cycles;
- const d=await j('/api/daily-summary');document.getElementById('daily').textContent='今日 '+d.solidified+'✓/'+d.failed+'✗ 触发'+d.triggered;
- const v=await j('/api/value?window=7d');
- const top=(v.topGenes||[]).slice(0,3).map(g=>esc(g.assetId)+' ×'+esc(g.reuses)).join(' · ')||'—';
- document.getElementById('valuecard').innerHTML=
-   '<div><div class="lbl">measured saved (7d)</div><span class="big">'+nf(v.totalTokensSaved)+' tokens</span> <span class="muted">$'+(v.totalCostUsd||0).toFixed(4)+'</span></div>'
-   +'<div><div class="lbl">estimated</div><span class="est">'+nf(v.estimated&&v.estimated.totalTokensSaved)+' tokens</span> <span class="muted">(tracked separately)</span></div>'
-   +'<div><div class="lbl">top reused</div><span class="muted">'+top+'</span></div>';
- const rv=await j('/api/review');const stag=s=>s==='quarantined'?'warn':s==='approved'?'ok':s==='rejected'?'fail':'muted';
- const pend=rv.filter(g=>g.state==='quarantined').length;
- const btns=g=>g.state==='quarantined'?' <button onclick="reviewAct(\\''+q(g.assetId)+'\\',\\'approve\\')">Approve</button><button onclick="reviewAct(\\''+q(g.assetId)+'\\',\\'reject\\')">Reject</button>':'';
- document.getElementById('reviewqueue').innerHTML='<div><div class="lbl">review queue</div><span class="big">'+pend+'</span> <span class="muted">待审 pending</span></div>'
-   +rv.slice(0,8).map(g=>'<div><span class="tag '+stag(g.state)+'">'+esc(g.state)+'</span> '+esc(g.geneId)+(g.autoDrafted?' <span class="muted">auto</span>':'')+btns(g)+'</div>').join('');
- const tr=await j('/api/triggers');document.getElementById('triggers').innerHTML=tr.map(t=>'<div class="row"><span class="tag '+(t.triggered?'ok':'warn')+'">'+(t.triggered?'触发':'抑制')+'</span> '+esc(t.patternId)+' <span class="muted">v='+((t.value||0).toFixed?t.value.toFixed(2):esc(t.value))+'</span></div>').join('')||'<div class="muted">无</div>';
- const cs=await j('/api/cycles');document.getElementById('cycles').innerHTML=cs.slice(-30).reverse().map(c=>'<div class="row" onclick="showCycle(\\''+q(c.cycleId)+'\\')"><span class="tag '+(c.finalStage==='solidified'?'ok':c.finalStage==='failed'?'fail':'warn')+'">'+esc(c.finalStage)+'</span> '+esc(c.cycleId)+' <span class="muted">('+esc(c.events)+')</span></div>').join('')||'<div class="muted">无 cycle</div>';
+if(FRAG.has('token')||QUERY.has('token')){QUERY.delete('token');const query=QUERY.toString();history.replaceState(null,'',location.pathname+(query?'?'+query:''))}
+async function j(url,options){options=options||{};options.headers=Object.assign({},options.headers||{});if(TOK)options.headers.authorization='Bearer '+TOK;options.credentials='same-origin';const response=await fetch(url,options);return response.json()}
+// Kept for compatibility with older embedded-console extensions. New observability surfaces use DOM text nodes only.
+const esc=value=>String(value==null?'':value).replace(/[&<>"']/g,char=>'&#'+char.charCodeAt(0)+';');
+const q=value=>String(value==null?'':value).replace(/[^a-zA-Z0-9:_.-]/g,'');
+const nf=value=>Math.round(Number(value)||0).toLocaleString('en-US');
+const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!=null)node.textContent=String(text);if(cls)node.className=cls;return node};
+const clear=node=>{while(node.firstChild)node.removeChild(node.firstChild)};
+const appendLine=(parent,label,value)=>{const row=el('div');row.append(el('b',label+': '),document.createTextNode(value==null||value===''?'—':String(value)));parent.append(row)};
+const asArray=value=>Array.isArray(value)?value:[];
+function safeJson(value){try{return JSON.stringify(value,null,1)}catch{return '[unavailable]'}}
+function sourceSection(parent,title,source,render,id){const section=el('section',null,'lineage-section');if(id)section.id=id;section.append(el('h3',title));
+ if(!source||source.available!==true){section.append(el('div',(source&&source.error)||'unavailable','tag warn'));parent.append(section);return;}
+ render(section,source.data);parent.append(section);
 }
-async function refreshRetention(){const el=document.getElementById('retentionbar');
- try{const r=await j('/api/retention');if(!r||r.available!==true){el.innerHTML='<span class="muted">retention unavailable</span>';return;}
-  const safe=!!(r.rootEvents&&r.rootEvents.archiveRotationSafe&&r.material&&r.material.archiveRotationSafe);
-  const gate=safe?'ok':'warn';const warnings=Array.isArray(r.warnings)?r.warnings.length:0;
-  el.innerHTML='<div><div class="lbl">retention health</div><span class="tag '+gate+'">'+(safe?'safe':'attention')+'</span> <span class="muted">warnings '+esc(warnings)+'</span></div>'
-   +'<div><div class="lbl">root events · '+esc(r.rootEvents.state)+'</div><span class="big">'+esc(nf(r.rootEvents.records))+'</span> <span class="muted">active · '+esc(nf(r.rootEvents.archiveRecords))+' archive · '+esc(nf(r.rootEvents.historyRecords))+' history</span></div>'
-   +'<div><div class="lbl">material · '+esc(r.material.state)+'</div><span class="big">'+esc(nf(r.material.records))+'</span> <span class="muted">active · '+esc(nf(r.material.archiveRecords))+' archive · '+esc(nf(r.material.historyRecords))+' history · '+esc(nf(r.material.pending))+' pending · cursor '+esc(r.material.cursor)+'</span></div>';
- }catch{el.innerHTML='<span class="tag warn">retention unavailable</span>'}}
-async function showCycle(id){sel=id;const t=await j('/api/cycle?id='+encodeURIComponent(id));
- document.getElementById('inspector').innerHTML='<b>'+esc(id)+'</b>'+t.timeline.map(e=>'<div class="row">#'+esc(e.seq)+' <b>'+esc(e.type)+'</b><br>'+esc(e.title)+(e.why?'<br><span class="muted">why: '+esc(e.why)+'</span>':'')+(e.payload?'<pre>'+esc(JSON.stringify(e.payload,null,1))+'</pre>':'')+'</div>').join('');
+function setSurfaceStatus(name,text,cls){const status=document.getElementById(name+'-status');status.textContent=text;status.className=cls||'muted'}
+function surfaceFailure(name,message){setSurfaceStatus(name,'unavailable','tag warn');const root=document.getElementById(name);clear(root);root.append(el('div',message||'unavailable','muted'))}
+function githubUrl(value){try{const url=new URL(String(value));const host=url.hostname.toLowerCase();if(url.protocol!=='https:'||(host!=='github.com'&&!host.endsWith('.github.com'))||url.port)return null;url.username='';url.password='';url.search='';url.hash='';return url.href}catch{return null}}
+function externalLink(url,label){const valid=githubUrl(url);if(!valid)return null;const link=el('a',label||valid);link.href=valid;link.target='_blank';link.rel='noopener noreferrer';return link}
+function relationItems(value){if(Array.isArray(value))return value;if(value&&value.available===true){if(Array.isArray(value.data))return value.data;if(value.data&&Array.isArray(value.data.items))return value.data.items}if(value&&Array.isArray(value.items))return value.items;return []}
+function relationLabel(value){if(value==null)return 'relation';if(typeof value!=='object')return String(value);const fields=['title','type','id','trajectoryId','traceId','sessionId','number','state'];const parts=[];for(const field of fields){if(value[field]!=null&&value[field]!=='')parts.push(field+' '+String(value[field]))}return parts.join(' · ')||'relation'}
+function renderRelationCards(parent,items,kind){const list=el('div',null,'relation-list');for(const item of items){const card=el('div',null,'relation-card');if(kind==='asset'){
+   const assetId=String(item&&item.assetId||'');if(!assetId)continue;const button=el('button',relationLabel(item));button.addEventListener('click',()=>void showAsset(assetId,1,1));card.append(button);
+  }else if(kind==='pr'){
+   const link=externalLink(item&&item.url,relationLabel(item));card.append(link||el('span',relationLabel(item)));
+  }else card.append(el('span',relationLabel(item)));
+  list.append(card)}if(list.childNodes.length)parent.append(list)}
+function renderOptionalRelations(parent,relations,scope){if(!relations)return;const assets=relationItems(relations.assets);const trajectories=relationItems(relations.trajectories);const prs=relationItems(relations.pullRequests);
+ if(assets.length)sourceSection(parent,'related assets',{available:true,data:assets},(section,data)=>renderRelationCards(section,data,'asset'));
+ if(trajectories.length)sourceSection(parent,'trajectories',{available:true,data:trajectories},(section,data)=>renderRelationCards(section,data,'trajectory'),scope?scope+'-trajectories':undefined);
+ if(prs.length)sourceSection(parent,'related pull requests',{available:true,data:prs},(section,data)=>renderRelationCards(section,data,'pr'));
 }
-async function reviewAct(gene,action){const reason=prompt(action+' 理由 reason:');if(reason===null)return;
- try{const r=await j('/api/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({gene,action,reason})});
-  if(!r||r.ok!==true){alert('review 失败 failed: '+((r&&r.error)||'unknown'));return;}}
- catch(e){alert('review 失败 failed: '+e);return;}
- refresh();}
-async function act(kind){const note=prompt(kind+' 备注:');if(note===null)return;
- await j('/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:kind,title:kind+(sel?(' @'+sel):''),note,cycleId:sel})});refresh();}
-refresh();refreshRetention();setInterval(refresh,4000);setInterval(refreshRetention,60000);
+async function refreshStatus(){try{const status=await j('/api/status');document.getElementById('stat').textContent='events='+status.totalEvents+' cycles='+status.cycles}catch{document.getElementById('stat').textContent='status unavailable'}}
+async function refreshDaily(){try{const daily=await j('/api/daily-summary');document.getElementById('daily').textContent='今日 '+daily.solidified+'✓/'+daily.failed+'✗ 触发'+daily.triggered}catch{document.getElementById('daily').textContent='daily unavailable'}}
+async function refreshValue(){const root=document.getElementById('valuecard');try{const value=await j('/api/value?window=7d');clear(root);
+ const measured=el('div');measured.append(el('div','measured saved (7d)','lbl'),el('span',nf(value.totalTokensSaved)+' tokens','big'),document.createTextNode(' '),el('span','$'+Number(value.totalCostUsd||0).toFixed(4),'muted'));
+ const estimated=el('div');estimated.append(el('div','estimated','lbl'),el('span',nf(value.estimated&&value.estimated.totalTokensSaved)+' tokens','est'),document.createTextNode(' '),el('span','(tracked separately)','muted'));
+ const top=el('div');top.append(el('div','top reused','lbl'));const topText=asArray(value.topGenes).slice(0,3).map(g=>String(g.assetId)+' ×'+String(g.reuses)).join(' · ')||'—';top.append(el('span',topText,'muted'));root.append(measured,estimated,top);
+ }catch{clear(root);root.append(el('span','value unavailable','tag warn'))}}
+async function refreshReview(){const root=document.getElementById('reviewqueue');try{const review=await j('/api/review');clear(root);const pending=asArray(review).filter(item=>item.state==='quarantined').length;const summary=el('div');summary.append(el('div','review queue','lbl'),el('span',pending,'big'),document.createTextNode(' '),el('span','待审 pending','muted'));root.append(summary);
+ const stateClass=state=>state==='quarantined'?'warn':state==='approved'?'ok':state==='rejected'?'fail':'muted';for(const item of asArray(review).slice(0,8)){const row=el('div');row.append(el('span',item.state,'tag '+stateClass(item.state)),document.createTextNode(' '),el('span',item.geneId));if(item.autoDrafted)row.append(document.createTextNode(' '),el('span','auto','muted'));
+  if(item.state==='quarantined'){const assetId=String(item.assetId||'');const approve=el('button','Approve');const reject=el('button','Reject');approve.addEventListener('click',()=>void reviewAct(assetId,'approve'));reject.addEventListener('click',()=>void reviewAct(assetId,'reject'));row.append(document.createTextNode(' '),approve,reject)}root.append(row)}
+ }catch{clear(root);root.append(el('span','review unavailable','tag warn'))}}
+async function refreshTriggers(){const root=document.getElementById('triggers');try{const triggers=await j('/api/triggers');clear(root);for(const trigger of asArray(triggers)){const row=el('div',null,'row');row.append(el('span',trigger.triggered?'触发':'抑制','tag '+(trigger.triggered?'ok':'warn')),document.createTextNode(' '+String(trigger.patternId)+' '));const value=Number(trigger.value);row.append(el('span','v='+(Number.isFinite(value)?value.toFixed(2):String(trigger.value)),'muted'));root.append(row)}if(!root.firstChild)root.append(el('div','无','muted'))}catch{clear(root);root.append(el('div','triggers unavailable','muted'))}}
+async function refreshCycles(){const root=document.getElementById('cycles');try{const cycles=await j('/api/cycles');clear(root);for(const cycle of asArray(cycles).slice(-30).reverse()){const cycleId=String(cycle.cycleId||'');const row=el('div',null,'row clickable');const stageClass=cycle.finalStage==='solidified'?'ok':cycle.finalStage==='failed'?'fail':'warn';row.append(el('span',cycle.finalStage,'tag '+stageClass),document.createTextNode(' '+String(cycle.cycleId)+' '),el('span','('+String(cycle.events)+')','muted'));row.addEventListener('click',()=>void showCycle(cycleId));root.append(row)}if(!root.firstChild)root.append(el('div','无 cycle','muted'))}catch{clear(root);root.append(el('div','cycles unavailable','muted'))}}
+function refresh(){void refreshStatus();void refreshDaily();void refreshValue();void refreshReview();void refreshTriggers();void refreshCycles()}
+async function refreshRetention(){const root=document.getElementById('retentionbar');try{const retention=await j('/api/retention');clear(root);if(!retention||retention.available!==true){root.append(el('span','retention unavailable','muted'));return;}
+ const safe=!!(retention.rootEvents&&retention.rootEvents.archiveRotationSafe&&retention.material&&retention.material.archiveRotationSafe);const summary=el('div');summary.append(el('div','retention health','lbl'),el('span',safe?'safe':'attention','tag '+(safe?'ok':'warn')),document.createTextNode(' '),el('span','warnings '+asArray(retention.warnings).length,'muted'));root.append(summary);
+ const rootEvents=el('div');rootEvents.append(el('div','root events · '+String(retention.rootEvents.state),'lbl'),el('span',nf(retention.rootEvents.records),'big'),document.createTextNode(' '),el('span','active · '+nf(retention.rootEvents.archiveRecords)+' archive · '+nf(retention.rootEvents.historyRecords)+' history','muted'));root.append(rootEvents);
+ const material=el('div');material.append(el('div','material · '+String(retention.material.state),'lbl'),el('span',nf(retention.material.records),'big'),document.createTextNode(' '),el('span','active · '+nf(retention.material.archiveRecords)+' archive · '+nf(retention.material.historyRecords)+' history · '+nf(retention.material.pending)+' pending · cursor '+String(retention.material.cursor),'muted'));root.append(material);
+ }catch{clear(root);root.append(el('span','retention unavailable','tag warn'))}}
+async function refreshAssets(){const root=document.getElementById('assetbar');try{const source=await j('/api/asset-lineage/assets?page='+assetPage+'&pageSize=12');clear(root);const title=el('div');title.append(el('div','asset lineage','lbl'));root.append(title);
+ if(!source||source.available!==true){root.append(el('span',(source&&source.error)||'asset store unavailable','tag warn'));return;}const grid=el('div',null,'assetgrid');for(const asset of source.data.items){const assetId=String(asset.assetId||'');const button=el('button',asset.type+' · '+asset.id+(asset.summary?' · '+asset.summary:''),'assetbutton');button.addEventListener('click',()=>void showAsset(assetId,1,1));grid.append(button)}if(source.data.items.length===0)grid.append(el('span','no assets','muted'));root.append(grid);
+ const pager=el('div',null,'pager');const previous=el('button','Previous');previous.disabled=source.data.page<=1;previous.addEventListener('click',()=>{assetPage=Math.max(1,assetPage-1);void refreshAssets()});const next=el('button','Next');next.disabled=!source.data.hasMore;next.addEventListener('click',()=>{assetPage+=1;void refreshAssets()});pager.append(previous,el('span','page '+source.data.page+(source.data.truncated?' · bounded':''),'muted'),next);root.append(pager);
+ }catch{clear(root);root.append(el('span','asset store unavailable','tag warn'))}}
+function renderPersonalityRecords(parent,title,records){if(!Array.isArray(records)||records.length===0)return;const section=el('section',null,'lineage-section');section.append(el('h3',title));for(const record of records.slice(-8).reverse()){const row=el('div',null,'row');if(record&&typeof record==='object'){for(const key of ['at','updatedAt','key','success','fail','avgScore','n','outcome','score'])if(record[key]!=null)appendLine(row,key,record[key]);if(!row.firstChild)row.append(el('span',safeJson(record)))}else row.append(el('span',record));section.append(row)}parent.append(section)}
+async function refreshPersonality(){const root=document.getElementById('personality');try{const response=await j('/api/personality');if(!response||response.available!==true){surfaceFailure('personality',(response&&response.error)||'personality unavailable');return;}clear(root);setSurfaceStatus('personality','live','tag ok');const data=response.data||{};const current=data.current&&typeof data.current==='object'?data.current:{};const grid=el('div',null,'metricgrid');for(const key of Object.keys(current).slice(0,5)){const metric=el('div',null,'metric');metric.append(el('b',key),el('span',current[key]));grid.append(metric)}if(!grid.firstChild)grid.append(el('span','no current profile','muted'));root.append(grid);appendLine(root,'updated',data.updatedAt);renderPersonalityRecords(root,'stats',data.stats);renderPersonalityRecords(root,'history',data.history)}catch{surfaceFailure('personality','personality unavailable')}}
+async function refreshMemoryGraph(){const root=document.getElementById('memorygraph');try{const response=await j('/api/memory-graph');if(!response||response.available!==true){surfaceFailure('memorygraph',(response&&response.error)||'memory graph unavailable');return;}clear(root);const recovery=String(response.recovery||'degraded');const gate=recovery==='healthy'?'ok':recovery==='degraded'?'fail':'warn';setSurfaceStatus('memorygraph',recovery,'tag '+gate);appendLine(root,'selection',response.selectionReason||'no scoped selection yet');appendLine(root,'compacted records',nf(response.compactedRecords));appendLine(root,'active records',nf(response.activeRecords));appendLine(root,'archives',nf(response.archives));appendLine(root,'corrupt lines',nf(response.corruptLines));appendLine(root,'oversized lines',nf(response.oversizedLines));appendLine(root,'oversized files',nf(response.oversizedFiles))}catch{surfaceFailure('memorygraph','memory graph unavailable')}}
+async function refreshLogs(){const root=document.getElementById('logs');try{const response=await j('/api/logs');if(!response||response.available!==true){surfaceFailure('logs',(response&&response.error)||'logs unavailable');return;}clear(root);setSurfaceStatus('logs',response.data&&response.data.truncated?'bounded':'live',response.data&&response.data.truncated?'tag warn':'tag ok');const pre=el('pre',null,'logview');pre.append(document.createTextNode(asArray(response.data&&response.data.lines).join('\\n')));root.append(pre)}catch{surfaceFailure('logs','logs unavailable')}}
+function checksText(checks){checks=checks||{};return 'checks '+Number(checks.passed||0)+' passing · '+Number(checks.failed||0)+' failing · '+Number(checks.pending||0)+' pending / '+Number(checks.total||0)}
+async function refreshGitHubPrs(){const root=document.getElementById('githubprs');try{const response=await j('/api/github-prs');if(!response||response.available!==true){surfaceFailure('githubprs',(response&&response.error)||'GitHub PR status unavailable');return;}clear(root);setSurfaceStatus('githubprs',response.data&&response.data.truncated?'bounded':'live',response.data&&response.data.truncated?'tag warn':'tag ok');const items=asArray(response.data&&response.data.prs);for(const item of items){const row=el('div',null,'row');const title='#'+String(item.number)+' '+String(item.title||'');const link=externalLink(item.url,title);row.append(link||el('span',title));const state=String(item.state||'unknown')+(item.isDraft?' · draft':'');appendLine(row,'state',state);appendLine(row,'branch',String(item.head||'—')+' → '+String(item.base||'—'));appendLine(row,'review',item.reviewDecision);appendLine(row,'updated',item.updatedAt);row.append(el('div',checksText(item.checks),'muted'));root.append(row)}if(!root.firstChild)root.append(el('div','no pull requests','muted'))}catch{surfaceFailure('githubprs','GitHub PR status unavailable')}}
+function renderRows(section,page,fields){if(!page||!Array.isArray(page.items)||page.items.length===0){section.append(el('div','none','lineage-empty'));return;}for(const item of page.items){const row=el('div',null,'row');for(const field of fields)appendLine(row,field[0],item[field[1]]);section.append(row)}if(page.truncated)section.append(el('div','source window bounded for dashboard safety','tag warn'))}
+function renderEventRows(section,page){if(!page||!Array.isArray(page.items)||page.items.length===0){section.append(el('div','none','lineage-empty'));return;}for(const item of page.items){const row=el('div',null,'row');for(const field of [['seq','seq'],['type','type'],['time','ts'],['title','title'],['why','why']])appendLine(row,field[0],item[field[1]]);const cycleId=String(item.cycleId||'');if(cycleId){const button=el('button','Open cycle '+String(item.cycleId));button.addEventListener('click',()=>void showCycle(cycleId));row.append(button)}section.append(row)}if(page.truncated)section.append(el('div','source window bounded for dashboard safety','tag warn'))}
+function lineagePager(parent,label,page,data,onPage){const pager=el('div',null,'pager');const previous=el('button','Previous');previous.disabled=page<=1;previous.addEventListener('click',()=>onPage(page-1));const next=el('button','Next');next.disabled=!data||!data.hasMore;next.addEventListener('click',()=>onPage(page+1));pager.append(el('span',label,'muted'),previous,el('span','page '+page,'muted'),next);parent.append(pager)}
+function inspectorNav(parent,targetId,label){const button=el('button',label);button.addEventListener('click',()=>{const target=document.getElementById(targetId);if(target)target.scrollIntoView({block:'start'})});parent.append(button)}
+async function showAsset(id,capsulePage,eventPage){lineageId=id;lineageCapsulePage=capsulePage||1;lineageEventPage=eventPage||1;sel=null;const root=document.getElementById('inspector');clear(root);root.append(el('span','loading asset lineage …','muted'));try{const response=await j('/api/asset-lineage?id='+encodeURIComponent(id)+'&capsulePage='+lineageCapsulePage+'&eventPage='+lineageEventPage+'&pageSize=20');const relations=response.relations||{trajectories:response.trajectories,pullRequests:response.pullRequests};clear(root);root.append(el('h2','Asset lineage'));const nav=el('div',null,'section-nav');inspectorNav(nav,'asset-source','Source');inspectorNav(nav,'asset-review','Review');if(relationItems(relations.trajectories).length)inspectorNav(nav,'asset-trajectories','Trajectory');root.append(nav);
+ sourceSection(root,'asset',response.asset,(section,data)=>{if(!data){section.append(el('div','asset not found','tag warn'));return;}appendLine(section,'type',data.type);appendLine(section,'id',data.id);appendLine(section,'asset',data.assetId);appendLine(section,'category',data.category);appendLine(section,'summary',data.summary)});
+ sourceSection(root,'review',response.review,(section,data)=>{if(!data){section.append(el('div','default eligible / no record','lineage-empty'));return;}appendLine(section,'state',data.state);appendLine(section,'at',data.at);appendLine(section,'by',data.by);appendLine(section,'reason',data.reason)},'asset-review');
+ sourceSection(root,'provenance / source',response.provenance,(section,data)=>{if(!data){section.append(el('div','local default / no record','lineage-empty'));return;}appendLine(section,'source',data.source);appendLine(section,'trusted',data.trusted);appendLine(section,'at',data.at);appendLine(section,'promoted by',data.promotedBy);appendLine(section,'reason',data.reason)},'asset-source');
+ sourceSection(root,'capsules',response.capsules,(section,data)=>renderRows(section,data,[['type','type'],['id','id'],['asset','assetId'],['summary','summary']]));sourceSection(root,'events',response.events,(section,data)=>renderEventRows(section,data));renderOptionalRelations(root,relations,'asset');lineagePager(root,'capsules',lineageCapsulePage,response.capsules&&response.capsules.data,page=>showAsset(lineageId,page,lineageEventPage));lineagePager(root,'events',lineageEventPage,response.events&&response.events.data,page=>showAsset(lineageId,lineageCapsulePage,page));
+ }catch{clear(root);root.append(el('span','asset lineage unavailable','tag warn'))}}
+async function showCycle(id){sel=id;const root=document.getElementById('inspector');clear(root);root.append(el('span','loading cycle …','muted'));try{const response=await j('/api/cycle?id='+encodeURIComponent(id));const relations=response.relations;clear(root);root.append(el('h2','Cycle '+String(id)));if(relationItems(relations&&relations.trajectories).length){const nav=el('div',null,'section-nav');inspectorNav(nav,'cycle-trajectories','Trajectory');root.append(nav)}renderOptionalRelations(root,relations,'cycle');for(const event of asArray(response.timeline)){const row=el('div',null,'row');const heading=el('div');heading.append(document.createTextNode('#'+String(event.seq)+' '),el('b',event.type));row.append(heading);if(event.title)row.append(el('div',event.title));if(event.why)appendLine(row,'why',event.why);if(event.payload!=null){const pre=el('pre');pre.append(document.createTextNode(safeJson(event.payload)));row.append(pre)}root.append(row)}if(!asArray(response.timeline).length)root.append(el('div','no timeline events','muted'))}catch{clear(root);root.append(el('span','cycle unavailable','tag warn'))}}
+async function reviewAct(gene,action){const reason=prompt(action+' 理由 reason:');if(reason===null)return;try{const response=await j('/api/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({gene,action,reason})});if(!response||response.ok!==true){alert('review 失败 failed: '+((response&&response.error)||'unknown'));return;}}catch(error){alert('review 失败 failed: '+error);return;}refresh()}
+async function act(kind){const note=prompt(kind+' 备注:');if(note===null)return;await j('/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:kind,title:kind+(sel?(' @'+sel):''),note,cycleId:sel})});refresh()}
+for(const kind of ['observe','nudge','intervene','teach'])document.getElementById('act-'+kind).addEventListener('click',()=>void act(kind));
+refresh();void refreshRetention();void refreshAssets();void refreshPersonality();void refreshMemoryGraph();void refreshLogs();void refreshGitHubPrs();
+setInterval(refresh,4000);setInterval(refreshRetention,60000);setInterval(refreshAssets,30000);setInterval(refreshPersonality,30000);setInterval(refreshMemoryGraph,30000);setInterval(refreshLogs,10000);setInterval(refreshGitHubPrs,60000);
 </script></body></html>`;

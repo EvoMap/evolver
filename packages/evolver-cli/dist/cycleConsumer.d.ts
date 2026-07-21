@@ -1,6 +1,6 @@
 import { assetstore, algo, events, exec, material as materialNs, personality, verify } from '@evomap/evolver-core';
 type RunnerName = NonNullable<exec.AutonomousSafety['runner']>;
-type SleepFn = (ms: number) => Promise<void>;
+type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 type SandboxedValidationRunner = typeof verify.runSandboxedValidation;
 type MaterialCycleAction = 'cycle' | 'observe' | 'skip' | 'fail';
 type MaterialCycleStatus = exec.AutoExecVerdict['status'] | 'observed' | 'already_consumed' | 'already_terminal' | 'already_running' | 'no_signals' | 'parse_failed' | 'pending';
@@ -36,7 +36,7 @@ export interface MaterialCycleWatchResult {
     idleIterations: number;
     failedItems: number;
     cursor: number;
-    stopped: 'max_iterations' | 'max_idle';
+    stopped: 'max_iterations' | 'max_idle' | 'cancelled';
 }
 export interface MaterialCycleWatchState {
     ok: true;
@@ -61,6 +61,7 @@ export interface MaterialCycleOptions {
     validate?: exec.AutoExecDeps['validate'];
     runner?: RunnerName;
     timeoutMs?: number;
+    signal?: AbortSignal;
     safety?: Partial<exec.AutonomousSafety>;
     agent?: exec.AgentRunner;
     git?: exec.GitRunner;
@@ -81,6 +82,7 @@ export interface MaterialCycleDeps {
     ingestor?: events.Ingestor;
     engine?: algo.CycleEngine;
     personality?: personality.PersonalityStore;
+    memoryGraph?: algo.MemoryGraphProvider;
     validate?: exec.AutoExecDeps['validate'];
     /** Test/composition seam for the external validator; production defaults to the hardened core runner. */
     runSandboxedValidation?: SandboxedValidationRunner;

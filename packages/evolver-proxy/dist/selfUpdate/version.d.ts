@@ -1,2 +1,6 @@
-/** Resolve EVOLVER's own version. Walks up from this module to the nearest package.json named @evomap/evolver-proxy. */
-export declare function getCurrentVersion(): string;
+export interface CurrentVersionOptions {
+    startDir?: string;
+    buildVersion?: string;
+}
+/** Resolve EVOLVER's version from package/git metadata, then the standalone build-time version. */
+export declare function getCurrentVersion(options?: CurrentVersionOptions): string;

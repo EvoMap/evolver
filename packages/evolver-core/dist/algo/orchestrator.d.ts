@@ -7,6 +7,7 @@ import type { GeneCandidateInput } from './geneSelection.js';
 import { CycleEngine, type CycleInput, type CycleResult, type SolidifyPermitGate } from './cycleEngine.js';
 import { type PendingSignalsContext } from '../assetstore/pendingSignals.js';
 import { type ReuseOutcomeSummary, type ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
+import type { MemoryGraphAdvice } from './memoryGraph.js';
 export interface RunCycleOptions {
     cycleId: string;
     problem: ProblemPattern;
@@ -60,6 +61,8 @@ export interface RunCycleOptions {
      * agent self-report) gains teeth on selection. Omit → no recall contribution. Never feeds quarantine.
      */
     recallEvents?: readonly ReuseOutcomeEvent[];
+    /** Scoped local MemoryGraph query result. Omit to keep selection unchanged. */
+    memoryGraphAdvice?: MemoryGraphAdvice;
 }
 /** Drive one full evolution cycle end-to-end: assemble candidates from the store, then run the cycle. */
 export declare function runEvolutionCycle(engine: CycleEngine, store: AssetStoreProvider, opts: RunCycleOptions): Promise<CycleResult>;

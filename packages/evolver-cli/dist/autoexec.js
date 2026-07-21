@@ -18,6 +18,7 @@ import { resolveAutoDistillLlm } from './autoDistillLlm.js';
 import { resolveAutoDistillAntiGene as resolveAntiGeneDistill } from './autoDistillAntiGene.js';
 import { runTranscriptDistillTick, transcriptDistillMode } from './autoDistillTranscript.js';
 import { runSessionIngestTick, scanSessionDirs } from './index.js';
+import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
 import { resolveAtpAutoDeliver } from './atpAutoDeliver.js';
 import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
 import { runAutobuyPrompt } from './atpAutobuyPrompt.js';
@@ -40,8 +41,10 @@ export function readAutoExecConfig(base) {
     try {
         const c = JSON.parse(readFileSync(p, 'utf8'));
         // Coerce runner to the known set — an unknown value falls back to claude rather than reaching the registry.
-        // cursor is a scaffold runner (#66, unverified flags); selectable here but its safe default keeps skip OFF.
-        const runner = c.runner === 'codex' ? 'codex' : c.runner === 'cursor' ? 'cursor' : 'claude';
+        // Cursor and Gemini remain experimental; both are selectable only through their bounded registry defaults.
+        const runner = c.runner === 'codex' || c.runner === 'cursor' || c.runner === 'gemini'
+            ? c.runner
+            : 'claude';
         return { ...def, ...c, allowedRoots: Array.isArray(c.allowedRoots) ? c.allowedRoots : [], runner };
     }
     catch {
@@ -325,6 +328,40 @@ export function makeHubQuestionLink(cap, options = {}) {
 }
 export function shouldSubmitProactiveQuestionsForTask(task) {
     return typeof task.publicQuestionContext === 'string' && task.publicQuestionContext.trim().length > 0;
+}
+export function autoexecLockFailureMessage(error) {
+    if (error instanceof util.UnsafeLockPathError) {
+        return `evolver autoexec: unsafe single-instance lock (${error.reason}) - inspect the Evolver state directory before retrying\n`;
+    }
+    if (error instanceof util.LockTimeoutError) {
+        return 'evolver autoexec: another daemon holds the single-instance lock - refusing to start a second instance\n';
+    }
+    return 'evolver autoexec: failed to acquire the single-instance lock - refusing to start\n';
+}
+export function autoexecLockReleaseFailureMessage(error) {
+    const reason = error instanceof util.UnsafeLockPathError
+        ? error.reason
+        : typeof error === 'object' && error !== null && typeof error.reason === 'string'
+            ? error.reason
+            : null;
+    if (reason) {
+        return `evolver autoexec: could not safely release the single-instance lock (${reason}); inspect the Evolver state directory if the next start is blocked\n`;
+    }
+    return 'evolver autoexec: could not release the single-instance lock; inspect the Evolver state directory if the next start is blocked\n';
+}
+export function releaseAutoexecLock(lockPath, deps = {}) {
+    try {
+        const result = (deps.releaseLock ?? util.releaseLock)(lockPath);
+        if (result && !result.released) {
+            (deps.stderr ?? ((text) => { process.stderr.write(text); }))(autoexecLockReleaseFailureMessage(result));
+            return false;
+        }
+        return true;
+    }
+    catch (error) {
+        (deps.stderr ?? ((text) => { process.stderr.write(text); }))(autoexecLockReleaseFailureMessage(error));
+        return false;
+    }
 }
 export function urgentQuestionRuntimeWiringStatus() {
     return hubNs.URGENT_QUESTION_RUNTIME_WIRING_STATUS;
@@ -801,6 +838,9 @@ export async function runAutoExec(argv) {
             process.stdout.write(line + '\n');
     }
     const store = new assetstore.LocalJsonlProvider(events.assetsDir());
+    const memoryGraphDir = join(events.evomapHome(), 'evolution');
+    const memoryUser = resolveLocalMemoryUserIdentity(memoryGraphDir);
+    const memoryGraph = new LocalMemoryGraph({ dir: memoryGraphDir, ...memoryUser });
     // Observer bus (#113): the event total-bus, finally given its FIRST built-in observer. The value-digest
     // observer is hung off the bus and the bus is wired as the Ingestor's sink, so every emitted event fans out to
     // it; its weekly cadence + measured-value gate keep it quiet. Off via EVOLVER_VALUE_DIGEST=0. Fault-isolated:
@@ -847,7 +887,7 @@ export async function runAutoExec(argv) {
     let warnedNoIsolation = false;
     const probationOn = geneProbationEnabled();
     const deps = {
-        engine, store, provenance, review, personality: personalityStore,
+        engine, store, provenance, review, personality: personalityStore, memoryGraph,
         // Probation (#306, gated, default OFF via EVOLVER_GENE_PROBATION): try unproven auto-distilled genes (with their
         // strategy embedded) so the cross-AI loop self-closes — contained by the proven exec gates + worktree isolation.
         ...(probationOn ? { includeProbation: true } : {}),
@@ -916,8 +956,8 @@ export async function runAutoExec(argv) {
     try {
         util.acquireLock(lockPath, { maxTries: 5 });
     }
-    catch {
-        process.stderr.write(`evolver autoexec: another daemon holds ${lockPath} — refusing to start a second instance\n`);
+    catch (error) {
+        process.stderr.write(autoexecLockFailureMessage(error));
         return 1;
     }
     // First-run auto-buyer opt-in (PORT v1 #10): introduce the autonomous spend path to interactive operators once,
@@ -932,7 +972,7 @@ export async function runAutoExec(argv) {
         process.stderr.write(`[ATP-AutoBuyer] first-run prompt failed: ${e instanceof Error ? e.message : String(e)}\n`);
     }
     const uninstallUnhandledRejectionGuard = daemonNs.installUnhandledRejectionWindow({
-        beforeExit: () => { util.releaseLock(lockPath); },
+        beforeExit: () => { releaseAutoexecLock(lockPath); },
     });
     // SINGLE-FLIGHT the producer tick (same as autoExecPass): a session scan that outlasts pollMs must not let two
     // ticks interleave in recordSessionMaterial (which would re-emit material.batch_ready before watermarks settle).
@@ -1016,7 +1056,7 @@ export async function runAutoExec(argv) {
             process.stderr.write(`[Solo] 连续失败 ${soloState.consecutiveFailures} 次达阈值，熔断停机（非盲重生）。\n`);
             // Stop scheduling, release the lock, and exit non-zero. Detached so we
             // don't await our own loop.stop() from inside a tick.
-            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); util.releaseLock(lockPath); process.exit(1); });
+            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); releaseAutoexecLock(lockPath); process.exit(1); });
         }
     };
     // Heartbeat (#106): record liveness + pacing on the AE spine for the WebUI console, THROTTLED so a fast poll does
@@ -1051,7 +1091,7 @@ export async function runAutoExec(argv) {
                 return;
             stopping = true;
             process.stdout.write(`\nevolver autoexec: ${sig} → graceful stop (finishing in-flight, releasing lock)\n`);
-            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); util.releaseLock(lockPath); resolve(0); });
+            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); releaseAutoexecLock(lockPath); resolve(0); });
         };
         process.once('SIGINT', () => shutdown('SIGINT'));
         process.once('SIGTERM', () => shutdown('SIGTERM'));

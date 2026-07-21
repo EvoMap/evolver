@@ -3,6 +3,9 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { events as ev, assetstore, mailbox as mb, ops } from '@evomap/evolver-core';
 import { CONSOLE_HTML } from './console.js';
 import { EventSnapshotCache, fileEventSnapshotSource } from './eventSnapshot.js';
+import { listLineageAssets, loadAssetLineage } from './assetLineage.js';
+import { eventListRelations } from './observabilityRelations.js';
+import { redactDiagnosticText, sanitizeDiagnosticValue } from './diagnosticSanitize.js';
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const DASHBOARD_COOKIE = 'evolver_dashboard';
 const BROWSER_BLOCKED_PORTS = new Set([
@@ -15,6 +18,41 @@ const BROWSER_BLOCKED_PORTS = new Set([
 /** The empty value summary (zero entries) — the shape /api/value returns when no provider is wired, so the card
  *  always gets a valid ValueSummary to render. Derived from core's aggregator to stay shape-identical. */
 const EMPTY_VALUE_SUMMARY = ops.valueSummary([]);
+const MEMORY_GRAPH_REASON_PATTERN = /scoped memory-graph outcome ([+-]\d+\.\d{3}) \(boost=([+-]?\d+\.\d{2})\)/;
+const MEMORY_GRAPH_RECOVERY_STATES = new Set(['healthy', 'degraded', 'recovered', 'empty']);
+function boundedMemoryGraphCount(value) {
+    const count = Number(value);
+    return Number.isFinite(count) && count > 0 ? Math.min(1_000_000, Math.floor(count)) : 0;
+}
+function sanitizeMemoryGraphReason(value) {
+    if (typeof value !== 'string')
+        return undefined;
+    const match = MEMORY_GRAPH_REASON_PATTERN.exec(value);
+    if (!match?.[1] || !match[2])
+        return undefined;
+    const outcome = Number(match[1]);
+    const boost = Number(match[2]);
+    if (!Number.isFinite(outcome) || !Number.isFinite(boost) || Math.abs(outcome) > 1 || Math.abs(boost) > 1)
+        return undefined;
+    return `scoped memory-graph outcome ${match[1]} (boost=${match[2]})`;
+}
+function sanitizeMemoryGraphStatus(value) {
+    const raw = value;
+    const recovery = MEMORY_GRAPH_RECOVERY_STATES.has(raw['recovery'])
+        ? raw['recovery']
+        : 'degraded';
+    const selectionReason = sanitizeMemoryGraphReason(raw['selectionReason']);
+    return {
+        recovery,
+        compactedRecords: boundedMemoryGraphCount(raw['compactedRecords']),
+        activeRecords: boundedMemoryGraphCount(raw['activeRecords']),
+        corruptLines: boundedMemoryGraphCount(raw['corruptLines']),
+        oversizedLines: boundedMemoryGraphCount(raw['oversizedLines']),
+        oversizedFiles: boundedMemoryGraphCount(raw['oversizedFiles']),
+        archives: boundedMemoryGraphCount(raw['archives']),
+        ...(selectionReason ? { selectionReason } : {}),
+    };
+}
 /** Constant-time token compare (avoids leaking the token via timing). */
 function tokenEq(a, b) {
     const ba = Buffer.from(a), bb = Buffer.from(b);
@@ -35,6 +73,13 @@ function positiveIntParam(value) {
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
+function requireGet(req, res) {
+    if (req.method === 'GET')
+        return true;
+    res.writeHead(405, { allow: 'GET', 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'method_not_allowed' }));
+    return false;
+}
 const HUMAN_ACTIONS = {
     observe: 'actor.human.observe', nudge: 'actor.human.nudge', intervene: 'actor.human.intervene', teach: 'actor.human.teach',
 };
@@ -51,6 +96,7 @@ export class WebUIServer {
     actorId;
     /** Review ledger backing the human-review queue. Undefined when no LocalJsonlProvider store is available. */
     review;
+    provenance;
     /** Token guarding /api/*; supplied by the browser via Bearer, with ?token= retained for compatibility. */
     token;
     launchTicket;
@@ -67,6 +113,7 @@ export class WebUIServer {
         this.ingestor = deps.ingestor ?? new ev.Ingestor({ path: deps.eventsPath });
         // Co-locate the review ledger with the store so the queue reads the same review.jsonl the CLI writes.
         this.review = deps.review ?? (deps.store instanceof assetstore.LocalJsonlProvider ? new assetstore.ReviewLedger(deps.store.baseDir) : undefined);
+        this.provenance = deps.provenance ?? (deps.store instanceof assetstore.LocalJsonlProvider ? new assetstore.ProvenanceStore(deps.store.baseDir) : undefined);
         this.server = createServer((req, res) => { void this.handle(req, res); });
     }
     async listen(port = 0) {
@@ -148,26 +195,75 @@ export class WebUIServer {
                 }
             }
             if (p === '/api/status')
-                return this.json(res, ev.statusReport(this.eventSnapshots.read()));
+                return this.json(res, ev.statusReport(await this.eventSnapshots.read()));
             if (p === '/api/cycles')
-                return this.json(res, ev.listCycles(this.eventSnapshots.read()));
-            if (p === '/api/cycle')
-                return this.json(res, ev.showCycle(this.eventSnapshots.read(), url.searchParams.get('id') ?? ''));
+                return this.json(res, ev.listCycles(await this.eventSnapshots.read()));
+            if (p === '/api/cycle') {
+                const cycle = ev.showCycle(await this.eventSnapshots.read(), url.searchParams.get('id') ?? '');
+                const safeTimeline = cycle.timeline.map((event) => ({
+                    ...event,
+                    title: redactDiagnosticText(event.title),
+                    ...(event.why ? { why: redactDiagnosticText(event.why) } : {}),
+                    ...(event.payload ? { payload: sanitizeDiagnosticValue(event.payload) } : {}),
+                }));
+                const relationEvents = cycle.timeline.map((event) => ({
+                    seq: event.seq, type: event.type, ts: event.ts, payload: event.payload,
+                    human: { title: event.title, ...(event.why ? { why: event.why } : {}) },
+                }));
+                return this.json(res, { ...cycle, timeline: safeTimeline, relations: eventListRelations(relationEvents) });
+            }
             if (p === '/api/narrative') {
-                return this.json(res, ev.buildNarrativeSnapshot(this.eventSnapshots.read(), { limit: positiveIntParam(url.searchParams.get('limit')) }));
+                return this.json(res, ev.buildNarrativeSnapshot(await this.eventSnapshots.read(), { limit: positiveIntParam(url.searchParams.get('limit')) }));
             }
             if (p === '/api/triggers')
-                return this.json(res, ev.listTriggers(this.eventSnapshots.read()));
+                return this.json(res, ev.listTriggers(await this.eventSnapshots.read()));
             if (p === '/api/daily-summary') {
                 const day = url.searchParams.get('day') ?? new Date(this.now()).toISOString().slice(0, 10);
-                return this.json(res, ev.dailySummary(this.eventSnapshots.read(), day));
+                return this.json(res, ev.dailySummary(await this.eventSnapshots.read(), day));
             }
             if (p === '/api/value') {
                 // Thin pass-through: the provider (composition layer) owns prices + traces; the server only scopes the
                 // window and serializes. No provider wired → an empty summary so the card renders "no savings yet".
                 const window = ops.windowFromSpec(url.searchParams.get('window') ?? undefined, this.now());
-                const summary = this.deps.valueSummary ? this.deps.valueSummary(window, this.eventSnapshots.read()) : EMPTY_VALUE_SUMMARY;
+                const summary = this.deps.valueSummary ? this.deps.valueSummary(window, await this.eventSnapshots.read()) : EMPTY_VALUE_SUMMARY;
                 return this.json(res, summary);
+            }
+            if (p === '/api/personality') {
+                if (!requireGet(req, res))
+                    return;
+                return this.json(res, this.deps.personalityDiagnostics
+                    ? await this.deps.personalityDiagnostics()
+                    : { available: false, error: 'personality_unavailable' });
+            }
+            if (p === '/api/memory-graph') {
+                if (!requireGet(req, res))
+                    return;
+                if (!this.deps.memoryGraphStatus)
+                    return this.json(res, { available: false });
+                try {
+                    const status = sanitizeMemoryGraphStatus(this.deps.memoryGraphStatus());
+                    return this.json(res, { available: true, ...status });
+                }
+                catch {
+                    return this.send(res, 503, 'application/json', JSON.stringify({
+                        available: false,
+                        error: 'memory_graph_unavailable',
+                    }));
+                }
+            }
+            if (p === '/api/logs') {
+                if (!requireGet(req, res))
+                    return;
+                return this.json(res, this.deps.logDiagnostics
+                    ? await this.deps.logDiagnostics()
+                    : { available: false, error: 'logs_unavailable' });
+            }
+            if (p === '/api/github-prs') {
+                if (!requireGet(req, res))
+                    return;
+                return this.json(res, this.deps.githubPrDiagnostics
+                    ? await this.deps.githubPrDiagnostics()
+                    : { available: false, error: 'github_prs_unavailable' });
             }
             if (p === '/api/retention') {
                 if (!this.deps.retentionReport)
@@ -196,6 +292,31 @@ export class WebUIServer {
                     return this.json(res, []);
                 const kind = url.searchParams.get('kind');
                 return this.json(res, (await this.deps.store.list(kind ?? undefined, 100)).map((a) => ({ asset_id: a.asset_id, type: a.type, summary: a.summary })));
+            }
+            if (p === '/api/asset-lineage/assets') {
+                if (!requireGet(req, res))
+                    return;
+                return this.json(res, await listLineageAssets(this.deps.store, {
+                    page: positiveIntParam(url.searchParams.get('page')),
+                    pageSize: positiveIntParam(url.searchParams.get('pageSize')),
+                }));
+            }
+            if (p === '/api/asset-lineage') {
+                if (!requireGet(req, res))
+                    return;
+                return this.json(res, await loadAssetLineage({
+                    store: this.deps.store,
+                    events: () => this.eventSnapshots.read(),
+                    review: this.review,
+                    provenance: this.provenance,
+                }, url.searchParams.get('id') ?? '', {
+                    page: positiveIntParam(url.searchParams.get('page')),
+                    pageSize: positiveIntParam(url.searchParams.get('pageSize')),
+                    capsulePage: positiveIntParam(url.searchParams.get('capsulePage')),
+                    capsulePageSize: positiveIntParam(url.searchParams.get('capsulePageSize')),
+                    eventPage: positiveIntParam(url.searchParams.get('eventPage')),
+                    eventPageSize: positiveIntParam(url.searchParams.get('eventPageSize')),
+                }));
             }
             if (p === '/api/review' && req.method === 'POST') {
                 // Approve/reject a quarantined draft from the console: the SAME gate the CLI uses — flip the ReviewLedger
@@ -236,7 +357,7 @@ export class WebUIServer {
                 // record) are appended as context from a bounded list. Pending (quarantined) sorts first. Read-only here.
                 // Match the CLI's semantics exactly: only the unattended distill-observer counts as "auto-drafted"
                 // (manual `ingest --distill` / skill2gep emit gene.distilled with a different source and are NOT auto).
-                const autoDrafted = new Set(this.eventSnapshots.read()
+                const autoDrafted = new Set((await this.eventSnapshots.read())
                     .filter((e) => e.type === 'gene.distilled' && e.payload?.['source'] === 'distill-observer')
                     .map((e) => String(e.payload?.['assetId'] ?? ''))
                     .filter(Boolean));
@@ -271,8 +392,8 @@ export class WebUIServer {
             }
             return this.send(res, 404, 'application/json', JSON.stringify({ error: 'not found' }));
         }
-        catch (e) {
-            return this.send(res, 500, 'application/json', JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        catch {
+            return this.send(res, 500, 'application/json', JSON.stringify({ error: 'dashboard_request_failed' }));
         }
     }
     readJson(req) {

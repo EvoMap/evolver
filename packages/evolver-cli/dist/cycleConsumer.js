@@ -4,13 +4,15 @@ import { assetstore, algo, events, exec, material as materialNs, personality, sc
 import { materialHasRuntimeSessionSnapshot, materialSourceAvailable, runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
 import { signalTokens } from './distillPrimitives.js';
 import { readEvents, showCycle } from './commands.js';
+import { RUNTIME_CAPABILITY_MATRIX, runtimeCapabilities } from './runtimeCapabilities.js';
+import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
 const CYCLE_GROUP = 'cycle';
 const DEFAULT_LIMIT = 5;
 const DEFAULT_WATCH_IDLE_MS = 1000;
 const DEFAULT_WATCH_MAX_IDLE_MS = 30_000;
 const DEFAULT_WATCH_BACKOFF = 2;
-const CYCLE_USAGE = 'usage: evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor] [--validation-cmd <cmd>] [--timeout-ms N]\n';
-const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
+const CYCLE_USAGE = 'usage: evolver cycle capabilities [--json] | evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor|gemini] [--validation-cmd <cmd>] [--timeout-ms N]\n';
+const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor|gemini] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
 class CycleWatchStateWriteError extends Error {
     constructor() {
         super('cycle watch state file write failed');
@@ -92,7 +94,60 @@ function parseRequiredPositiveIntFlag(flags, name) {
     return Number.isInteger(n) && n > 0 ? n : null;
 }
 function parseRunner(value) {
-    return value === 'codex' || value === 'cursor' ? value : 'claude';
+    if (value === undefined || value === 'claude')
+        return { ok: true, runner: 'claude' };
+    if (value.trim() === '')
+        return { ok: false, error: 'runner value is required (supported: claude, codex, cursor, gemini)' };
+    if (value === 'codex' || value === 'cursor' || value === 'gemini')
+        return { ok: true, runner: value };
+    if (value === 'antigravity' || value === 'kimi' || value === 'kiro' || value === 'opencode') {
+        const capability = RUNTIME_CAPABILITY_MATRIX[value].execute;
+        return { ok: false, error: `runner '${value}' execute capability is ${capability.status}: ${capability.evidence}` };
+    }
+    return { ok: false, error: `unknown runner '${value}' (supported: claude, codex, cursor, gemini)` };
+}
+function resolveMaterialRunner(material, requestedRunner) {
+    const sourceAgent = material.sourceAgent;
+    let runner;
+    switch (sourceAgent) {
+        case 'claude-code':
+            runner = 'claude';
+            break;
+        case 'codex':
+        case 'cursor':
+        case 'gemini':
+            runner = sourceAgent;
+            break;
+        case 'antigravity':
+        case 'kimi': {
+            const capability = RUNTIME_CAPABILITY_MATRIX[sourceAgent].execute;
+            return {
+                ok: false,
+                error: `sourceAgent '${sourceAgent}' execute capability is ${capability.status}: ${capability.evidence}`,
+            };
+        }
+        case 'kiro':
+        case 'opencode':
+        case 'generic-chat':
+            return { ok: false, error: `sourceAgent '${sourceAgent}' has no supported cycle runner` };
+        default:
+            return { ok: false, error: 'runtime_session material has no supported sourceAgent' };
+    }
+    if (requestedRunner !== undefined && requestedRunner !== runner) {
+        return {
+            ok: false,
+            error: `explicit runner '${requestedRunner}' does not match sourceAgent '${sourceAgent}' runner '${runner}'`,
+        };
+    }
+    return { ok: true, runner };
+}
+function printRuntimeCapabilities() {
+    for (const entry of runtimeCapabilities()) {
+        const values = ['ingest', 'inject', 'execute', 'verify', 'resume']
+            .map((capability) => `${capability}=${entry[capability].status}`)
+            .join(' ');
+        process.stdout.write(`${entry.runtime}: ${values}\n`);
+    }
 }
 function resolveMaterialCycleDeps(deps = {}) {
     const materialStore = deps.materialStore ?? new materialNs.MaterialStore({ path: events.materialStorePath() });
@@ -106,6 +161,11 @@ function resolveMaterialCycleDeps(deps = {}) {
     const review = deps.review ?? new assetstore.ReviewLedger(assetDir);
     const ingestor = deps.ingestor ?? new events.Ingestor({ path: events.rootEventsPath() });
     const personalityStore = deps.personality ?? new personality.PersonalityStore();
+    const memoryGraphDir = join(events.evomapHome(), 'evolution');
+    const memoryGraph = deps.memoryGraph ?? new LocalMemoryGraph({
+        dir: memoryGraphDir,
+        ...resolveLocalMemoryUserIdentity(memoryGraphDir),
+    });
     const engine = deps.engine ?? new algo.CycleEngine({
         ingestor,
         selection: algo.makeGeneSelectionPoint(),
@@ -113,7 +173,7 @@ function resolveMaterialCycleDeps(deps = {}) {
         now: () => Date.now(),
         personality: personalityStore,
     });
-    return { materialStore, consumer, store, provenance, review, ingestor, engine, personality: personalityStore };
+    return { materialStore, consumer, store, provenance, review, ingestor, engine, personality: personalityStore, memoryGraph };
 }
 export function cycleIdForMaterial(materialId) {
     return `autoexec-material-${materialId}`;
@@ -288,6 +348,19 @@ async function processMaterial(material, opts, deps) {
             ackOne(deps.consumer, material);
             return item;
         }
+        const runner = resolveMaterialRunner(material, opts.runner);
+        if (!runner.ok) {
+            const item = {
+                materialId: material.materialId,
+                action: 'fail',
+                status: 'refused',
+                cycleId,
+                reason: runner.error,
+            };
+            await emitConsumed(deps.ingestor, material, item);
+            ackOne(deps.consumer, material);
+            return item;
+        }
         let extracted;
         try {
             extracted = materialSignals(material);
@@ -317,9 +390,10 @@ async function processMaterial(material, opts, deps) {
         };
         const safety = {
             allowedRoots: [repo],
-            runner: opts.runner ?? 'claude',
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
             ...opts.safety,
+            runner: runner.runner,
+            ...(opts.signal ? { signal: opts.signal } : {}),
         };
         const verdict = await exec.runAutoExecTask({
             engine: deps.engine,
@@ -327,6 +401,7 @@ async function processMaterial(material, opts, deps) {
             provenance: deps.provenance,
             review: deps.review,
             personality: deps.personality,
+            memoryGraph: deps.memoryGraph,
             ...(opts.validate ? { validate: opts.validate } : {}),
             ...(opts.agent ? { agent: opts.agent } : {}),
             ...(opts.git ? { git: opts.git } : {}),
@@ -342,6 +417,7 @@ async function processMaterial(material, opts, deps) {
             finalStage: verdict.finalStage,
             signalCount: extracted.signals.length,
             signals: extracted.signals,
+            runner: runner.runner,
         });
         ackOne(deps.consumer, material);
         return item;
@@ -356,12 +432,35 @@ export async function runMaterialCycleConsumer(opts, injectedDeps = {}) {
     const claimed = deps.consumer.claim(CYCLE_GROUP, limit);
     const items = [];
     for (const material of claimed) {
+        if (opts.signal?.aborted)
+            break;
         items.push(await processMaterial(material, opts, deps));
     }
     return { claimed: claimed.length, processed: items.length, items };
 }
-function defaultSleep(ms) {
-    return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+function defaultSleep(ms, signal) {
+    return new Promise((resolveSleep) => {
+        if (signal?.aborted) {
+            resolveSleep();
+            return;
+        }
+        const timer = setTimeout(finish, ms);
+        function finish() {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', finish);
+            resolveSleep();
+        }
+        signal?.addEventListener('abort', finish, { once: true });
+    });
+}
+function watchResult(deps, stopped, counters) {
+    return {
+        ok: true,
+        group: 'cycle.watch',
+        ...counters,
+        cursor: deps.consumer.position(CYCLE_GROUP),
+        stopped,
+    };
 }
 function positiveNumber(value, fallback) {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
@@ -392,6 +491,15 @@ export async function runMaterialCycleWatch(opts, injectedDeps = {}, hooks = {})
     let totalProcessed = 0;
     let totalFailedItems = 0;
     for (;;) {
+        if (opts.signal?.aborted) {
+            return watchResult(deps, 'cancelled', {
+                iterations,
+                claimed: totalClaimed,
+                processed: totalProcessed,
+                idleIterations,
+                failedItems: totalFailedItems,
+            });
+        }
         iterations += 1;
         const cursorBefore = deps.consumer.position(CYCLE_GROUP);
         const result = await runMaterialCycleConsumer(opts, deps);
@@ -419,29 +527,46 @@ export async function runMaterialCycleWatch(opts, injectedDeps = {}, hooks = {})
             idleIterations = 0;
             nextDelayMs = idleBase;
         }
-        const stopped = maxIterations !== undefined && iterations >= maxIterations
-            ? 'max_iterations'
-            : maxIdle !== undefined && idleIterations >= maxIdle
-                ? 'max_idle'
-                : null;
+        const stopped = opts.signal?.aborted
+            ? 'cancelled'
+            : maxIterations !== undefined && iterations >= maxIterations
+                ? 'max_iterations'
+                : maxIdle !== undefined && idleIterations >= maxIdle
+                    ? 'max_idle'
+                    : null;
         if (stopped) {
-            return {
-                ok: true,
-                group: 'cycle.watch',
+            return watchResult(deps, stopped, {
                 iterations,
                 claimed: totalClaimed,
                 processed: totalProcessed,
                 idleIterations,
                 failedItems: totalFailedItems,
-                cursor: deps.consumer.position(CYCLE_GROUP),
-                stopped,
-            };
+            });
         }
         if (idle) {
-            await sleep(nextDelayMs);
+            await sleep(nextDelayMs, opts.signal);
             nextDelayMs = Math.min(idleMax, Math.max(idleBase, Math.ceil(nextDelayMs * backoff)));
         }
     }
+}
+function createProcessCancellation() {
+    const controller = new AbortController();
+    let code = 1;
+    const interrupt = () => { code = 130; controller.abort(); };
+    const terminate = () => { code = 143; controller.abort(); };
+    process.once('SIGINT', interrupt);
+    process.once('SIGTERM', terminate);
+    return {
+        signal: controller.signal,
+        exitCode: () => code,
+        dispose: () => {
+            process.removeListener('SIGINT', interrupt);
+            process.removeListener('SIGTERM', terminate);
+        },
+    };
+}
+function combineSignals(primary, secondary) {
+    return secondary ? AbortSignal.any([primary, secondary]) : primary;
 }
 async function recoverMaterialCycleAudit(material, deps) {
     const cycleId = cycleIdForMaterial(material.materialId);
@@ -701,6 +826,14 @@ function materialCycleExitCode(result) {
     return result.items.some(hasFailedItem) ? 1 : 0;
 }
 export async function runCycleCommand(argv, injectedDeps = {}) {
+    if (argv[0] === 'capabilities') {
+        const flags = parseFlags(argv.slice(1));
+        if ('json' in flags)
+            process.stdout.write(`${JSON.stringify(runtimeCapabilities())}\n`);
+        else
+            printRuntimeCapabilities();
+        return 0;
+    }
     if (argv[0] === 'show') {
         if (!argv[1]) {
             process.stderr.write('usage: evolver cycle show <id>\n');
@@ -732,6 +865,11 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
     }
     if (argv[0] === 'watch') {
         const flags = parseFlags(argv.slice(1));
+        const runner = parseRunner(flags['runner']);
+        if (!runner.ok) {
+            process.stderr.write(`${runner.error}\n`);
+            return 1;
+        }
         const validationCmds = parseRepeatedFlag(argv.slice(1), 'validation-cmd');
         const repo = flags['repo'];
         if (!repo) {
@@ -762,6 +900,8 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         let stateFailedItems = 0;
         let lastIteration;
         const writeState = injectedDeps.watchStateWriter ?? writeWatchStateFile;
+        const cancellation = createProcessCancellation();
+        const signal = combineSignals(cancellation.signal, injectedDeps.safety?.signal);
         let result;
         try {
             result = await runMaterialCycleWatch({
@@ -769,11 +909,12 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
                 limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
                 target: flags['target'] || '.',
                 expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
-                runner: parseRunner(flags['runner']),
+                ...('runner' in flags ? { runner: runner.runner } : {}),
+                signal,
                 ...(timeoutMs !== undefined ? { timeoutMs } : {}),
                 ...(validationCmds.length > 0 ? { validationCmds } : {}),
                 ...(validate ? { validate } : {}),
-                ...(injectedDeps.safety ? { safety: injectedDeps.safety } : {}),
+                safety: { ...injectedDeps.safety, signal },
                 ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
                 ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
                 idleMs: parsePositiveInt(flags['idle-ms'], DEFAULT_WATCH_IDLE_MS),
@@ -832,6 +973,9 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
             process.stderr.write('cycle watch failed: state_write_failed\n');
             return 1;
         }
+        finally {
+            cancellation.dispose();
+        }
         const finalState = {
             ok: true,
             group: 'cycle.watch.state',
@@ -859,9 +1003,14 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
             process.stdout.write(`${JSON.stringify(result)}\n`);
         else
             printWatchResult(result);
-        return 0;
+        return result.stopped === 'cancelled' ? cancellation.exitCode() : 0;
     }
     const flags = parseFlags(argv);
+    const runner = parseRunner(flags['runner']);
+    if (!runner.ok) {
+        process.stderr.write(`${runner.error}\n`);
+        return 1;
+    }
     const validationCmds = parseRepeatedFlag(argv, 'validation-cmd');
     const repo = flags['repo'];
     if (!repo) {
@@ -878,19 +1027,28 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         return 1;
     }
     const validate = makeCycleValidationHook(validationCmds, injectedDeps.validate, injectedDeps.runSandboxedValidation);
-    const result = await runMaterialCycleConsumer({
-        repo,
-        limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
-        target: flags['target'] || '.',
-        expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
-        runner: parseRunner(flags['runner']),
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        ...(validationCmds.length > 0 ? { validationCmds } : {}),
-        ...(validate ? { validate } : {}),
-        ...(injectedDeps.safety ? { safety: injectedDeps.safety } : {}),
-        ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
-        ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
-    }, injectedDeps);
+    const cancellation = createProcessCancellation();
+    const signal = combineSignals(cancellation.signal, injectedDeps.safety?.signal);
+    let result;
+    try {
+        result = await runMaterialCycleConsumer({
+            repo,
+            limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
+            target: flags['target'] || '.',
+            expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
+            ...('runner' in flags ? { runner: runner.runner } : {}),
+            signal,
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(validationCmds.length > 0 ? { validationCmds } : {}),
+            ...(validate ? { validate } : {}),
+            safety: { ...injectedDeps.safety, signal },
+            ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
+            ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
+        }, injectedDeps);
+    }
+    finally {
+        cancellation.dispose();
+    }
     printResult(result);
-    return materialCycleExitCode(result);
+    return signal.aborted ? cancellation.exitCode() : materialCycleExitCode(result);
 }

@@ -43,7 +43,7 @@ export declare function runResetLocalSecret(argv: readonly string[], opts?: Rese
 export declare function rebuildViews(opts?: RebuildOptions): {
     rebuilt: string[];
 };
-/** migrate import-v1 <v1dir> [outDir]: v1→v2 只读迁移(异步, 由 cli.ts 调). */
+/** migrate import-v1 <v1dir> [outDir] --workspace <path>: v1→v2 read-only migration. */
 export declare function runMigrate(argv: readonly string[]): Promise<number>;
 /** One-line summary of an asset for `asset-log` (pure, testable). */
 export declare function formatAssetLine(a: assetstore.AssetRecord): string;

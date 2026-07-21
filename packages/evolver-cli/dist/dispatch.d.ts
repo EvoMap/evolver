@@ -1,3 +1,10 @@
+interface ProxyCliModule {
+    runProxyCli(options: {
+        argv: readonly string[];
+    }): Promise<number>;
+}
+type ProxyCliImporter = () => Promise<ProxyCliModule>;
+export declare function runProxyCommand(argv: string[], importer?: ProxyCliImporter): Promise<number>;
 export type CommandHandler = (argv: string[]) => Promise<number>;
 /** Verbs dispatched asynchronously ahead of the synchronous runCli core. cli.ts drives its dispatch from this. */
 export declare const ASYNC_COMMANDS: Readonly<Record<string, CommandHandler>>;
@@ -9,3 +16,4 @@ export declare const ALL_COMMANDS: ReadonlySet<string>;
 export declare function v1TopLevelRunArgs(argv: readonly string[]): readonly string[] | undefined;
 /** Run a top-level argv against the registry: async handler if present, else the synchronous runCli core. */
 export declare function dispatch(argv: readonly string[]): Promise<number> | number;
+export {};

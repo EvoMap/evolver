@@ -238,6 +238,25 @@ function toPublicKey(publicKey) {
     const der = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]);
     return createPublicKey({ key: der, format: 'der', type: 'spki' });
 }
+/** Verify the signature over the complete canonical manifest when a public key is configured. */
+function verifyConfiguredManifestSignature(manifest, publicKey) {
+    if (!publicKey)
+        return { ok: true, reason: 'signature_not_required' };
+    if (!manifest.signature)
+        return { ok: false, reason: 'signature_required_but_missing' };
+    if (manifest.signatureAlg && manifest.signatureAlg !== 'ed25519') {
+        return { ok: false, reason: 'signature_alg_unsupported' };
+    }
+    try {
+        const key = toPublicKey(publicKey);
+        const ok = cryptoVerify(null, // Ed25519 ignores the digest-name arg
+        canonicalManifestBytes(manifest), key, Buffer.from(manifest.signature, 'base64'));
+        return ok ? { ok: true, reason: 'signature_verified' } : { ok: false, reason: 'signature_invalid' };
+    }
+    catch (err) {
+        return { ok: false, reason: `signature_verify_error: ${err instanceof Error ? err.message : String(err)}` };
+    }
+}
 /**
  * Verify downloaded artifacts against the manifest. PURE + deterministic (takes already-read bytes/hashes; does
  * NO I/O). Two layers:
@@ -274,21 +293,51 @@ export function verifyManifest(manifest, downloaded, publicKey) {
             return { ok: false, reason: `sha256_mismatch: ${art.path}` };
     }
     // Layer 2: Ed25519 signature — enforced ONLY when a key is configured (then fail-closed).
-    if (publicKey) {
-        if (!m.signature)
-            return { ok: false, reason: 'signature_required_but_missing' };
-        if (m.signatureAlg && m.signatureAlg !== 'ed25519')
-            return { ok: false, reason: 'signature_alg_unsupported' };
-        try {
-            const key = toPublicKey(publicKey);
-            const ok = cryptoVerify(null, // Ed25519 ignores the digest-name arg
-            canonicalManifestBytes(m), key, Buffer.from(m.signature, 'base64'));
-            if (!ok)
-                return { ok: false, reason: 'signature_invalid' };
-        }
-        catch (err) {
-            return { ok: false, reason: `signature_verify_error: ${err instanceof Error ? err.message : String(err)}` };
-        }
+    const signature = verifyConfiguredManifestSignature(m, publicKey);
+    if (!signature.ok)
+        return signature;
+    return { ok: true, reason: 'verified' };
+}
+/**
+ * Verify exactly one explicitly selected download against a complete release manifest.
+ *
+ * Unlike verifyManifest, this verifier does not require downloading every platform artifact. When a public key is
+ * configured it first verifies the Ed25519 signature over the complete canonical manifest, then requires exactly
+ * one downloaded artifact and exactly one manifest entry with the same path, and finally checks that artifact's
+ * sha256. The complete manifest is never filtered or reconstructed before signature verification.
+ */
+export function verifySelectedManifestArtifact(manifest, downloaded, publicKey) {
+    const structErr = manifestStructuralError(manifest);
+    if (structErr)
+        return { ok: false, reason: structErr };
+    const m = manifest;
+    const signature = verifyConfiguredManifestSignature(m, publicKey);
+    if (!signature.ok)
+        return signature;
+    if (downloaded.length !== 1) {
+        return { ok: false, reason: `downloaded_artifact_count_invalid: ${downloaded.length}` };
+    }
+    const selected = downloaded[0];
+    if (!selected || typeof selected.path !== 'string' || !selected.path) {
+        return { ok: false, reason: 'downloaded_artifact_path_invalid' };
+    }
+    const matches = m.artifacts.filter((artifact) => artifact.path === selected.path);
+    if (matches.length === 0)
+        return { ok: false, reason: `artifact_missing: ${selected.path}` };
+    if (matches.length !== 1)
+        return { ok: false, reason: `artifact_duplicate: ${selected.path}` };
+    const expected = matches[0];
+    if (!expected)
+        return { ok: false, reason: `artifact_missing: ${selected.path}` };
+    let digest;
+    if (selected.sha256)
+        digest = selected.sha256.toLowerCase();
+    else if (selected.bytes)
+        digest = sha256Hex(selected.bytes);
+    else
+        return { ok: false, reason: `artifact_no_content: ${selected.path}` };
+    if (digest !== expected.sha256.toLowerCase()) {
+        return { ok: false, reason: `sha256_mismatch: ${selected.path}` };
     }
     return { ok: true, reason: 'verified' };
 }

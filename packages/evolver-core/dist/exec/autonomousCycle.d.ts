@@ -29,6 +29,8 @@ export interface AutonomousSafety {
     /** Only embed trusted gene strategies (#45). Default true. */
     requireTrustedGene?: boolean;
     timeoutMs?: number;
+    /** Cooperative cancellation propagated to the spawned runner process tree. */
+    signal?: AbortSignal;
 }
 /**
  * Build the fully-hardened `execute` for an autonomous run against `repo`. Composes every exec-bridge control

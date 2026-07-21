@@ -104,3 +104,12 @@ export interface DownloadedArtifact {
  * Fail-closed everywhere: any doubt (bad structure, hash gap, signature failure, thrown crypto error) → reject.
  */
 export declare function verifyManifest(manifest: unknown, downloaded: readonly DownloadedArtifact[], publicKey?: string | KeyObject): VerifyResult;
+/**
+ * Verify exactly one explicitly selected download against a complete release manifest.
+ *
+ * Unlike verifyManifest, this verifier does not require downloading every platform artifact. When a public key is
+ * configured it first verifies the Ed25519 signature over the complete canonical manifest, then requires exactly
+ * one downloaded artifact and exactly one manifest entry with the same path, and finally checks that artifact's
+ * sha256. The complete manifest is never filtered or reconstructed before signature verification.
+ */
+export declare function verifySelectedManifestArtifact(manifest: unknown, downloaded: readonly DownloadedArtifact[], publicKey?: string | KeyObject): VerifyResult;

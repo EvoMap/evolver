@@ -9,6 +9,15 @@ const DEFAULT_RELEASES_URL = 'https://github.com/EvoMap/evolver/releases';
 const SIGNED_MANIFEST_ASSET = 'evolver-update-manifest.json';
 const RELEASE_DOWNLOAD_TIMEOUT_MS = 60_000;
 /**
+ * Hard ceiling for primary release binaries. The binary is buffered before its
+ * manifest hash is verified, so an unbounded response could exhaust memory
+ * before the verification gate runs. 128MiB leaves headroom above current
+ * single-platform binaries while bounding that pre-verification allocation.
+ */
+export const MAX_PRIMARY_BINARY_BYTES = 128 * 1024 * 1024;
+/** Release metadata is untrusted and buffered before parsing or verification. */
+export const MAX_RELEASE_METADATA_BYTES = 256 * 1024;
+/**
  * Hard ceiling for Channel 1b tarball downloads. A compromised/corrupt release
  * could advertise a multi-GB tar.gz and OOM us because tarballBytes is buffered
  * before extraction. 64MB is well above any real single-platform precompiled
@@ -75,7 +84,7 @@ export async function downloadGithubReleaseArtifact(targetVersion, directive, op
 }
 async function downloadBinaryAsset(version, assetName, directive, opts) {
     const assetUrl = releaseDownloadUrl(directive.release_url, version, assetName);
-    const bytes = Buffer.from(await fetchBytes(assetUrl, opts.fetchFn));
+    const bytes = Buffer.from(await fetchBytes(assetUrl, opts.fetchFn, resolvedPrimaryBinaryLimit(opts.maxPrimaryBinaryBytes)));
     if (bytes.byteLength === 0) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_INCOMPLETE, `empty release asset:${assetName}`);
     }
@@ -192,7 +201,7 @@ export async function atomicReplaceExecutable(stagedPath, opts = {}) {
     }
 }
 export function resolveSelfUpdateTarget(opts = {}) {
-    const explicitTarget = opts.targetPath ?? opts.env?.['EVOLVER_SELF_UPDATE_TARGET_PATH'];
+    const explicitTarget = opts.targetPath ?? opts.env?.['EVOLVER_SELF_UPDATE_TARGET_PATH']?.trim();
     if (explicitTarget)
         return { path: explicitTarget, explicit: true };
     const execPath = opts.processExecPath ?? process.execPath;
@@ -207,7 +216,10 @@ function releaseDownloadUrl(releaseUrl, version, assetName) {
         base = new URL(releaseUrl && releaseUrl.trim() ? releaseUrl : DEFAULT_RELEASES_URL);
     }
     catch (err) {
-        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED, errorDetail(err), { cause: err });
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED, 'invalid_release_url', { cause: err });
+    }
+    if (base.username || base.password) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED, 'invalid_release_url_credentials');
     }
     if (base.protocol !== 'https:' || base.hostname !== 'github.com') {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED, 'invalid_release_url_origin');
@@ -242,8 +254,8 @@ async function fetchSignedReleaseManifest(releaseUrl, version, assetName, fetchF
     if (!manifestVersion) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_INCOMPLETE, 'signed_manifest_invalid_version');
     }
-    if (!ops.currentSatisfiesRequiredVersion(manifestVersion, version)) {
-        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOADED_VERSION_MISMATCH, 'signed_manifest_below_required');
+    if (manifestVersion !== version) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOADED_VERSION_MISMATCH, 'signed_manifest_version_mismatch');
     }
     const artifacts = Array.isArray(manifest.artifacts) ? manifest.artifacts : [];
     if (!artifacts.some((artifact) => artifact && typeof artifact.path === 'string' && basename(artifact.path) === assetName)) {
@@ -253,7 +265,8 @@ async function fetchSignedReleaseManifest(releaseUrl, version, assetName, fetchF
 }
 async function fetchText(url, fetchFn) {
     const fetched = await fetchWith(url, fetchFn);
-    return readBodyWithTimeout(url, 'text', () => fetched.response.text(), fetched.abort);
+    const bytes = await readBodyWithTimeout(url, 'text', () => readBytesWithLimit(fetched.response, MAX_RELEASE_METADATA_BYTES, fetched.abort), fetched.abort);
+    return Buffer.from(bytes).toString('utf8');
 }
 async function fetchBytes(url, fetchFn, maxBytes) {
     const fetched = await fetchWith(url, fetchFn);
@@ -266,6 +279,12 @@ async function readBytesWithLimit(response, maxBytes, abort) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_INCOMPLETE, `release_body_too_large:${arr.byteLength} > ${maxBytes}`);
         }
         return arr;
+    }
+    const declaredBytes = parseContentLength(response.headers.get('content-length'));
+    if (declaredBytes !== undefined && declaredBytes > maxBytes) {
+        abort();
+        await response.body.cancel().catch(() => { });
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_INCOMPLETE, `release_body_too_large:${declaredBytes} > ${maxBytes}`);
     }
     const reader = response.body.getReader();
     const chunks = [];
@@ -296,6 +315,15 @@ async function readBytesWithLimit(response, maxBytes, abort) {
         offset += chunk.byteLength;
     }
     return out.buffer;
+}
+function parseContentLength(raw) {
+    const trimmed = raw?.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed))
+        return undefined;
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed))
+        return Number.POSITIVE_INFINITY;
+    return parsed;
 }
 async function fetchWith(url, fetchFn) {
     const fn = fetchFn ?? globalThis.fetch;
@@ -471,6 +499,15 @@ function resolvedExtractedTarballLimit(requested) {
     if (!Number.isFinite(requested) || requested <= 0)
         return MAX_EXTRACTED_TARBALL_BYTES;
     return Math.min(Math.floor(requested), MAX_EXTRACTED_TARBALL_BYTES);
+}
+function resolvedPrimaryBinaryLimit(requested) {
+    if (requested === undefined)
+        return MAX_PRIMARY_BINARY_BYTES;
+    if (!Number.isFinite(requested) || requested <= 0)
+        return MAX_PRIMARY_BINARY_BYTES;
+    // Tests may lower the cap without providing a production escape hatch that
+    // could raise or disable the hard safety boundary.
+    return Math.min(Math.floor(requested), MAX_PRIMARY_BINARY_BYTES);
 }
 function readTarString(block, start, length) {
     let end = start;

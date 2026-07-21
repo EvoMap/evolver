@@ -1,12 +1,68 @@
 #!/usr/bin/env node
 import { mailbox } from '@evomap/evolver-core';
+import { loadEnvFileFromEnv } from './envFile.js';
 import { type SelfUpdatePolicy } from '../selfUpdate/policy.js';
 import { type ReleaseBinaryOptions } from '../selfUpdate/releaseBinary.js';
+import { rollbackDurableSelfUpdate, type SelfUpdateRecoveryOptions, type SelfUpdateRecoveryResult, type StagedBinaryProbe } from '../selfUpdate/transaction.js';
+import { maybeRunWindowsUpdaterWorkerFromArgv } from '../selfUpdate/windowsUpdater.js';
+import { maybeRunUnixRecoveryController } from '../selfUpdate/unixController.js';
+import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsController.js';
 import type { AtpProxyClient, ProxyDaemonDeps, ProxyTickReport } from '../daemon/proxyDaemon.js';
 import type { HelloLifecycleMode, HelloResult, HeartbeatOptions, HeartbeatResult } from '../lifecycle/manager.js';
 import type { InboundResult } from '../sync/engine.js';
+/** evolver-proxy 系统级 daemon 入口(M6-7). EVOMAP_HUB_MODE/URL/NODE_SECRET 选址. */
+interface RunProxyMainOptions {
+    environmentPrepared?: boolean;
+}
+export declare function runProxyMain(options?: RunProxyMainOptions): Promise<void>;
+export declare function recoverBoundDurableSelfUpdate(options: Omit<SelfUpdateRecoveryOptions, 'beforeJournalMutation'>): Promise<SelfUpdateRecoveryResult>;
+export declare function loadProxyEnvFile(env: NodeJS.ProcessEnv): ReturnType<typeof loadEnvFileFromEnv>;
+interface StartupClosableStore {
+    close(): void;
+}
+interface StartupStoppableDaemon {
+    stop(): Promise<void>;
+}
+interface RollbackPendingStartupOptions {
+    storePath?: string;
+    store?: StartupClosableStore;
+    daemon?: StartupStoppableDaemon;
+    startupError: unknown;
+    env?: NodeJS.ProcessEnv;
+    rollback?: typeof rollbackDurableSelfUpdate;
+    openTelemetryStore?: (storePath: string) => StartupClosableStore;
+    persistTelemetry?: (store: StartupClosableStore, recovery: SelfUpdateRecoveryResult) => void;
+    logger?: {
+        write(chunk: string): unknown;
+    };
+    processExecPath?: string;
+}
+export declare function rollbackPendingStartup(options: RollbackPendingStartupOptions): Promise<SelfUpdateRecoveryResult>;
+export declare function startupRollbackExitCode(rollback: SelfUpdateRecoveryResult): 78;
 export declare function proxyUsage(): string;
-export declare function runProxyCli(): void;
+export interface RunProxyCliOptions {
+    argv?: readonly string[];
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+    processExecPath?: string;
+    runMain?: () => Promise<void>;
+    runUnixRecoveryController?: typeof maybeRunUnixRecoveryController;
+    runWindowsRecoveryController?: typeof maybeRunWindowsRecoveryController;
+    runWindowsUpdaterWorker?: typeof maybeRunWindowsUpdaterWorkerFromArgv;
+}
+export interface ProxyCliPathOptions {
+    home?: string;
+    store?: string;
+    settings?: string;
+    envFile?: string;
+    help: boolean;
+}
+export declare function parseProxyCliPathOptions(argv: readonly string[]): ProxyCliPathOptions;
+export declare function prepareProxyCliEnvironment(argv: readonly string[], env: NodeJS.ProcessEnv): {
+    options: ProxyCliPathOptions;
+    envFile: ReturnType<typeof loadEnvFileFromEnv>;
+};
+export declare function runProxyCli(options?: RunProxyCliOptions): Promise<number>;
 type PrivateAdapterImporter = (specifier: string) => Promise<unknown>;
 export interface RuntimeDeps {
     mode: 'public' | 'private';
@@ -61,14 +117,19 @@ interface CreateProxyDaemonDepsOptions {
     evolverVersion: string;
     selfUpdatePolicy: SelfUpdatePolicy;
     env?: NodeJS.ProcessEnv;
-    selfUpdateOverrides?: ReleaseBinaryOptions & {
-        restart?: () => void;
+    selfUpdateOverrides?: SelfUpdateRuntimeOverrides;
+}
+interface SelfUpdateRuntimeOverrides extends ReleaseBinaryOptions {
+    restart?: () => void;
+    stagedBinaryProbe?: StagedBinaryProbe;
+    /** Test-only attestation seam. Production callers must use the real process executable. */
+    supervisorAttested?: {
+        processExecPath: string;
     };
 }
 export declare function createProxyDaemonDeps(options: CreateProxyDaemonDepsOptions): ProxyDaemonDeps;
-export declare function createSelfUpdateDeps(policy: SelfUpdatePolicy, currentVersion: string, env?: NodeJS.ProcessEnv, overrides?: ReleaseBinaryOptions & {
-    restart?: () => void;
-}): ProxyDaemonDeps['selfUpdate'];
+export declare function createSelfUpdateDeps(policy: SelfUpdatePolicy, currentVersion: string, env?: NodeJS.ProcessEnv, overrides?: SelfUpdateRuntimeOverrides): ProxyDaemonDeps['selfUpdate'];
+export declare function assertSelfUpdateProcessTargetBound(options: ReleaseBinaryOptions, allowUnresolvedTarget?: boolean): void;
 export declare function resolvePublicNodeSecret(deps: RuntimeDeps): PublicNodeSecretSelection;
 /**
  * Hub rejected the cached node_secret as diverged (v1 a2aProtocol.js L1983-2017). Clear every

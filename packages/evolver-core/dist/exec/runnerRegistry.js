@@ -21,6 +21,13 @@ export class UnsupportedCursorSkipPermissionsError extends Error {
         this.name = 'UnsupportedCursorSkipPermissionsError';
     }
 }
+/** Thrown when Gemini permission options cannot be mapped to a verified bounded CLI contract. */
+export class UnsupportedGeminiPermissionOptionsError extends Error {
+    constructor() {
+        super('gemini runner does not support skipPermissions or allowedTools: --yolo is unbounded and --allowed-tools is deprecated; the verified runner uses --approval-mode auto_edit only');
+        this.name = 'UnsupportedGeminiPermissionOptionsError';
+    }
+}
 /** Thrown when Cursor's Windows installation cannot be reduced to a shell-free node.exe + index.js launch. */
 export class UnsupportedCursorWindowsRunnerError extends Error {
     constructor() {
@@ -114,40 +121,189 @@ function cursorVersionKey(version) {
     const second = match[6] ?? '0';
     return [year, month, day, hour, minute, second].map((part, index) => index === 0 ? part : part.padStart(2, '0')).join('');
 }
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
+/** Build the shell-free taskkill invocation used for Windows process-tree termination. */
+export function windowsTreeKillCommand(pid) {
+    if (!Number.isSafeInteger(pid) || pid <= 0)
+        throw new RangeError(`invalid process id: ${pid}`);
+    return { command: 'taskkill.exe', args: ['/PID', String(pid), '/T', '/F'] };
+}
+/** Run taskkill and report whether Windows accepted the process-tree termination request. */
+export function killWindowsProcessTree(pid, spawnCommand = spawn, timeoutMs = WINDOWS_TREE_KILL_TIMEOUT_MS) {
+    const { command, args } = windowsTreeKillCommand(pid);
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+        throw new RangeError(`invalid taskkill timeout: ${timeoutMs}`);
+    return new Promise((resolve) => {
+        let settled = false;
+        let killer;
+        const finish = (ok, terminateKiller = false) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (terminateKiller) {
+                try {
+                    killer?.kill?.('SIGKILL');
+                }
+                catch { /* best-effort watchdog cleanup */ }
+            }
+            resolve(ok);
+        };
+        const timer = setTimeout(() => finish(false, true), timeoutMs);
+        timer.unref?.();
+        try {
+            killer = spawnCommand(command, args, { shell: false, windowsHide: true, stdio: 'ignore' });
+            killer.once('error', () => finish(false));
+            killer.once('close', (code) => finish(code === 0));
+        }
+        catch {
+            finish(false);
+        }
+    });
+}
 /**
  * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
  * On timeout the WHOLE process group is killed, not just the direct child (finding #39.5): an agent spawns
  * tool subprocesses (grandchildren) that would otherwise orphan and leak. On POSIX we spawn detached (the
- * child becomes its own group leader) and SIGKILL the group via the negative pid; Windows falls back to a
- * direct kill (different process-group semantics).
+ * child becomes its own group leader) and SIGKILL the group via the negative pid. Windows runs
+ * `taskkill.exe /PID <pid> /T /F` without a shell and waits for that command before resolving.
  */
 export function spawnCapture(cmd, args, opts) {
     return new Promise((resolve, reject) => {
-        const detached = process.platform !== 'win32';
+        if (opts.signal?.aborted) {
+            resolve({ code: null, stdout: '', stderr: '', termination: 'cancelled' });
+            return;
+        }
+        const platform = opts.processPlatform ?? process.platform;
+        const detached = platform !== 'win32';
         const r = resolveSpawnCommand(cmd, args, opts.env, opts.resolvePlatform ?? process.platform);
         const child = spawn(r.cmd, r.args, { cwd: opts.cwd, shell: false, detached, ...(opts.env ? { env: opts.env } : {}) });
         let stdout = '';
         let stderr = '';
+        let termination = 'exit';
+        let killPromise;
+        let settled = false;
         const killTree = () => {
-            if (detached && typeof child.pid === 'number') {
-                try {
-                    process.kill(-child.pid, 'SIGKILL');
-                    return;
+            if (killPromise)
+                return killPromise;
+            killPromise = (async () => {
+                if (platform === 'win32' && typeof child.pid === 'number') {
+                    let killed = false;
+                    try {
+                        killed = await (opts.windowsProcessTreeKiller ?? killWindowsProcessTree)(child.pid);
+                    }
+                    catch {
+                        // Treat an injected/custom killer rejection like taskkill failure and fall back to the direct child.
+                    }
+                    if (killed)
+                        return;
                 }
-                catch { /* group gone; fall back */ }
-            }
-            child.kill('SIGKILL');
+                if (detached && typeof child.pid === 'number') {
+                    try {
+                        process.kill(-child.pid, 'SIGKILL');
+                        return;
+                    }
+                    catch { /* group gone; fall back */ }
+                }
+                child.kill('SIGKILL');
+            })();
+            return killPromise;
         };
-        const timer = setTimeout(killTree, opts.timeoutMs);
+        const cancel = () => {
+            if (termination !== 'exit')
+                return;
+            termination = 'cancelled';
+            void killTree();
+        };
+        const timeout = () => {
+            if (termination !== 'exit')
+                return;
+            termination = 'timeout';
+            void killTree();
+        };
+        const ignoreProcessSignal = () => { };
+        const cleanup = () => {
+            clearTimeout(timer);
+            opts.signal?.removeEventListener('abort', cancel);
+            if (opts.processSignalMode === 'ignore') {
+                process.removeListener('SIGINT', ignoreProcessSignal);
+                process.removeListener('SIGTERM', ignoreProcessSignal);
+            }
+            else {
+                process.removeListener('SIGINT', cancel);
+                process.removeListener('SIGTERM', cancel);
+            }
+        };
+        const settle = async (finish) => {
+            if (settled)
+                return;
+            settled = true;
+            if (killPromise)
+                await killPromise;
+            cleanup();
+            finish();
+        };
+        const timer = setTimeout(timeout, opts.timeoutMs);
+        opts.signal?.addEventListener('abort', cancel, { once: true });
+        // A detached POSIX child would otherwise survive Ctrl-C/SIGTERM. Cancel first so the bridge can clean its
+        // worktree and return a failure instead of leaking an agent or tool subprocess.
+        if (opts.processSignalMode === 'ignore') {
+            process.on('SIGINT', ignoreProcessSignal);
+            process.on('SIGTERM', ignoreProcessSignal);
+        }
+        else {
+            process.once('SIGINT', cancel);
+            process.once('SIGTERM', cancel);
+        }
         child.stdout?.on('data', (d) => { stdout += d.toString(); });
         child.stderr?.on('data', (d) => { stderr += d.toString(); });
-        child.on('error', (e) => { clearTimeout(timer); reject(e); });
-        child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+        child.on('error', (e) => { void settle(() => reject(e)); });
+        child.on('close', (code) => { void settle(() => resolve({ code, stdout, stderr, termination })); });
         if (opts.input !== undefined) {
             child.stdin?.write(opts.input);
             child.stdin?.end();
         }
     });
+}
+/** Map the shared process result into the failure taxonomy used by plain-text runners. */
+export function classifyBasicRunnerResult(runner, result, timeoutMs) {
+    if (result.termination === 'timeout') {
+        return {
+            ok: false,
+            output: result.stdout,
+            error: `${runner} timed out after ${timeoutMs}ms`,
+            failureKind: 'timeout',
+            exitCode: result.code,
+        };
+    }
+    if (result.termination === 'cancelled') {
+        return {
+            ok: false,
+            output: result.stdout,
+            error: `${runner} execution cancelled`,
+            failureKind: 'cancelled',
+            exitCode: result.code,
+        };
+    }
+    if (result.code !== 0) {
+        return {
+            ok: false,
+            output: result.stdout,
+            error: result.stderr || `${runner} exited with code ${String(result.code)}`,
+            failureKind: 'non_zero_exit',
+            exitCode: result.code,
+        };
+    }
+    return { ok: true, output: result.stdout };
+}
+function spawnFailureResult(error) {
+    return {
+        ok: false,
+        output: '',
+        error: error instanceof Error ? error.message : String(error),
+        failureKind: 'spawn_failed',
+        exitCode: null,
+    };
 }
 /**
  * Build the `claude -p` argv for the given options (pure — testable without spawning).
@@ -175,12 +331,13 @@ export function claudeRunnerArgs(opts = {}) {
 export function makeClaudeHeadlessRunner(opts = {}) {
     const args = claudeRunnerArgs(opts);
     return async (prompt, ctx) => {
+        const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         try {
-            const r = await spawnCapture('claude', args, { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS, input: prompt, ...(ctx.env ? { env: ctx.env } : {}) });
-            return r.code === 0 ? { ok: true, output: r.stdout } : { ok: false, output: r.stdout, error: r.stderr || `exit ${r.code}` };
+            const result = await spawnCapture('claude', args, { cwd: ctx.cwd, timeoutMs, input: prompt, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+            return classifyBasicRunnerResult('claude', result, timeoutMs);
         }
         catch (e) {
-            return { ok: false, output: '', error: e instanceof Error ? e.message : String(e) };
+            return spawnFailureResult(e);
         }
     };
 }
@@ -213,12 +370,95 @@ export function codexRunnerArgs(opts = {}) {
 export function makeCodexHeadlessRunner(opts = {}) {
     const args = codexRunnerArgs(opts);
     return async (prompt, ctx) => {
+        const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         try {
-            const r = await spawnCapture('codex', [...args, '--cd', ctx.cwd, prompt], { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS, ...(ctx.env ? { env: ctx.env } : {}) });
-            return r.code === 0 ? { ok: true, output: r.stdout } : { ok: false, output: r.stdout, error: r.stderr || `exit ${r.code}` };
+            const result = await spawnCapture('codex', [...args, '--cd', ctx.cwd, prompt], { cwd: ctx.cwd, timeoutMs, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+            return classifyBasicRunnerResult('codex', result, timeoutMs);
         }
         catch (e) {
-            return { ok: false, output: '', error: e instanceof Error ? e.message : String(e) };
+            return spawnFailureResult(e);
+        }
+    };
+}
+const GEMINI_PERMISSION_DENIAL_RE = /agent execution blocked|permission denied|approval required|not approved|denied by (?:policy|user|admin)|tool (?:call )?(?:was )?denied/i;
+const GEMINI_TERMINATION_WARNINGS = [
+    { pattern: /^(?:[^:\r\n]{1,80}:\s*)?Agent execution stopped\b/i, error: 'gemini agent execution stopped' },
+    { pattern: /^(?:[^:\r\n]{1,80}:\s*)?Loop detected\b/i, error: 'gemini loop detected' },
+    { pattern: /^(?:[^:\r\n]{1,80}:\s*)?Maximum session turns exceeded\b/i, error: 'gemini maximum session turns exceeded' },
+];
+function geminiMessage(value) {
+    if (typeof value === 'string')
+        return value;
+    if (value && typeof value === 'object') {
+        const record = value;
+        const type = typeof record['type'] === 'string' ? record['type'] : '';
+        const message = typeof record['message'] === 'string' ? record['message'] : '';
+        return [type, message].filter(Boolean).join(': ');
+    }
+    return value === undefined ? '' : String(value);
+}
+function geminiWarnings(value) {
+    return Array.isArray(value) ? value.map(geminiMessage).filter(Boolean) : [];
+}
+/** Build verified Gemini CLI argv. The prompt is appended separately as one argv element with shell:false. */
+export function geminiRunnerArgs(opts = {}) {
+    if (opts.skipPermissions || (opts.allowedTools?.length ?? 0) > 0)
+        throw new UnsupportedGeminiPermissionOptionsError();
+    const args = ['--output-format', 'json', '--approval-mode', 'auto_edit', '--skip-trust'];
+    if (opts.model)
+        args.push('--model', opts.model);
+    return args;
+}
+/** Headless Gemini runner with structured failure classification; stdout text alone never proves execution success. */
+export function makeGeminiHeadlessRunner(opts = {}) {
+    const args = geminiRunnerArgs(opts);
+    return async (prompt, ctx) => {
+        try {
+            const result = await spawnCapture('gemini', [...args, '--prompt', prompt], {
+                cwd: ctx.cwd,
+                timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                ...(ctx.env ? { env: ctx.env } : {}),
+                ...(ctx.signal ? { signal: ctx.signal } : {}),
+            });
+            if (result.termination === 'timeout') {
+                return { ok: false, output: result.stdout, error: `gemini timed out after ${ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`, failureKind: 'timeout', exitCode: result.code };
+            }
+            if (result.termination === 'cancelled') {
+                return { ok: false, output: result.stdout, error: 'gemini execution cancelled', failureKind: 'cancelled', exitCode: result.code };
+            }
+            let envelope;
+            try {
+                const parsed = JSON.parse(result.stdout);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                    throw new Error('JSON object required');
+                envelope = parsed;
+            }
+            catch {
+                const error = result.stderr || (result.code === 0 ? 'gemini returned invalid JSON output' : `gemini exited with code ${String(result.code)}`);
+                return { ok: false, output: result.stdout, error, failureKind: result.code === 0 ? 'invalid_output' : 'non_zero_exit', exitCode: result.code };
+            }
+            const structuredError = geminiMessage(envelope.error);
+            const warnings = geminiWarnings(envelope.warnings);
+            const terminationError = result.code === 0
+                ? GEMINI_TERMINATION_WARNINGS.find(({ pattern }) => warnings.some((warning) => pattern.test(warning)))?.error
+                : undefined;
+            if (terminationError) {
+                return { ok: false, output: geminiMessage(envelope.response), error: terminationError, failureKind: 'runtime_error', exitCode: result.code };
+            }
+            const denial = [structuredError, ...warnings, result.stderr].find((message) => GEMINI_PERMISSION_DENIAL_RE.test(message));
+            if (denial) {
+                return { ok: false, output: geminiMessage(envelope.response), error: denial, failureKind: 'permission_denied', exitCode: result.code };
+            }
+            if (result.code !== 0) {
+                return { ok: false, output: geminiMessage(envelope.response), error: structuredError || result.stderr || `gemini exited with code ${String(result.code)}`, failureKind: 'non_zero_exit', exitCode: result.code };
+            }
+            if (structuredError) {
+                return { ok: false, output: geminiMessage(envelope.response), error: structuredError, failureKind: 'runtime_error', exitCode: result.code };
+            }
+            return { ok: true, output: geminiMessage(envelope.response), exitCode: result.code };
+        }
+        catch (error) {
+            return { ok: false, output: '', error: error instanceof Error ? error.message : String(error), failureKind: 'spawn_failed', exitCode: null };
         }
     };
 }
@@ -264,17 +504,19 @@ export function makeCursorHeadlessRunner(opts = {}, platform = process.platform)
     const args = cursorRunnerArgs(opts);
     return async (prompt, ctx) => {
         assertCursorRunnerPlatformSupported(platform, ctx.env ?? process.env);
+        const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         try {
-            const r = await spawnCapture('cursor-agent', [...args, prompt], {
+            const result = await spawnCapture('cursor-agent', [...args, prompt], {
                 cwd: ctx.cwd,
-                timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                timeoutMs,
                 resolvePlatform: platform,
                 ...(ctx.env ? { env: ctx.env } : {}),
+                ...(ctx.signal ? { signal: ctx.signal } : {}),
             });
-            return r.code === 0 ? { ok: true, output: r.stdout } : { ok: false, output: r.stdout, error: r.stderr || `exit ${r.code}` };
+            return classifyBasicRunnerResult('cursor', result, timeoutMs);
         }
         catch (e) {
-            return { ok: false, output: '', error: e instanceof Error ? e.message : String(e) };
+            return spawnFailureResult(e);
         }
     };
 }
@@ -283,6 +525,14 @@ const RUNNER_SPECS = {
     codex: { name: 'codex', makeRunner: makeCodexHeadlessRunner, envAllow: { prefixes: ['OPENAI_', 'CODEX_'] } },
     // cursor keeps only its OWN auth env (CURSOR_); like every runner it never inherits another's vendor key.
     cursor: { name: 'cursor', makeRunner: makeCursorHeadlessRunner, envAllow: { prefixes: ['CURSOR_'] } },
+    gemini: {
+        name: 'gemini',
+        makeRunner: makeGeminiHeadlessRunner,
+        envAllow: {
+            prefixes: ['GEMINI_'],
+            keys: ['GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI'],
+        },
+    },
 };
 /** Resolve a runner spec by name (default 'claude' — byte-identical to the pre-registry behavior). */
 export function getRunnerSpec(name = 'claude') {

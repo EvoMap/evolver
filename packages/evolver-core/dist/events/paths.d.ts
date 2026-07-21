@@ -1,5 +1,5 @@
 /** ~/.evomap, 可 EVOLVER_HOME/EVOMAP_HOME 覆盖. */
-export declare function evomapHome(): string;
+export declare function evomapHome(env?: Readonly<Record<string, string | undefined>>): string;
 export declare function rootEventsPath(): string;
 export declare function mvDir(): string;
 /** 可进化人格模型持久化文件 (五维向量 + 各键统计 + 变更历史). v1 personality_state.json 的 v2 落点. */

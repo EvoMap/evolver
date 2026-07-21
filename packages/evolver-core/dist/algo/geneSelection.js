@@ -4,9 +4,17 @@ import { tagOverlapScore, bagCosine } from '../signals/expand.js';
 import { driftSelect } from './exploration.js';
 import { isDistilledGeneId } from './geneIntake.js';
 function decisionWithWarnings(input, decision) {
+    const selected = decision.selectedGeneId
+        ? decision.candidates.find((candidate) => candidate.geneId === decision.selectedGeneId || candidate.assetId === decision.selectedAssetId)
+        : undefined;
+    const enriched = {
+        ...decision,
+        ...(selected ? { selectedReason: selected.reasons.join('; ') } : {}),
+        ...(input.memoryEvidence && input.memoryEvidence.length > 0 ? { memoryEvidence: [...input.memoryEvidence] } : {}),
+    };
     return input.antiWarnings && input.antiWarnings.length > 0
-        ? { ...decision, antiWarnings: [...input.antiWarnings] }
-        : decision;
+        ? { ...enriched, antiWarnings: [...input.antiWarnings] }
+        : enriched;
 }
 function signalMatchScore(signals, match) {
     if (signals.length === 0 || match.length === 0)
@@ -29,12 +37,14 @@ export const CONFIDENCE_WEIGHT = 0.15;
  * ±REUSE_WEIGHT and can never dominate health/signal-match.
  */
 export const REUSE_WEIGHT = 0.1;
+/** Weight of scoped local MemoryGraph outcome evidence. */
+export const MEMORY_GRAPH_WEIGHT = 0.12;
 /**
  * Version of the full engine-health weight vector (health 0.6 + signal-match 0.4 − epigenetic penalty
  * + CONFIDENCE_WEIGHT × confidence + REUSE_WEIGHT × reuse-sentiment). Bumped whenever a factor is added so golden
  * weight snapshots track the change. Composed from the health-weights version so a change to either layer shows.
  */
-export const SELECTION_WEIGHTS_VERSION = `sel-3(${HEALTH_WEIGHTS_VERSION},conf=${CONFIDENCE_WEIGHT},reuse=${REUSE_WEIGHT})`;
+export const SELECTION_WEIGHTS_VERSION = `sel-4(${HEALTH_WEIGHTS_VERSION},conf=${CONFIDENCE_WEIGHT},memory=${MEMORY_GRAPH_WEIGHT},reuse=${REUSE_WEIGHT})`;
 /**
  * Match score with semantic signal expansion (ported from v1): literal coverage first, then fill the
  * recall gap with semantic tag overlap, then with bag-of-words cosine similarity. A perfect literal match
@@ -65,13 +75,16 @@ function scoreCandidate(signals, c) {
     // Cross-runtime reuse sentiment (#268 phase 1): clamped to [-1,1] so an upstream bug cannot turn the soft nudge
     // into a dominant (or unbounded) term. Absent → 0 → no effect (default-off until a caller injects it).
     const reuse = Math.max(-1, Math.min(1, c.reuseAdjust ?? 0));
-    const score = 0.6 * health.score + 0.4 * m.score - epi + CONFIDENCE_WEIGHT * conf + REUSE_WEIGHT * reuse;
+    const memory = Math.max(-1, Math.min(1, c.memoryBoost ?? 0));
+    const score = 0.6 * health.score + 0.4 * m.score - epi + CONFIDENCE_WEIGHT * conf + MEMORY_GRAPH_WEIGHT * memory + REUSE_WEIGHT * reuse;
     const breakdown = m.tag > 0 || m.cos > 0 ? `(literal=${m.literal.toFixed(2)}+tag=${m.tag.toFixed(2)}+cos=${m.cos.toFixed(2)})` : '';
     const reasons = [`health=${health.score.toFixed(3)}(succ=${health.successRate.toFixed(2)},reuse=${health.reuseCount})`, `信号匹配=${m.score.toFixed(2)}${breakdown}`];
     if (epi > 0)
         reasons.push(`epigenetic 环境抑制 -${epi.toFixed(2)}`);
     if (conf > 0)
         reasons.push(`preferred-gene confidence +${(CONFIDENCE_WEIGHT * conf).toFixed(3)} (conf=${conf.toFixed(2)})`);
+    if (memory !== 0)
+        reasons.push(`scoped memory-graph outcome ${memory >= 0 ? '+' : ''}${(MEMORY_GRAPH_WEIGHT * memory).toFixed(3)} (boost=${memory.toFixed(2)})`);
     if (reuse !== 0)
         reasons.push(`cross-runtime reuse ${reuse >= 0 ? '+' : ''}${(REUSE_WEIGHT * reuse).toFixed(3)} (sentiment=${reuse.toFixed(2)})`);
     return { geneId: c.geneId, ...(c.assetId ? { assetId: c.assetId } : {}), score, health, reasons };
@@ -164,11 +177,14 @@ export const engineHealthSelection = {
             // (0 < score <= floor) would be preempted by an unrelated zero-evidence distilled gene; V1 (which has no floor)
             // keeps such a match. When candidates scored > 0 but below floor, defer to V2's floor policy (innovate).
             const noSignalMatch = !forced.forceRejected && forced.scoredForChoice.every((s) => s.score <= 0);
-            const fb = noSignalMatch
-                ? (input.distilledFallback ?? []).find((c) => isReusableFallbackCandidate(c) && (c.epigeneticPenalty ?? 0) === 0)
+            const fallback = noSignalMatch
+                ? (input.distilledFallback ?? [])
+                    .filter((candidate) => isReusableFallbackCandidate(candidate) && (candidate.epigeneticPenalty ?? 0) === 0)
+                    .map((candidate) => ({ candidate, scored: scoreCandidate(input.signals, candidate) }))
+                    .sort((left, right) => right.scored.score - left.scored.score || left.candidate.geneId.localeCompare(right.candidate.geneId))[0]
                 : undefined;
-            if (fb) {
-                const fbScored = scoreCandidate(input.signals, fb);
+            if (fallback) {
+                const { candidate: fb, scored: fbScored } = fallback;
                 fbScored.reasons.push('distilled_fallback(#97): 无信号匹配, 低置信度复用蒸馏 gene');
                 scored.push(fbScored);
                 selectedGeneId = fb.geneId;
