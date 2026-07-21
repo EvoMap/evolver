@@ -113,7 +113,7 @@ describe('opencode adapter: buildPluginSource', () => {
   it('exports both named Evolver and default for opencode loader compat', () => {
     const src = opencodeAdapter.buildPluginSource('/x');
     assert.match(src, /module\.exports\s*=\s*\{\s*Evolver\s*\}/);
-    assert.match(src, /module\.exports\.default\s*=\s*Evolver/);
+    assert.match(src, /module\.exports\.default\s*=\s*evolverPluginModule/);
   });
 
   it('produces source that parses as valid JavaScript', () => {
@@ -329,7 +329,7 @@ describe('opencode adapter: verify (issue #531)', () => {
       fs.mkdirSync(pluginsDir, { recursive: true });
       // user-authored plugin: parses, exports a function, but no managed marker
       fs.writeFileSync(path.join(pluginsDir, 'evolver.js'),
-        'const Evolver = async () => ({});\nmodule.exports = { Evolver };\nmodule.exports.default = Evolver;\n',
+        'const Evolver = async () => ({});\nconst evolverPluginModule = { id: \"evolver\", server: Evolver };\nmodule.exports = evolverPluginModule;\nmodule.exports.default = evolverPluginModule;\n',
         'utf8',
       );
 
