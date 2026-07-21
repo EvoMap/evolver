@@ -72,8 +72,7 @@ const Evolver = async () => ({
   },
 });
 
-module.exports = { Evolver };
-module.exports.default = Evolver;
+module.exports = { id: "evolver", server: Evolver };
 `;
 }
 
@@ -220,7 +219,7 @@ function verify({ configRoot }) {
       // failure here is a guaranteed failure under opencode too.
       delete require.cache[require.resolve(pluginPath)];
       const mod = require(pluginPath);
-      const fn = mod && (mod.Evolver || mod.default);
+      const fn = mod && (mod.server || mod.Evolver || mod.default);
       pluginLoadable = typeof fn === 'function';
       if (!pluginLoadable) pluginLoadError = 'no Evolver/default function export';
     } catch (err) {
