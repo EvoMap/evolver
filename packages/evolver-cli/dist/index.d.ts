@@ -24,6 +24,7 @@ export interface RebuildOptions {
     eventsPath?: string;
     mvDir?: string;
 }
+export declare function cliUsage(): string;
 export interface ResetLocalSecretOptions {
     env?: NodeJS.ProcessEnv;
     homeDir?: string;

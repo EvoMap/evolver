@@ -235,9 +235,9 @@ export function startupRollbackExitCode(rollback) {
     }
     return 78;
 }
-export function proxyUsage() {
+export function proxyUsage(command = 'evolver-proxy') {
     return [
-        'usage: evolver-proxy [options]',
+        `Usage: ${command} [options]`,
         '',
         'Starts the local Evolver proxy daemon.',
         '',
@@ -346,7 +346,7 @@ export async function runProxyCli(options = {}) {
     try {
         const cliOptions = parseProxyCliPathOptions(argv);
         if (cliOptions.help) {
-            process.stdout.write(proxyUsage());
+            process.stdout.write(proxyUsage(argv[0] === 'proxy' ? 'evolver proxy' : 'evolver-proxy'));
             return 0;
         }
         const prepared = prepareProxyCliEnvironment(argv, env);

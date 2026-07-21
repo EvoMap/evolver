@@ -39,7 +39,7 @@ interface RollbackPendingStartupOptions {
 }
 export declare function rollbackPendingStartup(options: RollbackPendingStartupOptions): Promise<SelfUpdateRecoveryResult>;
 export declare function startupRollbackExitCode(rollback: SelfUpdateRecoveryResult): 78;
-export declare function proxyUsage(): string;
+export declare function proxyUsage(command?: string): string;
 export interface RunProxyCliOptions {
     argv?: readonly string[];
     env?: NodeJS.ProcessEnv;

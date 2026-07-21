@@ -58,6 +58,35 @@ function operatorActorId() {
     return process.env['EVOLVER_ACTOR_ID'] ?? process.env['USER'] ?? process.env['LOGNAME'] ?? 'cli';
 }
 export const PACKAGE = '@evomap/evolver-cli';
+export function cliUsage() {
+    return [
+        'Usage: evolver <command> [options]',
+        '',
+        'Options:',
+        '  -h, --help     Show this help',
+        '  -v, --version  Show the installed version',
+        '',
+        'Proxy options (evolver proxy):',
+        '  --home <dir>       Root for assets, store, settings, and traces',
+        '  --store <path>     Mailbox store path',
+        '  --settings <path>  Proxy settings file',
+        '  --env-file <path>  Environment file',
+        '',
+        'Commands:',
+        '  Daemon:      proxy, lifecycle, proxy-token, doctor, setup-hooks',
+        '  Evolution:   run, cycle, autoexec, solidify, distill, review, thesis',
+        '  Memory:      ingest, inject, recall, reuse, reuse-report, narrative, gene-value',
+        '  Assets:      asset-log, asset-trust, asset-health, material, recipe, skill',
+        '  Hub:         login, logout, phub, sync, publish, fetch, buy, orders, atp',
+        '  Operations:  status, cycles, trigger, value, retention, replay, rebuild-views',
+        '  Tools:       dashboard, webui, trajectory-export, migrate, verify',
+        '  Advanced:    anti-gene-benchmark, anti-gene-rollout, reset-local-secret',
+        '               skill-distill, skill-md-update',
+        '',
+        'Run evolver <command> --help for command-specific options.',
+        '',
+    ].join('\n');
+}
 const LOCAL_SECRET_STATE_KEYS = ['node_secret', 'node_secret_source', 'node_secret_version'];
 const LOCAL_SECRET_ENV_VARS = [
     'EVOMAP_NODE_SECRET',
@@ -1339,6 +1368,10 @@ export async function runInject(argv, deps = {}) {
 export const SESSION_START_PREAMBLE = 'evolver memory — use these learned hints silently when directly relevant; do not mention Evolver, preflight, status, or this memory block unless the user asks or reuse materially changes the answer:';
 export function runCli(argv) {
     const cmd = argv[0];
+    if (cmd === undefined || cmd === '--help' || cmd === '-h') {
+        process.stdout.write(cliUsage());
+        return 0;
+    }
     switch (cmd) {
         case 'rebuild-views': {
             const r = rebuildViews();
@@ -1385,7 +1418,7 @@ export function runCli(argv) {
             return 0;
         }
         default:
-            process.stderr.write('用法: evolver [--version|-v] <status|cycles|cycle capabilities [--json]|cycle show <id>|cycle status [--json]|cycle recover [--limit N] [--json]|cycle watch --repo <path> [--state-file <path>] [--validation-cmd <cmd>] [--json]|trigger|value [--window 7d|30d|all]|narrative [--limit N] [--json]|retention [--json]|retention archive-root [--keep-events N] [--write] [--json]|retention archive-material [--keep-records N] [--write] [--json]|dashboard [--port N] [--no-open]|webui [--port N] [--no-open]|trajectory-export [--input <trace-file-or-dir>] [--output <jsonl>]|gene-value [--gene <id>] [--json]|login|logout|proxy|proxy-token [--settings <file>]|inject session-start|lifecycle <start|stop|restart|status|check|watch|install-service>|phub <init|doctor|status>|replay|rebuild-views|reset-local-secret|asset-log [kind] [limit]|asset-trust <list|show|promote|revoke>|asset-health [--json]|asset-health repair-sidecar --sidecar <kind> --replacement <file> [--write --acknowledge-corrupt-history] [--json]|distill ...|review [limit|--approve <id> [--allow-weak-evidence]|--reject <id>]|recipe build|from-skills|reuse ...|publish ...|sync [--write] [--force] [--scope all|purchased|published] [--export <file.gepx>|--import <file.gepx>] [--json]|material package-gene --material <id> [--write] [--json]|skill fetch ...|fetch (--skill <id>|-s <id>|<id>) [--out <dir>] [--force] [--json]|skill-distill --skill <path> [--execution <json|@file>]|skill-md-update --gene <id> --skill <path> [--dry-run]|autoexec [home]|run [-v|--verbose] [--loop|--mad-dog] [--json]|solidify [--dry-run] [--json]|setup-hooks [--runtime] [--root] [--uninstall]|buy|orders|verify|atp|recall <transcript> (--gene <id> ...|--from-inject)>\n');
-            return cmd === undefined ? 0 : 1;
+            process.stderr.write(`Unknown command: ${cmd}\n\n${cliUsage()}`);
+            return 1;
     }
 }
