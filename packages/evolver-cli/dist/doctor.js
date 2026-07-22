@@ -4,6 +4,7 @@
 // (heartbeat, proxy path) touch the proxy and are a SEPARATE, gated step — not here.
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { events, issueReporter } from '@evomap/evolver-core';
 import { expandHomePath, parseEnvFile } from '@evomap/evolver-mcp';
 import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
 // Secrets that must live ONLY behind the EVOLVER_ENV_FILE pointer — never inlined into a runtime config (#217).
@@ -923,6 +924,21 @@ export async function runDoctor(argv, deps = {}) {
     }
     const checks = runDoctorChecks({ ...deps, profile: f.profile, ...(f.root !== undefined ? { configRoot: f.root } : {}) });
     const failed = checks.some((c) => c.status === 'fail');
+    if (failed) {
+        try {
+            const input = issueReporter.issueReportInputFromDoctor(checks.map(({ name, status }) => ({ name, status })));
+            if (input) {
+                issueReporter.createIssueDraft(input, {
+                    rootDir: join(events.evomapHome(deps.env ?? process.env), 'evolution', 'issue-reporter'),
+                    workspaceScope: f.root ?? process.cwd(),
+                    env: deps.env ?? process.env,
+                });
+            }
+        }
+        catch {
+            // Local draft reporting must never change the doctor command surface.
+        }
+    }
     if (f.json) {
         process.stdout.write(`${JSON.stringify({ ok: !failed, profile: f.profile, checks })}\n`);
     }

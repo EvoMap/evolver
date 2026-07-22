@@ -23,6 +23,8 @@ import { installCodex, uninstallCodex } from './codexInstaller.js';
 // top genes into .cursor/rules/evolver.mdc. It plugs into the same install/uninstall dispatch below.
 import { installCursorRules, uninstallCursorRules } from './cursorRulesInstaller.js';
 import { installAntigravity, uninstallAntigravity } from './antigravityInstaller.js';
+import { installOpenCode, uninstallOpenCode } from './opencodeInstaller.js';
+import { installKiro, uninstallKiro } from './kiroInstaller.js';
 /** Marks a config file as containing evolver-managed entries, so uninstall only removes what we added. */
 export const MANAGED_MARKER = '_evolver_managed';
 /** A hook entry is evolver-owned if any of its commands mention this — used to replace-not-duplicate on reinstall. */
@@ -404,9 +406,14 @@ export function installInjection(plan, opts) {
     if (plan.runtime === 'antigravity') {
         return installAntigravity(plan, opts);
     }
+    if (plan.runtime === 'opencode') {
+        return installOpenCode(plan, opts);
+    }
+    if (plan.runtime === 'kiro') {
+        return installKiro(plan, opts);
+    }
     if (plan.runtime !== 'claude-code') {
-        // kiro/opencode are passive (handled above); any other active runtime is not yet ported.
-        return { ok: false, runtime: plan.runtime, mode: plan.mode, files: [], error: `installer not yet implemented for ${plan.runtime} (supported: claude-code, codex, cursor, antigravity)` };
+        return { ok: false, runtime: plan.runtime, mode: plan.mode, files: [], error: `installer not yet implemented for ${plan.runtime} (supported: claude-code, codex, cursor, antigravity, opencode, kiro)` };
     }
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
     const scope = opts.scope ?? 'project';
@@ -486,6 +493,12 @@ export function uninstallInjection(runtime, opts) {
     }
     if (runtime === 'antigravity') {
         return uninstallAntigravity(runtime, opts);
+    }
+    if (runtime === 'opencode') {
+        return uninstallOpenCode(runtime, opts);
+    }
+    if (runtime === 'kiro') {
+        return uninstallKiro(runtime, opts);
     }
     if (runtime !== 'claude-code') {
         return { ok: false, runtime, mode: 'n/a', files: [], error: `uninstall not implemented for ${runtime}` };

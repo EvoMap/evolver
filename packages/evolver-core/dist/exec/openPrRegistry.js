@@ -77,34 +77,44 @@ export function findSignalHints(signals, prs, opts = {}) {
 }
 // ── gh lister seam + TTL cache ─────────────────────────────────────────────
 const GH_TIMEOUT_MS = 5000;
+export function parseGhOpenPrListResult(result) {
+    if (result.termination !== undefined && result.termination !== 'exit') {
+        throw new Error(`gh open PR list did not complete (${result.termination})`);
+    }
+    if (result.stdoutTruncated)
+        throw new Error('gh open PR list exceeded the capture limit');
+    if (result.code !== 0)
+        return [];
+    try {
+        const arr = JSON.parse(result.stdout || '[]');
+        if (!Array.isArray(arr))
+            return [];
+        return arr.map((pr) => ({
+            number: Number(pr.number),
+            title: String(pr.title ?? ''),
+            headRefName: String(pr.headRefName ?? ''),
+            files: Array.isArray(pr.files) ? pr.files.map((f) => String(f.path ?? '')).filter(Boolean) : [],
+        }));
+    }
+    catch {
+        return [];
+    }
+}
 /**
- * Default lister: `gh pr list --state=open --json number,title,headRefName,files --limit 50`. Graceful —
- * returns [] on any failure (gh missing, unauthenticated, timeout, bad JSON) so dedup just turns off. gh is a
+ * Default lister: `gh pr list --state=open --json number,title,headRefName,files --limit 50`.
+ * Legacy fetch/parse failures return []; proven incomplete bounded capture rejects so dedup fails closed. gh is a
  * trusted infra tool, so its own auth (GH_TOKEN/GITHUB_TOKEN, or the gh config under $HOME) is passed through.
  */
 export function makeGhPrLister() {
     return async (cwd) => {
-        try {
-            const r = await spawnCapture('gh', ['pr', 'list', '--state=open', '--json', 'number,title,headRefName,files', '--limit', '50'], {
-                cwd: cwd ?? process.cwd(),
-                timeoutMs: GH_TIMEOUT_MS,
-                env: scrubAgentEnv(process.env, { allowKeys: ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR'] }),
-            });
-            if (r.code !== 0)
-                return [];
-            const arr = JSON.parse(r.stdout || '[]');
-            if (!Array.isArray(arr))
-                return [];
-            return arr.map((pr) => ({
-                number: Number(pr.number),
-                title: String(pr.title ?? ''),
-                headRefName: String(pr.headRefName ?? ''),
-                files: Array.isArray(pr.files) ? pr.files.map((f) => String(f.path ?? '')).filter(Boolean) : [],
-            }));
-        }
-        catch {
+        const r = await spawnCapture('gh', ['pr', 'list', '--state=open', '--json', 'number,title,headRefName,files', '--limit', '50'], {
+            cwd: cwd ?? process.cwd(),
+            timeoutMs: GH_TIMEOUT_MS,
+            env: scrubAgentEnv(process.env, { allowKeys: ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR'] }),
+        }).catch(() => null);
+        if (!r)
             return [];
-        }
+        return parseGhOpenPrListResult(r);
     };
 }
 /**

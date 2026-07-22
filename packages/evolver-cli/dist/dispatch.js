@@ -28,6 +28,7 @@ import { runCycleCommand } from './cycleConsumer.js';
 import { runProxyToken } from './proxyToken.js';
 import { runMaterialCommand } from './materialPackage.js';
 import { runDashboardCommand } from './dashboard.js';
+import { runIssueReportCommand } from './issueReport.js';
 import { runAssetTrustCommand } from './assetTrust.js';
 import { runAssetHealthCommand } from './assetHealth.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat } from './v1Compat.js';
@@ -71,6 +72,7 @@ export const ASYNC_COMMANDS = {
     'anti-gene-benchmark': runAntiGeneBenchmarkCommand,
     'anti-gene-rollout': runAntiGeneRolloutCommand,
     dashboard: runDashboardCommand,
+    'issue-report': runIssueReportCommand,
     'asset-trust': runAssetTrustCommand,
     'asset-health': runAssetHealthCommand,
     proxy: runProxyCommand,

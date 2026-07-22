@@ -4,10 +4,12 @@
 // (the real device-wide scope); `--scope=project` (default) writes the project's own .mcp.json. Deny-nothing:
 // it only writes the runtime's own config, is idempotent, refuses symlinked adapter paths, and `--uninstall`
 // cleanly removes only evolver's entries.
-import { planInjection, installInjection, uninstallInjection, runtimeSupport, renderManualWiring, renderServiceGuidance, SETUP_RUNTIMES, SERVICE_TARGETS } from '@evomap/evolver-mcp';
+import { planInjection, installInjection, uninstallInjection, runtimeSupport, renderManualWiring, renderServiceGuidance, SETUP_RUNTIMES, SERVICE_TARGETS, kiroConfigRoot, resolveOpenCodeConfig, McpConfigConflictError, McpConfigOwnershipError, McpConfigVerificationError, McpServerValidationError } from '@evomap/evolver-mcp';
 import { assetstore, events } from '@evomap/evolver-core';
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { currentTopCursorGenes } from './cursorRewrite.js';
 import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
@@ -34,7 +36,133 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--uninstall] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n`;
+export function commandNamesForPath(command, platform, pathExt) {
+    if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
+        return [command];
+    const extensions = (pathExt?.trim() || '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .map((extension) => extension.trim())
+        .filter((extension) => /^\.?[A-Za-z\d]+$/.test(extension))
+        .map((extension) => extension.startsWith('.') ? extension : `.${extension}`);
+    return [command, ...extensions.map((extension) => `${command}${extension}`)];
+}
+function commandOnPath(command) {
+    const names = commandNamesForPath(command, process.platform, process.env['PATHEXT']);
+    for (const directory of (process.env['PATH'] ?? '').split(delimiter).filter(Boolean)) {
+        for (const name of names) {
+            try {
+                const candidate = join(directory, name);
+                if (!statSync(candidate).isFile())
+                    continue;
+                accessSync(candidate, constants.X_OK);
+                return true;
+            }
+            catch {
+                // Continue searching PATH.
+            }
+        }
+    }
+    return false;
+}
+function defaultRuntimeAvailable(runtime, configRoot, scope) {
+    if (runtime === 'opencode') {
+        const resolution = resolveOpenCodeConfig({
+            configRoot,
+            scope,
+            homeDir: homedir(),
+            xdgConfigHome: process.env['XDG_CONFIG_HOME'],
+            opencodeConfig: process.env['OPENCODE_CONFIG'],
+            opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
+        });
+        return commandOnPath('opencode') || (resolution.evidencePaths ?? [resolution.configPath]).some(existsSync);
+    }
+    const pathOptions = {
+        configRoot,
+        homeDir: homedir(),
+        kiroHome: process.env['KIRO_HOME'],
+    };
+    const evidenceRoots = scope === 'project'
+        ? [
+            kiroConfigRoot({ ...pathOptions, scope: 'project' }),
+            kiroConfigRoot({ ...pathOptions, scope: 'user' }),
+        ]
+        : [kiroConfigRoot({ ...pathOptions, scope: 'user' })];
+    return commandOnPath('kiro') || commandOnPath('kiro-cli') || evidenceRoots.some(existsSync);
+}
+function displaySetupPath(path, configRoot, scope) {
+    if (scope === 'user') {
+        const home = homedir();
+        const homePath = safeRelativePath(home, path);
+        if (homePath === '')
+            return '~';
+        if (homePath !== undefined)
+            return `~/${homePath.replaceAll('\\', '/')}`;
+    }
+    const projectPath = safeProjectRelativePath(configRoot, path);
+    if (projectPath === '')
+        return '.';
+    return projectPath !== undefined ? projectPath.replaceAll('\\', '/') : '<config-path>';
+}
+function safeRelativePath(root, path) {
+    const candidate = relative(root, path);
+    if (isAbsolute(candidate) || candidate === '..' || candidate.startsWith(`..${sep}`))
+        return undefined;
+    return candidate;
+}
+function safeProjectRelativePath(root, path) {
+    const descendant = safeRelativePath(root, path);
+    if (descendant !== undefined)
+        return descendant;
+    return safeRelativePath(dirname(path), root) === undefined ? undefined : relative(root, path);
+}
+function displayResultPaths(paths, configRoot, scope) {
+    return paths?.map((path) => displaySetupPath(path, configRoot, scope));
+}
+export function safeSetupOperationError(error) {
+    if (error instanceof McpConfigConflictError)
+        return error.message;
+    if (error instanceof McpConfigOwnershipError)
+        return error.message;
+    if (error instanceof McpConfigVerificationError) {
+        return error.restored
+            ? '[setup-hooks] runtime configuration verification failed; the previous configuration was restored.'
+            : '[setup-hooks] runtime configuration verification failed; rollback could not be confirmed. Inspect the runtime config before retrying.';
+    }
+    if (error instanceof McpServerValidationError)
+        return error.message;
+    const name = error instanceof Error ? error.name : '';
+    switch (name) {
+        case 'McpConfigConflictError': return '[setup-hooks] existing Evolver configuration conflicts; use --force to replace only the Evolver entry.';
+        case 'McpConfigOwnershipError': return '[setup-hooks] Evolver ownership metadata is ambiguous or no longer matches the runtime configuration; inspect it before retrying.';
+        case 'McpConfigShapeError': return '[setup-hooks] runtime configuration has an invalid JSON shape.';
+        case 'McpConfigVerificationError': return error.restored === true
+            ? '[setup-hooks] runtime configuration verification failed; the previous configuration was restored.'
+            : '[setup-hooks] runtime configuration verification failed; rollback could not be confirmed. Inspect the runtime config before retrying.';
+        case 'McpConfigChangedError': return '[setup-hooks] runtime configuration changed during the operation; retry after the runtime finishes writing it.';
+        case 'EmptySharedConfigError': return '[setup-hooks] runtime configuration is empty; repair or remove it before retrying.';
+        case 'UnparseableConfigError': return '[setup-hooks] runtime configuration is not valid JSON; repair it before retrying.';
+        case 'SymlinkRefusedError': return '[setup-hooks] refused an unsafe symbolic-link configuration path.';
+        default: return '[setup-hooks] runtime configuration operation failed.';
+    }
+}
+export function safeSetupResultError(error) {
+    if (typeof error !== 'string')
+        return safeSetupOperationError(error);
+    const reason = error.replace(/\s+/g, ' ').trim();
+    const passive = reason.match(/^passive runtime ([a-z0-9][a-z0-9-]{0,63}): no tool injection$/);
+    const unimplementedInstall = reason.match(/^installer not yet implemented for ([a-z0-9][a-z0-9-]{0,63}) \(supported: [a-z0-9, -]+\)$/);
+    const unimplementedUninstall = reason.match(/^uninstall not implemented for ([a-z0-9][a-z0-9-]{0,63})$/);
+    const runtime = passive?.[1] ?? unimplementedInstall?.[1] ?? unimplementedUninstall?.[1];
+    if (!runtime || !SETUP_RUNTIMES.includes(runtime)) {
+        return safeSetupOperationError(error);
+    }
+    if (passive)
+        return `[setup-hooks] passive runtime ${runtime}: no tool injection`;
+    if (unimplementedInstall)
+        return `[setup-hooks] installer not yet implemented for ${runtime}`;
+    return `[setup-hooks] uninstall not implemented for ${runtime}`;
+}
 const PROFILE_DESCRIPTOR_FLAG = 'profile-descriptor';
 const SECRET_ASSIGNMENT_RE = /\b(?:A2A_NODE_SECRET|EVOMAP_ENTERPRISE_TOKEN|EVOMAP_PRIVATE_HUB_TOKEN|EVOMAP_NODE_SECRET|EVOLVER_IPC_TOKEN|EVOLVER_LLM_TOKEN|PHUB_ENTERPRISE_TOKEN|PRIVATE_HUB_ENTERPRISE_TOKEN)\b\s*[:=]\s*["']?[^"'\s<]+/;
 const INLINE_BEARER_RE = /\bBearer\s+(?!<|\$|%|REDACTED\b|TOKEN\b|token\b|env:)[A-Za-z0-9._~+/=-]{12,}/i;
@@ -306,19 +434,57 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     const configRoot = typeof f['root'] === 'string' ? f['root'] : process.cwd();
     // claude-code: user scope targets ~/.claude.json regardless of --root; project scope uses configRoot.
     const scope = scopeResult.scope;
+    if (f['dry-run'] === true && runtime !== 'opencode' && runtime !== 'kiro') {
+        const error = `--dry-run is currently supported for opencode and kiro setup only; no config was written.`;
+        if (json)
+            emit({ runtime, outcome: 'error', files: [], error });
+        else
+            process.stderr.write(`${error}\n`);
+        return 1;
+    }
     if (support.outcome === 'installed' && f['uninstall']) {
-        const r = uninstallInjection(runtime, { configRoot, scope });
-        if (!r.ok) {
+        let r;
+        try {
+            r = uninstallInjection(runtime, {
+                configRoot,
+                scope,
+                homeDir: homedir(),
+                kiroHome: process.env['KIRO_HOME'],
+                xdgConfigHome: process.env['XDG_CONFIG_HOME'],
+                opencodeConfig: process.env['OPENCODE_CONFIG'],
+                opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
+                dryRun: f['dry-run'] === true,
+            });
+        }
+        catch (error) {
+            const message = safeSetupOperationError(error);
             if (json)
-                emit({ runtime, action: 'uninstall', files: [], error: r.error ?? 'uninstall failed' });
+                emit({ runtime, action: 'uninstall', files: [], error: message });
             else
-                process.stderr.write(`${r.error ?? 'uninstall failed'}\n`);
+                process.stderr.write(`${message}\n`);
             return 1;
         }
+        const files = displayResultPaths(r.files, configRoot, scope) ?? [];
+        const backups = displayResultPaths(r.backups, configRoot, scope);
+        if (!r.ok) {
+            const message = safeSetupResultError(r.error);
+            if (json)
+                emit({ runtime, action: 'uninstall', files: [], error: message });
+            else
+                process.stderr.write(`${message}\n`);
+            return 1;
+        }
+        if (r.dryRun) {
+            if (json)
+                emit({ runtime, action: 'uninstall', files, backups, dryRun: true });
+            else
+                process.stdout.write(files.length ? `dry-run: would remove evolver from: ${files.join(', ')}\n` : 'dry-run: nothing to remove\n');
+            return 0;
+        }
         if (json)
-            emit({ runtime, action: 'uninstall', files: r.files });
+            emit({ runtime, action: 'uninstall', files, backups });
         else
-            process.stdout.write(r.files.length ? `removed evolver from: ${r.files.join(', ')}\n` : 'nothing to remove\n');
+            process.stdout.write(files.length ? `removed evolver from: ${files.join(', ')}\n` : 'nothing to remove\n');
         return 0;
     }
     const profileDescriptor = profileDescriptorFromFlag(f);
@@ -360,6 +526,28 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         return 0;
     }
     const server = buildServer(f, descriptor);
+    if ((runtime === 'opencode' || runtime === 'kiro') && f['dry-run'] !== true) {
+        let runtimeDetected;
+        try {
+            runtimeDetected = (deps.runtimeAvailable ?? defaultRuntimeAvailable)(runtime, configRoot, scope);
+        }
+        catch (error) {
+            const message = safeSetupOperationError(error);
+            if (json)
+                emit({ runtime, outcome: 'error', files: [], error: message });
+            else
+                process.stderr.write(`${message}\n`);
+            return 1;
+        }
+        if (!runtimeDetected) {
+            const error = `${runtime} runtime was not detected; install or launch ${runtime === 'opencode' ? 'OpenCode' : 'Kiro'} first, then rerun. No config was written.`;
+            if (json)
+                emit({ runtime, outcome: 'error', files: [], error });
+            else
+                process.stderr.write(`${error}\n`);
+            return 1;
+        }
+    }
     if (runtime === 'cursor')
         (deps.emitNonGitWorkspaceNotice ?? maybeEmitNonGitWorkspaceNotice)({ cwd: configRoot });
     // cursor seeds .cursor/rules/evolver.mdc with the CURRENT top REVIEW-APPROVED genes so the file is useful
@@ -376,6 +564,12 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             ...(typeof f['hook-command'] === 'string' ? { hookCommand: f['hook-command'] } : {}),
             ...(cursorGenes ? { genes: cursorGenes } : {}),
             force: f['force'] === true,
+            dryRun: f['dry-run'] === true,
+            homeDir: homedir(),
+            kiroHome: process.env['KIRO_HOME'],
+            xdgConfigHome: process.env['XDG_CONFIG_HOME'],
+            opencodeConfig: process.env['OPENCODE_CONFIG'],
+            opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
         });
     }
     catch (e) {
@@ -383,7 +577,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         // `unsupported` runtime. Reporting `unsupported` here would tell a bootstrapper the runtime isn't supported and
         // make it stop trying, when the real cause is operational. `error` is a CLI result status (the attempt failed),
         // distinct from the support-matrix `unsupported` (an unrecognized runtime id) (Bugbot #264).
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = safeSetupOperationError(e);
         if (json)
             emit({ runtime, outcome: 'error', files: [], error: msg });
         else
@@ -392,22 +586,44 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     }
     if (!r.ok) {
         // Same reasoning for an ok:false install result: a failed install of a supported runtime is `error`, not `unsupported`.
+        const message = safeSetupResultError(r.error);
         if (json)
-            emit({ runtime, outcome: 'error', files: [], error: r.error ?? 'install failed' });
+            emit({ runtime, outcome: 'error', files: [], error: message });
         else
-            process.stderr.write(`${r.error ?? 'install failed'}\n`);
+            process.stderr.write(`${message}\n`);
         return 1;
+    }
+    const files = displayResultPaths(r.files, configRoot, scope) ?? [];
+    const backups = displayResultPaths(r.backups, configRoot, scope);
+    if (r.dryRun) {
+        if (json) {
+            emit({
+                runtime,
+                outcome: 'installed',
+                files,
+                backups,
+                dryRun: true,
+                ...(r.alreadyInstalled ? { alreadyInstalled: true } : {}),
+            });
+        }
+        else if (r.alreadyInstalled) {
+            process.stdout.write('dry-run: evolver already installed (no changes)\n');
+        }
+        else {
+            process.stdout.write(`dry-run: would install evolver (${r.mode}) → ${files.join(', ')}\n`);
+        }
+        return 0;
     }
     if (r.alreadyInstalled) {
         if (json)
-            emit({ runtime, outcome: 'installed', files: r.files, alreadyInstalled: true });
+            emit({ runtime, outcome: 'installed', files, alreadyInstalled: true });
         else
             process.stdout.write('evolver already installed (use --force to reinstall)\n');
         return 0;
     }
     if (json)
-        emit({ runtime, outcome: 'installed', files: r.files, mode: r.mode });
+        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified });
     else
-        process.stdout.write(`installed evolver (${r.mode}) → ${r.files.join(', ')}\n`);
+        process.stdout.write(`installed evolver (${r.mode}) → ${files.join(', ')}\n`);
     return 0;
 }

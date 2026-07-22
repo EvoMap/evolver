@@ -11,19 +11,20 @@
 // SAFETY: default-OFF. The factory throws ExecBridgeDisabledError unless explicitly enabled (opts.enabled)
 // or EVOLVE_EXEC_BRIDGE === '1'. Wiring it in by accident must fail loudly rather than silently spawn an
 // autonomous agent.
+import { randomUUID } from 'node:crypto';
 import { resolve as resolvePath, sep, join as joinPath } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { renderExecPrompt } from './prompt.js';
 import { parseGitShortstat, gitDiffProof } from './proofOfWork.js';
 // Policy enforcement core (#107): checkPolicy runs the always-on global guards (blast hard cap +
 // protected paths + destructive deletes) on EVERY exec — gene or not — plus the per-gene constraints when a
 // gene supplies them. It supersedes the old gene-gated `checkChangeConstraints` call (the no-gene-no-guard hole).
 import { checkPolicy, summarizeViolations } from './policy/index.js';
-import { spawnCapture, getRunnerSpec, DEFAULT_TIMEOUT_MS } from './runnerRegistry.js';
+import { spawnCapture, SpawnCaptureFinalizeError, getRunnerSpec, DEFAULT_TIMEOUT_MS } from './runnerRegistry.js';
 // Re-export the runner layer so existing importers of ./claudeBridge.js (and the `exec` namespace) keep their
 // surface after the #91-6 split — the registry simply has a clearer home now.
-export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
 export class ExecBridgeDisabledError extends Error {
     constructor() {
         super('exec bridge is disabled — set EVOLVE_EXEC_BRIDGE=1 or pass { enabled: true } to enable agent execution');
@@ -130,6 +131,18 @@ class ExecBridgeRunCancelledError extends Error {
         this.name = 'ExecBridgeRunCancelledError';
     }
 }
+class GitProofError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'GitProofError';
+    }
+}
+class GitOutputTruncatedError extends GitProofError {
+    constructor(bytes) {
+        super(`git output exceeded the capture limit (${String(bytes ?? 'unknown')} bytes)`);
+        this.name = 'GitOutputTruncatedError';
+    }
+}
 function cancelledExecutionResult(run) {
     return {
         outcome: { status: 'failed', score: 0.1, reason: 'execution cancelled' },
@@ -139,26 +152,85 @@ function cancelledExecutionResult(run) {
         ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
     };
 }
-/** Default git runner: spawn `git <args>` in cwd, return stdout (empty string on error). Env scrubbed — git never needs evolver/hub secrets. */
+function failedProofExecutionResult(run, error, proofOfWork) {
+    return {
+        outcome: { status: 'failed', score: 0.1, reason: `execution proof failed: ${error.message}` },
+        ...(proofOfWork ? { proofOfWork } : {}),
+        strongEvidence: false,
+        failureKind: run.failureKind ?? 'runtime_error',
+        exitCode: run.exitCode ?? null,
+        sessionLog: run.error ? `${run.output}\n${run.error}` : run.output,
+    };
+}
+/** Default git runner: every incomplete command result fails closed. */
 export const defaultGitRunner = async (args, cwd, signal, options) => {
+    let result;
     try {
-        const r = await spawnCapture('git', args, {
+        result = await spawnCapture('git', args, {
             cwd,
             timeoutMs: 30_000,
             env: scrubAgentEnv(process.env),
             ...(signal ? { signal } : {}),
             ...(options?.processSignalMode ? { processSignalMode: options.processSignalMode } : {}),
         });
-        if (r.termination === 'cancelled')
-            throw new ExecBridgeRunCancelledError();
-        return r.stdout;
+    }
+    catch {
+        throw new GitProofError('git command failed to start or capture output');
+    }
+    if (result.termination === 'cancelled')
+        throw new ExecBridgeRunCancelledError();
+    if (result.termination === 'timeout')
+        throw new GitProofError('git command timed out');
+    if (result.stdoutTruncated)
+        throw new GitOutputTruncatedError(result.stdoutBytes);
+    if (result.code !== 0)
+        throw new GitProofError(`git command exited with code ${result.code}`);
+    return result.stdout;
+};
+/** Stream a complete git patch to disk so large diffs never need to be retained in the Node heap. */
+async function writeDefaultGitPatch(args, cwd, destination, signal, onDestinationOpened) {
+    const result = await spawnCapture('git', args, {
+        cwd,
+        timeoutMs: 30_000,
+        env: scrubAgentEnv(process.env),
+        stdoutFile: destination,
+        ...(onDestinationOpened ? { onStdoutFileOpened: onDestinationOpened } : {}),
+        ...(signal ? { signal } : {}),
+    });
+    if (result.termination === 'cancelled')
+        throw new ExecBridgeRunCancelledError();
+    if (result.termination === 'timeout')
+        throw new GitProofError('git patch capture timed out');
+    if (result.code !== 0)
+        throw new GitProofError(`git patch capture exited with code ${result.code}`);
+}
+export const defaultGitPatchWriter = (args, cwd, destination, signal, onDestinationOpened) => (writeDefaultGitPatch(args, cwd, destination, signal, onDestinationOpened));
+function writePrivatePatchFile(path, patch) {
+    let fd;
+    let ownsFile = false;
+    try {
+        fd = openSync(path, 'wx', 0o600);
+        ownsFile = true;
+        writeFileSync(fd, patch, { encoding: 'utf8' });
+        closeSync(fd);
+        fd = undefined;
     }
     catch (error) {
-        if (error instanceof ExecBridgeRunCancelledError)
-            throw error;
-        return '';
+        if (fd !== undefined) {
+            try {
+                closeSync(fd);
+            }
+            catch { /* best-effort close before removing our artifact */ }
+        }
+        if (ownsFile) {
+            try {
+                rmSync(path, { force: true });
+            }
+            catch { /* preserve the persistence failure */ }
+        }
+        throw error;
     }
-};
+}
 /**
  * Build the `execute` function CycleEngine/runEvolutionCycle consume. Default-off: throws
  * ExecBridgeDisabledError on first call unless enabled.
@@ -168,6 +240,7 @@ export function makeClaudeExecBridge(opts) {
     const spec = getRunnerSpec(opts.runner); // #66: claude (default, byte-identical) | codex
     const agent = opts.agent ?? spec.makeRunner(opts.agentOptions);
     const git = opts.git ?? defaultGitRunner;
+    const gitPatchWriter = opts.gitPatchWriter ?? (git === defaultGitRunner ? defaultGitPatchWriter : undefined);
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     // secure by default; only THIS runner's auth env reaches it (claude never gets OPENAI_, codex never ANTHROPIC_, #66)
     const agentEnv = opts.scrubEnv === false ? undefined : scrubAgentEnv(process.env, { allowPrefixes: spec.envAllow.prefixes, ...(spec.envAllow.keys ? { allowKeys: spec.envAllow.keys } : {}) });
@@ -207,21 +280,40 @@ export function makeClaudeExecBridge(opts) {
         });
         // Isolation: run in a throwaway git worktree so the agent's edits never touch the real working tree.
         const isolate = opts.isolation === 'worktree';
-        const workDir = isolate ? joinPath(tmpdir(), `evolver-wt-${mutation.id}`) : opts.cwd;
         if (opts.signal?.aborted)
             return cancelledExecutionResult(undefined);
+        // Reserve a parent namespace atomically before handing its child path to Git. The parent stays owned until
+        // cleanup completes, so another run cannot reuse the worktree path between Git removal and disk cleanup.
+        const worktreeReservation = isolate ? mkdtempSync(joinPath(tmpdir(), 'evolver-wt-')) : undefined;
+        const workDir = worktreeReservation ? joinPath(worktreeReservation, 'worktree') : opts.cwd;
+        let worktreeRegistered = false;
         let observedRun;
-        const proofGit = async (args, cwd) => {
+        let patchRef;
+        let ownsPatchRef = false;
+        let preservePatchRef = false;
+        let failedProof;
+        const proofGit = async (args, cwd, onResolved) => {
             if (opts.signal?.aborted)
                 throw new ExecBridgeRunCancelledError();
-            const output = await git(args, cwd, opts.signal);
-            if (opts.signal?.aborted)
-                throw new ExecBridgeRunCancelledError();
-            return output;
+            try {
+                const output = await git(args, cwd, opts.signal);
+                onResolved?.();
+                if (opts.signal?.aborted)
+                    throw new ExecBridgeRunCancelledError();
+                return output;
+            }
+            catch (error) {
+                if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
+                    throw error;
+                if (error instanceof GitProofError)
+                    throw error;
+                throw new GitProofError('git state proof failed');
+            }
         };
         try {
-            if (isolate)
-                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd);
+            if (isolate) {
+                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd, () => { worktreeRegistered = true; });
+            }
             const run = await agent(prompt, {
                 cwd: workDir,
                 timeoutMs,
@@ -245,17 +337,69 @@ export function makeClaudeExecBridge(opts) {
             let changedFiles;
             let numstat;
             let patch = '';
+            const resetIntentToAdd = async () => {
+                if (untrackedFiles.length > 0) {
+                    await git(['reset', '--quiet', '--', ...untrackedFiles], workDir);
+                }
+            };
             try {
                 stat = parseGitShortstat(await proofGit(['diff', '--shortstat', 'HEAD'], workDir));
                 changedFiles = (await proofGit(['diff', '--name-only', 'HEAD'], workDir)).split('\n').map((s) => s.trim()).filter(Boolean);
                 numstat = await proofGit(['diff', '--numstat', 'HEAD'], workDir);
-                if (isolate && stat.files > 0)
-                    patch = await proofGit(['diff', '--binary', '--full-index', 'HEAD'], workDir);
+                if (isolate && stat.files > 0) {
+                    if (gitPatchWriter) {
+                        patchRef = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
+                        try {
+                            await gitPatchWriter(['diff', '--binary', '--full-index', 'HEAD'], workDir, patchRef, opts.signal, () => { ownsPatchRef = true; });
+                            // A successful writer owns its result even when an older injected implementation ignores the
+                            // optional callback. On rejection, only the callback can prove that a partial file is ours.
+                            ownsPatchRef = true;
+                        }
+                        catch (error) {
+                            if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
+                                throw error;
+                            if (error instanceof SpawnCaptureFinalizeError) {
+                                if (error.result.termination === 'cancelled')
+                                    throw new ExecBridgeRunCancelledError();
+                                if (error.result.termination === 'timeout')
+                                    throw new GitProofError('git patch capture timed out');
+                            }
+                            if (error instanceof GitProofError)
+                                throw error;
+                            throw new GitProofError('git patch capture failed');
+                        }
+                    }
+                    else {
+                        patch = await proofGit(['diff', '--binary', '--full-index', 'HEAD'], workDir);
+                    }
+                }
             }
-            finally {
-                if (untrackedFiles.length > 0)
-                    await git(['reset', '--quiet', '--', ...untrackedFiles], workDir);
+            catch (error) {
+                try {
+                    await resetIntentToAdd();
+                }
+                catch (cleanupError) {
+                    if (cleanupError instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
+                        throw new ExecBridgeRunCancelledError();
+                    }
+                    // Preserve the primary proof failure for non-cancellation cleanup errors.
+                }
+                throw error;
             }
+            try {
+                await resetIntentToAdd();
+            }
+            catch (error) {
+                if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
+                    throw error;
+                if (patchRef && ownsPatchRef) {
+                    failedProof = gitDiffProof(stat, patchRef);
+                    preservePatchRef = true;
+                }
+                throw new GitProofError('git index cleanup failed');
+            }
+            if (opts.signal?.aborted)
+                throw new ExecBridgeRunCancelledError();
             // ENFORCE policy against the ACTUAL diff (finding: prompt.ts only ADVISES the agent "touch at most N
             // file(s) / never modify X"; this is the hard gate). checkPolicy ALWAYS runs the global guards — the
             // system blast hard cap (EVOLVER_HARD_CAP_FILES/LINES), the critical-protected paths (.env, MEMORY.md,
@@ -263,11 +407,19 @@ export function makeClaudeExecBridge(opts) {
             // constraints run is no longer un-guarded. The gene's max_files/max_lines/forbidden_paths layer on top.
             // Any violation fails the cycle no matter what the agent did — even when validation would pass.
             const violations = checkPolicy({ stat, changedFiles, numstat, ...(gene?.constraints ? { constraints: gene.constraints } : {}) });
-            let patchRef;
-            if (isolate && stat.files > 0) {
+            if (isolate && stat.files > 0 && !patchRef) {
                 // preserve the isolated edits as a patch (the worktree itself is removed); the real repo is untouched
-                patchRef = joinPath(tmpdir(), `evolver-patch-${mutation.id}.diff`);
-                writeFileSync(patchRef, patch);
+                const destination = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
+                try {
+                    (opts.writePatchFile ?? writePrivatePatchFile)(destination, patch);
+                    patchRef = destination;
+                    ownsPatchRef = true;
+                }
+                catch (error) {
+                    if (error instanceof GitProofError)
+                        throw error;
+                    throw new GitProofError('git patch persistence failed');
+                }
             }
             const proof = gitDiffProof(stat, patchRef);
             // Success: prefer the authoritative validation hook; otherwise "agent succeeded AND produced a diff".
@@ -290,6 +442,7 @@ export function makeClaudeExecBridge(opts) {
                 score = Math.min(score, 0.1);
                 reason = summarizeViolations(violations);
             }
+            preservePatchRef = patchRef !== undefined && ownsPatchRef;
             return {
                 outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
                 proofOfWork: proof,
@@ -306,14 +459,32 @@ export function makeClaudeExecBridge(opts) {
             if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
                 return cancelledExecutionResult(observedRun);
             }
+            if (error instanceof GitProofError && observedRun) {
+                return failedProofExecutionResult(observedRun, error, failedProof);
+            }
             throw error;
         }
         finally {
+            if (!preservePatchRef && ownsPatchRef && patchRef) {
+                try {
+                    (opts.removePatchFile ?? ((path) => rmSync(path, { force: true })))(patchRef);
+                }
+                catch { /* best-effort cleanup must not replace the execution result or its primary failure */ }
+            }
             if (isolate) {
+                let worktreeRemoved = false;
                 try {
                     await git(['worktree', 'remove', '--force', workDir], opts.cwd, undefined, { processSignalMode: 'ignore' });
+                    worktreeRemoved = true;
                 }
                 catch { /* best-effort cleanup */ }
+                const addFailedBeforeCreatingWorktree = !worktreeRegistered && !existsSync(workDir);
+                if (worktreeReservation && (worktreeRemoved || addFailedBeforeCreatingWorktree)) {
+                    try {
+                        rmSync(worktreeReservation, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+                    }
+                    catch { /* best-effort cleanup of the owned reservation */ }
+                }
             }
         }
     };

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { events as ev, assetstore, mailbox as mb, ops } from '@evomap/evolver-core';
+import { events as ev, assetstore, mailbox as mb, ops, util } from '@evomap/evolver-core';
 import { CONSOLE_HTML } from './console.js';
 import { EventSnapshotCache, fileEventSnapshotSource } from './eventSnapshot.js';
 import { listLineageAssets, loadAssetLineage } from './assetLineage.js';
@@ -8,13 +8,6 @@ import { eventListRelations } from './observabilityRelations.js';
 import { redactDiagnosticText, sanitizeDiagnosticValue } from './diagnosticSanitize.js';
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const DASHBOARD_COOKIE = 'evolver_dashboard';
-const BROWSER_BLOCKED_PORTS = new Set([
-    1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
-    101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
-    389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
-    636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566,
-    6665, 6666, 6667, 6668, 6669, 6697, 10080,
-]);
 /** The empty value summary (zero entries) — the shape /api/value returns when no provider is wired, so the card
  *  always gets a valid ValueSummary to render. Derived from core's aggregator to stay shape-identical. */
 const EMPTY_VALUE_SUMMARY = ops.valueSummary([]);
@@ -117,11 +110,11 @@ export class WebUIServer {
         this.server = createServer((req, res) => { void this.handle(req, res); });
     }
     async listen(port = 0) {
-        if (port !== 0 && BROWSER_BLOCKED_PORTS.has(port))
+        if (port !== 0 && util.isFetchForbiddenPort(port))
             throw new Error('webui_port_blocked');
         for (let attempt = 0; attempt < 5; attempt += 1) {
             const assigned = await this.listenOnce(port);
-            if (port !== 0 || !BROWSER_BLOCKED_PORTS.has(assigned))
+            if (port !== 0 || !util.isFetchForbiddenPort(assigned))
                 return assigned;
             await this.close();
         }

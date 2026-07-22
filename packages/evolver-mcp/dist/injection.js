@@ -3,12 +3,10 @@ export const SETUP_RUNTIMES = [
     'claude-code', 'codex', 'cursor', 'antigravity', 'opencode', 'kiro', 'openclaw', 'mcp-generic', 'http-agent', 'server',
 ];
 /** Runtimes v2 can write config/hooks for and verify. Antigravity is MCP-config-only (no lifecycle hook). */
-const INSTALLED_RUNTIMES = new Set(['claude-code', 'codex', 'cursor', 'antigravity']);
+const INSTALLED_RUNTIMES = new Set(['claude-code', 'codex', 'cursor', 'antigravity', 'opencode', 'kiro']);
 /** Runtimes with no v2 auto-installer but a real manual path. The reason is the short, honest "do it by hand"
  *  line; the precise wiring text is a separate concern (#217 slice 2), not hard-coded here. */
 const MANUAL_RUNTIMES = new Map([
-    ['opencode', 'opencode is consumed passively today; register the evolver MCP server in its config by hand'],
-    ['kiro', 'kiro is consumed passively today; register the evolver MCP server in its config by hand'],
     ['openclaw', 'no v2 auto-installer yet; wire the evolver MCP server (or PrivateHub HTTP/A2A) by hand'],
     ['mcp-generic', 'no config writer for a generic MCP client; register the evolver MCP server by hand'],
     ['http-agent', 'no config writer for an HTTP/API-only agent; wire it to PrivateHub HTTP/A2A by hand'],
@@ -67,12 +65,17 @@ export function planInjection(runtime, server) {
                 config: { mcpServers: { evolver: { command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}) } } },
                 note: 'antigravity: write mcpServers.evolver in the user-level MCP config; tool discovery only (no SessionStart hook)',
             };
-        case 'kiro':
         case 'opencode':
             return {
-                runtime, mode: 'passive',
-                config: {},
-                note: `${runtime}: MVP 仅被动消费会话日志(无工具注入); 接入方式待补`,
+                runtime, mode: 'mcp-config',
+                config: { mcp: { evolver: { type: 'local', command: [server.command, ...(server.args ?? [])], ...(server.env ? { environment: server.env } : {}), enabled: true } } },
+                note: 'OpenCode: write opencode.json local MCP registration; no lifecycle prompt injection.',
+            };
+        case 'kiro':
+            return {
+                runtime, mode: 'mcp-config',
+                config: { mcpServers: { evolver: { command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}), disabled: false } } },
+                note: 'Kiro: write .kiro/settings/mcp.json MCP registration; no lifecycle prompt injection.',
             };
         default: {
             const _exhaustive = runtime;

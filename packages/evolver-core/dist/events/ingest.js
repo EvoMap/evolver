@@ -1,4 +1,6 @@
+import { dirname, join } from 'node:path';
 import { EventStore } from './eventStore.js';
+import { createIssueDraftForEventBestEffort } from '../issueReporter/index.js';
 /** 已知事件类型 (军杰 §9; 可 registerEventType 扩展). */
 export const EVENT_TYPES = [
     'cycle.started', 'cycle.signals_collected', 'cycle.solidified', 'cycle.failed',
@@ -51,6 +53,11 @@ export class Ingestor {
         if (raw.actor?.kind === 'human' && !raw.actor.id)
             throw new IngestValidationError('actor.kind=human 必带 actor.id (审计, 军杰 §9.7)');
         const evt = await this.store.append(raw);
+        createIssueDraftForEventBestEffort(evt, {
+            rootDir: join(dirname(this.store.path), 'issue-reporter'),
+            workspaceScope: process.cwd(),
+            env: process.env,
+        });
         this.sink?.dispatch(evt);
         return evt;
     }

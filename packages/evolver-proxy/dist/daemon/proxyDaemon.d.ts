@@ -151,6 +151,7 @@ export declare class ProxyDaemon {
     private recordTickError;
     /** 启动: 锁 + IPC 监听 + 初次 hello. 返回 IPC 端口. */
     start(): Promise<number>;
+    private listenIpc;
     /** 单轮: core pump/TTL/wake + proxy 出站 + hub 入站 + 到点心跳. */
     tick(): Promise<ProxyTickReport>;
     /** 下一轮建议延时: inbound 背压/idle 与 outbound pending cadence 取更快者. */

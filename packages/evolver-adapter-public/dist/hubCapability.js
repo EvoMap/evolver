@@ -1,4 +1,4 @@
-import { hub as hubNs } from '@evomap/evolver-core';
+import { bootstrap, hub as hubNs } from '@evomap/evolver-core';
 import { AuthError, HubFetch, HubClientError, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire } from './wireMap.js';
@@ -103,6 +103,11 @@ export class PublicHubCapability {
                 timestamp: new Date().toISOString(),
                 ...(sender ? { node_id: sender } : {}),
                 ...(opts.evolverVersion ? { evolver_version: opts.evolverVersion } : {}),
+                // v1 parity (a2aProtocol.js buildHello): every hello carries the env fingerprint — it is how the
+                // hub builds node/IP trust for its anti-abuse layer. v2 had moved it to heartbeat-only meta, which
+                // one-shot CLI paths never send; the hub then answers heartbeats with resend_hello
+                // `missing_env_fingerprint` and 403-antibodies /a2a/fetch (#555).
+                env_fingerprint: bootstrap.captureEnvFingerprint({ env: this.opts.antiAbuse?.env ?? process.env }),
             }));
             const payload = asRecord(body['payload']) ?? body;
             const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');

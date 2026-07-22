@@ -66,16 +66,16 @@ export declare const personalityStats: z.ZodObject<{
     updatedAt: z.ZodDefault<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
     success: number;
-    n: number;
     updatedAt: string | null;
-    avgScore: number;
     fail: number;
+    n: number;
+    avgScore: number;
 }, {
     success?: number | undefined;
-    n?: number | undefined;
     updatedAt?: string | null | undefined;
-    avgScore?: number | undefined;
     fail?: number | undefined;
+    n?: number | undefined;
+    avgScore?: number | undefined;
 }>;
 export type PersonalityStats = z.infer<typeof personalityStats>;
 /** 单条人格变更历史 (可审计; 也镜像进事件流). */
@@ -133,16 +133,16 @@ export declare const personalityModel: z.ZodObject<{
         updatedAt: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     }, "strip", z.ZodTypeAny, {
         success: number;
-        n: number;
         updatedAt: string | null;
-        avgScore: number;
         fail: number;
+        n: number;
+        avgScore: number;
     }, {
         success?: number | undefined;
-        n?: number | undefined;
         updatedAt?: string | null | undefined;
-        avgScore?: number | undefined;
         fail?: number | undefined;
+        n?: number | undefined;
+        avgScore?: number | undefined;
     }>>>;
     history: z.ZodDefault<z.ZodArray<z.ZodObject<{
         at: z.ZodString;
@@ -179,10 +179,10 @@ export declare const personalityModel: z.ZodObject<{
     };
     stats: Record<string, {
         success: number;
-        n: number;
         updatedAt: string | null;
-        avgScore: number;
         fail: number;
+        n: number;
+        avgScore: number;
     }>;
     history: {
         at: string;
@@ -205,10 +205,10 @@ export declare const personalityModel: z.ZodObject<{
     } | undefined;
     stats?: Record<string, {
         success?: number | undefined;
-        n?: number | undefined;
         updatedAt?: string | null | undefined;
-        avgScore?: number | undefined;
         fail?: number | undefined;
+        n?: number | undefined;
+        avgScore?: number | undefined;
     }> | undefined;
     history?: {
         at: string;

@@ -5,8 +5,11 @@
 // nothing here spawns a real agent in tests except through spawnCapture, which the bridge injects fakes around.
 import { spawn } from 'node:child_process';
 import { join as joinPath, delimiter as pathDelimiter } from 'node:path';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 export const DEFAULT_TIMEOUT_MS = 600_000;
+/** Per-stream stdout/stderr capture ceiling. A child can emit indefinitely without growing the parent heap. */
+export const DEFAULT_MAX_CAPTURE_BYTES = 1_048_576;
+const MIN_MAX_CAPTURE_BYTES = 256;
 /** Thrown when permission bypass is requested without bounding the agent's tools (would be an unbounded autonomous agent). */
 export class UnboundedSkipPermissionsError extends Error {
     constructor() {
@@ -161,6 +164,132 @@ export function killWindowsProcessTree(pid, spawnCommand = spawn, timeoutMs = WI
         }
     });
 }
+/** A redirected stdout artifact could not be finalized; the subprocess outcome remains available for classification. */
+export class SpawnCaptureFinalizeError extends Error {
+    result;
+    constructor(result, cause) {
+        const detail = cause instanceof Error ? `: ${cause.message}` : '';
+        super(`redirected stdout finalization failed${detail}`, { cause });
+        this.name = 'SpawnCaptureFinalizeError';
+        this.result = result;
+    }
+}
+/**
+ * Retain a bounded prefix and suffix while counting every byte received. Keeping raw buffers until rendering
+ * avoids corrupting multi-byte UTF-8 characters when Node splits a character across stream chunks.
+ */
+class BoundedStreamCapture {
+    maxBytes;
+    headCapacity;
+    tailCapacity;
+    head;
+    tail;
+    headLength = 0;
+    tailLength = 0;
+    tailWriteOffset = 0;
+    totalBytes = 0;
+    constructor(maxBytes) {
+        this.maxBytes = maxBytes;
+        this.headCapacity = Math.ceil(maxBytes / 2);
+        this.tailCapacity = maxBytes - this.headCapacity;
+    }
+    append(value) {
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        this.totalBytes += chunk.length;
+        let offset = 0;
+        if (this.headLength < this.headCapacity) {
+            const take = Math.min(this.headCapacity - this.headLength, chunk.length);
+            const head = this.ensureHeadCapacity(this.headLength + take);
+            chunk.copy(head, this.headLength, 0, take);
+            this.headLength += take;
+            offset = take;
+        }
+        if (offset < chunk.length)
+            this.appendTail(chunk.subarray(offset));
+    }
+    result() {
+        const head = this.head?.subarray(0, this.headLength) ?? Buffer.alloc(0);
+        const tail = this.orderedTail();
+        if (this.totalBytes <= this.maxBytes) {
+            return {
+                text: Buffer.concat([head, tail]).toString('utf8'),
+                bytes: this.totalBytes,
+                truncated: false,
+            };
+        }
+        const marker = Buffer.from(`\n...[evolver output truncated; total_bytes=${this.totalBytes}]...\n`);
+        const retainedBudget = this.maxBytes - marker.length;
+        const headBudget = Math.ceil(retainedBudget / 2);
+        const tailBudget = retainedBudget - headBudget;
+        const retainedHead = trimIncompleteUtf8Suffix(head.subarray(0, headBudget));
+        const tailStart = Math.max(0, tail.length - tailBudget);
+        const retainedTail = trimUtf8ContinuationPrefix(tail.subarray(tailStart));
+        return {
+            text: Buffer.concat([retainedHead, marker, retainedTail]).toString('utf8'),
+            bytes: this.totalBytes,
+            truncated: true,
+        };
+    }
+    ensureHeadCapacity(required) {
+        const current = this.head;
+        if (current && current.length >= required)
+            return current;
+        let capacity = current?.length ?? Math.min(4_096, this.headCapacity);
+        while (capacity < required)
+            capacity = Math.min(this.headCapacity, capacity * 2);
+        const next = Buffer.allocUnsafe(capacity);
+        if (current)
+            current.copy(next, 0, 0, this.headLength);
+        this.head = next;
+        return next;
+    }
+    appendTail(incoming) {
+        const tail = this.tail ??= Buffer.allocUnsafe(this.tailCapacity);
+        if (incoming.length >= this.tailCapacity) {
+            incoming.copy(tail, 0, incoming.length - this.tailCapacity);
+            this.tailLength = this.tailCapacity;
+            this.tailWriteOffset = 0;
+            return;
+        }
+        const first = Math.min(incoming.length, this.tailCapacity - this.tailWriteOffset);
+        incoming.copy(tail, this.tailWriteOffset, 0, first);
+        if (first < incoming.length)
+            incoming.copy(tail, 0, first);
+        this.tailWriteOffset = (this.tailWriteOffset + incoming.length) % this.tailCapacity;
+        this.tailLength = Math.min(this.tailCapacity, this.tailLength + incoming.length);
+    }
+    orderedTail() {
+        const tail = this.tail;
+        if (!tail || this.tailLength === 0)
+            return Buffer.alloc(0);
+        if (this.tailLength < this.tailCapacity)
+            return tail.subarray(0, this.tailLength);
+        if (this.tailWriteOffset === 0)
+            return tail;
+        return Buffer.concat([
+            tail.subarray(this.tailWriteOffset),
+            tail.subarray(0, this.tailWriteOffset),
+        ]);
+    }
+}
+function trimIncompleteUtf8Suffix(value) {
+    if (value.length === 0)
+        return value;
+    let lead = value.length - 1;
+    while (lead >= 0 && (value[lead] & 0xc0) === 0x80)
+        lead -= 1;
+    if (lead < 0)
+        return Buffer.alloc(0);
+    const first = value[lead];
+    const expected = first < 0x80 ? 1 : first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : first >= 0xc0 ? 2 : 1;
+    return value.length - lead < expected ? value.subarray(0, lead) : value;
+}
+function trimUtf8ContinuationPrefix(value) {
+    let offset = 0;
+    while (offset < value.length && (value[offset] & 0xc0) === 0x80)
+        offset += 1;
+    return value.subarray(offset);
+}
 /**
  * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
  * On timeout the WHOLE process group is killed, not just the direct child (finding #39.5): an agent spawns
@@ -169,20 +298,87 @@ export function killWindowsProcessTree(pid, spawnCommand = spawn, timeoutMs = WI
  * `taskkill.exe /PID <pid> /T /F` without a shell and waits for that command before resolving.
  */
 export function spawnCapture(cmd, args, opts) {
+    const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_CAPTURE_BYTES;
+    if (!Number.isSafeInteger(maxOutputBytes)
+        || maxOutputBytes < MIN_MAX_CAPTURE_BYTES
+        || maxOutputBytes > DEFAULT_MAX_CAPTURE_BYTES) {
+        throw new RangeError(`maxOutputBytes must be an integer between ${MIN_MAX_CAPTURE_BYTES} and ${DEFAULT_MAX_CAPTURE_BYTES}`);
+    }
     return new Promise((resolve, reject) => {
         if (opts.signal?.aborted) {
-            resolve({ code: null, stdout: '', stderr: '', termination: 'cancelled' });
+            resolve({
+                code: null,
+                stdout: '',
+                stderr: '',
+                termination: 'cancelled',
+                stdoutBytes: 0,
+                stderrBytes: 0,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+            });
             return;
         }
         const platform = opts.processPlatform ?? process.platform;
         const detached = platform !== 'win32';
         const r = resolveSpawnCommand(cmd, args, opts.env, opts.resolvePlatform ?? process.platform);
-        const child = spawn(r.cmd, r.args, { cwd: opts.cwd, shell: false, detached, ...(opts.env ? { env: opts.env } : {}) });
-        let stdout = '';
-        let stderr = '';
+        let stdoutFd;
+        let ownsStdoutFile = false;
+        const cleanupOwnedStdoutFile = () => {
+            if (!ownsStdoutFile || !opts.stdoutFile)
+                return;
+            try {
+                rmSync(opts.stdoutFile, { force: true });
+                ownsStdoutFile = false;
+            }
+            catch { /* best-effort; a caller ownership hook can retry */ }
+        };
+        try {
+            if (opts.stdoutFile) {
+                stdoutFd = openSync(opts.stdoutFile, 'wx', 0o600);
+                ownsStdoutFile = true;
+                opts.onStdoutFileOpened?.(opts.stdoutFile);
+            }
+        }
+        catch (error) {
+            if (stdoutFd !== undefined) {
+                try {
+                    closeSync(stdoutFd);
+                }
+                catch { /* best-effort cleanup before the child exists */ }
+                stdoutFd = undefined;
+            }
+            cleanupOwnedStdoutFile();
+            reject(error);
+            return;
+        }
+        let child;
+        try {
+            child = spawn(r.cmd, r.args, {
+                cwd: opts.cwd,
+                shell: false,
+                detached,
+                ...(opts.env ? { env: opts.env } : {}),
+                ...(stdoutFd !== undefined ? { stdio: ['pipe', stdoutFd, 'pipe'] } : {}),
+            });
+        }
+        catch (error) {
+            if (stdoutFd !== undefined) {
+                try {
+                    closeSync(stdoutFd);
+                }
+                catch { /* best-effort cleanup before rejection */ }
+                stdoutFd = undefined;
+            }
+            cleanupOwnedStdoutFile();
+            reject(error);
+            return;
+        }
+        const stdoutCapture = new BoundedStreamCapture(maxOutputBytes);
+        const stderrCapture = new BoundedStreamCapture(maxOutputBytes);
         let termination = 'exit';
         let killPromise;
         let settled = false;
+        let redirectedStdoutBytes;
         const killTree = () => {
             if (killPromise)
                 return killPromise;
@@ -241,7 +437,28 @@ export function spawnCapture(cmd, args, opts) {
             if (killPromise)
                 await killPromise;
             cleanup();
-            finish();
+            let stdoutFileError;
+            if (stdoutFd !== undefined) {
+                const fd = stdoutFd;
+                stdoutFd = undefined;
+                try {
+                    redirectedStdoutBytes = opts.stdoutFileOps?.size(fd) ?? fstatSync(fd).size;
+                }
+                catch (error) {
+                    stdoutFileError = error;
+                }
+                try {
+                    (opts.stdoutFileOps?.close ?? closeSync)(fd);
+                }
+                catch (error) {
+                    stdoutFileError ??= error;
+                    try {
+                        closeSync(fd);
+                    }
+                    catch { /* retry a failed/injected close before removing our artifact */ }
+                }
+            }
+            finish(stdoutFileError);
         };
         const timer = setTimeout(timeout, opts.timeoutMs);
         opts.signal?.addEventListener('abort', cancel, { once: true });
@@ -255,10 +472,37 @@ export function spawnCapture(cmd, args, opts) {
             process.once('SIGINT', cancel);
             process.once('SIGTERM', cancel);
         }
-        child.stdout?.on('data', (d) => { stdout += d.toString(); });
-        child.stderr?.on('data', (d) => { stderr += d.toString(); });
-        child.on('error', (e) => { void settle(() => reject(e)); });
-        child.on('close', (code) => { void settle(() => resolve({ code, stdout, stderr, termination })); });
+        child.stdout?.on('data', (d) => { stdoutCapture.append(d); });
+        child.stderr?.on('data', (d) => { stderrCapture.append(d); });
+        child.on('error', (e) => {
+            void settle(() => {
+                cleanupOwnedStdoutFile();
+                reject(e);
+            });
+        });
+        child.on('close', (code) => {
+            void settle((stdoutFileError) => {
+                const stdout = stdoutCapture.result();
+                const stderr = stderrCapture.result();
+                const result = {
+                    code,
+                    stdout: stdout.text,
+                    stderr: stderr.text,
+                    termination,
+                    stdoutBytes: redirectedStdoutBytes ?? stdout.bytes,
+                    stderrBytes: stderr.bytes,
+                    stdoutTruncated: stdout.truncated,
+                    stderrTruncated: stderr.truncated,
+                    ...(opts.stdoutFile ? { stdoutRedirected: true } : {}),
+                };
+                if (stdoutFileError !== undefined) {
+                    cleanupOwnedStdoutFile();
+                    reject(new SpawnCaptureFinalizeError(result, stdoutFileError));
+                    return;
+                }
+                resolve(result);
+            });
+        });
         if (opts.input !== undefined) {
             child.stdin?.write(opts.input);
             child.stdin?.end();
@@ -400,6 +644,54 @@ function geminiMessage(value) {
 function geminiWarnings(value) {
     return Array.isArray(value) ? value.map(geminiMessage).filter(Boolean) : [];
 }
+/** Interpret one bounded Gemini subprocess result. Structured output and diagnostics require complete capture. */
+export function classifyGeminiRunnerResult(result, timeoutMs) {
+    if (result.termination === 'timeout') {
+        return { ok: false, output: result.stdout, error: `gemini timed out after ${timeoutMs}ms`, failureKind: 'timeout', exitCode: result.code };
+    }
+    if (result.termination === 'cancelled') {
+        return { ok: false, output: result.stdout, error: 'gemini execution cancelled', failureKind: 'cancelled', exitCode: result.code };
+    }
+    if (result.stdoutTruncated || result.stderrTruncated) {
+        return {
+            ok: false,
+            output: result.stdout,
+            error: 'gemini output exceeded the capture limit',
+            failureKind: 'invalid_output',
+            exitCode: result.code,
+        };
+    }
+    let envelope;
+    try {
+        const parsed = JSON.parse(result.stdout);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            throw new Error('JSON object required');
+        envelope = parsed;
+    }
+    catch {
+        const error = result.stderr || (result.code === 0 ? 'gemini returned invalid JSON output' : `gemini exited with code ${String(result.code)}`);
+        return { ok: false, output: result.stdout, error, failureKind: result.code === 0 ? 'invalid_output' : 'non_zero_exit', exitCode: result.code };
+    }
+    const structuredError = geminiMessage(envelope.error);
+    const warnings = geminiWarnings(envelope.warnings);
+    const terminationError = result.code === 0
+        ? GEMINI_TERMINATION_WARNINGS.find(({ pattern }) => warnings.some((warning) => pattern.test(warning)))?.error
+        : undefined;
+    if (terminationError) {
+        return { ok: false, output: geminiMessage(envelope.response), error: terminationError, failureKind: 'runtime_error', exitCode: result.code };
+    }
+    const denial = [structuredError, ...warnings, result.stderr].find((message) => GEMINI_PERMISSION_DENIAL_RE.test(message));
+    if (denial) {
+        return { ok: false, output: geminiMessage(envelope.response), error: denial, failureKind: 'permission_denied', exitCode: result.code };
+    }
+    if (result.code !== 0) {
+        return { ok: false, output: geminiMessage(envelope.response), error: structuredError || result.stderr || `gemini exited with code ${String(result.code)}`, failureKind: 'non_zero_exit', exitCode: result.code };
+    }
+    if (structuredError) {
+        return { ok: false, output: geminiMessage(envelope.response), error: structuredError, failureKind: 'runtime_error', exitCode: result.code };
+    }
+    return { ok: true, output: geminiMessage(envelope.response), exitCode: result.code };
+}
 /** Build verified Gemini CLI argv. The prompt is appended separately as one argv element with shell:false. */
 export function geminiRunnerArgs(opts = {}) {
     if (opts.skipPermissions || (opts.allowedTools?.length ?? 0) > 0)
@@ -414,48 +706,14 @@ export function makeGeminiHeadlessRunner(opts = {}) {
     const args = geminiRunnerArgs(opts);
     return async (prompt, ctx) => {
         try {
+            const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
             const result = await spawnCapture('gemini', [...args, '--prompt', prompt], {
                 cwd: ctx.cwd,
-                timeoutMs: ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                timeoutMs,
                 ...(ctx.env ? { env: ctx.env } : {}),
                 ...(ctx.signal ? { signal: ctx.signal } : {}),
             });
-            if (result.termination === 'timeout') {
-                return { ok: false, output: result.stdout, error: `gemini timed out after ${ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`, failureKind: 'timeout', exitCode: result.code };
-            }
-            if (result.termination === 'cancelled') {
-                return { ok: false, output: result.stdout, error: 'gemini execution cancelled', failureKind: 'cancelled', exitCode: result.code };
-            }
-            let envelope;
-            try {
-                const parsed = JSON.parse(result.stdout);
-                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                    throw new Error('JSON object required');
-                envelope = parsed;
-            }
-            catch {
-                const error = result.stderr || (result.code === 0 ? 'gemini returned invalid JSON output' : `gemini exited with code ${String(result.code)}`);
-                return { ok: false, output: result.stdout, error, failureKind: result.code === 0 ? 'invalid_output' : 'non_zero_exit', exitCode: result.code };
-            }
-            const structuredError = geminiMessage(envelope.error);
-            const warnings = geminiWarnings(envelope.warnings);
-            const terminationError = result.code === 0
-                ? GEMINI_TERMINATION_WARNINGS.find(({ pattern }) => warnings.some((warning) => pattern.test(warning)))?.error
-                : undefined;
-            if (terminationError) {
-                return { ok: false, output: geminiMessage(envelope.response), error: terminationError, failureKind: 'runtime_error', exitCode: result.code };
-            }
-            const denial = [structuredError, ...warnings, result.stderr].find((message) => GEMINI_PERMISSION_DENIAL_RE.test(message));
-            if (denial) {
-                return { ok: false, output: geminiMessage(envelope.response), error: denial, failureKind: 'permission_denied', exitCode: result.code };
-            }
-            if (result.code !== 0) {
-                return { ok: false, output: geminiMessage(envelope.response), error: structuredError || result.stderr || `gemini exited with code ${String(result.code)}`, failureKind: 'non_zero_exit', exitCode: result.code };
-            }
-            if (structuredError) {
-                return { ok: false, output: geminiMessage(envelope.response), error: structuredError, failureKind: 'runtime_error', exitCode: result.code };
-            }
-            return { ok: true, output: geminiMessage(envelope.response), exitCode: result.code };
+            return classifyGeminiRunnerResult(result, timeoutMs);
         }
         catch (error) {
             return { ok: false, output: '', error: error instanceof Error ? error.message : String(error), failureKind: 'spawn_failed', exitCode: null };

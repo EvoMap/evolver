@@ -19,12 +19,13 @@ export interface LegacyNodeIdCandidateOptions {
  *     and let the hub mint a duplicate. Probed FIRST and ADDITIVELY (the
  *     EVOLVER_HOME/EVOMAP_HOME candidates below are kept), so setting EVOMAP_DIR
  *     never hides an id that lives under one of the home overrides. Deduped.
- *  1. `<evomapHome>/node_id` — the override-aware home file. `resolveEvomapHome()`
- *     honours EVOLVER_HOME (matching v1 `getEvomapDir`) and ADDITIONALLY
- *     EVOMAP_HOME after dropping blank/relative overrides. It wins first so a
- *     home relocated via EVOLVER_HOME reads the file the v1 writer put there —
- *     the lesson of v1 #120, which routed the reader through the same helper as
- *     the writer.
+ *  1. `<identity home>/node_id` — the override-aware home files. `identityHomeCandidates()`
+ *     probes EVOMAP_HOME first (THE identity home, #555 T2 — the evox agentDir split keeps
+ *     node files under `<agentDir>/evomap` while EVOLVER_HOME points at the state root) and
+ *     then EVOLVER_HOME (matching v1 `getEvomapDir`), after dropping blank/relative
+ *     overrides. Probing both keeps the v1 #120 lesson — the reader walks every dir a
+ *     writer may have used — while the order makes a split identity dir win over the
+ *     state root when both hold files.
  *  2. `~/.evomap/node_id` — the UNCONDITIONAL v1 location. v1's writer pivots on
  *     `getEvomapDir` = `EVOLVER_HOME || ~/.evomap` and ignores EVOMAP_HOME
  *     entirely, so unless EVOLVER_HOME was set a v1 file always physically lands

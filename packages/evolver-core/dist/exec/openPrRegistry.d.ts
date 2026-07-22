@@ -44,9 +44,15 @@ export declare function findSignalHints(signals: readonly string[], prs: readonl
     threshold?: number;
     topN?: number;
 }): SignalHint[];
+export declare function parseGhOpenPrListResult(result: {
+    code: number | null;
+    stdout: string;
+    stdoutTruncated?: boolean;
+    termination?: 'exit' | 'timeout' | 'cancelled';
+}): OpenPr[];
 /**
- * Default lister: `gh pr list --state=open --json number,title,headRefName,files --limit 50`. Graceful —
- * returns [] on any failure (gh missing, unauthenticated, timeout, bad JSON) so dedup just turns off. gh is a
+ * Default lister: `gh pr list --state=open --json number,title,headRefName,files --limit 50`.
+ * Legacy fetch/parse failures return []; proven incomplete bounded capture rejects so dedup fails closed. gh is a
  * trusted infra tool, so its own auth (GH_TOKEN/GITHUB_TOKEN, or the gh config under $HOME) is passed through.
  */
 export declare function makeGhPrLister(): OpenPrLister;

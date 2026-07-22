@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { mailbox, hub as hubNs, shadow as shadow_, assetstore } from '@evomap/evolver-core';
+import { mailbox, hub as hubNs, shadow as shadow_, assetstore, util } from '@evomap/evolver-core';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
 import { executeForceUpdate } from '../selfUpdate/executor.js';
@@ -11,6 +11,7 @@ export const DEFAULT_IPC_PORT = 19820;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_PROXY_TICK_ERROR_LENGTH = 2_000;
 const MAX_HEARTBEAT_TICK_ERROR_LENGTH = 1_000;
+const MAX_EPHEMERAL_IPC_LISTEN_ATTEMPTS = 5;
 /**
  * ProxyDaemon(M6-4) 装配层: 把 core(MailboxStore/Dispatcher/MailboxDaemon/IpcServer) +
  * HubBindings(M6-1) + SyncEngine(M6-2) + LifecycleManager(M6-3) 拼成系统级 proxy.
@@ -164,7 +165,7 @@ export class ProxyDaemon {
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
                 extraRoutes: [(ctx) => this.handleProxyRoute(ctx)],
             });
-            const port = await this.ipc.listen(this.deps.ipcPort ?? DEFAULT_IPC_PORT);
+            const port = await this.listenIpc(this.ipc);
             try {
                 this.deps.onIpcListen?.(port);
             }
@@ -187,6 +188,22 @@ export class ProxyDaemon {
             this.started = false;
             throw err;
         }
+    }
+    async listenIpc(ipc) {
+        const requestedPort = this.deps.ipcPort ?? DEFAULT_IPC_PORT;
+        if (requestedPort !== 0)
+            return ipc.listen(requestedPort);
+        for (let attempt = 0; attempt < MAX_EPHEMERAL_IPC_LISTEN_ATTEMPTS; attempt += 1) {
+            const assignedPort = await ipc.listen(0);
+            if (!util.isFetchForbiddenPort(assignedPort))
+                return assignedPort;
+            // The outer start() cleanup owns the final listener when retries are exhausted.
+            if (attempt === MAX_EPHEMERAL_IPC_LISTEN_ATTEMPTS - 1) {
+                throw new Error('proxy_ipc_safe_port_unavailable');
+            }
+            await ipc.close();
+        }
+        throw new Error('proxy_ipc_safe_port_unavailable');
     }
     /** 单轮: core pump/TTL/wake + proxy 出站 + hub 入站 + 到点心跳. */
     async tick() {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { algo, assetstore, events, exec, hub, verify } from '@evomap/evolver-core';
@@ -338,7 +338,7 @@ export async function runClaudeDistill(prompt, ctx) {
     const env = exec.scrubAgentEnv(ctx.env, { allowPrefixes: exec.getRunnerSpec('claude').envAllow.prefixes });
     try {
         const r = await exec.spawnCapture('claude', args, { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, input: prompt, env });
-        return { exitCode: r.code, stdout: r.stdout, stderr: r.stderr };
+        return { exitCode: r.code, stdout: r.stdout, stderr: r.stderr, stdoutTruncated: r.stdoutTruncated };
     }
     catch (e) {
         return { exitCode: null, stdout: '', stderr: e instanceof Error ? e.message : String(e) };
@@ -356,6 +356,30 @@ export function codexDistillArgs(cwd, lastMessageFile, model) {
     args.push('-');
     return args;
 }
+/** Read Codex's final-message file without allowing that subprocess-owned file to bypass output bounds. */
+export function readBoundedDistillOutputFile(path, maxBytes = exec.DEFAULT_MAX_CAPTURE_BYTES) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 256)
+        throw new RangeError('maxBytes must be an integer >= 256');
+    const fd = openSync(path, 'r');
+    try {
+        const buffer = Buffer.allocUnsafe(maxBytes + 1);
+        let offset = 0;
+        while (offset < buffer.length) {
+            const read = readSync(fd, buffer, offset, buffer.length - offset, null);
+            if (read === 0)
+                break;
+            offset += read;
+        }
+        const truncated = offset > maxBytes;
+        return {
+            text: truncated ? '' : buffer.subarray(0, offset).toString('utf8').trim(),
+            truncated,
+        };
+    }
+    finally {
+        closeSync(fd);
+    }
+}
 /** Distill a prompt with `codex exec` (read-only). Reads the clean final message from --output-last-message so
  *  parseDistillOutput sees a bare gene JSON; falls back to raw stdout (pickGeneObject scans it) if the file is absent.
  *  Windows: codex is a `.cmd` npm shim, so route through resolveSpawnCommand (shell-free). */
@@ -367,13 +391,20 @@ export async function runCodexDistill(prompt, ctx) {
     try {
         const r = await exec.spawnCapture(resolved.cmd, resolved.args, { cwd: ctx.cwd, timeoutMs: ctx.timeoutMs, input: prompt, env });
         let stdout = r.stdout;
+        let stdoutTruncated = r.stdoutTruncated;
         try {
-            const last = readFileSync(lastMessageFile, 'utf8').trim();
-            if (last)
-                stdout = last;
+            const last = readBoundedDistillOutputFile(lastMessageFile);
+            if (last.truncated) {
+                stdout = '';
+                stdoutTruncated = true;
+            }
+            else if (last.text) {
+                stdout = last.text;
+                stdoutTruncated = false;
+            }
         }
         catch { /* file absent (codex failed early) → keep raw stdout for pickGeneObject */ }
-        return { exitCode: r.code, stdout, stderr: r.stderr };
+        return { exitCode: r.code, stdout, stderr: r.stderr, stdoutTruncated };
     }
     catch (e) {
         return { exitCode: null, stdout: '', stderr: e instanceof Error ? e.message : String(e) };
@@ -466,6 +497,9 @@ export async function autoDistillLlm(options) {
         // bumping here would let an environmental hiccup (e.g. a rate-limit surfacing as exit 1 rather than null)
         // permanently exhaust this data hash after MAX_ATTEMPTS — the exact silent stall this exemption prevents.
         return { ok: false, mode, reason: llm.exitCode === null ? 'claude_spawn_error' : 'claude_nonzero_exit', dataHash: input.dataHash };
+    }
+    if (llm.stdoutTruncated) {
+        return { ok: false, mode, reason: 'llm_output_truncated', dataHash: input.dataHash };
     }
     const raw = parseDistillOutput(llm.stdout);
     const candidate0 = asGeneCandidate(raw);

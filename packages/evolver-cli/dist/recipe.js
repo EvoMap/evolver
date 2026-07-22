@@ -701,10 +701,16 @@ function resolveRecipeHubCredentials(env) {
  * the next recipe run (H3). Kept env-pure (no events.evomapHome()) so reset stays hermetic under an injected env.
  */
 export function explicitRecipeHomes(env) {
+    // Identity-first order (#555 T2): EVOMAP_HOME is THE identity home and outranks the state root
+    // (EVOLVER_HOME). This order decides BOTH the read fall-through AND rotatePersistDir (= homes[0]),
+    // so under the evox agentDir split (EVOMAP_HOME=<agentDir>/evomap, EVOLVER_HOME=<agentDir>/evolver)
+    // a hub-rotated secret persists into the evomap dir the desktop actually reads — the old
+    // EVOLVER_HOME-first order would strand it in the state root and split-brain the node on rotation.
+    // Read-your-writes holds because read and persist share this one order; single-home setups are unchanged.
     const explicit = [
+        env['EVOMAP_HOME'],
         env['EVOMAP_DIR'],
         env['EVOLVER_HOME'],
-        env['EVOMAP_HOME'],
     ];
     return uniqueStrings(explicit.map((value) => value?.trim()).filter((value) => Boolean(value)));
 }

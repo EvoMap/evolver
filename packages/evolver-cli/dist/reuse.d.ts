@@ -1,7 +1,7 @@
 import { assetstore, hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
 declare const REUSE_CONTRACT = "reuse.v1";
-export type ReuseStatus = 'ok' | 'dry_run' | 'invalid_arg' | 'missing_id' | 'unsupported' | 'not_found' | 'unauthorized' | 'unavailable' | 'network' | 'internal_error';
+export type ReuseStatus = 'ok' | 'dry_run' | 'invalid_arg' | 'missing_id' | 'unsupported' | 'not_found' | 'unauthorized' | 'unavailable' | 'network' | 'rate_limited' | 'internal_error';
 /** The stable reuse.v1 machine contract printed to stdout on success AND failure. Field set is locked by the
  *  consumer (evox-desktop `evolverReuseEnvelope`, #1008): { ok, contract, status, reason, message }. */
 export interface ReuseEnvelope {
@@ -11,9 +11,14 @@ export interface ReuseEnvelope {
     reason: string;
     message: string;
 }
-/** Minimal hub surface this command needs: the reuse pull is a single fetch-by-id. PublicHubCapability satisfies it. */
+/** Minimal hub surface this command needs: a single fetch-by-id, plus an optional trust-establishing hello
+ *  (PublicHubCapability satisfies both; a bare fetcher in tests may omit hello). */
 type AssetByIdFetcher = {
     fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
+    hello?(opts: {
+        rotate: boolean;
+        evolverVersion?: string;
+    }): Promise<unknown>;
 };
 export interface ReuseCliDeps {
     store?: assetstore.AssetStoreProvider;

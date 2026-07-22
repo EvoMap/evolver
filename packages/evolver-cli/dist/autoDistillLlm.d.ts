@@ -30,6 +30,7 @@ export interface LlmDistillRunnerResult {
     exitCode: number | null;
     stdout: string;
     stderr?: string;
+    stdoutTruncated?: boolean;
 }
 export type LlmDistillRunner = (prompt: string, ctx: {
     cwd: string;
@@ -80,6 +81,11 @@ export declare function runClaudeDistill(prompt: string, ctx: {
  *  `--output-last-message <file>`: capture ONLY the final assistant message (the gene JSON), avoiding codex's stdout
  *  preamble/token-count noise. Prompt arrives via stdin (the trailing `-`). Verified live against codex-cli 0.137.0. */
 export declare function codexDistillArgs(cwd: string, lastMessageFile: string, model?: string): string[];
+/** Read Codex's final-message file without allowing that subprocess-owned file to bypass output bounds. */
+export declare function readBoundedDistillOutputFile(path: string, maxBytes?: number): {
+    text: string;
+    truncated: boolean;
+};
 /** Distill a prompt with `codex exec` (read-only). Reads the clean final message from --output-last-message so
  *  parseDistillOutput sees a bare gene JSON; falls back to raw stdout (pickGeneObject scans it) if the file is absent.
  *  Windows: codex is a `.cmd` npm shim, so route through resolveSpawnCommand (shell-free). */

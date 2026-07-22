@@ -14,6 +14,7 @@ import { assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv } from './recipe.js';
+import { getCliVersion } from './version.js';
 const REUSE_CONTRACT = 'reuse.v1';
 const MAX_ID_LENGTH = 200;
 const REUSE_USAGE = [
@@ -86,6 +87,11 @@ export async function runReuseCommand(argv, deps = {}) {
         }
         // 3) Pull the global asset by id, write it into the local recall library (put dedups → idempotent on repeat).
         const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
+        // One-shot CLIs never heartbeat, so the hub may hold no env fingerprint for this node and its anti-abuse
+        // layer then 403s /a2a/fetch (`bulk_fetch_blocked: IP antibody`, #555). A fingerprinted hello
+        // (rotate:false — never requests secret rotation) establishes that trust first. Best-effort by design:
+        // a hello failure must not block the fetch — the fetch's own error path classifies precisely.
+        await establishReuseTrust(hub);
         const asset = await hub.fetchAssetById(opts.id);
         if (!asset)
             return emit({ ok: false, status: 'not_found', message: `asset ${opts.id} not found on the hub` }, ctx);
@@ -232,17 +238,48 @@ function logReuse(deps, opts, asset, source) {
         extra: { source },
     });
 }
+async function establishReuseTrust(hub) {
+    if (typeof hub.hello !== 'function')
+        return;
+    try {
+        await hub.hello({ rotate: false, evolverVersion: getCliVersion() });
+    }
+    catch { /* fetch decides the outcome */ }
+}
+const ANTI_ABUSE_BLOCK_MESSAGE = 'hub anti-abuse temporarily blocked asset fetch for this node; keep the local Evolver proxy running so the node builds trust, then retry';
+function antiAbuseOutcome() {
+    return { ok: false, status: 'rate_limited', message: ANTI_ABUSE_BLOCK_MESSAGE };
+}
+function isAntiAbuseFetchBlock(status, code) {
+    return status === 403 && code !== undefined && /antibody|bulk_fetch|anti[-_]?abuse/i.test(code);
+}
+function hubErrorField(body) {
+    if (!body || typeof body !== 'object')
+        return undefined;
+    const err = body['error'];
+    return typeof err === 'string' ? err : undefined;
+}
 function mapError(e) {
-    if (e instanceof AuthError)
+    if (e instanceof AuthError) {
+        // hubFetch raises AuthError for BOTH 401 and 403, so the hub's anti-abuse 403
+        // (`bulk_fetch_blocked: IP antibody active`) used to be misreported as "log in" — it is an
+        // abuse-control block on a perfectly healthy credential, not an auth failure (#555).
+        if (isAntiAbuseFetchBlock(e.status, e.errorCode))
+            return antiAbuseOutcome();
         return { ok: false, status: 'unauthorized', message: 'hub authentication failed; run `evolver login` or set EVOMAP_NODE_SECRET' };
+    }
     if (e instanceof HubUnreachableError)
         return { ok: false, status: 'network', message: 'hub is unreachable' };
     if (e instanceof HubClientError) {
+        if (e.status === 429)
+            return { ok: false, status: 'rate_limited', message: 'hub rate limited the request; retry later' };
+        if (isAntiAbuseFetchBlock(e.status, hubErrorField(e.body)))
+            return antiAbuseOutcome();
         if (e.status === 401 || e.status === 403)
             return { ok: false, status: 'unauthorized', message: 'hub authentication failed; run `evolver login` or set EVOMAP_NODE_SECRET' };
         if (e.status === 404)
             return { ok: false, status: 'not_found', message: 'asset not found on the hub' };
-        if (e.status === 429 || e.status >= 500)
+        if (e.status >= 500)
             return { ok: false, status: 'network', message: 'hub is temporarily unavailable' };
         return { ok: false, status: 'internal_error', message: 'hub rejected the reuse request' };
     }

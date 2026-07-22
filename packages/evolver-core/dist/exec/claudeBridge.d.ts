@@ -4,13 +4,16 @@ import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneStrategyInfo } from './prompt.js';
 import type { PersonalityStore } from '../personality/store.js';
 import { type AgentRunner, type AgentRunnerOptions, type RunnerName } from './runnerRegistry.js';
-export { resolveSpawnCommand, spawnCapture, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
 export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, } from './runnerRegistry.js';
 export interface GitRunnerOptions {
     processSignalMode?: 'cancel' | 'ignore';
 }
 /** Run a git subcommand in cwd and return its stdout. */
 export type GitRunner = (args: readonly string[], cwd: string, signal?: AbortSignal, options?: GitRunnerOptions) => Promise<string>;
+export type GitPatchWriter = (args: readonly string[], cwd: string, destination: string, signal?: AbortSignal, 
+/** Call immediately after this writer exclusively creates `destination`. */
+onDestinationOpened?: () => void) => Promise<void>;
 /** Resolve the selected gene's learned strategy (for prompt enrichment). */
 export type GeneResolver = (geneId: string) => Promise<GeneStrategyInfo | null> | GeneStrategyInfo | null;
 /** Decide success from the post-run working tree (e.g. run the gene's validation plan). */
@@ -32,6 +35,12 @@ export interface ExecBridgeOptions {
     agentOptions?: AgentRunnerOptions;
     /** Default: spawns `git`. Inject a fake in tests. */
     git?: GitRunner;
+    /** Optional complete-patch sink. The default streams built-in git output directly to disk. */
+    gitPatchWriter?: GitPatchWriter;
+    /** Test seam for fallback patch persistence; production callers should use the exclusive private writer. */
+    writePatchFile?: (path: string, patch: string) => void;
+    /** Test seam for temporary patch cleanup; production callers should use the filesystem default. */
+    removePatchFile?: (path: string) => void;
     /** Default: EVOLVE_EXEC_BRIDGE === '1'. Set true to force-enable (e.g. integration tests). */
     enabled?: boolean;
     /**
@@ -108,8 +117,9 @@ export declare function scrubAgentEnv(env: NodeJS.ProcessEnv, opts?: {
     allowKeys?: readonly string[];
     allowPrefixes?: readonly string[];
 }): NodeJS.ProcessEnv;
-/** Default git runner: spawn `git <args>` in cwd, return stdout (empty string on error). Env scrubbed — git never needs evolver/hub secrets. */
+/** Default git runner: every incomplete command result fails closed. */
 export declare const defaultGitRunner: GitRunner;
+export declare const defaultGitPatchWriter: GitPatchWriter;
 /**
  * Build the `execute` function CycleEngine/runEvolutionCycle consume. Default-off: throws
  * ExecBridgeDisabledError on first call unless enabled.

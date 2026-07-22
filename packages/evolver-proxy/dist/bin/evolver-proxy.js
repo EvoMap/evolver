@@ -242,11 +242,12 @@ export function proxyUsage(command = 'evolver-proxy') {
         'Starts the local Evolver proxy daemon.',
         '',
         'Options (CLI overrides environment variables):',
-        '  --home <dir>       Root for assets, store, settings, and traces',
-        '  --store <path>     Mailbox store path (EVOLVER_PROXY_STORE)',
-        '  --settings <path>  Proxy settings file (EVOLVER_PROXY_SETTINGS_FILE)',
-        '  --env-file <path>  Environment file (EVOLVER_ENV_FILE)',
-        '  -h, --help         Show this help',
+        '  --home <dir>         Root for assets, store, settings, and traces',
+        '  --evomap-home <dir>  Identity home for node_id/node_secret (EVOMAP_HOME); defaults to --home',
+        '  --store <path>       Mailbox store path (EVOLVER_PROXY_STORE)',
+        '  --settings <path>    Proxy settings file (EVOLVER_PROXY_SETTINGS_FILE)',
+        '  --env-file <path>    Environment file (EVOLVER_ENV_FILE)',
+        '  -h, --help           Show this help',
         '',
         'Required for public mode:',
         '  EVOMAP_NODE_SECRET or A2A_NODE_SECRET',
@@ -267,6 +268,7 @@ export function proxyUsage(command = 'evolver-proxy') {
 }
 const PROXY_PATH_FLAGS = new Map([
     ['--home', 'home'],
+    ['--evomap-home', 'evomapHome'],
     ['--store', 'store'],
     ['--settings', 'settings'],
     ['--env-file', 'envFile'],
@@ -309,6 +311,11 @@ export function prepareProxyCliEnvironment(argv, env) {
         env['EVOLVER_PROXY_SETTINGS_FILE'] = join(options.home, 'settings.json');
         env['EVOLVER_LLM_TRACE_DIR'] = join(options.home, 'proxy', 'traces');
     }
+    // Identity/state split for embedders whose node identity lives outside the state root (evox agentDir keeps
+    // node_id/node_secret under <agentDir>/evomap while evolver state lives under <agentDir>/evolver, #555 T2).
+    // Applied AFTER --home so it overrides the single-root EVOMAP_HOME derivation; state paths stay on --home.
+    if (options.evomapHome)
+        env['EVOMAP_HOME'] = options.evomapHome;
     if (options.store)
         env['EVOLVER_PROXY_STORE'] = options.store;
     if (options.settings)
@@ -706,13 +713,29 @@ function readTrimmedFile(path) {
         return undefined;
     }
 }
+// Identity-home probe order (#555 T2): EVOMAP_HOME is THE identity home and outranks the state root
+// (EVOLVER_HOME) — under the evox agentDir split (`--home <agentDir>/evolver --evomap-home <agentDir>/evomap`)
+// node files live only under the evomap dir, and the old single-home read (EVOLVER_HOME-first) would miss
+// them and fall back to the machine-global ~/.evomap node. Probing is a fall-through union, so single-home
+// setups (only EVOLVER_HOME, or neither) resolve exactly as before.
+function identityHomeCandidates(env = process.env) {
+    const candidates = [
+        env['EVOMAP_HOME'],
+        env['EVOMAP_DIR'],
+        env['EVOLVER_HOME'],
+        join(env['HOME'] || homedir(), '.evomap'),
+    ];
+    return [...new Set(candidates.map((value) => value?.trim()).filter((value) => Boolean(value)))];
+}
 function readLegacyNodeSecret(env = process.env) {
-    const home = evomapHome(env);
-    const nodeSecret = readTrimmedFile(join(home, 'node_secret'));
-    if (!nodeSecret || !isNodeSecret(nodeSecret))
-        return undefined;
-    const nodeSecretVersion = parseNodeSecretVersion(readTrimmedFile(join(home, 'node_secret_version')));
-    return { nodeSecret, ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}) };
+    for (const home of identityHomeCandidates(env)) {
+        const nodeSecret = readTrimmedFile(join(home, 'node_secret'));
+        if (!nodeSecret || !isNodeSecret(nodeSecret))
+            continue;
+        const nodeSecretVersion = parseNodeSecretVersion(readTrimmedFile(join(home, 'node_secret_version')));
+        return { nodeSecret, ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}) };
+    }
+    return undefined;
 }
 // Durable copies of the legacy node_secret, cleared on hub-signalled divergence.
 // Store keys mirror cli LOCAL_SECRET_STATE_KEYS (index.ts:82); on-disk files mirror
@@ -728,13 +751,17 @@ const LEGACY_SECRET_FILES = ['node_secret', 'node_secret_version'];
 export function clearDivergedPublicNodeSecret(store, env = process.env) {
     for (const key of LOCAL_SECRET_STATE_KEYS)
         store.setState(key, '');
-    const home = evomapHome(env);
-    for (const file of LEGACY_SECRET_FILES) {
-        try {
-            rmSync(join(home, file), { force: true });
-        }
-        catch (err) {
-            process.stderr.write(`[evolver-proxy] failed to unlink diverged ${file}: ${err instanceof Error ? err.message : String(err)}\n`);
+    // Wipe every identity-home candidate, not just the resolved state home: under the identity/state split
+    // (EVOMAP_HOME ≠ EVOLVER_HOME) the diverged files live in the evomap dir, and clearing only one home would
+    // leave them to resurrect the diverged secret on the next start (same union rationale as reset-local-secret).
+    for (const home of identityHomeCandidates(env)) {
+        for (const file of LEGACY_SECRET_FILES) {
+            try {
+                rmSync(join(home, file), { force: true });
+            }
+            catch (err) {
+                process.stderr.write(`[evolver-proxy] failed to unlink diverged ${file}: ${err instanceof Error ? err.message : String(err)}\n`);
+            }
         }
     }
 }

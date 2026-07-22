@@ -17,11 +17,22 @@ function cleanAbsolutePath(value) {
         return undefined;
     return isAbsolute(trimmed) ? trimmed : undefined;
 }
-function resolveEvomapHome(opts, fallbackHomeDir) {
-    return cleanAbsolutePath(opts.evomapHomeDir)
-        ?? cleanAbsolutePath(process.env['EVOLVER_HOME'])
-        ?? cleanAbsolutePath(process.env['EVOMAP_HOME'])
-        ?? (fallbackHomeDir === undefined ? undefined : join(fallbackHomeDir, '.evomap'));
+// Identity homes in probe order (#555 T2): the explicit test/caller override wins outright; otherwise
+// EVOMAP_HOME (THE identity home) outranks EVOLVER_HOME (the state root) so the evox agentDir split
+// (`--evomap-home <agentDir>/evomap` + `--home <agentDir>/evolver`) reads node files from the evomap dir
+// instead of missing them and falling through to the machine-global ~/.evomap node. Both homes stay in the
+// candidate union, so single-home setups resolve exactly as before.
+function identityHomeCandidates(opts, fallbackHomeDir) {
+    const fromOpts = cleanAbsolutePath(opts.evomapHomeDir);
+    if (fromOpts !== undefined)
+        return [fromOpts];
+    const homes = [
+        cleanAbsolutePath(process.env['EVOMAP_HOME']),
+        cleanAbsolutePath(process.env['EVOLVER_HOME']),
+    ].filter((value) => value !== undefined);
+    if (homes.length > 0)
+        return homes;
+    return fallbackHomeDir === undefined ? [] : [join(fallbackHomeDir, '.evomap')];
 }
 function packageNameAt(dir) {
     const pkgPath = join(dir, 'package.json');
@@ -66,12 +77,13 @@ function installRootNodeIdCandidates(moduleDir) {
  *     and let the hub mint a duplicate. Probed FIRST and ADDITIVELY (the
  *     EVOLVER_HOME/EVOMAP_HOME candidates below are kept), so setting EVOMAP_DIR
  *     never hides an id that lives under one of the home overrides. Deduped.
- *  1. `<evomapHome>/node_id` — the override-aware home file. `resolveEvomapHome()`
- *     honours EVOLVER_HOME (matching v1 `getEvomapDir`) and ADDITIONALLY
- *     EVOMAP_HOME after dropping blank/relative overrides. It wins first so a
- *     home relocated via EVOLVER_HOME reads the file the v1 writer put there —
- *     the lesson of v1 #120, which routed the reader through the same helper as
- *     the writer.
+ *  1. `<identity home>/node_id` — the override-aware home files. `identityHomeCandidates()`
+ *     probes EVOMAP_HOME first (THE identity home, #555 T2 — the evox agentDir split keeps
+ *     node files under `<agentDir>/evomap` while EVOLVER_HOME points at the state root) and
+ *     then EVOLVER_HOME (matching v1 `getEvomapDir`), after dropping blank/relative
+ *     overrides. Probing both keeps the v1 #120 lesson — the reader walks every dir a
+ *     writer may have used — while the order makes a split identity dir win over the
+ *     state root when both hold files.
  *  2. `~/.evomap/node_id` — the UNCONDITIONAL v1 location. v1's writer pivots on
  *     `getEvomapDir` = `EVOLVER_HOME || ~/.evomap` and ignores EVOMAP_HOME
  *     entirely, so unless EVOLVER_HOME was set a v1 file always physically lands
@@ -97,12 +109,12 @@ function installRootNodeIdCandidates(moduleDir) {
 export function legacyNodeIdCandidates(opts = {}) {
     const home = cleanAbsolutePath(opts.homeDir) ?? cleanAbsolutePath(homedir());
     const moduleDir = opts.moduleDir ?? _moduleDir;
-    const evomapHome = resolveEvomapHome(opts, home);
+    const evomapHomes = identityHomeCandidates(opts, home);
     const evomapDir = cleanAbsolutePath(opts.evomapDir) ?? cleanAbsolutePath(process.env['EVOMAP_DIR']);
     return [
         ...new Set([
             ...(evomapDir === undefined ? [] : [join(evomapDir, 'node_id')]),
-            ...(evomapHome === undefined ? [] : [join(evomapHome, 'node_id')]),
+            ...evomapHomes.map((dir) => join(dir, 'node_id')),
             ...(home === undefined ? [] : [join(home, '.evomap', 'node_id')]),
             ...installRootNodeIdCandidates(moduleDir),
         ]),

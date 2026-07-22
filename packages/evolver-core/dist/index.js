@@ -25,3 +25,4 @@ export * as shadow from './shadow/index.js';
 export * as ops from './ops/index.js';
 export * as util from './util/index.js';
 export * as trace from './trace/index.js';
+export * as issueReporter from './issueReporter/index.js';

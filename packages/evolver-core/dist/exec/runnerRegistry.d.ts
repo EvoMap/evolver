@@ -1,4 +1,6 @@
 export declare const DEFAULT_TIMEOUT_MS = 600000;
+/** Per-stream stdout/stderr capture ceiling. A child can emit indefinitely without growing the parent heap. */
+export declare const DEFAULT_MAX_CAPTURE_BYTES = 1048576;
 export interface AgentRunContext {
     cwd: string;
     timeoutMs?: number;
@@ -73,6 +75,17 @@ export interface SpawnCaptureOptions {
     signal?: AbortSignal;
     /** Cleanup subprocesses can shield themselves from repeated SIGINT/SIGTERM instead of cancelling. */
     processSignalMode?: 'cancel' | 'ignore';
+    /** Maximum retained bytes for each of stdout and stderr. The original byte count is still reported. */
+    maxOutputBytes?: number;
+    /** Stream stdout directly to a file when the complete artifact must outlive the subprocess. */
+    stdoutFile?: string;
+    /** Ownership hook fired only after an exclusive redirected stdout artifact is opened successfully. */
+    onStdoutFileOpened?: (path: string) => void;
+    /** Test seam for redirected stdout finalization; production callers should use the filesystem defaults. */
+    stdoutFileOps?: {
+        size(fd: number): number;
+        close(fd: number): void;
+    };
     resolvePlatform?: NodeJS.Platform;
     /** Test seam for Windows process behavior; production callers should use the default. */
     processPlatform?: NodeJS.Platform;
@@ -84,6 +97,17 @@ export interface SpawnCaptureResult {
     stdout: string;
     stderr: string;
     termination: 'exit' | 'timeout' | 'cancelled';
+    /** Present on real spawn results; optional so injected legacy test seams remain source-compatible. */
+    stdoutBytes?: number;
+    stderrBytes?: number;
+    stdoutTruncated?: boolean;
+    stderrTruncated?: boolean;
+    stdoutRedirected?: boolean;
+}
+/** A redirected stdout artifact could not be finalized; the subprocess outcome remains available for classification. */
+export declare class SpawnCaptureFinalizeError extends Error {
+    readonly result: SpawnCaptureResult;
+    constructor(result: SpawnCaptureResult, cause?: unknown);
 }
 /**
  * Promise wrapper over spawn (shell:false). Optionally writes `input` to stdin; resolves with stdout/exit.
@@ -136,6 +160,8 @@ export declare const claudeHeadlessRunner: AgentRunner;
 export declare function codexRunnerArgs(opts?: AgentRunnerOptions): string[];
 /** Headless `codex exec` runner. Working root pinned with `--cd`; prompt is the trailing positional arg (shell:false). */
 export declare function makeCodexHeadlessRunner(opts?: AgentRunnerOptions): AgentRunner;
+/** Interpret one bounded Gemini subprocess result. Structured output and diagnostics require complete capture. */
+export declare function classifyGeminiRunnerResult(result: SpawnCaptureResult, timeoutMs: number): AgentRunResult;
 /** Build verified Gemini CLI argv. The prompt is appended separately as one argv element with shell:false. */
 export declare function geminiRunnerArgs(opts?: AgentRunnerOptions): string[];
 /** Headless Gemini runner with structured failure classification; stdout text alone never proves execution success. */

@@ -52,6 +52,7 @@ export interface RunProxyCliOptions {
 }
 export interface ProxyCliPathOptions {
     home?: string;
+    evomapHome?: string;
     store?: string;
     settings?: string;
     envFile?: string;

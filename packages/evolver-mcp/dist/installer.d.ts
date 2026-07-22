@@ -32,6 +32,8 @@ export interface InstallOptions {
     hookCommand?: string;
     /** Reinstall even if an evolver install is already present. */
     force?: boolean;
+    /** Plan and validate without writing config or backup files. */
+    dryRun?: boolean;
     /** Cursor only: the top genes to render into .cursor/rules/evolver.mdc. The daemon refreshes these on change;
      *  a one-shot `setup-hooks --runtime=cursor` install seeds the file (empty ⇒ a placeholder the daemon fills). */
     genes?: readonly CursorGene[];
@@ -40,12 +42,44 @@ export interface InstallOptions {
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. Intended for hermetic
      *  embedding/tests; normal callers omit it. configRoot and scope do not affect Antigravity's user config. */
     homeDir?: string;
+    /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
+    kiroHome?: string;
+    /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
+    xdgConfigHome?: string;
+    /** OpenCode user scope only: explicit OPENCODE_CONFIG file override. */
+    opencodeConfig?: string;
+    /** OpenCode user scope only: explicit OPENCODE_CONFIG_DIR override. */
+    opencodeConfigDir?: string;
+    /** OpenCode only: inline config loaded after project/custom-directory config. */
+    opencodeConfigContent?: string;
+    /** OpenCode only: mirrors truthy OPENCODE_DISABLE_PROJECT_CONFIG handling. */
+    opencodeDisableProjectConfig?: boolean;
+    /** OpenCode only: injectable managed-config directory for hermetic tests. */
+    opencodeManagedConfigDir?: string;
+    /** OpenCode only: injectable macOS managed-preference paths for hermetic tests. */
+    opencodeManagedPreferencePaths?: readonly string[];
+    /** OpenCode only: injectable platform used to resolve system managed paths. */
+    opencodePlatform?: NodeJS.Platform;
+    /** OpenCode only: injectable ProgramData used to resolve the Windows managed path. */
+    opencodeProgramData?: string;
+    /** OpenCode only: injectable username used to resolve macOS managed preferences. */
+    opencodeUsername?: string;
 }
 export interface UninstallOptions {
     configRoot: string;
     scope?: InstallScope;
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. */
     homeDir?: string;
+    /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
+    kiroHome?: string;
+    /** Validate and report the uninstall without changing config or backup files. */
+    dryRun?: boolean;
+    /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
+    xdgConfigHome?: string;
+    /** OpenCode user scope only: explicit OPENCODE_CONFIG file override. */
+    opencodeConfig?: string;
+    /** OpenCode user scope only: explicit OPENCODE_CONFIG_DIR override. */
+    opencodeConfigDir?: string;
 }
 export interface InstallResult {
     ok: boolean;
@@ -54,6 +88,9 @@ export interface InstallResult {
     /** Absolute paths written (install) or cleaned (uninstall). */
     files: string[];
     alreadyInstalled?: boolean;
+    dryRun?: boolean;
+    verified?: boolean;
+    backups?: string[];
     error?: string;
 }
 export declare class SymlinkRefusedError extends Error {

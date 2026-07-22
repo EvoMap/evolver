@@ -1,11 +1,11 @@
 {
   "package": "@evomap/evolver",
-  "version": "2.0.0-beta.5",
+  "version": "2.0.0-beta.6",
   "channel": "v2-beta",
   "publicRepo": "EvoMap/evolver",
   "publicBranch": "v2-beta",
-  "releaseTag": "v2.0.0-beta.5",
-  "releaseTitle": "Evolver v2 beta v2.0.0-beta.5",
+  "releaseTag": "v2.0.0-beta.6",
+  "releaseTitle": "Evolver v2 beta v2.0.0-beta.6",
   "prerelease": true,
   "obfuscate": [],
   "workspacePackages": [
