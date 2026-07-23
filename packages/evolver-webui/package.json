@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-webui",
-  "version": "2.0.0-beta.13",
+  "version": "2.0.0-beta.14",
   "private": false,
   "type": "module",
   "description": "保活/可视化 WebUI",
@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.13"
+    "@evomap/evolver-core": "2.0.0-beta.14"
   },
   "repository": {
     "type": "git",

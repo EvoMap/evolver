@@ -139,17 +139,19 @@ export async function runPublishCommand(args, deps = {}) {
             const validationCredits = extractCredits(validation.body);
             if (!validation.ok) {
                 const reason = publishReasonFromResponse(validation.status, validation.body);
+                const detail = hubDetailFromBody(validation.body);
                 if (parsed.dryRun && reason === 'quality_gate_failed') {
                     bundle.gates.quality = 'fail';
                     if (!bundle.blockReasons.includes('quality_gate_failed'))
                         bundle.blockReasons.push('quality_gate_failed');
-                    return write(dryRunEnvelope(bundle, validationCredits), 0);
+                    return write(dryRunEnvelope(bundle, validationCredits, detail), 0);
                 }
                 return write(publishFailure(reason, publishReasonMessage(reason), {
                     retryable: publishRetryable(reason),
                     mode: parsed.dryRun ? 'dry_run' : 'publish',
                     gates: parsed.dryRun ? bundle.gates : { ...bundle.gates, quality: 'fail' },
                     assets: bundle.assets,
+                    ...(detail ? { detail } : {}),
                     ...(validationCredits ? { credits: validationCredits } : {}),
                 }), 1);
             }
@@ -160,11 +162,13 @@ export async function runPublishCommand(args, deps = {}) {
             const publishCredits = extractCredits(published.body);
             if (!published.ok) {
                 const reason = publishReasonFromResponse(published.status, published.body);
+                const detail = hubDetailFromBody(published.body);
                 return write(publishFailure(reason, publishReasonMessage(reason), {
                     retryable: publishRetryable(reason),
                     mode: 'publish',
                     gates: bundle.gates,
                     assets: bundle.assets,
+                    ...(detail ? { detail } : {}),
                     ...(publishCredits ? { credits: publishCredits } : {}),
                 }), 1);
             }
@@ -488,7 +492,7 @@ function stripPublishMetadata(asset) {
 function storeBaseDir(store, deps) {
     return store instanceof assetstore.LocalJsonlProvider ? store.baseDir : deps.assetsDir ?? events.assetsDir();
 }
-function dryRunEnvelope(bundle, credits) {
+function dryRunEnvelope(bundle, credits, blockDetail) {
     const suppressPayload = bundle.blockReasons.includes('leak_detected');
     return {
         ok: true,
@@ -497,6 +501,7 @@ function dryRunEnvelope(bundle, credits) {
         reversibility: REVERSIBILITY,
         blocked: bundle.blockReasons.length > 0,
         block_reasons: bundle.blockReasons,
+        ...(blockDetail ? { block_details: [blockDetail] } : {}),
         assets: bundle.assets,
         ...(suppressPayload ? {} : { payload: { assets: bundle.sanitized } }),
         gates: bundle.gates,
@@ -510,6 +515,7 @@ function publishFailure(reason, message, opts) {
         ...(opts.mode ? { mode: opts.mode } : {}),
         ...(opts.gates ? { gates: opts.gates } : {}),
         ...(opts.assets ? { assets: opts.assets } : {}),
+        ...(opts.detail ? { detail: opts.detail } : {}),
         ...(opts.credits ? { credits: opts.credits } : {}),
         reason,
         retryable: opts.retryable,
@@ -756,6 +762,43 @@ function normalizePublishStatus(body) {
 function payloadRecord(body) {
     const root = asRecord(body) ?? {};
     return asRecord(root['payload']) ?? root;
+}
+// The Hub answers a rejected publish with the SPECIFIC rule that failed
+// ("gene_validation_required: ..."), which our stable ContractReason enum
+// necessarily flattens to `quality_gate_failed`. Keeping only the flattened code
+// leaves every caller — the desktop wizard above all — with a red gate and no
+// way to act on it, so the detail rides along in a separate additive field.
+// Capped and control-character-stripped: it is Hub-authored text that ends up in
+// a machine-readable envelope on stdout.
+const HUB_DETAIL_MAX_CHARS = 300;
+function stripControlChars(value) {
+    let out = '';
+    for (const ch of value) {
+        const code = ch.codePointAt(0) ?? 0;
+        out += code < 0x20 || code === 0x7f ? ' ' : ch;
+    }
+    return out;
+}
+function hubDetailFromBody(body) {
+    const root = asRecord(body) ?? {};
+    const payload = payloadRecord(body);
+    // Take the first candidate that ISN'T already a stable contract token: those
+    // are what `reason` carries, so emitting one here would repeat the flattened
+    // code this field exists to supplement. The Hub is free to put the token in
+    // `reason` and the rule text in `error` (or the reverse), so order alone
+    // cannot pick the informative one.
+    const raw = [
+        stringField(root, 'error'),
+        stringField(root, 'reason'),
+        stringField(payload, 'error'),
+        stringField(payload, 'reason'),
+    ].find((candidate) => candidate && !isStableContractReason(candidate.trim()));
+    if (!raw)
+        return undefined;
+    const detail = stripControlChars(raw).replace(/\s+/g, ' ').trim();
+    if (!detail)
+        return undefined;
+    return detail.length > HUB_DETAIL_MAX_CHARS ? `${detail.slice(0, HUB_DETAIL_MAX_CHARS)}…` : detail;
 }
 function stableContractReasonFromBody(body) {
     const payload = payloadRecord(body);
