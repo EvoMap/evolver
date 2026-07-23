@@ -56,6 +56,18 @@ export declare class ProvenanceStore {
  */
 export declare function ingestUntrusted(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, source?: ProvenanceSource): Promise<PutResult>;
 /**
+ * Hub → local-pool landing for an asset whose content does NOT hash to its declared asset_id. The hub
+ * demonstrably rewrites delivered payloads (injected `validation`, wholesale `payload_backfill_reason`
+ * synthesis — evolver-v2#570), which breaks {@link ingestUntrusted}'s normalizeForPut self-consistency check
+ * even though the loop's own in-run reuse already consumes hub content without re-verifying it (adapter
+ * `hubReuse.ts`). Rather than hard-reject a save the operator explicitly asked for, freeze the asset under its
+ * declared (network) asset_id via `putFrozen` and mark it untrusted in the sidecar with an explicit reason.
+ * Trust-first still holds (#30.1): selection defaults to trusted-only, so an unverified asset never silently
+ * enters the reasoning pool — it lands where the operator put it and stays flagged until an explicit,
+ * audited promotion. `reason` records WHY verification was waived (e.g. hub rewrite vs synthesized payload).
+ */
+export declare function ingestUnverified(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, reason: string, source?: ProvenanceSource): Promise<PutResult>;
+/**
  * Conditional variant used by Hub sync to reject a logical-id collision without ever allowing a Hub record
  * to become implicitly trusted. Providers that cannot make the condition atomically are rejected here.
  */

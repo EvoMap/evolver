@@ -47,6 +47,14 @@ export interface AssetStoreProvider {
     get(assetId: string): Promise<AssetRecord | null>;
     /** Optional direct lookup for non-content-addressed logical ids. Callers must handle 0, 1, or multiple matches. */
     findByLogicalId?(id: string, limit?: number): Promise<AssetRecord[]>;
+    /**
+     * Optional frozen write: store the record under its OWN declared asset_id without recomputing or
+     * normalizing it (bypasses {@link normalizeForPut}'s self-consistency check). Only providers backing a
+     * content-addressed local pool implement it. Callers that must preserve a hash-inconsistent asset —
+     * v1 migration import, and unverified hub reuse of a hub-rewritten payload (see `ingestUnverified`) —
+     * feature-detect it rather than assuming it exists.
+     */
+    putFrozen?(record: AssetRecord): Promise<PutResult>;
     search(query: SearchQuery): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
 }
@@ -62,6 +70,12 @@ export declare class AssetIdMismatchError extends Error {
 export declare class CapsuleGeneBindingError extends Error {
     constructor();
 }
+/**
+ * M3-4 强绑定校验: Capsule.gene 必须非空(否则一条无来源基因的经验会污染选择池).
+ * 抽成独立 helper 以便 normalizeForPut(校验落库路径)与 ingestUnverified(冻结落库路径,
+ * 绕过 normalizeForPut)共用同一条不变量,不让降级路径把绑定校验漏掉.
+ */
+export declare function assertCapsuleGeneBinding(asset: AssetRecord): void;
 /**
  * 落库前规范化(共享给各 provider): 计算/校验 asset_id + 强绑定校验.
  * - 缺 asset_id → 计算填入(verified=false 表示非入参自带).

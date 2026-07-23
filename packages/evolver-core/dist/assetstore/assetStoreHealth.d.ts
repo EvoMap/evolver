@@ -15,6 +15,12 @@ export interface AssetStoreFileHealth {
     duplicateRows: number;
     corruptRows: number;
     hashMismatchRows: number;
+    /**
+     * Rows that fail content-hash verification but are provenance-marked as an unverified hub reuse
+     * (evolver-v2#570). These are EXPECTED — the hub rewrote the delivered bytes and reuse froze them untrusted —
+     * so they are a benign category, counted separately and never degrading the store.
+     */
+    unverifiedRows: number;
     schemaInvalidRows: number;
     unterminated: boolean;
     reason?: UnsafeAssetStorePathReason | 'base_directory' | 'lock_unavailable' | 'read_unavailable' | 'scan_limit_exceeded';
@@ -31,6 +37,7 @@ export interface AssetStoreHealthTotals {
     duplicateRows: number;
     corruptRows: number;
     hashMismatchRows: number;
+    unverifiedRows: number;
     schemaInvalidRows: number;
     unterminatedFiles: number;
 }

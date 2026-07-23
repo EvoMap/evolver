@@ -4,7 +4,7 @@
 // must not enter the content hash (#30.2), or it would break content-addressing. Trust-first by construction:
 // selection defaults to trusted-only; an untrusted asset is promoted to trusted only by an explicit, logged act.
 import { join, dirname } from 'node:path';
-import { normalizeForPut, supportsAtomicConditionalPut, validateConditionalPutResult, } from './provider.js';
+import { assertCapsuleGeneBinding, normalizeForPut, supportsAtomicConditionalPut, validateConditionalPutResult, } from './provider.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, truncateUtf8SuffixDurable, withAssetStoreLock, } from './assetStoreStorage.js';
 import { assertTrustSidecarHealthy, parseProvenanceRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 function immutableRecord(record) {
@@ -139,6 +139,34 @@ export async function ingestUntrusted(store, prov, record, source = 'hub') {
     // A thrown write has an ambiguous outcome: the asset may have reached disk before the acknowledgement was
     // lost. Keep the untrusted marker in that case so a persisted Hub asset can never fall through the default
     // no-record => trusted policy. Only an explicit no-write result is safe to roll back.
+    if (!result.stored)
+        prov.rollbackLast(mark);
+    return result;
+}
+/**
+ * Hub → local-pool landing for an asset whose content does NOT hash to its declared asset_id. The hub
+ * demonstrably rewrites delivered payloads (injected `validation`, wholesale `payload_backfill_reason`
+ * synthesis — evolver-v2#570), which breaks {@link ingestUntrusted}'s normalizeForPut self-consistency check
+ * even though the loop's own in-run reuse already consumes hub content without re-verifying it (adapter
+ * `hubReuse.ts`). Rather than hard-reject a save the operator explicitly asked for, freeze the asset under its
+ * declared (network) asset_id via `putFrozen` and mark it untrusted in the sidecar with an explicit reason.
+ * Trust-first still holds (#30.1): selection defaults to trusted-only, so an unverified asset never silently
+ * enters the reasoning pool — it lands where the operator put it and stays flagged until an explicit,
+ * audited promotion. `reason` records WHY verification was waived (e.g. hub rewrite vs synthesized payload).
+ */
+export async function ingestUnverified(store, prov, record, reason, source = 'hub') {
+    if (typeof store.putFrozen !== 'function') {
+        // Only a content-addressed local pool receives hub reuse writes; a provider that cannot freeze a
+        // hash-inconsistent record cannot preserve the network id, so fail loudly rather than silently restamp it.
+        throw new Error('ingestUnverified requires a store that implements putFrozen');
+    }
+    // putFrozen bypasses normalizeForPut, so re-assert the M3-4 Capsule↔gene binding here — a hash-mismatched
+    // Capsule with an empty gene must still fail closed on the frozen path, exactly as it does on the verified one.
+    assertCapsuleGeneBinding(record);
+    const mark = prov.mark({ assetId: record.asset_id, source, trusted: false, reason });
+    const result = await store.putFrozen(record);
+    // Mirror ingestUntrusted: only an explicit no-write result (dedup) is safe to roll the marker back; a
+    // thrown write has an ambiguous on-disk outcome and must keep the untrusted marker.
     if (!result.stored)
         prov.rollbackLast(mark);
     return result;

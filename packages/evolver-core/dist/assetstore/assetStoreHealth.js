@@ -31,6 +31,7 @@ function emptyFile(kind, file, status, reason) {
         duplicateRows: 0,
         corruptRows: 0,
         hashMismatchRows: 0,
+        unverifiedRows: 0,
         schemaInvalidRows: 0,
         unterminated: false,
         ...(reason ? { reason } : {}),
@@ -69,6 +70,7 @@ function summarize(files, sidecars) {
         duplicateRows: files.reduce((sum, file) => sum + file.duplicateRows, 0),
         corruptRows: files.reduce((sum, file) => sum + file.corruptRows, 0),
         hashMismatchRows: files.reduce((sum, file) => sum + file.hashMismatchRows, 0),
+        unverifiedRows: files.reduce((sum, file) => sum + file.unverifiedRows, 0),
         schemaInvalidRows: files.reduce((sum, file) => sum + file.schemaInvalidRows, 0),
         unterminatedFiles: files.filter((file) => file.unterminated).length,
     };
@@ -105,7 +107,7 @@ function summarize(files, sidecars) {
         sidecars: [...sidecars],
     };
 }
-function inspectFile(baseDir, kind, file, maxFileBytes) {
+function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds) {
     try {
         const path = join(baseDir, file);
         const stat = assertOptionalRegularFile(path);
@@ -123,6 +125,7 @@ function inspectFile(baseDir, kind, file, maxFileBytes) {
         let duplicateRows = 0;
         let corruptRows = 0;
         let hashMismatchRows = 0;
+        let unverifiedRows = 0;
         let schemaInvalidRows = 0;
         for (const line of rows) {
             try {
@@ -142,7 +145,13 @@ function inspectFile(baseDir, kind, file, maxFileBytes) {
                 else
                     seen.add(assetId);
                 if (!verifyAssetId(record)) {
-                    hashMismatchRows += 1;
+                    // A hash mismatch is corruption UNLESS provenance says this id is an unverified hub reuse: the hub
+                    // rewrote the delivered bytes and reuse froze them untrusted on purpose (#570). That is expected, not
+                    // store rot, so it lands in the benign unverifiedRows bucket and never degrades the store.
+                    if (unverifiedIds.has(assetId))
+                        unverifiedRows += 1;
+                    else
+                        hashMismatchRows += 1;
                     continue;
                 }
                 if (kind !== 'AntiGene' && !validateWire(record).ok) {
@@ -174,6 +183,7 @@ function inspectFile(baseDir, kind, file, maxFileBytes) {
             duplicateRows,
             corruptRows,
             hashMismatchRows,
+            unverifiedRows,
             schemaInvalidRows,
             unterminated,
         };
@@ -183,6 +193,24 @@ function inspectFile(baseDir, kind, file, maxFileBytes) {
             return emptyFile(kind, file, 'unsafe', error.reason);
         return emptyFile(kind, file, 'unavailable', 'read_unavailable');
     }
+}
+/**
+ * Asset ids marked in the provenance sidecar as an unverified hub reuse (reason `unverified_*`, evolver-v2#570).
+ * Read directly from `<baseDir>/provenance.jsonl` — NOT via ProvenanceStore — because inspectLocalAssetStore
+ * already holds the shared `.assetstore.lock`, and ProvenanceStore would try to re-acquire it. A missing or
+ * unreadable sidecar yields an empty set: without provenance every mismatch stays classified as corruption.
+ */
+function readUnverifiedReuseIds(baseDir) {
+    const raw = readUtf8Regular(join(baseDir, 'provenance.jsonl'));
+    if (raw === null)
+        return new Set();
+    const ids = new Set();
+    for (const record of parseSidecarJsonl(raw, parseProvenanceRecord).records) {
+        if (record.trusted === false && typeof record.reason === 'string' && record.reason.startsWith('unverified_')) {
+            ids.add(record.assetId);
+        }
+    }
+    return ids;
 }
 function inspectSidecar(baseDir, definition, maxFileBytes) {
     const { kind, file, parseRecord } = definition;
@@ -256,10 +284,13 @@ export function inspectLocalAssetStore(baseDir, opts = {}, deps = {}) {
         return summarize(allFiles('unavailable', 'lock_unavailable'), allSidecars('unavailable', 'lock_unavailable'));
     }
     const maxFileBytes = healthScanLimit(opts.maxFileBytes);
+    // Read the unverified-reuse set once, under the lock we already hold, so every asset file classifies its
+    // hash mismatches consistently against the same provenance snapshot.
+    const unverifiedIds = readUnverifiedReuseIds(baseDir);
     let report;
     try {
         report = summarize(Object.entries(LOCAL_ASSET_FILES)
-            .map(([kind, file]) => inspectFile(baseDir, kind, file, maxFileBytes)), LOCAL_ASSET_SIDECARS.map((definition) => inspectSidecar(baseDir, definition, maxFileBytes)));
+            .map(([kind, file]) => inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds)), LOCAL_ASSET_SIDECARS.map((definition) => inspectSidecar(baseDir, definition, maxFileBytes)));
     }
     catch {
         report = summarize(allFiles('unavailable', 'read_unavailable'), allSidecars('unavailable', 'read_unavailable'));

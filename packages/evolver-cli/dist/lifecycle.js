@@ -73,7 +73,7 @@ async function runLifecycleCommandInner(argv, deps) {
             if (envFileResult.error)
                 throw new Error('failed to load lifecycle environment file');
             const target = serviceTarget(flags);
-            const result = await installService(target, flags, env, deps.argv1 ?? process.argv[1]);
+            const result = await installService(target, flags, env, deps.argv1 ?? process.argv[1], deps.loadUnixRecoveryController);
             stdout(`${JSON.stringify(result, null, 2)}\n`);
             return 0;
         }
@@ -494,7 +494,7 @@ function serviceTarget(flags) {
         return value;
     throw new Error('missing or invalid --target (expected: launchd|systemd|windows)');
 }
-async function installService(target, flags, env, argv1) {
+async function installService(target, flags, env, argv1, loadUnixRecoveryController = () => import('@evomap/evolver-proxy')) {
     const dryRun = flags['dry-run'] === true;
     const envFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : env['EVOLVER_ENV_FILE'];
     const supervised = configuredSelfUpdateTarget(env)
@@ -506,7 +506,7 @@ async function installService(target, flags, env, argv1) {
     let unixController;
     let unixControllerStateDir;
     if (target !== 'windows' && standaloneTarget) {
-        const { provisionStableUnixRecoveryController, stableUnixRecoveryControllerPathForTarget, UNIX_RECOVERY_CONTROLLER_ARG, } = await import('@evomap/evolver-proxy');
+        const { provisionStableUnixRecoveryController, stableUnixRecoveryControllerPathForTarget, UNIX_RECOVERY_CONTROLLER_ARG, } = await loadUnixRecoveryController();
         const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim() || undefined;
         const controllerPath = dryRun
             ? stableUnixRecoveryControllerPathForTarget(standaloneTarget, stateDir)

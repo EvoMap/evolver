@@ -98,9 +98,20 @@ export async function runReuseCommand(argv, deps = {}) {
         const asset = await hub.fetchAssetById(opts.id);
         if (!asset)
             return emit({ ok: false, status: 'not_found', message: `asset ${opts.id} not found on the hub` }, ctx);
-        const cleaned = await ingestHubAsset(store, deps, asset, opts.id);
-        logReuse(deps, opts, cleaned, 'hub');
-        return emit({ ok: true, status: 'ok', message: 'reused into local recall library' }, ctx);
+        const { record, verified } = await ingestHubAsset(store, deps, asset, opts.id);
+        logReuse(deps, opts, record, 'hub');
+        // Both land the asset (exit 0). A verified reuse is a plain success; an unverified one is a first-class
+        // success too — the operator's save happened — but carries reason `unverified` so the desktop adapter can
+        // surface "added (unverified)" instead of a plain "added". status stays `ok` so older desktop builds, which
+        // key success on status==='ok' and ignore reason, keep working unchanged.
+        return emit(verified
+            ? { ok: true, status: 'ok', message: 'reused into local recall library' }
+            : {
+                ok: true,
+                status: 'ok',
+                reason: 'unverified',
+                message: 'reused into local recall library as untrusted: hub-delivered content does not match its content fingerprint and could not be verified',
+            }, ctx);
     }
     catch (e) {
         return emit(mapError(e), ctx);
@@ -176,27 +187,59 @@ class ReuseIntegrityError extends Error {
 const INTEGRITY_MISMATCH_MESSAGE = 'hub-delivered content does not match the asset content fingerprint';
 const INTEGRITY_BACKFILLED_MESSAGE = 'hub delivered a synthesized payload for this asset; the original published content is unavailable for verification';
 const INTEGRITY_LOGICAL_ID_MESSAGE = 'hub-delivered asset does not match the requested logical id';
-function integrityError(content) {
-    const backfilled = stringField(content, 'payload_backfill_reason') !== undefined;
-    return new ReuseIntegrityError(backfilled ? INTEGRITY_BACKFILLED_MESSAGE : INTEGRITY_MISMATCH_MESSAGE);
+function integrityError(synthesized) {
+    return new ReuseIntegrityError(synthesized ? INTEGRITY_BACKFILLED_MESSAGE : INTEGRITY_MISMATCH_MESSAGE);
 }
 async function ingestHubAsset(store, deps, asset, requestedId) {
-    const cleaned = stripHubMetadata(unwrapHubAssetContent(asset));
+    const delivered = stripHubMetadata(unwrapHubAssetContent(asset));
+    // `payload_backfill_reason` is a hub DELIVERY marker (unwrapHubAssetContent lifts it onto the content so a
+    // synthesized payload can be classified). It is NOT publisher content, so it must be excluded from EVERY hash
+    // — identity, the local-conflict check, AND the stored bytes — and never persisted. Capture the
+    // classification fact, then drop the marker ONCE, up front: hashing it here but stripping it before storage
+    // made assertNoLocalReuseIdConflict hash a different byte string than what landed on disk, throwing a false
+    // id conflict on the second reuse of the same synthesized asset (Bugbot HIGH, broke idempotency).
+    const synthesized = stringField(delivered, 'payload_backfill_reason') !== undefined;
+    const cleaned = withoutHubDeliveryMarkers(delivered);
     const actualAssetId = wire.computeAssetId(cleaned);
     const contentAssetId = stringField(cleaned, 'asset_id');
-    if (!actualAssetId || !contentAssetId || actualAssetId !== contentAssetId) {
-        throw integrityError(cleaned);
+    if (!actualAssetId || !contentAssetId) {
+        // Malformed beyond classification — no computable hash or no declared id — stays a hard reject.
+        throw integrityError(synthesized);
     }
-    if (isContentAssetId(requestedId) && actualAssetId !== requestedId) {
-        throw integrityError(cleaned);
+    // Identity guards stay STRICT: a hub that returned a DIFFERENT asset than requested (a self-consistent asset
+    // B under a request for A, or a different logical id) is a delivery fault, not the hub's known content-rewrite
+    // of the RIGHT asset — reject it so a reuse never silently pulls the wrong gene.
+    if (isContentAssetId(requestedId)) {
+        if (contentAssetId !== requestedId)
+            throw integrityError(synthesized);
     }
-    if (!isContentAssetId(requestedId) && stringField(cleaned, 'id') !== requestedId) {
+    else if (stringField(cleaned, 'id') !== requestedId) {
         throw new ReuseIntegrityError(INTEGRITY_LOGICAL_ID_MESSAGE);
     }
     await assertNoLocalReuseIdConflict(cleaned, store);
     const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, deps));
-    const stored = await assetstore.ingestUntrusted(store, provenance, cleaned, 'hub');
-    return { ...cleaned, asset_id: stored.asset_id };
+    // Identity is confirmed; now content integrity. When the (marker-free) payload hashes to its declared id it
+    // lands verified (still sidecar-marked untrusted per #30). When it does NOT, the hub rewrote the delivered
+    // bytes of the right asset (#570) — DOWNGRADE instead of reject: freeze it under the network id and mark it
+    // unverified so the save actually happens and the loop (which already reuses hub content without
+    // re-verifying) can use it, while trust-first selection keeps it out of the reasoning pool until promotion.
+    if (actualAssetId === contentAssetId) {
+        const stored = await assetstore.ingestUntrusted(store, provenance, cleaned, 'hub');
+        return { record: { ...cleaned, asset_id: stored.asset_id }, verified: true };
+    }
+    const reason = synthesized ? 'unverified_hub_synthesized' : 'unverified_hub_rewrite';
+    const stored = await assetstore.ingestUnverified(store, provenance, cleaned, reason, 'hub');
+    return { record: { ...cleaned, asset_id: stored.asset_id }, verified: false };
+}
+/**
+ * Drop hub DELIVERY markers that unwrapHubAssetContent lifts onto the content for classification but that must
+ * never reach content-addressed storage. Right now that is `payload_backfill_reason`; keeping this as a named
+ * helper localizes the "these keys describe HOW the hub delivered the asset, not the asset" rule.
+ */
+function withoutHubDeliveryMarkers(asset) {
+    const rest = { ...asset };
+    delete rest['payload_backfill_reason'];
+    return rest;
 }
 async function resolveLocalReuseAsset(store, id) {
     const direct = await store.get(id);
@@ -332,7 +375,7 @@ function mapError(e) {
 function emit(outcome, ctx) {
     if (ctx.jsonOut) {
         // stdout ONLY, exactly one object — the desktop adapter json.Unmarshals the whole stdout stream.
-        const envelope = { ok: outcome.ok, contract: REUSE_CONTRACT, status: outcome.status, reason: outcome.status, message: outcome.message };
+        const envelope = { ok: outcome.ok, contract: REUSE_CONTRACT, status: outcome.status, reason: outcome.reason ?? outcome.status, message: outcome.message };
         ctx.stdout(JSON.stringify(envelope));
     }
     else if (outcome.ok) {

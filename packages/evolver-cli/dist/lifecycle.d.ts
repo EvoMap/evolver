@@ -34,9 +34,12 @@ export interface LifecycleResult {
     files?: string[];
     service?: string;
 }
+type UnixRecoveryControllerModule = Pick<typeof import('@evomap/evolver-proxy'), 'provisionStableUnixRecoveryController' | 'stableUnixRecoveryControllerPathForTarget' | 'UNIX_RECOVERY_CONTROLLER_ARG'>;
+type LoadUnixRecoveryController = () => Promise<UnixRecoveryControllerModule>;
 interface RunLifecycleDeps {
     argv1?: string;
     env?: NodeJS.ProcessEnv;
+    loadUnixRecoveryController?: LoadUnixRecoveryController;
     stdout?: (text: string) => void;
     stderr?: (text: string) => void;
 }

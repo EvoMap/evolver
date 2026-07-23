@@ -63,17 +63,25 @@ export class CapsuleGeneBindingError extends Error {
     constructor() { super('Capsule.gene 必须非空或显式 "ad-hoc" 哨兵 (批注#28/M3-4)'); this.name = 'CapsuleGeneBindingError'; }
 }
 /**
+ * M3-4 强绑定校验: Capsule.gene 必须非空(否则一条无来源基因的经验会污染选择池).
+ * 抽成独立 helper 以便 normalizeForPut(校验落库路径)与 ingestUnverified(冻结落库路径,
+ * 绕过 normalizeForPut)共用同一条不变量,不让降级路径把绑定校验漏掉.
+ */
+export function assertCapsuleGeneBinding(asset) {
+    if (asset.type !== 'Capsule')
+        return;
+    const gene = asset.gene;
+    if (typeof gene !== 'string' || gene.length === 0)
+        throw new CapsuleGeneBindingError();
+}
+/**
  * 落库前规范化(共享给各 provider): 计算/校验 asset_id + 强绑定校验.
  * - 缺 asset_id → 计算填入(verified=false 表示非入参自带).
  * - 带 asset_id → 必须自洽, 否则抛 AssetIdMismatchError.
  * - Capsule.gene 必须非空(M3-4 强绑定).
  */
 export function normalizeForPut(asset) {
-    if (asset.type === 'Capsule') {
-        const gene = asset.gene;
-        if (typeof gene !== 'string' || gene.length === 0)
-            throw new CapsuleGeneBindingError();
-    }
+    assertCapsuleGeneBinding(asset);
     const actual = computeAssetId(asset);
     if (actual === null)
         throw new Error('computeAssetId 失败: 资产非对象');
