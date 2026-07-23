@@ -5,8 +5,10 @@
 // host (other local users, container neighbors, postinstall scripts), hence the mandatory token.
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { util } from '@evomap/evolver-core';
 export const DEFAULT_LLM_PORT = 19821; // one above the mailbox IPC default — the two daemons co-exist
 const MAX_PORT_ATTEMPTS = 100;
+const MAX_EPHEMERAL_LLM_LISTEN_ATTEMPTS = 5;
 /** /v1/messages bodies legitimately reach tens of MiB (long contexts); the 1 MiB IPC-style cap would break
  * real clients. Still bounded — an unauthenticated local writer must not be able to balloon memory. */
 export const DEFAULT_LLM_MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -193,19 +195,35 @@ export class LlmProxyServer {
         const basePort = this.opts.port ?? Number(this.env['EVOLVER_LLM_PORT'] || DEFAULT_LLM_PORT);
         const server = createServer((req, res) => { void this.handle(req, res); });
         const tryListen = (port) => new Promise((resolve, reject) => {
-            server.once('error', (err) => {
+            const onError = (err) => {
                 if (err.code === 'EADDRINUSE')
                     resolve(false);
                 else
                     reject(err);
+            };
+            server.once('error', onError);
+            server.listen(port, host, () => {
+                server.removeListener('error', onError);
+                resolve(true);
             });
-            server.listen(port, host, () => resolve(true));
+        });
+        const closeListener = () => new Promise((resolve, reject) => {
+            server.close((err) => { if (err)
+                reject(err);
+            else
+                resolve(); });
         });
         let port = basePort;
-        for (let i = 0; i < MAX_PORT_ATTEMPTS; i++) {
+        const maxAttempts = basePort === 0 ? MAX_EPHEMERAL_LLM_LISTEN_ATTEMPTS : MAX_PORT_ATTEMPTS;
+        for (let i = 0; i < maxAttempts; i++) {
             if (await tryListen(port)) {
                 const addr = server.address();
-                this.actualPort = typeof addr === 'object' && addr ? addr.port : port;
+                const actualPort = typeof addr === 'object' && addr ? addr.port : port;
+                if (basePort === 0 && util.isFetchForbiddenPort(actualPort)) {
+                    await closeListener();
+                    continue;
+                }
+                this.actualPort = actualPort;
                 this.server = server;
                 const url = `http://${host}:${this.actualPort}`;
                 this.log.log?.(`[evolver-llm-proxy] listening on ${url}`);
@@ -215,6 +233,8 @@ export class LlmProxyServer {
                 break; // kernel-assigned can't collide; a failure here is real
             port++;
         }
+        if (basePort === 0)
+            throw new Error('llm_proxy_safe_port_unavailable');
         throw new Error(`LlmProxyServer: no free port after ${MAX_PORT_ATTEMPTS} attempts from ${basePort}`);
     }
     async stop() {
