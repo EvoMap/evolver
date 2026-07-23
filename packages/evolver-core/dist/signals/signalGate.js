@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeText } from '../signatures/signatures.js';
-const STRENGTH_WEIGHT = { strong: 1.0, agent: 0.8, weak: 0.4 };
+const STRENGTH_WEIGHT = { strong: 1.0, agent: 0.8, success: 0.7, weak: 0.4 };
 function signatureOf(s) {
     return createHash('sha1').update(`${s.kind}\x1f${normalizeText(s.text)}`).digest('hex').slice(0, 16);
 }

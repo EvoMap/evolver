@@ -54,6 +54,10 @@ export interface QuestionGenerationResult {
     state: QuestionGeneratorState;
     changed: boolean;
 }
-export declare function extractTopicKeywords(transcript: string | undefined, memory: string | undefined, max?: number): string[];
+export interface TopicKeywordOptions {
+    minOccurrences?: number;
+    preserveSourceOrder?: boolean;
+}
+export declare function extractTopicKeywords(transcript: string | undefined, memory: string | undefined, max?: number, opts?: TopicKeywordOptions): string[];
 export declare function generateQuestions(input?: GenerateQuestionsInput): QuestionGenerationResult;
 export declare function generateUrgentQuestions(input?: GenerateUrgentQuestionsInput): QuestionGenerationResult;

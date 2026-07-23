@@ -27,6 +27,9 @@ function isEmptyCycle(r) {
 function isFailed(r) {
     return r.outcome?.status === 'failed';
 }
+function isSuccess(r) {
+    return r.outcome?.status === 'success';
+}
 /**
  * Derive the v1 history counters from a normalized cycle-record window (newest LAST), mirroring v1
  * analyzeRecentHistory. Pure + deterministic. Use {@link cycleRecordsFromEvents} to adapt the v2 event log.
@@ -37,6 +40,8 @@ export function deriveCycleHistory(records) {
         emptyCycleCount: 0,
         consecutiveEmptyCycles: 0,
         consecutiveFailureCount: 0,
+        consecutiveSuccessCount: 0,
+        successCycleCount: 0,
         recentFailureRatio: 0,
         geneFreq: {},
     };
@@ -90,11 +95,32 @@ export function deriveCycleHistory(records) {
         if (isFailed(r))
             recentFailureCount++;
     }
+    // Consecutive successes at the tail (stable success plateau detection). Empty cycles are zero-blast
+    // no-ops: like the failure streak, they break the success streak instead of extending it.
+    let consecutiveSuccessCount = 0;
+    for (let i = recent.length - 1; i >= 0; i--) {
+        if (isEmptyCycle(recent[i]))
+            break;
+        if (isSuccess(recent[i]))
+            consecutiveSuccessCount++;
+        else
+            break;
+    }
+    // Successful cycles within the frequency window (non-empty successes, same caliber as recentFailureRatio).
+    let successCycleCount = 0;
+    for (const r of tail) {
+        if (isEmptyCycle(r))
+            continue;
+        if (isSuccess(r))
+            successCycleCount++;
+    }
     return {
         consecutiveRepairCount,
         emptyCycleCount,
         consecutiveEmptyCycles,
         consecutiveFailureCount,
+        consecutiveSuccessCount,
+        successCycleCount,
         recentFailureRatio: nonEmptyCycleCount > 0 ? recentFailureCount / nonEmptyCycleCount : 0,
         geneFreq,
     };
@@ -152,6 +178,22 @@ export function computeMetaSignals(history) {
     if (history.recentFailureRatio >= 0.75) {
         signals.push('high_failure_ratio');
         signals.push('force_innovation_after_repair_loop');
+    }
+    // Stable success plateau: 5+ consecutive successes → system is in a stable success plateau.
+    // This is the SUCCESS counterpart of failure_loop_detected: instead of signaling "stuck failing",
+    // it signals "consistently succeeding" — the loop should distill WHAT WORKED into reusable genes.
+    if (history.consecutiveSuccessCount >= 5) {
+        signals.push('stable_success_plateau');
+    }
+    // Issue already resolved: 3+ consecutive successes after a prior failure context suggests
+    // the problem is solved — downstream can skip redundant repair attempts.
+    if (history.consecutiveSuccessCount >= 3 && history.recentFailureRatio > 0) {
+        signals.push('issue_already_resolved');
+    }
+    // Self-healed requires the current tail to be successful. Window totals alone would mislabel
+    // [success, success, failed] as recovered even though the latest outcome is a failure.
+    if (history.consecutiveSuccessCount > 0 && history.successCycleCount >= 2 && history.recentFailureRatio > 0 && history.recentFailureRatio < 0.5) {
+        signals.push('openclaw_self_healed');
     }
     // De-dup while preserving first-seen order.
     return [...new Set(signals)];

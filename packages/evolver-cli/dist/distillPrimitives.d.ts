@@ -1,9 +1,10 @@
 import { algo, type signals } from '@evomap/evolver-core';
 import type { NormalizedTurn } from '@evomap/evolver-runtime-adapters';
-/** Short matchable signal tokens from the STRONG signals only (toolName + a known error class). Every strong
- *  signal yields ≥1 token: if it has no toolName and matches no known error class (e.g. `FAILED: …` or
+/** Short matchable signal tokens from STRONG signals (error classes) and SUCCESS signals (verified capabilities).
+ *  Every strong signal yields ≥1 token: if it has no toolName and matches no known error class (e.g. `FAILED: …` or
  *  `Error: connection refused`), it falls back to its kind (`structured_error`/`error_result`) so a real strong
  *  signal is never silently tokenless — keeping `signals_match.length === 0` an honest "no strong signal" gate.
+ *  Success signals (#578) also produce tokens so a purely successful session can yield a matchable gene.
  *  Deduped, ≤8. */
 export declare function signalTokens(sigs: readonly signals.ExtractedSignal[]): string[];
 /** Draft strategy steps = the agent's own substantive (non-meta) turns — boundary-trimmed (never chopped

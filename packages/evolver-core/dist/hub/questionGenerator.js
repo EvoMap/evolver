@@ -21,7 +21,7 @@ const EXPLORE_STOPWORDS = new Set([
     'agent', 'about', 'into', 'then', 'than', 'they', 'them', 'their', 'there',
     'here', 'will', 'would', 'could', 'should', 'been', 'were', 'using', 'used',
     'cycle', 'evolution', 'error', 'errors', 'failed', 'failure', 'null', 'undefined',
-    'true', 'false', 'console', 'return', 'function', 'const', 'value', 'result',
+    'true', 'false', 'console', 'return', 'function', 'const', 'value', 'result', 'redacted',
 ]);
 const SENSITIVE_TOPIC_RE = /secret|token|api[_-]?key|password|passwd|credential|bearer|authorization|cookie|session[_-]?id|private[_-]?key|oauth|refresh[_-]?token/i;
 const LONG_OPAQUE_RE = /^[a-z0-9_-]{32,}$/i;
@@ -106,8 +106,8 @@ function safeTopicToken(token) {
         return false;
     return true;
 }
-export function extractTopicKeywords(transcript, memory, max = 5) {
-    const text = `${String(transcript ?? '')} ${String(memory ?? '')}`.toLowerCase();
+export function extractTopicKeywords(transcript, memory, max = 5, opts = {}) {
+    const text = redactString(`${String(transcript ?? '')} ${String(memory ?? '')}`).toLowerCase();
     const words = text.match(/[a-z][a-z0-9_-]{4,}/g) ?? [];
     const freq = new Map();
     for (const word of words) {
@@ -115,9 +115,11 @@ export function extractTopicKeywords(transcript, memory, max = 5) {
             continue;
         freq.set(word, (freq.get(word) ?? 0) + 1);
     }
-    return [...freq.entries()]
-        .filter(([, count]) => count >= 2)
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    const entries = [...freq.entries()]
+        .filter(([, count]) => count >= Math.max(1, Math.trunc(opts.minOccurrences ?? 2)));
+    if (!opts.preserveSourceOrder)
+        entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return entries
         .map(([word]) => word)
         .slice(0, max);
 }

@@ -69,6 +69,7 @@ export function composeSessionStartWithRecap(base, recapCtx, estimateTokensOrOpt
 export function signalsFromToolUse(event) {
     const turn = {
         toolName: event.toolName,
+        ...(event.toolResult ? { toolResult: event.toolResult } : {}),
         ...(event.isError && event.toolResult ? { errorMessage: event.toolResult } : {}),
         ...(event.text ? { text: event.text } : {}),
         isMeta: false,

@@ -19,7 +19,16 @@ const EXPANSION_RULES = [
     // 功能/機能/기능 alone are too broad: as unanchored substrings they match the malfunction vocabulary
     // (機能不全 / 기능장애 / 功能障碍), which are reliability problems — use the v1 #99 feature-request compounds.
     { re: /(feature|capability_gap|user_feature_request|external_opportunity|stagnation recommendation|功能请求|機能リクエスト|기능요청|能力缺口|機能ギャップ|역량공백|改进建议|改善提案|개선제안|外部机会|外部機会|외부기회)/, tags: ['problem:capability', 'action:innovate'] },
-    { re: /(stagnation|plateau|steady_state|saturation|empty_cycle_loop|loop_detected|recurring)/, tags: ['problem:stagnation', 'action:innovate'] },
+    // Negative lookbehind on `plateau`: `stable_success_plateau` contains the substring `plateau`, but it is a
+    // SUCCESS signal (#578), not a stagnation signal. Without (?<!success_) the stagnation rule would fire on it,
+    // producing contradictory tags (problem:stagnation + signal:success) in a single expandSignals pass.
+    { re: /(stagnation|(?<!success_)plateau|steady_state|saturation|empty_cycle_loop|loop_detected|recurring)/, tags: ['problem:stagnation', 'action:innovate'] },
+    // Success signals (v2-native, #578): a stable success plateau or resolved issue expands to
+    // signal:success + action:optimize/action:innovate so a gene tagged for optimization/innovation can be selected
+    // when the loop is succeeding — enabling "learn from what works" rather than only "fix what's broken".
+    // `verified[-_]success` matches both the underscore form (meta-signal naming) and the hyphen form
+    // (distillPrimitives signalTokens token) so success genes distilled from sessions are also expanded.
+    { re: /(stable_success_plateau|issue_already_resolved|openclaw_self_healed|self_healed|resolved|verified[-_]success|success_prose)/, tags: ['signal:success', 'action:optimize', 'action:innovate'] },
     { re: /(task|worker|heartbeat|hub|commitment|assignment|orchestration)/, tags: ['area:orchestration'] },
     // Tool-integrity (ported from v1 #99 gene_tool_integrity): bypassing a registered tool or looping on raw
     // shell is an orchestration-discipline / validation risk. CN/JA/KO aliases included for recall parity.

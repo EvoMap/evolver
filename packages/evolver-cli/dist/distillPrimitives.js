@@ -2,7 +2,7 @@
 // `evolver ingest --distill` and the live distillObserver reuse ONE copy (no forked distill logic). Zero behavior
 // change vs the inline version: same tokens, same step drafting, same candidate shape. No I/O — the caller parses
 // the session into turns + extracts signals; this turns them into a draft GeneCandidate (or null when too thin).
-import { algo } from '@evomap/evolver-core';
+import { algo, hub } from '@evomap/evolver-core';
 // Map a strong signal's free-text to a SHORT, matchable token (so a gene's signals_match stays a few
 // keywords, not a dumped error blob). Deterministic + testable; unknown errors fall back to the tool name only.
 const SIGNAL_ERROR_CLASSES = [
@@ -14,10 +14,11 @@ const SIGNAL_ERROR_CLASSES = [
     [/permission denied/i, 'permission-denied'],
     [/timed?\s?out/i, 'timeout'],
 ];
-/** Short matchable signal tokens from the STRONG signals only (toolName + a known error class). Every strong
- *  signal yields ≥1 token: if it has no toolName and matches no known error class (e.g. `FAILED: …` or
+/** Short matchable signal tokens from STRONG signals (error classes) and SUCCESS signals (verified capabilities).
+ *  Every strong signal yields ≥1 token: if it has no toolName and matches no known error class (e.g. `FAILED: …` or
  *  `Error: connection refused`), it falls back to its kind (`structured_error`/`error_result`) so a real strong
  *  signal is never silently tokenless — keeping `signals_match.length === 0` an honest "no strong signal" gate.
+ *  Success signals (#578) also produce tokens so a purely successful session can yield a matchable gene.
  *  Deduped, ≤8. */
 export function signalTokens(sigs) {
     const set = new Set();
@@ -36,6 +37,22 @@ export function signalTokens(sigs) {
                 break;
             }
         if (!matched)
+            set.add(s.kind);
+    }
+    // A later failure invalidates an earlier successful intermediate command. Conversely, fail-then-pass remains a
+    // valid repair history because the last deterministic outcome is the verified success.
+    const lastOutcome = sigs.findLast((s) => s.strength === 'strong' || s.strength === 'weak' || (s.strength === 'success' && !s.needsAnalysis));
+    const terminalSuccess = lastOutcome?.strength === 'success' && !lastOutcome.needsAnalysis;
+    // Only confirmed terminal success enters the deterministic path. Prose marked needsAnalysis is left to transcript
+    // LLM distillation instead of triggering a material cycle before analysis has happened.
+    for (const s of terminalSuccess ? sigs : []) {
+        if (s.strength !== 'success' || s.needsAnalysis)
+            continue;
+        if (s.toolName)
+            set.add(s.toolName);
+        if (s.kind === 'verified_success')
+            set.add('verified-success');
+        else
             set.add(s.kind);
     }
     return [...set].slice(0, 8);
@@ -83,7 +100,7 @@ export function draftStrategy(turns) {
     for (const t of turns) {
         if (t.role !== 'assistant' || t.isMeta)
             continue;
-        const raw = (t.text ?? '').replace(/\s+/g, ' ').trim();
+        const raw = hub.redactString(t.text ?? '').replace(/\s+/g, ' ').trim();
         if (raw.length < 40)
             continue; // too short to be a step
         if (isNarrationOnly(raw))
@@ -96,6 +113,17 @@ export function draftStrategy(turns) {
     }
     return steps.slice(-6); // the latest substantive actions (closest to the resolution)
 }
+const GENERIC_SUCCESS_TOPICS = new Set([
+    'added', 'adjusted', 'assistant', 'change', 'changed', 'changes', 'command', 'commands', 'complete',
+    'completed', 'coverage', 'fixed', 'handling', 'implementation', 'passed', 'passing', 'regression', 'result',
+    'results', 'successful', 'successfully', 'tests', 'updated', 'validation', 'verified',
+]);
+function successTopicSignals(strategy) {
+    const text = strategy.join(' ');
+    return hub.extractTopicKeywords(text, undefined, 24, { minOccurrences: 1, preserveSourceOrder: true })
+        .filter((topic) => !GENERIC_SUCCESS_TOPICS.has(topic))
+        .slice(0, 4);
+}
 /**
  * Assemble an UNPROVEN draft GeneCandidate from a parsed session, or null when too thin to distill (no strong
  * signal OR no substantive step). The single source of the "what makes a draftable session" gate + candidate
@@ -105,10 +133,36 @@ export function draftStrategy(turns) {
 export function draftGeneCandidate(turns, sigs, agent) {
     const signals_match = signalTokens(sigs);
     const strategy = draftStrategy(turns);
-    if (signals_match.length === 0 || strategy.length === 0) {
-        const hit = algo.sniffConversationCapabilities(turns)[0];
-        if (!hit)
+    const hadVerifiedSuccess = sigs.some((s) => s.strength === 'success' && !s.needsAnalysis);
+    const hasTerminalVerifiedSuccess = signals_match.includes('verified-success');
+    // 当只有成功信号（没有错误信号）时，走 innovate 路径而非 repair (#578):
+    // 一次成功的问题解决过程不应被分类为 repair —— 它是一个可复用的成功能力。
+    const hasStrongError = sigs.some((s) => s.strength === 'strong');
+    if (signals_match.length === 0 || strategy.length === 0 || !hasStrongError) {
+        // Do not let the capability sniffer resurrect a success that a later unresolved outcome already superseded.
+        if (hadVerifiedSuccess && !hasTerminalVerifiedSuccess && !hasStrongError)
             return null;
+        const hit = algo.sniffConversationCapabilities(turns)[0];
+        if (!hit) {
+            // Sniffer 也未命中：如果有 success 信号和 strategy（仅当 hasStrongError 为 false 才走到这里且 signals_match 非空），
+            // 仍然产出 gene，但标记为 innovate —— 这是一个被验证的能力，而非错误修复。
+            if (signals_match.length > 0 && strategy.length > 0) {
+                const topics = successTopicSignals(strategy);
+                // Generic runner + success tokens are not a reusable capability identity. Let the optional transcript-LLM
+                // path handle prose that has no safe discriminating topic instead of storing one global shell-success gene.
+                if (topics.length === 0)
+                    return null;
+                const successSignals = [...new Set([...signals_match, ...topics])].slice(0, 8);
+                return {
+                    category: 'innovate',
+                    signals_match: successSignals,
+                    strategy,
+                    summary: `Auto-drafted from ${agent} session (UNPROVEN — curate via review): ${topics.slice(0, 3).join(', ')}`,
+                    generation_meta: { source: 'distilled' },
+                };
+            }
+            return null;
+        }
         const fallbackStrategy = hit.evidence;
         if (fallbackStrategy.length === 0)
             return null;
@@ -149,6 +203,8 @@ const GENERIC_NOVELTY_SIGNALS = new Set([
     'sh',
     'cmd',
     'command',
+    'verified-success',
+    'verified_success',
 ]);
 function normalizeSignalSet(values) {
     return new Set((values ?? []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));

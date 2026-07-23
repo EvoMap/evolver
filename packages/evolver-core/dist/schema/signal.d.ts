@@ -7,7 +7,7 @@ export declare const problemSignature: z.ZodString;
 export declare const signal: z.ZodObject<{
     signalId: z.ZodString;
     fromMaterial: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
-    kind: z.ZodEnum<["strong_structured", "weak_corpus", "agent_marked"]>;
+    kind: z.ZodEnum<["strong_structured", "weak_corpus", "agent_marked", "verified_success"]>;
     text: z.ZodString;
     score: z.ZodDefault<z.ZodNumber>;
     eventSignature: z.ZodString;
@@ -16,7 +16,7 @@ export declare const signal: z.ZodObject<{
     discoveredAt: z.ZodString;
     extensions: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
 }, "strip", z.ZodTypeAny, {
-    kind: "strong_structured" | "weak_corpus" | "agent_marked";
+    kind: "strong_structured" | "weak_corpus" | "agent_marked" | "verified_success";
     extensions: Record<string, unknown>;
     signalId: string;
     fromMaterial: string[];
@@ -27,7 +27,7 @@ export declare const signal: z.ZodObject<{
     signatureV: number;
     discoveredAt: string;
 }, {
-    kind: "strong_structured" | "weak_corpus" | "agent_marked";
+    kind: "strong_structured" | "weak_corpus" | "agent_marked" | "verified_success";
     signalId: string;
     text: string;
     eventSignature: string;

@@ -8,7 +8,7 @@ export const problemSignature = z.string();
 export const signal = z.object({
     signalId: ulid,
     fromMaterial: z.array(ulid).default([]),
-    kind: z.enum(['strong_structured', 'weak_corpus', 'agent_marked']),
+    kind: z.enum(['strong_structured', 'weak_corpus', 'agent_marked', 'verified_success']),
     text: z.string(),
     score: z.number().min(0).max(1).default(0),
     eventSignature,

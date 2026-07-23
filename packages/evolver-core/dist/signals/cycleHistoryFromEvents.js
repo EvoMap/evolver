@@ -8,7 +8,8 @@
 //  - intent:     mutation.built.payload.category (the cycle's GepCategory), if emitted
 //  - genesUsed:  decision.gene_selected.payload.selectedGeneId  ||  cycle.*.payload.gene
 //  - score:      cycle.*.payload.outcome.score
-//  - blastRadius:capsule.produced.payload.blastRadius, if emitted (else absent → not counted as empty)
+//  - blastRadius:capsule.produced.payload.blastRadius, if emitted. Productive {0,0} is omitted because non-git
+//                proofs use it as "unknown"; measured/no-value {0,0} remains an empty-cycle marker.
 // Only terminal cycles (a cycle.solidified or cycle.failed) become records; in-flight cycles are skipped.
 function payloadObj(e) {
     return e.payload && typeof e.payload === 'object' ? e.payload : {};
@@ -22,13 +23,12 @@ function cycleIdOf(p) {
  */
 export function cycleRecordsFromEvents(events) {
     const byCycle = new Map();
-    const order = [];
+    const terminalOrder = [];
     const get = (id) => {
         let a = byCycle.get(id);
         if (!a) {
             a = { terminal: false };
             byCycle.set(id, a);
-            order.push(id);
         }
         return a;
     };
@@ -53,15 +53,24 @@ export function cycleRecordsFromEvents(events) {
                 const br = p['blastRadius'];
                 if (br && typeof br === 'object') {
                     const o = br;
-                    a.blastRadius = {
-                        ...(typeof o['files'] === 'number' ? { files: o['files'] } : {}),
-                        ...(typeof o['lines'] === 'number' ? { lines: o['lines'] } : {}),
-                    };
+                    const files = typeof o['files'] === 'number' ? o['files'] : undefined;
+                    const lines = typeof o['lines'] === 'number' ? o['lines'] : undefined;
+                    // Non-git proofs use {0,0} as "blast unknown". producedValue is the authoritative distinction between
+                    // those productive cycles and a measured zero-change git cycle.
+                    const productiveUnknownBlast = p['producedValue'] === true && files === 0 && lines === 0;
+                    if (!productiveUnknownBlast) {
+                        a.blastRadius = {
+                            ...(files !== undefined ? { files } : {}),
+                            ...(lines !== undefined ? { lines } : {}),
+                        };
+                    }
                 }
                 break;
             }
             case 'cycle.solidified':
             case 'cycle.failed': {
+                if (!a.terminal)
+                    terminalOrder.push(id);
                 a.terminal = true;
                 a.status = e.type === 'cycle.solidified' ? 'success' : 'failed';
                 if (typeof p['gene'] === 'string')
@@ -77,7 +86,7 @@ export function cycleRecordsFromEvents(events) {
         }
     }
     const records = [];
-    for (const id of order) {
+    for (const id of terminalOrder) {
         const a = byCycle.get(id);
         if (!a.terminal)
             continue; // skip in-flight cycles

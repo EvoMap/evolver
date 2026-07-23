@@ -8,6 +8,10 @@ export interface CycleHistory {
     consecutiveEmptyCycles: number;
     /** Trailing run of consecutive failed cycles at the tail. */
     consecutiveFailureCount: number;
+    /** Trailing run of consecutive successful cycles at the tail. */
+    consecutiveSuccessCount: number;
+    /** Successful cycles within the recent window. */
+    successCycleCount: number;
     /** Fraction of the recent window that failed (0..1). */
     recentFailureRatio: number;
     /** geneId → times used within the recent window (informs which gene dominates a failure loop). */

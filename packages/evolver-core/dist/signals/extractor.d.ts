@@ -6,8 +6,8 @@ export interface SignalSourceTurn {
     errorMessage?: string;
     isMeta?: boolean;
 }
-/** 信号强度三条腿(批注#13): strong=零成本结构化判断 / agent=自标记 / weak=需 LLM 分析. */
-export type SignalStrength = 'strong' | 'agent' | 'weak';
+/** 信号强度四条腿(批注#13): strong=零成本结构化错误判断 / agent=自标记 / weak=需 LLM 分析 / success=成功信号(Issue#578). */
+export type SignalStrength = 'strong' | 'agent' | 'weak' | 'success';
 export interface ExtractedSignal {
     id: string;
     strength: SignalStrength;
