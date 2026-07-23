@@ -1,4 +1,4 @@
-import { type AssetKind, type AssetRecord, type AssetStoreProvider, type PutResult, type SearchQuery } from './provider.js';
+import { type AssetKind, type AssetRecord, type AssetStoreProvider, type ConditionalPutOptions, type ConditionalPutResult, type PutResult, type SearchQuery } from './provider.js';
 /**
  * 本地 jsonl 资产库(M3-2, 移植 v1 src/gep/assetStore.js 单写锁).
  * 每 kind 一文件(genes/capsules/events.jsonl); append-only; O_EXCL 文件锁防并发写撕裂;
@@ -19,6 +19,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     private ensureFresh;
     private updateFileStateAfterWrite;
     put(asset: AssetRecord): Promise<PutResult>;
+    putConditional(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     /**
      * 迁移专用(M8-2): 以**冻结 asset_id** 原样写入, 不经 normalizeForPut 重算/校验.
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.

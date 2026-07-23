@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { assetstore, events, mailbox } from '@evomap/evolver-core';
@@ -95,6 +96,30 @@ export function createRecipeHubFromEnv(env = process.env, connectHub = connectPu
         })
         : connectHub({ hubUrl, authMode: 'oauth', evomapDir: credentials.evomapDir, senderId: () => credentials.senderId });
     return connected.hub;
+}
+/** Opaque identity for resume isolation; raw credentials, account ids, and local paths never leave this helper. */
+export function resolveRecipeHubResumeIdentityFingerprint(env) {
+    loadEnvFileFromEnv(env);
+    const credentials = resolveRecipeHubCredentials(env);
+    let credential;
+    if (credentials.nodeSecret) {
+        credential = credentials.nodeSecret;
+    }
+    else {
+        try {
+            credential = createHash('sha256')
+                .update(readFileSync(join(credentials.evomapDir, 'token.json'), 'utf8'))
+                .digest('hex');
+        }
+        catch {
+            throw new Error('Hub resume identity credentials are unavailable');
+        }
+    }
+    return createHash('sha256').update(JSON.stringify({
+        authMode: credentials.nodeSecret ? 'legacy' : 'oauth',
+        senderId: credentials.senderId ?? '',
+        credential,
+    })).digest('hex');
 }
 function resolveRecipeHubUrl(env) {
     return resolveHubUrl(env);

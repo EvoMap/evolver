@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-runtime-adapters",
-  "version": "2.0.0-beta.9",
+  "version": "2.0.0-beta.10",
   "private": false,
   "type": "module",
   "description": "五 runtime 会话日志适配器 (CC/codex/cursor/kiro/opencode)",

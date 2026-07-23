@@ -801,14 +801,19 @@ function isDirectRun(metaUrl, argv1) {
 }
 export async function connectHubRuntime(deps) {
     if (deps.mode === 'private') {
-        const { hub } = await connectPrivateProxyHub({
+        const runtime = await connectPrivateProxyHub({
             hubUrl: deps.hubUrl,
             senderId: deps.senderId,
             env: deps.env ?? process.env,
             ...(deps.now ? { now: deps.now } : {}),
             ...(deps.privateImporter ? { importer: deps.privateImporter } : {}),
         });
-        return { hub, hello: (opts) => hub.hello(opts), heartbeat: (opts) => hub.heartbeat(opts), helloMode: 'enterprise_token' };
+        return {
+            hub: runtime.hub,
+            hello: runtime.hello,
+            heartbeat: (opts) => runtime.hub.heartbeat(opts),
+            helloMode: 'enterprise_token',
+        };
     }
     const selection = resolvePublicNodeSecret(deps);
     const { nodeSecret, nodeSecretVersion } = selection;

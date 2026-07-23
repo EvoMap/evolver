@@ -4,12 +4,12 @@ import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { validateWire, verifyAssetId } from '../wire/index.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { assertOptionalRegularFile, isReliableAssetStoreLockRelease, readUtf8Regular, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
-import { parseAssetSyncRecord, parseProvenanceRecord, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
+import { parseAssetSyncSidecarRecord, parseProvenanceRecord, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 export const DEFAULT_ASSET_HEALTH_MAX_FILE_BYTES = 64 * 1024 * 1024;
 const LOCAL_ASSET_SIDECARS = [
     { kind: 'provenance', file: 'provenance.jsonl', parseRecord: parseProvenanceRecord },
     { kind: 'review', file: 'review.jsonl', parseRecord: parseReviewRecord },
-    { kind: 'asset-sync', file: 'asset-sync.jsonl', parseRecord: parseAssetSyncRecord },
+    { kind: 'asset-sync', file: 'asset-sync.jsonl', parseRecord: parseAssetSyncSidecarRecord },
 ];
 function healthScanLimit(value) {
     if (value === undefined || !Number.isFinite(value))

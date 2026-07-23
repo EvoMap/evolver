@@ -1,5 +1,6 @@
 import { hub as hubNs } from '@evomap/evolver-core';
 import type { HelloResult, HeartbeatOptions, HeartbeatResult } from '../lifecycle/manager.js';
+import { type PrivateAccountAssetHub, type PrivateCompatibilityFetch } from './accountAssetCompatibility.js';
 export type PrivateHubWithLifecycle = hubNs.HubCapability & {
     hello(opts: {
         rotate: boolean;
@@ -7,6 +8,7 @@ export type PrivateHubWithLifecycle = hubNs.HubCapability & {
     }): Promise<HelloResult>;
     heartbeat(opts?: HeartbeatOptions): Promise<HeartbeatResult>;
 };
+export type PrivateProxyHub = PrivateHubWithLifecycle & PrivateAccountAssetHub;
 interface PrivateSsoExchange {
     identity: () => {
         subject: string;
@@ -29,11 +31,19 @@ export interface ConnectPrivateHubOptions {
     now?: () => number;
     /** One-shot invitation token (evoinv_…) — preferred over the SSO bearer for token_required hubs. */
     invitationToken?: string;
+    /** Ready credential from the standard Private Hub onboarding store. */
+    nodeSecret?: string;
+    fetchFn?: PrivateCompatibilityFetch;
 }
 type DynamicImporter = (specifier: string) => Promise<unknown>;
 export interface PrivateProxyHubRuntime {
-    hub: PrivateHubWithLifecycle;
+    hub: PrivateProxyHub;
     auth: hubNs.AuthProvider;
+    /** Enrollment-aware lifecycle entrypoint. Ready node_secret credentials must not re-run hello. */
+    hello(opts: {
+        rotate: boolean;
+        evolverVersion?: string;
+    }): Promise<HelloResult>;
 }
 export interface ConnectPrivateProxyHubOptions {
     hubUrl: string;
@@ -41,11 +51,13 @@ export interface ConnectPrivateProxyHubOptions {
     env: Record<string, string | undefined>;
     now?: () => number;
     importer?: DynamicImporter;
+    fetchFn?: PrivateCompatibilityFetch;
 }
 export declare function resolvePrivateEnterpriseToken(env: Record<string, string | undefined>): string | undefined;
 /** One-shot invitation token (evoinv_…), matching the hub's official onboarding script (A2A_INVITATION_TOKEN).
  *  Preferred over the enterprise token for the default token_required enrollment mode. */
 export declare function resolvePrivateInvitationToken(env: Record<string, string | undefined>): string | undefined;
+export declare function resolvePrivateNodeSecret(env: Record<string, string | undefined>): string | undefined;
 export declare function resolvePrivateEnterpriseSubject(env: Record<string, string | undefined>): string;
 export declare function connectPrivateProxyHub(opts: ConnectPrivateProxyHubOptions): Promise<PrivateProxyHubRuntime>;
 export {};

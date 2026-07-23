@@ -6,3 +6,4 @@ export * from './lifecycle/deployGuard.js';
 export * from './router/index.js';
 export * from './llm/index.js';
 export * from './selfUpdate/index.js';
+export * from './private/adapterLoader.js';

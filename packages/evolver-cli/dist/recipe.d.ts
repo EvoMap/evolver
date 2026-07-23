@@ -56,6 +56,8 @@ export declare function createRecipeHubFromEnv(env?: NodeJS.ProcessEnv, connectH
     hub: PublicHubCapability;
     auth: hubNs.AuthProvider;
 }): PublicHubCapability;
+/** Opaque identity for resume isolation; raw credentials, account ids, and local paths never leave this helper. */
+export declare function resolveRecipeHubResumeIdentityFingerprint(env: NodeJS.ProcessEnv): string;
 export declare function parseRecipeArgs(argv: readonly string[]): ParseResult<RecipeOptions>;
 /**
  * The EXPLICIT home overrides (EVOMAP_DIR / EVOLVER_HOME / EVOMAP_HOME) the recipe credential layer honors,

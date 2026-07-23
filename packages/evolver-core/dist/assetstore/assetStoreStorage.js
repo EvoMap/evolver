@@ -237,10 +237,19 @@ export function appendUtf8Durable(path, value, opts = {}) {
     const parent = dirname(path);
     assertAssetStoreDirectory(parent);
     const existed = assertOptionalRegularFile(path) !== null;
-    const fd = openNoFollow(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
+    const fd = openNoFollow(path, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT, 0o600);
     try {
         assertOpenedPathMatches(fd, path, 'asset_file');
-        writeAll(fd, value);
+        const stat = fstatSync(fd);
+        let needsLineSeparator = false;
+        if (stat.size > 0 && value.length > 0) {
+            const tail = Buffer.allocUnsafe(1);
+            const bytesRead = readSync(fd, tail, 0, 1, stat.size - 1);
+            if (bytesRead !== 1)
+                throw new Error('asset store tail read made no progress');
+            needsLineSeparator = tail[0] !== 0x0a;
+        }
+        writeAll(fd, needsLineSeparator ? `\n${value}` : value);
         (opts.syncFile ?? fsyncSync)(fd);
     }
     finally {

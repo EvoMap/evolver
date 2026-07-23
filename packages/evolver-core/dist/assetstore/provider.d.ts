@@ -10,6 +10,24 @@ export interface PutResult {
     stored: boolean;
     verified: boolean;
 }
+export type ConditionalPutStatus = 'stored' | 'already_exists' | 'logical_collision';
+export interface ConditionalPutOptions {
+    /** Only explicit force-like callers may keep multiple content versions for the same type + logical id. */
+    allowLogicalCollision?: boolean;
+}
+export interface ConditionalPutResult extends PutResult {
+    status: ConditionalPutStatus;
+    logicalId?: string;
+    collisionWithAssetId?: string;
+}
+export type InvalidConditionalPutResultReason = 'malformed_result' | 'asset_id_mismatch' | 'inconsistent_status' | 'invalid_collision' | 'collision_bypass';
+export declare class InvalidConditionalPutResultError extends Error {
+    readonly reason: InvalidConditionalPutResultReason;
+    readonly code = "INVALID_CONDITIONAL_PUT_RESULT";
+    constructor(reason: InvalidConditionalPutResultReason);
+}
+/** Validate an injected provider response before callers treat it as an explicit write/no-write decision. */
+export declare function validateConditionalPutResult(value: unknown, expectedAssetId: string, options?: ConditionalPutOptions): ConditionalPutResult;
 export interface SearchQuery {
     kind?: AssetKind;
     signalsAny?: string[];
@@ -24,12 +42,18 @@ export interface SearchQuery {
  */
 export interface AssetStoreProvider {
     put(asset: AssetRecord): Promise<PutResult>;
+    /** Optional atomic capability; use supportsAtomicConditionalPut() before calling through this interface. */
+    putConditional?(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
     /** Optional direct lookup for non-content-addressed logical ids. Callers must handle 0, 1, or multiple matches. */
     findByLogicalId?(id: string, limit?: number): Promise<AssetRecord[]>;
     search(query: SearchQuery): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
 }
+export type AtomicConditionalPutProvider = AssetStoreProvider & {
+    putConditional(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
+};
+export declare function supportsAtomicConditionalPut(provider: AssetStoreProvider): provider is AtomicConditionalPutProvider;
 export declare class AssetIdMismatchError extends Error {
     readonly claimed: string;
     readonly actual: string;

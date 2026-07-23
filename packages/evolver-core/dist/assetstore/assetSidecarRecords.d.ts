@@ -1,4 +1,4 @@
-import type { AssetSyncRecord } from './assetSyncLedger.js';
+import type { AssetSyncInventorySegmentRecord, AssetSyncRecord, AssetSyncRunRecord } from './assetSyncLedger.js';
 import type { ProvenanceRecord } from './provenance.js';
 import type { ReviewRecord } from './reviewLedger.js';
 export type AssetSidecarKind = 'provenance' | 'review' | 'asset-sync';
@@ -21,3 +21,8 @@ export declare function assertTrustSidecarHealthy<T>(sidecar: Extract<AssetSidec
 export declare function parseProvenanceRecord(value: unknown): ProvenanceRecord | null;
 export declare function parseReviewRecord(value: unknown): ReviewRecord | null;
 export declare function parseAssetSyncRecord(value: unknown): AssetSyncRecord | null;
+export declare const ASSET_SYNC_INVENTORY_MAX_SEGMENT_BYTES: number;
+export type AssetSyncSidecarRecord = AssetSyncRecord | AssetSyncRunRecord | AssetSyncInventorySegmentRecord;
+export declare function parseAssetSyncRunRecord(value: unknown): AssetSyncRunRecord | null;
+export declare function parseAssetSyncInventorySegmentRecord(value: unknown): AssetSyncInventorySegmentRecord | null;
+export declare function parseAssetSyncSidecarRecord(value: unknown): AssetSyncSidecarRecord | null;

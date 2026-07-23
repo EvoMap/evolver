@@ -4,7 +4,7 @@
 // must not enter the content hash (#30.2), or it would break content-addressing. Trust-first by construction:
 // selection defaults to trusted-only; an untrusted asset is promoted to trusted only by an explicit, logged act.
 import { join, dirname } from 'node:path';
-import { normalizeForPut } from './provider.js';
+import { normalizeForPut, supportsAtomicConditionalPut, validateConditionalPutResult, } from './provider.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, truncateUtf8SuffixDurable, withAssetStoreLock, } from './assetStoreStorage.js';
 import { assertTrustSidecarHealthy, parseProvenanceRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 function immutableRecord(record) {
@@ -139,6 +139,21 @@ export async function ingestUntrusted(store, prov, record, source = 'hub') {
     // A thrown write has an ambiguous outcome: the asset may have reached disk before the acknowledgement was
     // lost. Keep the untrusted marker in that case so a persisted Hub asset can never fall through the default
     // no-record => trusted policy. Only an explicit no-write result is safe to roll back.
+    if (!result.stored)
+        prov.rollbackLast(mark);
+    return result;
+}
+/**
+ * Conditional variant used by Hub sync to reject a logical-id collision without ever allowing a Hub record
+ * to become implicitly trusted. Providers that cannot make the condition atomically are rejected here.
+ */
+export async function ingestUntrustedConditional(store, prov, record, options, source = 'hub') {
+    if (!supportsAtomicConditionalPut(store)) {
+        throw new Error('asset store does not support conditional writes');
+    }
+    const normalized = normalizeForPut(record);
+    const mark = prov.mark({ assetId: normalized.record.asset_id, source, trusted: false });
+    const result = validateConditionalPutResult(await store.putConditional(record, options), normalized.record.asset_id, options);
     if (!result.stored)
         prov.rollbackLast(mark);
     return result;

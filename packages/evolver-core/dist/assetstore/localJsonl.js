@@ -97,15 +97,42 @@ export class LocalJsonlProvider {
         this.loaded = true;
     }
     async put(asset) {
+        return this.putConditional(asset, { allowLogicalCollision: true });
+    }
+    async putConditional(asset, options) {
         const { record, verified } = normalizeForPut(asset);
         const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
+        const logicalId = typeof record.id === 'string' ? record.id : undefined;
+        let collision;
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             // Refresh under the shared lock so another process cannot append between reload and dedupe.
             this.refreshUnderLock();
-            if (this.index.has(record.asset_id))
-                return { asset_id: record.asset_id, stored: false, verified };
+            if (this.index.has(record.asset_id)) {
+                return {
+                    asset_id: record.asset_id,
+                    stored: false,
+                    verified,
+                    status: 'already_exists',
+                    logicalId,
+                };
+            }
+            collision = logicalId === undefined
+                ? undefined
+                : [...this.index.values()].find((existing) => (existing.type === record.type
+                    && existing.id === logicalId
+                    && existing.asset_id !== record.asset_id));
+            if (collision && !options?.allowLogicalCollision) {
+                return {
+                    asset_id: record.asset_id,
+                    stored: false,
+                    verified,
+                    status: 'logical_collision',
+                    logicalId,
+                    collisionWithAssetId: collision.asset_id,
+                };
+            }
             appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
             this.index.set(record.asset_id, record);
             this.updateFileStateAfterWrite();
@@ -113,7 +140,16 @@ export class LocalJsonlProvider {
         finally {
             releaseLock(this.lockPath);
         }
-        return { asset_id: record.asset_id, stored: true, verified };
+        return {
+            asset_id: record.asset_id,
+            stored: true,
+            verified,
+            status: 'stored',
+            ...(collision ? {
+                logicalId,
+                collisionWithAssetId: collision.asset_id,
+            } : {}),
+        };
     }
     /**
      * 迁移专用(M8-2): 以**冻结 asset_id** 原样写入, 不经 normalizeForPut 重算/校验.

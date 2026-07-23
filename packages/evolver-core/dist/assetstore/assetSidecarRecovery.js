@@ -5,7 +5,7 @@ import { TextDecoder } from 'node:util';
 import { canonicalize } from '../wire/index.js';
 import { LockReleaseError } from '../util/fileLock.js';
 import { AssetStoreReadLimitError, assertAssetStoreDirectory, createBufferDurableExclusive, fsyncDirectoryBestEffort, readRegularBuffer, regularFileFingerprint, replaceUtf8Durable, withAssetStoreLock, } from './assetStoreStorage.js';
-import { parseAssetSyncRecord, parseProvenanceRecord, parseReviewRecord, } from './assetSidecarRecords.js';
+import { parseAssetSyncSidecarRecord, parseProvenanceRecord, parseReviewRecord, } from './assetSidecarRecords.js';
 export class AssetSidecarRecoveryError extends Error {
     reason;
     code = 'ASSET_SIDECAR_RECOVERY_FAILED';
@@ -29,7 +29,7 @@ const SIDECAR_FILES = {
 const RECORD_PARSERS = {
     provenance: parseProvenanceRecord,
     review: parseReviewRecord,
-    'asset-sync': parseAssetSyncRecord,
+    'asset-sync': parseAssetSyncSidecarRecord,
 };
 function isErrno(error, code) {
     return typeof error === 'object' && error !== null && error.code === code;

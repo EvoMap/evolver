@@ -1,4 +1,4 @@
-import { type AssetStoreProvider, type AssetRecord, type PutResult } from './provider.js';
+import { type AssetStoreProvider, type AssetRecord, type ConditionalPutOptions, type ConditionalPutResult, type PutResult } from './provider.js';
 export type ProvenanceSource = 'local' | 'migrated' | 'hub';
 export type ProvenanceDecision = 'promoted' | 'revoked';
 export interface ProvenanceRecord {
@@ -55,3 +55,8 @@ export declare class ProvenanceStore {
  * should bring hub-fetched assets into the local pool — trust-first from the first byte (#30.1).
  */
 export declare function ingestUntrusted(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, source?: ProvenanceSource): Promise<PutResult>;
+/**
+ * Conditional variant used by Hub sync to reject a logical-id collision without ever allowing a Hub record
+ * to become implicitly trusted. Providers that cannot make the condition atomically are rejected here.
+ */
+export declare function ingestUntrustedConditional(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, options?: ConditionalPutOptions, source?: ProvenanceSource): Promise<ConditionalPutResult>;

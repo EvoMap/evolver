@@ -1,4 +1,5 @@
 import { hub as hubNs } from '@evomap/evolver-core';
+import { withPrivateAccountAssetCompatibility, } from './accountAssetCompatibility.js';
 const DEFAULT_PRIVATE_ADAPTER_MODULE = '@evomap/evolver-adapter-private';
 export function resolvePrivateEnterpriseToken(env) {
     return firstEnv(env, 'EVOMAP_ENTERPRISE_TOKEN', 'EVOMAP_PRIVATE_HUB_TOKEN', 'PHUB_ENTERPRISE_TOKEN', 'PRIVATE_HUB_ENTERPRISE_TOKEN');
@@ -8,14 +9,21 @@ export function resolvePrivateEnterpriseToken(env) {
 export function resolvePrivateInvitationToken(env) {
     return firstEnv(env, 'A2A_INVITATION_TOKEN');
 }
+export function resolvePrivateNodeSecret(env) {
+    return firstEnv(env, 'EVOMAP_NODE_SECRET', 'A2A_NODE_SECRET');
+}
 export function resolvePrivateEnterpriseSubject(env) {
     return firstEnv(env, 'EVOMAP_ENTERPRISE_SUBJECT', 'EVOMAP_PRIVATE_SUBJECT', 'PHUB_ENTERPRISE_SUBJECT', 'USER') ?? 'evolver-proxy';
 }
 export async function connectPrivateProxyHub(opts) {
     const invitationToken = resolvePrivateInvitationToken(opts.env);
     const token = resolvePrivateEnterpriseToken(opts.env);
-    if (!token && !invitationToken) {
-        throw new Error('EVOMAP_HUB_MODE=private 需要 A2A_INVITATION_TOKEN（推荐，对齐 PrivateHub onboarding）或 EVOMAP_ENTERPRISE_TOKEN（也兼容 EVOMAP_PRIVATE_HUB_TOKEN / PHUB_ENTERPRISE_TOKEN）');
+    const nodeSecret = resolvePrivateNodeSecret(opts.env);
+    if (nodeSecret && !isNodeSecret(nodeSecret)) {
+        throw new Error('Private Hub node_secret 必须是 64 位十六进制字符串');
+    }
+    if (!token && !invitationToken && !nodeSecret) {
+        throw new Error('EVOMAP_HUB_MODE=private 需要 A2A_NODE_SECRET / EVOMAP_NODE_SECRET、A2A_INVITATION_TOKEN 或 EVOMAP_ENTERPRISE_TOKEN');
     }
     const moduleName = opts.env['EVOMAP_PRIVATE_ADAPTER_MODULE']?.trim() || DEFAULT_PRIVATE_ADAPTER_MODULE;
     const connectPrivateHub = await loadConnectPrivateHub(moduleName, opts.importer ?? ((specifier) => import(specifier)));
@@ -28,16 +36,33 @@ export async function connectPrivateProxyHub(opts) {
         now,
         sso: {
             identity: () => ({ subject }),
-            exchange: async () => ({ token: token ?? '' }),
+            exchange: async () => ({ token: token ?? nodeSecret ?? '' }),
             now,
         },
-        ...(invitationToken ? { invitationToken } : {}),
+        ...(nodeSecret ? { nodeSecret } : {}),
+        ...(!nodeSecret && invitationToken ? { invitationToken } : {}),
+        ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
     });
     assertPrivateLifecycle(hub, moduleName);
+    if (nodeSecret)
+        await adoptReadyNodeSecret(auth, nodeSecret);
     if (!hub.agentDirectory) {
         hub.agentDirectory = hubNs.unsupportedAgentDirectoryCapability('private_hub_agent_directory_not_supported');
     }
-    return { hub, auth };
+    const compatibleHub = withPrivateAccountAssetCompatibility(hub, {
+        baseUrl: opts.hubUrl,
+        auth,
+        senderId: opts.senderId,
+        env: opts.env,
+        ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
+    });
+    return {
+        hub: compatibleHub,
+        auth,
+        hello: nodeSecret
+            ? async (helloOpts) => await helloWithReadyPrivateCredential(compatibleHub, auth, nodeSecret, opts.senderId, helloOpts)
+            : (helloOpts) => compatibleHub.hello(helloOpts),
+    };
 }
 async function loadConnectPrivateHub(moduleName, importer) {
     let loaded;
@@ -59,6 +84,44 @@ function assertPrivateLifecycle(hub, moduleName) {
     if (typeof candidate?.['hello'] !== 'function' || typeof candidate['heartbeat'] !== 'function') {
         throw new Error(`${moduleName} 的 hub 缺少 hello/heartbeat lifecycle 方法，无法接入 evolver-proxy`);
     }
+}
+async function adoptReadyNodeSecret(auth, nodeSecret) {
+    const candidate = auth;
+    if (typeof candidate.adoptNodeSecret === 'function') {
+        candidate.adoptNodeSecret.call(auth, nodeSecret);
+    }
+    if (!await authenticatesWithNodeSecret(auth, nodeSecret)) {
+        throw new Error('private Hub adapter cannot activate the configured node_secret');
+    }
+}
+async function helloWithReadyPrivateCredential(hub, auth, nodeSecret, senderId, opts) {
+    if (await authenticatesWithNodeSecret(auth, nodeSecret))
+        return readyPrivateHello(senderId);
+    return await hub.hello(opts);
+}
+async function authenticatesWithNodeSecret(auth, nodeSecret) {
+    const signed = await auth.authenticate({ method: 'GET', path: '/a2a/assets/published-by-me' });
+    const authorization = headerValue(signed.headers, 'authorization');
+    const bodySecret = signed.bodyFields?.['node_secret'];
+    return authorization === `Bearer ${nodeSecret}` || bodySecret === nodeSecret;
+}
+function headerValue(headers, name) {
+    const lower = name.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() === lower)
+            return value;
+    }
+    return undefined;
+}
+function trimmedSenderId(senderId) {
+    return senderId()?.trim() || undefined;
+}
+function readyPrivateHello(senderId) {
+    const nodeId = trimmedSenderId(senderId);
+    return { ok: true, ...(nodeId ? { nodeId } : {}) };
+}
+function isNodeSecret(value) {
+    return /^[a-f0-9]{64}$/i.test(value);
 }
 function firstEnv(env, ...keys) {
     for (const key of keys) {
