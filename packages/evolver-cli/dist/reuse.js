@@ -167,18 +167,30 @@ export function parseReuseArgs(argv) {
     const runId = flagValue(argv, '--run');
     return { ok: true, value: { id, mode: modeRaw === 'direct' ? 'direct' : 'reference', ...(runId ? { runId } : {}) } };
 }
+// Integrity rejection is a first-class outcome, not an internal fault: the hub demonstrably rewrites
+// delivered payloads (injected `validation`, wholesale `payload_backfill_reason` synthesis — #570), so the
+// desktop adapter needs a typed reason to tell "this asset cannot be verified" apart from "the engine broke".
+// Messages are fixed strings by construction (hard rule 2: nothing dynamic can reach a stream).
+class ReuseIntegrityError extends Error {
+}
+const INTEGRITY_MISMATCH_MESSAGE = 'hub-delivered content does not match the asset content fingerprint';
+const INTEGRITY_BACKFILLED_MESSAGE = 'hub delivered a synthesized payload for this asset; the original published content is unavailable for verification';
+function integrityError(content) {
+    const backfilled = stringField(content, 'payload_backfill_reason') !== undefined;
+    return new ReuseIntegrityError(backfilled ? INTEGRITY_BACKFILLED_MESSAGE : INTEGRITY_MISMATCH_MESSAGE);
+}
 async function ingestHubAsset(store, deps, asset, requestedId) {
     const cleaned = stripHubMetadata(unwrapHubAssetContent(asset));
     const actualAssetId = wire.computeAssetId(cleaned);
     const contentAssetId = stringField(cleaned, 'asset_id');
     if (!actualAssetId || !contentAssetId || actualAssetId !== contentAssetId) {
-        throw new Error('asset integrity verification failed');
+        throw integrityError(cleaned);
     }
     if (isContentAssetId(requestedId) && actualAssetId !== requestedId) {
-        throw new Error('asset integrity verification failed');
+        throw integrityError(cleaned);
     }
     if (!isContentAssetId(requestedId) && stringField(cleaned, 'id') !== requestedId) {
-        throw new Error('asset integrity verification failed');
+        throw integrityError(cleaned);
     }
     await assertNoLocalReuseIdConflict(cleaned, store);
     const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, deps));
@@ -270,6 +282,9 @@ function hubErrorField(body) {
     return typeof err === 'string' ? err : undefined;
 }
 function mapError(e) {
+    if (e instanceof ReuseIntegrityError) {
+        return { ok: false, status: 'integrity_failed', message: e.message };
+    }
     if (e instanceof AuthError) {
         // hubFetch raises AuthError for BOTH 401 and 403, so the hub's anti-abuse 403
         // (`bulk_fetch_blocked: IP antibody active`) used to be misreported as "log in" — it is an

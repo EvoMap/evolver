@@ -1,7 +1,7 @@
 import { assetstore, hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHelloOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
 declare const REUSE_CONTRACT = "reuse.v1";
-export type ReuseStatus = 'ok' | 'dry_run' | 'invalid_arg' | 'missing_id' | 'unsupported' | 'not_found' | 'unauthorized' | 'unavailable' | 'network' | 'rate_limited' | 'internal_error';
+export type ReuseStatus = 'ok' | 'dry_run' | 'invalid_arg' | 'missing_id' | 'unsupported' | 'not_found' | 'unauthorized' | 'unavailable' | 'network' | 'rate_limited' | 'integrity_failed' | 'internal_error';
 /** The stable reuse.v1 machine contract printed to stdout on success AND failure. Field set is locked by the
  *  consumer (evox-desktop `evolverReuseEnvelope`, #1008): { ok, contract, status, reason, message }. */
 export interface ReuseEnvelope {

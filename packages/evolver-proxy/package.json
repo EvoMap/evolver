@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-proxy",
-  "version": "2.0.0-beta.7",
+  "version": "2.0.0-beta.8",
   "private": false,
   "type": "module",
   "description": "系统级 mailbox/hub 同步 daemon (Node)",
@@ -26,8 +26,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1053.0",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.7",
-    "@evomap/evolver-core": "2.0.0-beta.7"
+    "@evomap/evolver-adapter-public": "2.0.0-beta.8",
+    "@evomap/evolver-core": "2.0.0-beta.8"
   },
   "repository": {
     "type": "git",
