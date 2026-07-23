@@ -180,8 +180,8 @@ export class LocalJsonlProvider {
             if (q.gene && r.gene !== q.gene)
                 continue;
             if (q.signalsAny && q.signalsAny.length > 0) {
-                const sig = new Set(signalsOf(r));
-                if (!q.signalsAny.some((s) => sig.has(s)))
+                const sig = new Set(signalsOf(r).map((signal) => signal.trim().toLowerCase()));
+                if (!q.signalsAny.some((signal) => sig.has(signal.trim().toLowerCase())))
                     continue;
             }
             if (q.text) {

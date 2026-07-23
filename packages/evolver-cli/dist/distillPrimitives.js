@@ -136,19 +136,40 @@ export function draftGeneCandidate(turns, sigs, agent) {
         generation_meta: { source: 'distilled' },
     };
 }
+// Signals injected by the fallback itself, plus generic command runners, carry no domain identity. Including them
+// in Jaccard makes unrelated capabilities (for example GitHub vs Playwright) look 60% identical even though their
+// one discriminating signal differs. Keep them for exact-subset detection, but omit them from soft similarity.
+const GENERIC_NOVELTY_SIGNALS = new Set([
+    'reusable_capability',
+    'verified_workflow',
+    'shell_command',
+    'bash',
+    'powershell',
+    'pwsh',
+    'sh',
+    'cmd',
+    'command',
+]);
+function normalizeSignalSet(values) {
+    return new Set((values ?? []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
+}
+function noveltySignalSet(signals) {
+    const discriminating = [...signals].filter((signal) => !GENERIC_NOVELTY_SIGNALS.has(signal));
+    return discriminating.length > 0 ? new Set(discriminating) : signals;
+}
 /**
  * Value/novelty gate run BEFORE a draft is quarantined (#117 improvement 3). `intakeGene` already rejects
- * empty/structurally-invalid candidates and EXACT signal subsets (fullyOverlaps), but two kinds of noise still
- * reach the human review queue: drafts too thin to be worth reviewing (one weak signal, one vague step), and
- * near-duplicates that escape the subset check by carrying one extra signal. Unattended auto-distill turns that
- * trickle into a flood, and a review gate nobody reads is no gate. This adds a substance floor + a SOFT similarity
- * reject. Pure and deterministic; the caller decides what to do with a non-admit (skip, never an error).
+ * empty/structurally-invalid candidates and EXACT signal subsets (fullyOverlaps). Admission mirrors that subset
+ * check so a duplicate is a per-candidate skip instead of aborting a whole batch, then adds the two missing noise
+ * controls: a substance floor and a SOFT near-duplicate comparison. Unattended auto-distill turns that trickle
+ * into a flood, and a review gate nobody reads is no gate. Pure and deterministic; the caller decides what to do
+ * with a non-admit (skip, never an error).
  */
 export function assessDraftAdmission(candidate, existing = [], opts = {}) {
     const minSignals = opts.minSignals ?? 2;
     const minStrategy = opts.minStrategy ?? 1;
     const maxSimilarity = opts.maxSimilarity ?? 0.6;
-    const sigs = [...new Set((candidate.signals_match ?? []).map((s) => String(s).toLowerCase()).filter(Boolean))];
+    const sigs = [...normalizeSignalSet(candidate.signals_match)];
     const strategy = (candidate.strategy ?? []).filter((s) => String(s).trim());
     if (sigs.length < minSignals)
         return { admit: false, reason: `too few signals (${sigs.length} < ${minSignals})` };
@@ -156,11 +177,16 @@ export function assessDraftAdmission(candidate, existing = [], opts = {}) {
         return { admit: false, reason: `strategy too thin (${strategy.length} < ${minStrategy} steps)` };
     const newSet = new Set(sigs);
     for (const eg of existing) {
-        const egSet = new Set((eg.signals_match ?? []).map((s) => String(s).toLowerCase()).filter(Boolean));
+        const egSet = normalizeSignalSet(eg.signals_match);
         if (egSet.size === 0)
             continue;
-        const inter = [...newSet].filter((s) => egSet.has(s)).length;
-        const union = new Set([...newSet, ...egSet]).size;
+        if ([...newSet].every((signal) => egSet.has(signal))) {
+            return { admit: false, reason: `near-duplicate of ${eg.id ?? '?'} (candidate signal subset)` };
+        }
+        const comparableNew = noveltySignalSet(newSet);
+        const comparableExisting = noveltySignalSet(egSet);
+        const inter = [...comparableNew].filter((s) => comparableExisting.has(s)).length;
+        const union = new Set([...comparableNew, ...comparableExisting]).size;
         const jaccard = union ? inter / union : 0;
         if (jaccard >= maxSimilarity)
             return { admit: false, reason: `near-duplicate of ${eg.id ?? '?'} (similarity ${jaccard.toFixed(2)})` };

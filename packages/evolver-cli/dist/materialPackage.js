@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { assetstore, algo, events, hub, material as materialNs, schema, signals } from '@evomap/evolver-core';
 import { runtimeSessionSourcesForMaterial, runtimeSessionSourcesFromMaterialPayload } from './materialSnapshot.js';
-import { assessDraftAdmission, draftGeneCandidate } from './distillPrimitives.js';
+import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { buildPublishBundle } from './cliContracts.js';
 const GROUP = 'material.package_gene';
@@ -165,10 +166,6 @@ async function draftGeneFromMaterial(material, store, readSource) {
     }
     if (sources.length === 0)
         return { blocker: 'source_unavailable', message: 'material has no usable runtime session source', sourceCount: 0, signalCount: 0 };
-    const existing = (await store.list('Gene', 10_000)).map((g) => ({
-        id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
-        signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
-    }));
     let signalCount = 0;
     let sawCandidate = false;
     let lastIntakeError = '';
@@ -188,7 +185,7 @@ async function draftGeneFromMaterial(material, store, readSource) {
         if (alreadyStored?.type === 'Gene') {
             return { gene: alreadyStored, sourceCount: sources.length, signalCount, stored: true };
         }
-        const admission = assessDraftAdmission(candidate, existing);
+        const { admission, existing } = await assessDraftAdmissionFromStore(store, candidate);
         if (!admission.admit) {
             lastIntakeError = admission.reason ?? 'gene draft admission rejected the candidate';
             continue;

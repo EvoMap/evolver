@@ -175,6 +175,7 @@ class ReuseIntegrityError extends Error {
 }
 const INTEGRITY_MISMATCH_MESSAGE = 'hub-delivered content does not match the asset content fingerprint';
 const INTEGRITY_BACKFILLED_MESSAGE = 'hub delivered a synthesized payload for this asset; the original published content is unavailable for verification';
+const INTEGRITY_LOGICAL_ID_MESSAGE = 'hub-delivered asset does not match the requested logical id';
 function integrityError(content) {
     const backfilled = stringField(content, 'payload_backfill_reason') !== undefined;
     return new ReuseIntegrityError(backfilled ? INTEGRITY_BACKFILLED_MESSAGE : INTEGRITY_MISMATCH_MESSAGE);
@@ -190,7 +191,7 @@ async function ingestHubAsset(store, deps, asset, requestedId) {
         throw integrityError(cleaned);
     }
     if (!isContentAssetId(requestedId) && stringField(cleaned, 'id') !== requestedId) {
-        throw integrityError(cleaned);
+        throw new ReuseIntegrityError(INTEGRITY_LOGICAL_ID_MESSAGE);
     }
     await assertNoLocalReuseIdConflict(cleaned, store);
     const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, deps));
@@ -227,7 +228,12 @@ async function assertNoLocalReuseIdConflict(asset, store) {
 function unwrapHubAssetContent(asset) {
     const payload = asset.payload;
     if (payload && typeof payload === 'object' && !Array.isArray(payload) && stringField(payload, 'asset_id')) {
-        return payload;
+        const content = payload;
+        const backfillReason = stringField(asset, 'payload_backfill_reason');
+        if (backfillReason && stringField(payload, 'payload_backfill_reason') === undefined) {
+            return { ...content, payload_backfill_reason: backfillReason };
+        }
+        return content;
     }
     return asset;
 }

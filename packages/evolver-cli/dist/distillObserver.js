@@ -11,7 +11,8 @@
 // wired into autoexec — a tracked dependency, not dead code. See distillObserver.test.ts.
 import { assetstore, events, observers, signals, algo } from '@evomap/evolver-core';
 import { readFileSync } from 'node:fs';
-import { draftGeneCandidate, assessDraftAdmission } from './distillPrimitives.js';
+import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
 /** Consumer group the distill drain claims under — independent cursor from any other material consumer. */
@@ -49,13 +50,10 @@ export function makeDistillDrain(c) {
             const candidate = draftGeneCandidate(source.turns, signals.extractSignals(source.turns), source.agent);
             if (!candidate)
                 continue; // too thin to distill
-            const existing = (await c.store.list('Gene', 1000)).map((g) => ({
-                id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
-                signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
-            }));
             // Value/novelty gate (#117 improvement 3): drop thin / near-duplicate drafts BEFORE they reach the human
             // review queue. Ack the material (a deliberate skip, not a failure — nothing to retry).
-            if (!assessDraftAdmission(candidate, existing).admit)
+            const { admission, existing } = await assessDraftAdmissionFromStore(c.store, candidate);
+            if (!admission.admit)
                 continue;
             const r = algo.intakeGene(candidate, existing);
             if (!r.ok || !r.gene)

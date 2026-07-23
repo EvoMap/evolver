@@ -723,12 +723,12 @@ function assetsFromBody(body) {
         .filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)))
         .map(unwrapFetchDeliveryRow);
 }
-// Delivery-row ranking metadata carried over onto the unwrapped GEP record: hubReuse's candidate
-// ranking reads these from the row (toRankedCandidate), and reuse's ingest strips them before
-// hashing, so carrying them is both useful and integrity-safe. Do not carry `confidence`: it is
-// transport metadata on Gene rows but canonical content on Capsules, so overloading it here can
-// either poison a Gene hash or overwrite the meaning of Capsule content (#565).
-const FETCH_ROW_CARRYOVER_KEYS = ['gdi_score', 'success_rate', 'reuse_count', 'source_node_id'];
+// Delivery-row metadata carried over onto the unwrapped GEP record. Ranking fields are consumed by
+// hubReuse and stripped before canonical storage. `payload_backfill_reason` must also survive this
+// boundary so integrity consumers can report that the Hub synthesized the payload (#570). Do not
+// carry `confidence`: it is transport metadata on Gene rows but canonical content on Capsules, so
+// overloading it can either poison a Gene hash or overwrite Capsule content (#565).
+const FETCH_ROW_CARRYOVER_KEYS = ['gdi_score', 'success_rate', 'reuse_count', 'source_node_id', 'payload_backfill_reason'];
 /**
  * The live hub's /a2a/fetch results are DELIVERY ROWS, not raw GEP records (#565, observed on
  * evomap.ai 2026-07-22): the record itself nests under `payload`, while the row's own keys are

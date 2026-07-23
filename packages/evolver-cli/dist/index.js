@@ -7,7 +7,8 @@ import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { makeInjectEmitter } from './autoexec.js';
 import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
-import { assessDraftAdmission, draftGeneCandidate } from './distillPrimitives.js';
+import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { emitSessionRecall } from './autoRecall.js';
 import { isRuntimeSessionSourcePath, parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
@@ -706,10 +707,7 @@ export async function runIngest(argv, store, deps = {}, review) {
     // --distill: assemble + intake UNPROVEN draft genes per runtime session (shared draft logic — see distillPrimitives).
     const s = store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
     const accepted = [];
-    let existing = (await s.list('Gene', 1000)).map((g) => ({
-        id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
-        signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
-    }));
+    const acceptedSignals = [];
     let candidateCount = 0;
     let admissionSkipped = 0;
     let lastAdmissionSkipReason = '';
@@ -721,7 +719,7 @@ export async function runIngest(argv, store, deps = {}, review) {
         // Same value/novelty gate as the live distillObserver (#562): without it, a bulk ingest over session
         // history floods the human review queue with thin / near-duplicate drafts (118 in one run). A non-admit
         // is a deliberate skip — the rest of the batch still distills; intake below stays the structural gate.
-        const admission = assessDraftAdmission(candidate, existing);
+        const { admission, existing } = await assessDraftAdmissionFromStore(s, candidate, acceptedSignals);
         if (!admission.admit) {
             admissionSkipped += 1;
             lastAdmissionSkipReason = admission.reason ?? '';
@@ -734,7 +732,7 @@ export async function runIngest(argv, store, deps = {}, review) {
             return 1;
         }
         accepted.push({ source, candidate, gene: r.gene });
-        existing = [...existing, { id: r.gene.id, signals_match: r.gene.signals_match }];
+        acceptedSignals.push({ id: r.gene.id, signals_match: r.gene.signals_match });
     }
     if (accepted.length === 0) {
         if (candidateCount > 0 && admissionSkipped === candidateCount) {

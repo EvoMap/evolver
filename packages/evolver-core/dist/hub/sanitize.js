@@ -16,11 +16,12 @@ const REDACT_PATTERNS = [
     /api[_-]?key[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,
     /secret[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,
     /password[=:]\s*["']?[^\s"',;)}\]]{6,}["']?/gi,
-    // GitHub tokens (ghp_, gho_, ghu_, ghs_, github_pat_)
+    // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_)
     /ghp_[A-Za-z0-9]{36,}/g,
     /gho_[A-Za-z0-9]{36,}/g,
     /ghu_[A-Za-z0-9]{36,}/g,
     /ghs_[A-Za-z0-9]{36,}/g,
+    /ghr_[A-Za-z0-9]{36,}/g,
     /github_pat_[A-Za-z0-9_]{22,}/g,
     // AWS access keys
     /AKIA[0-9A-Z]{16}/g,
@@ -139,7 +140,7 @@ const LEAK_SCANNERS = [
     { type: 'api_key', pattern: /sk-proj-[A-Za-z0-9-_]{20,}/g, suggest: 'process.env.OPENAI_API_KEY' },
     { type: 'api_key', pattern: /sk-ant-[A-Za-z0-9-_]{20,}/g, suggest: 'process.env.ANTHROPIC_API_KEY' },
     { type: 'api_key', pattern: /AKIA[0-9A-Z]{16}/g, suggest: 'process.env.AWS_ACCESS_KEY_ID' },
-    { type: 'github_token', pattern: /ghp_[A-Za-z0-9]{36,}/g, suggest: 'process.env.GITHUB_TOKEN' },
+    { type: 'github_token', pattern: /gh(?:p|o|u|s|r)_[A-Za-z0-9]{36,}/g, suggest: 'process.env.GITHUB_TOKEN' },
     { type: 'github_token', pattern: /github_pat_[A-Za-z0-9_]{22,}/g, suggest: 'process.env.GITHUB_TOKEN' },
     { type: 'npm_token', pattern: /npm_[A-Za-z0-9]{36,}/g, suggest: 'process.env.NPM_TOKEN' },
     { type: 'slack_token', pattern: /xox[baprsv]-[A-Za-z0-9-]{10,}/g, suggest: 'process.env.SLACK_TOKEN' },

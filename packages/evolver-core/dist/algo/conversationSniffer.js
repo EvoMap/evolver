@@ -4,9 +4,13 @@ import { redactString } from '../hub/sanitize.js';
 // occur in nearly every Chinese dev session, and matching them bare made this fallback the DOMINANT distill
 // path — 105 of 118 drafts in one bulk ingest (#562). English gets specificity from \b word boundaries;
 // Chinese has no \b, so specificity must come from the phrase itself.
-const REUSABLE_RE = /\b(reusable|repeatable|workflow|playbook|runbook|capability|procedure|pattern|recipe|documented|future runs?|next time|can reuse|reuse this)\b|复用|可重用|工作流|方法论|沉淀/i;
+const REUSABLE_RE = /\b(reusable|repeatable|workflow|playbook|runbook|capability|procedure|pattern|recipe|documented|future runs?|next time|can reuse|reuse this)\b|复用|可重用|工作流(?!程)|方法论|沉淀/i;
 const PROOF_RE = /\b(validated|verified|passed|green|success(?:ful|fully)?|succeeded|works?|completed|published|uploaded|recorded:true|exit code:?\s*0|all tests passed)\b|(?:验证|校验|测试|检查|构建|编译|运行|执行|部署|发布)(?:都|均|全部)?(?:通过|成功)|全部通过|跑通|已(?:验证|发布|上线)/i;
 const FAILURE_RE = /\b(failed|failure|error|exception|traceback|exit code:?\s*[1-9]|not working|unable to)\b|失败|错误|报错/i;
+const CHINESE_NEGATED_PROOF_PREFIX_SOURCE = '(?:尚未|并未|还没有|尚没有|并没有|没有|未能|无法|不能|不曾|并非|未|没)';
+const CHINESE_NEGATED_PROOF_SOURCE = `(?:${CHINESE_NEGATED_PROOF_PREFIX_SOURCE}\\s*(?:验证|校验|测试|检查|构建|编译|运行|执行|部署|发布)(?:都|均|全部)?\\s*(?:通过|成功)|(?:验证|校验|测试|检查|构建|编译|运行|执行|部署|发布)(?:仍|还|尚)?(?:没有|未能|未)(?:都|均|全部)?\\s*(?:通过|成功))`;
+const CHINESE_NEGATED_PROOF_RE = new RegExp(CHINESE_NEGATED_PROOF_SOURCE, 'i');
+const CHINESE_NEGATED_PROOF_GLOBAL_RE = new RegExp(CHINESE_NEGATED_PROOF_SOURCE, 'gi');
 const EXIT_ZERO_RE = /\bexit code:?\s*0\b/i;
 const EXIT_NON_ZERO_RE = /\bexit code:?\s*[1-9]\d*\b/i;
 const DOMAIN_TOKENS = [
@@ -58,15 +62,24 @@ function domainSignals(text, toolCalls) {
 function isToolTurn(turn) {
     return turn.role === 'tool' || Boolean(turn.toolName);
 }
+function hasPositiveProof(text) {
+    return PROOF_RE.test(text.replace(CHINESE_NEGATED_PROOF_GLOBAL_RE, ''));
+}
+function hasFailure(text) {
+    return FAILURE_RE.test(text) || CHINESE_NEGATED_PROOF_RE.test(text);
+}
 function classifyToolOutcome(turn) {
     const text = turnText(turn);
     if (EXIT_NON_ZERO_RE.test(text))
         return 'failure';
+    // A semantic "not yet successful" result is not proof even when the command process itself exited zero.
+    if (CHINESE_NEGATED_PROOF_RE.test(text))
+        return 'failure';
     if (EXIT_ZERO_RE.test(text))
         return 'success';
-    if (PROOF_RE.test(text) && !FAILURE_RE.test(text))
+    if (hasPositiveProof(text) && !FAILURE_RE.test(text))
         return 'success';
-    if (FAILURE_RE.test(text))
+    if (hasFailure(text))
         return 'failure';
     return 'unknown';
 }
@@ -85,7 +98,7 @@ function pickEvidence(turns, matcher, max = 3) {
     const evidence = [];
     for (const turn of turns) {
         const text = turnText(turn);
-        if (!text || !matcher.test(text))
+        if (!text || !(typeof matcher === 'function' ? matcher(text) : matcher.test(text)))
             continue;
         evidence.push(cleanText(text, 180));
         if (evidence.length >= max)
@@ -97,7 +110,7 @@ function pickSummary(turns, reusableEvidence, proofEvidence) {
     const assistant = turns
         .filter((turn) => turn.role === 'assistant' && !turn.isMeta)
         .map(turnText)
-        .find((text) => text.length >= 40 && (REUSABLE_RE.test(text) || PROOF_RE.test(text)));
+        .find((text) => text.length >= 40 && (REUSABLE_RE.test(text) || hasPositiveProof(text)));
     return cleanText(assistant ?? reusableEvidence[0] ?? proofEvidence[0] ?? 'Verified reusable conversation capability.', 180);
 }
 export function sniffConversationCapabilities(turns, opts = {}) {
@@ -108,10 +121,10 @@ export function sniffConversationCapabilities(turns, opts = {}) {
     if (!allText.trim())
         return [];
     const reusableEvidence = pickEvidence(usableTurns, REUSABLE_RE);
-    const proofEvidence = pickEvidence(usableTurns, PROOF_RE);
+    const proofEvidence = pickEvidence(usableTurns, hasPositiveProof);
     if (reusableEvidence.length === 0 || proofEvidence.length === 0)
         return [];
-    const failureOnly = FAILURE_RE.test(allText) && !PROOF_RE.test(allText);
+    const failureOnly = hasFailure(allText) && !hasPositiveProof(allText);
     if (failureOnly)
         return [];
     if (!hasTerminalSuccessfulToolRun(usableTurns))
