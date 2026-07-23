@@ -12,32 +12,29 @@ export interface LegacyNodeIdCandidateOptions {
  * Legacy node_id file locations, in priority order. Mirror of v1
  * `_loadPersistedNodeId`:
  *
- *  0. `<EVOMAP_DIR>/node_id` — the explicit dir the CLI recipe / ATP / proxy
+ *  0. `<EVOMAP_HOME>/node_id` — when an explicit identity home is configured, it
+ *     must precede every state-root candidate. The legacy node_secret resolver uses
+ *     the same priority, keeping both credentials on one identity in split layouts.
+ *  1. `<EVOMAP_DIR>/node_id` — the explicit dir the CLI recipe / ATP / proxy
  *     anti-abuse code write under (`recipeHomeCandidates` puts EVOMAP_DIR ahead
  *     of EVOLVER_HOME/EVOMAP_HOME). `resolveEvomapHome` never consults EVOMAP_DIR,
  *     so a deployment that pivots on it would otherwise send no node_id on hello
- *     and let the hub mint a duplicate. Probed FIRST and ADDITIVELY (the
- *     EVOLVER_HOME/EVOMAP_HOME candidates below are kept), so setting EVOMAP_DIR
- *     never hides an id that lives under one of the home overrides. Deduped.
- *  1. `<identity home>/node_id` — the override-aware home files. `identityHomeCandidates()`
- *     probes EVOMAP_HOME first (THE identity home, #555 T2 — the evox agentDir split keeps
- *     node files under `<agentDir>/evomap` while EVOLVER_HOME points at the state root) and
- *     then EVOLVER_HOME (matching v1 `getEvomapDir`), after dropping blank/relative
- *     overrides. Probing both keeps the v1 #120 lesson — the reader walks every dir a
- *     writer may have used — while the order makes a split identity dir win over the
- *     state root when both hold files.
- *  2. `~/.evomap/node_id` — the UNCONDITIONAL v1 location. v1's writer pivots on
+ *     and let the hub mint a duplicate. It remains first when EVOMAP_HOME is not
+ *     configured, preserving the existing EVOMAP_DIR-only contract. Deduped.
+ *  2. `<EVOLVER_HOME>/node_id` — the state-home compatibility candidate, kept
+ *     after the identity roots so readers still walk every dir a writer may have used.
+ *  3. `~/.evomap/node_id` — the UNCONDITIONAL v1 location. v1's writer pivots on
  *     `getEvomapDir` = `EVOLVER_HOME || ~/.evomap` and ignores EVOMAP_HOME
  *     entirely, so unless EVOLVER_HOME was set a v1 file always physically lands
  *     here. We probe it explicitly so a v2 install that sets only EVOMAP_HOME
  *     (which steers candidate 1 away from `~/.evomap`) still recovers the v1
  *     identity instead of letting the hub mint a duplicate orphan node. Deduped
  *     against candidate 1 for the common no-override case where they coincide.
- *  3. `<proxy package>/.evomap_node_id` — the install-root file the writer falls
+ *  4. `<proxy package>/.evomap_node_id` — the install-root file the writer falls
  *     back to when `~/.evomap/` isn't writable (read-only $HOME in
  *     containers / restricted CI). Kept first for parity with the old v2
  *     candidate.
- *  4. `<outer package/workspace root>/.evomap_node_id` — the v1/outer install
+ *  5. `<outer package/workspace root>/.evomap_node_id` — the v1/outer install
  *     root fallback. In v2's multi-package layout the proxy code lives below
  *     `packages/evolver-proxy`, so only checking the proxy package root misses
  *     a file written at the install/workspace root.

@@ -25,31 +25,16 @@ import { runAutobuyPrompt } from './atpAutobuyPrompt.js';
 import * as solomode from './solo/mode.js';
 import * as gitGuard from './solo/gitGuard.js';
 import * as breaker from './solo/breaker.js';
+import { initializeWorkflowStartupRecovery } from './workflowRuntime.js';
+import { readAutoExecConfig } from './autoexecConfig.js';
+export { readAutoExecConfig } from './autoexecConfig.js';
+const ENV_FILE_UNAVAILABLE_DIAGNOSTIC = '[evolver-autoexec] env_file_unavailable\n';
 /** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
 export function ensureAutoExecDirs(base) {
     const dirs = { base, tasks: join(base, 'tasks'), done: join(base, 'done'), refused: join(base, 'refused') };
-    for (const d of [dirs.tasks, dirs.done, dirs.refused])
-        mkdirSync(d, { recursive: true });
+    for (const dir of [dirs.tasks, dirs.done, dirs.refused])
+        mkdirSync(dir, { recursive: true });
     return dirs;
-}
-/** Read <base>/config.json; deny-by-default (empty allowedRoots) when absent. Default runner 'claude' (#66). */
-export function readAutoExecConfig(base) {
-    const p = join(base, 'config.json');
-    const def = { allowedRoots: [], pollMs: 60_000, timeoutMs: 600_000, runner: 'claude' };
-    if (!existsSync(p))
-        return def;
-    try {
-        const c = JSON.parse(readFileSync(p, 'utf8'));
-        // Coerce runner to the known set — an unknown value falls back to claude rather than reaching the registry.
-        // Cursor and Gemini remain experimental; both are selectable only through their bounded registry defaults.
-        const runner = c.runner === 'codex' || c.runner === 'cursor' || c.runner === 'gemini'
-            ? c.runner
-            : 'claude';
-        return { ...def, ...c, allowedRoots: Array.isArray(c.allowedRoots) ? c.allowedRoots : [], runner };
-    }
-    catch {
-        return def;
-    }
 }
 function clippedValidationText(value) {
     return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
@@ -494,8 +479,10 @@ function hubMode(env) {
  */
 export function resolveHubLink(env = process.env, ingestor, connectHub = connectPublicHub) {
     const envFile = loadEnvFileFromEnv(env);
-    if (envFile.error)
-        process.stderr.write(`[evolver-autoexec] failed to load EVOLVER_ENV_FILE: ${envFile.error}\n`);
+    if (envFile.error) {
+        process.stderr.write(ENV_FILE_UNAVAILABLE_DIAGNOSTIC);
+        return undefined;
+    }
     if (env['EVOLVER_REUSE_BEFORE_SOLVE'] !== '1')
         return undefined;
     if (hubMode(env) === 'private') {
@@ -819,8 +806,10 @@ export async function runAutoExec(argv) {
     // loads the file too (idempotent re-read) for its standalone callers/tests, so this is the single authoritative
     // early load, not a replacement. This MUST stay above runAutobuyPrompt() (which now runs after the lock below).
     const envFile = loadEnvFileFromEnv(process.env);
-    if (envFile.error)
-        process.stderr.write(`[evolver-autoexec] failed to load EVOLVER_ENV_FILE: ${envFile.error}\n`);
+    if (envFile.error) {
+        process.stderr.write(ENV_FILE_UNAVAILABLE_DIAGNOSTIC);
+        return 1;
+    }
     const home = argv.find((a) => !a.startsWith('-')) ?? join(events.evomapHome(), 'autoexec');
     const dirs = ensureAutoExecDirs(home);
     const cfg = readAutoExecConfig(home);
@@ -974,6 +963,9 @@ export async function runAutoExec(argv) {
     const uninstallUnhandledRejectionGuard = daemonNs.installUnhandledRejectionWindow({
         beforeExit: () => { releaseAutoexecLock(lockPath); },
     });
+    // Durable workflow recovery uses the same policy/review-gated runtime factory as `evolver workflow start/resume`.
+    // Pass the already-loaded config so a custom autoexec home uses the same allowlist, runner, and validation profiles.
+    initializeWorkflowStartupRecovery({ autoExecHome: home, autoExecConfig: cfg });
     // SINGLE-FLIGHT the producer tick (same as autoExecPass): a session scan that outlasts pollMs must not let two
     // ticks interleave in recordSessionMaterial (which would re-emit material.batch_ready before watermarks settle).
     const guardedDistill = distill.enabled && distill.observer ? exec.singleFlight(() => distill.tick()) : null;

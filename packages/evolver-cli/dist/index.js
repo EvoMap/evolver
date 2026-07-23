@@ -7,7 +7,7 @@ import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { makeInjectEmitter } from './autoexec.js';
 import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
-import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessDraftAdmission, draftGeneCandidate } from './distillPrimitives.js';
 import { emitSessionRecall } from './autoRecall.js';
 import { isRuntimeSessionSourcePath, parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
@@ -79,7 +79,7 @@ export function cliUsage() {
         '  Memory:      ingest, inject, recall, reuse, reuse-report, narrative, gene-value',
         '  Assets:      asset-log, asset-trust, asset-health, material, recipe, skill',
         '  Hub:         login, logout, phub, sync, publish, fetch, buy, orders, atp',
-        '  Operations:  status, cycles, trigger, value, retention, replay, rebuild-views',
+        '  Operations:  status, workflow status, cycles, trigger, value, retention, replay, rebuild-views',
         '               issue-report',
         '  Tools:       dashboard, webui, trajectory-export, migrate, verify',
         '  Advanced:    anti-gene-benchmark, anti-gene-rollout, reset-local-secret',
@@ -710,10 +710,24 @@ export async function runIngest(argv, store, deps = {}, review) {
         id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
         signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
     }));
+    let candidateCount = 0;
+    let admissionSkipped = 0;
+    let lastAdmissionSkipReason = '';
     for (const { source, sigs } of sourceSignalPairs) {
         const candidate = draftGeneCandidate(source.turns, sigs, source.agent);
         if (!candidate)
             continue;
+        candidateCount += 1;
+        // Same value/novelty gate as the live distillObserver (#562): without it, a bulk ingest over session
+        // history floods the human review queue with thin / near-duplicate drafts (118 in one run). A non-admit
+        // is a deliberate skip — the rest of the batch still distills; intake below stays the structural gate.
+        const admission = assessDraftAdmission(candidate, existing);
+        if (!admission.admit) {
+            admissionSkipped += 1;
+            lastAdmissionSkipReason = admission.reason ?? '';
+            process.stdout.write(`\ningest --distill skipped [${source.label}]: ${admission.reason}\n`);
+            continue;
+        }
         const r = algo.intakeGene(candidate, existing);
         if (!r.ok || !r.gene) {
             process.stderr.write(`\ningest --distill rejected: ${r.errors.join('; ')}\n`);
@@ -723,6 +737,11 @@ export async function runIngest(argv, store, deps = {}, review) {
         existing = [...existing, { id: r.gene.id, signals_match: r.gene.signals_match }];
     }
     if (accepted.length === 0) {
+        if (candidateCount > 0 && admissionSkipped === candidateCount) {
+            const reason = lastAdmissionSkipReason ? ` Last skip reason: ${lastAdmissionSkipReason}.` : '';
+            process.stdout.write(`\ningest: all ${candidateCount} draft candidate(s) skipped by admission gate.${reason} Nothing stored.\n`);
+            return 0;
+        }
         process.stdout.write('\ningest: not enough to distill — need ≥1 strong signal and ≥1 substantive assistant step. Nothing stored.\n');
         return 0;
     }

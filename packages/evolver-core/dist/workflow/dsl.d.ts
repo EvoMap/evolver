@@ -14,13 +14,26 @@ export interface CoreCall {
     fn: string;
     args: Value[];
 }
-export interface ScriptStep {
+export type WorkflowErrorClass = 'transient' | 'permanent' | 'safety' | 'unknown';
+export declare function containsWorkflowSensitiveText(value: string): boolean;
+export interface WorkflowRetryPolicy {
+    maxAttempts: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    multiplier?: number;
+}
+export interface DurableStepOptions {
+    /** Agent steps default to non-idempotent; script steps default to idempotent. */
+    idempotency?: 'idempotent' | 'non_idempotent';
+    retry?: WorkflowRetryPolicy;
+}
+export interface ScriptStep extends DurableStepOptions {
     id: string;
     kind: 'script';
     setOutput: string;
     call: CoreCall;
 }
-export interface AgentStep {
+export interface AgentStep extends DurableStepOptions {
     id: string;
     kind: 'agent';
     prompt: string;
@@ -42,8 +55,16 @@ export interface IfStep {
     then: WorkflowStep[];
     else?: WorkflowStep[];
 }
-export type WorkflowStep = ScriptStep | AgentStep | ForeachStep | IfStep;
+/** Durable human gate. Execution stops before subsequent steps until an operator approves or rejects it. */
+export interface ApprovalStep {
+    id: string;
+    kind: 'approval';
+    label?: string;
+}
+export type WorkflowStep = ScriptStep | AgentStep | ForeachStep | IfStep | ApprovalStep;
 export interface WorkflowSpec {
+    /** Stable caller-supplied identity. If omitted, the durable runtime derives one from the definition. */
+    workflowId?: string;
     name: string;
     input?: Record<string, unknown>;
     steps: WorkflowStep[];

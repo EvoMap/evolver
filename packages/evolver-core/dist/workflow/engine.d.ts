@@ -4,8 +4,12 @@ export interface WorkflowContext {
     steps: Record<string, unknown>;
     item?: unknown;
 }
+export interface AgentBridgeOptions {
+    /** Cooperative cancellation for the current durable attempt. */
+    signal?: AbortSignal;
+}
 /** agent step 桥(注入 runtime; 孵化期可注 stub). */
-export type AgentBridge = (prompt: string, ctx: WorkflowContext) => Promise<unknown> | unknown;
+export type AgentBridge = (prompt: string, ctx: WorkflowContext, options?: AgentBridgeOptions) => Promise<unknown> | unknown;
 export interface WorkflowEngineDeps {
     core?: Record<string, CoreFn>;
     agent: AgentBridge;

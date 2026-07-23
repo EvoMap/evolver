@@ -10,6 +10,7 @@ const STATE_VERSION = 1;
 const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_SUBMISSIONS = 2;
+const PENDING_RESOLUTION_GRACE_MS = 5 * 60 * 1000;
 const MAX_IDS = 5;
 const MAX_REMOTE_RECONCILE_PAGES = 10;
 const REMOTE_RECONCILE_PAGE_SIZE = 100;
@@ -902,6 +903,11 @@ function safeIsoNow(now) {
     }
     return new Date().toISOString();
 }
+function pendingSubmissionIsLive(reservedAt, nowMs) {
+    const reservedAtMs = Date.parse(reservedAt);
+    return !Number.isFinite(reservedAtMs)
+        || nowMs - reservedAtMs < PENDING_RESOLUTION_GRACE_MS;
+}
 function latestSubmission(state, fingerprint) {
     for (let index = state.submissions.length - 1; index >= 0; index -= 1) {
         const record = state.submissions[index];
@@ -1353,6 +1359,18 @@ export async function submitIssueDraft(draft, submit, options) {
                     status: 'rejected',
                     updatedAt: priorRejection.rejectedAt,
                 });
+                const submittedGuard = {
+                    version: STATE_VERSION,
+                    fingerprint: prepared.draft.fingerprint,
+                    attemptId: prepared.attemptId,
+                    reservedAt: prepared.reservedAt,
+                    status: 'submitted',
+                };
+                writeSubmissionGuard(options.rootDir, submittedGuard);
+                state.reservations = state.reservations.filter((record) => !(record.fingerprint === prepared.draft.fingerprint
+                    && record.attemptId === prepared.attemptId
+                    && record.reservedAt === prepared.reservedAt));
+                writeState(options.rootDir, state);
                 throw new Error('issue_report_rejected_before_finalize');
             }
             const priorSubmission = latestSubmission(state, prepared.draft.fingerprint);
@@ -1498,18 +1516,21 @@ export function resolveIssueSubmission(fingerprint, resolution, options) {
         const storedGuard = readSubmissionGuard(options.rootDir, fingerprint);
         const guard = recoverPreparingReservation(options.rootDir, state, quotaIndex, storedGuard);
         const reservations = state.reservations.filter((record) => record.fingerprint === fingerprint);
-        if (guard?.status === 'pending'
-            || reservations.some((record) => record.status === 'pending')) {
+        const timestamp = safeIsoNow(options.now);
+        const nowMs = Date.parse(timestamp);
+        if ((guard?.status === 'pending' && pendingSubmissionIsLive(guard.reservedAt, nowMs))
+            || reservations.some((record) => (record.status === 'pending' && pendingSubmissionIsLive(record.reservedAt, nowMs)))) {
             throw new IssueDraftConflictError('issue_report_submission_in_flight');
         }
         if (guard?.status === 'submitted' && resolution.outcome !== 'submitted') {
             throw new IssueDraftConflictError('issue_report_submission_ambiguous');
         }
-        const reservation = reservations.filter((record) => record.status === 'ambiguous').at(-1);
+        const reservation = reservations.filter((record) => record.status === 'ambiguous' || record.status === 'pending').at(-1);
         const quotaEntry = quotaIndex.entries.filter((entry) => entry.fingerprint === fingerprint).at(-1);
         const attempt = state.attempts.filter((record) => record.fingerprint === fingerprint).at(-1);
         const guardEvidence = guard?.status === 'ambiguous'
             || (guard?.status === 'submitted' && resolution.outcome === 'submitted')
+            || guard?.status === 'pending'
             ? guard
             : storedGuard?.status === 'preparing' ? storedGuard : undefined;
         if (!guardEvidence && !reservation && !quotaEntry && !attempt) {
@@ -1523,7 +1544,6 @@ export function resolveIssueSubmission(fingerprint, resolution, options) {
             ?? reservation?.reservedAt
             ?? quotaEntry?.countedAt
             ?? attempt.attemptedAt;
-        const timestamp = safeIsoNow(options.now);
         if (resolution.outcome === 'submitted') {
             const submitted = {
                 ...draft,

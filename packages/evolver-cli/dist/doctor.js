@@ -930,7 +930,7 @@ export async function runDoctor(argv, deps = {}) {
             if (input) {
                 issueReporter.createIssueDraft(input, {
                     rootDir: join(events.evomapHome(deps.env ?? process.env), 'evolution', 'issue-reporter'),
-                    workspaceScope: f.root ?? process.cwd(),
+                    workspaceScope: process.cwd(),
                     env: deps.env ?? process.env,
                 });
             }

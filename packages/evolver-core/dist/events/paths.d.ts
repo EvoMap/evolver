@@ -1,22 +1,22 @@
 /** ~/.evomap, 可 EVOLVER_HOME/EVOMAP_HOME 覆盖. */
 export declare function evomapHome(env?: Readonly<Record<string, string | undefined>>): string;
-export declare function rootEventsPath(): string;
-export declare function mvDir(): string;
+export declare function rootEventsPath(env?: Readonly<Record<string, string | undefined>>): string;
+export declare function mvDir(env?: Readonly<Record<string, string | undefined>>): string;
 /** 可进化人格模型持久化文件 (五维向量 + 各键统计 + 变更历史). v1 personality_state.json 的 v2 落点. */
-export declare function personalityStatePath(): string;
-export declare function assetsDir(): string;
+export declare function personalityStatePath(env?: Readonly<Record<string, string | undefined>>): string;
+export declare function assetsDir(env?: Readonly<Record<string, string | undefined>>): string;
 /** M1 raw-material substrate (append-only jsonl consumed by the cycle). */
-export declare function materialDir(): string;
+export declare function materialDir(env?: Readonly<Record<string, string | undefined>>): string;
 /** MaterialStore backing file. */
-export declare function materialStorePath(): string;
+export declare function materialStorePath(env?: Readonly<Record<string, string | undefined>>): string;
 /** Per-source watermark cursor used to make re-ingest idempotent (file-level dedup). */
-export declare function materialWatermarkPath(): string;
+export declare function materialWatermarkPath(env?: Readonly<Record<string, string | undefined>>): string;
 /** Proxy LLM-trace day-files dir (`llm-trace-YYYYMMDD.jsonl`), the route-savings source for the value ledger.
  *  Mirrors the proxy's EVOLVER_LLM_TRACE_DIR default so the outreach layer reads what the proxy wrote. */
-export declare function tracesDir(): string;
+export declare function tracesDir(env?: Readonly<Record<string, string | undefined>>): string;
 /** Hub-asset audit trail (`asset_call_log.jsonl`): one JSONL line per hub-asset interaction (search hit/miss,
  *  reuse/reference, publish, review). Written best-effort by AssetCallLog; the desktop's RecallHistory / 召回历程
  *  reads it. Defaults to the evomap home root, beside assets/ + evolution/.
  *  NOTE(reuse/#234): confirm this matches where the proxy/RecallHistory reads — best-effort append, so a path
  *  mismatch degrades the audit line, never the reuse write itself. */
-export declare function assetCallLogPath(): string;
+export declare function assetCallLogPath(env?: Readonly<Record<string, string | undefined>>): string;

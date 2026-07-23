@@ -32,6 +32,7 @@ import { runIssueReportCommand } from './issueReport.js';
 import { runAssetTrustCommand } from './assetTrust.js';
 import { runAssetHealthCommand } from './assetHealth.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat } from './v1Compat.js';
+import { runWorkflowCommand } from './workflow.js';
 export async function runProxyCommand(argv, importer = () => import('@evomap/evolver-proxy/bin/evolver-proxy')) {
     const { runProxyCli } = await importer();
     return runProxyCli({ argv: ['proxy', ...argv] });
@@ -80,6 +81,7 @@ export const ASYNC_COMMANDS = {
     solidify: runV1SolidifyCompat,
     fetch: runV1FetchCompat,
     webui: runV1WebuiCompat,
+    workflow: runWorkflowCommand,
 };
 /** Verbs handled by the synchronous runCli core (read-only views + local ops). Kept in sync with runCli's switch
  *  — the source of truth for these stays runCli; this list completes the surface for the registry contract. */

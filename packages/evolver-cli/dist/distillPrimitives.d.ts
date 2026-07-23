@@ -30,7 +30,11 @@ export interface DraftAdmissionOptions {
     /** Reject a draft with fewer strategy steps than this (default 1, i.e. just non-empty like intakeGene; raise it
      *  for a stricter substance floor). A real fix can be one concrete step, so the default does not over-filter. */
     minStrategy?: number;
-    /** Reject a draft whose signal-set Jaccard similarity to ANY existing gene is >= this (default 0.8). */
+    /** Reject a draft whose signal-set Jaccard similarity to ANY existing gene is >= this (default 0.6).
+     *  Signal sets are capped at 8 tokens, so two same-size sets differing by ONE token score 7/9 ≈ 0.78 —
+     *  the old 0.8 default could never fire on the dominant draft shape (#562: 118-draft flood, max pairwise
+     *  similarity exactly 0.78, zero rejections). 0.6 rejects shared-core near-dupes while genuinely
+     *  cross-domain drafts (less than half the tokens shared) still pass. */
     maxSimilarity?: number;
 }
 export interface DraftAdmission {

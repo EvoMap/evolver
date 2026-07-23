@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 export function syncSleep(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+const MALFORMED_LOCK_GRACE_NS = 1000000000n;
 const ownedLocks = new Map();
+const malformedLockObservations = new Map();
 export class LockTimeoutError extends Error {
     code = 'LOCK_TIMEOUT';
     constructor(_lockPath) {
@@ -60,7 +62,7 @@ function currentOwnerStat(path) {
         throw error;
     }
 }
-function readOwnerBounded(path) {
+function readOwnerFileBounded(path) {
     const before = currentOwnerStat(path);
     if (before === null)
         return null;
@@ -95,11 +97,24 @@ function readOwnerBounded(path) {
         }
         if (total > MAX_LOCK_OWNER_BYTES)
             throw new UnsafeLockPathError('owner_too_large');
-        return buffer.subarray(0, total).toString('utf8');
+        const settled = fstatSync(fd, { bigint: true });
+        assertRegularOwnerStat(settled);
+        const settledPath = currentOwnerStat(path);
+        if (settledPath === null
+            || settledPath.dev !== settled.dev
+            || settledPath.ino !== settled.ino
+            || settledPath.size !== settled.size
+            || settledPath.mtimeNs !== settled.mtimeNs) {
+            throw new UnsafeLockPathError('path_changed');
+        }
+        return { raw: buffer.subarray(0, total).toString('utf8'), stat: settled };
     }
     finally {
         closeSync(fd);
     }
+}
+function readOwnerBounded(path) {
+    return readOwnerFileBounded(path)?.raw ?? null;
 }
 /** True if pid is a live process (cross-platform via signal 0; EPERM = exists but owned by another user). */
 function pidAlive(pid) {
@@ -147,11 +162,19 @@ function parseOwner(raw) {
         return null;
     return parseJsonOwner(trimmed) ?? parseLegacyOwner(trimmed);
 }
-/** Owner recorded in the lock file; null if missing/unparseable. */
-function lockOwner(lockPath) {
+/** Snapshot of the lock inode and its owner payload; null if the path disappeared. */
+function lockSnapshot(lockPath) {
     try {
-        const raw = readOwnerBounded(lockPath);
-        return raw === null ? null : parseOwner(raw);
+        const read = readOwnerFileBounded(lockPath);
+        if (read === null)
+            return null;
+        return {
+            owner: parseOwner(read.raw),
+            dev: read.stat.dev,
+            ino: read.stat.ino,
+            size: read.stat.size,
+            mtimeNs: read.stat.mtimeNs,
+        };
     }
     catch (error) {
         // A valid owner can release and another waiter can acquire between lstat/open/fstat. Treat that snapshot as
@@ -160,6 +183,31 @@ function lockOwner(lockPath) {
             return null;
         throw error;
     }
+}
+function sameInode(left, right) {
+    return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino;
+}
+function sameSnapshot(left, right) {
+    return sameInode(left, right)
+        && left?.size === right?.size
+        && left?.mtimeNs === right?.mtimeNs;
+}
+function forgetMalformedObservation(lockPath) {
+    malformedLockObservations.delete(lockKey(lockPath));
+}
+function reclaimableSnapshot(lockPath, snapshot) {
+    if (snapshot.owner !== null) {
+        forgetMalformedObservation(lockPath);
+        return snapshot.owner.pid !== process.pid && !pidAlive(snapshot.owner.pid);
+    }
+    const key = lockKey(lockPath);
+    const now = process.hrtime.bigint();
+    const observed = malformedLockObservations.get(key);
+    if (observed === undefined || !sameSnapshot(observed.snapshot, snapshot)) {
+        malformedLockObservations.set(key, { snapshot, firstSeenAtNs: now });
+        return false;
+    }
+    return now - observed.firstSeenAtNs >= MALFORMED_LOCK_GRACE_NS;
 }
 function sameOwner(parsed, owner) {
     return parsed?.pid === owner.pid && parsed.token === owner.token;
@@ -179,12 +227,68 @@ function removeFileIfExists(path) {
             throw error;
     }
 }
+function pathExists(path) {
+    return existsSync(path);
+}
+function restoreMovedFile(lockPath, movedPath, moved) {
+    try {
+        linkSync(movedPath, lockPath);
+        removeFileIfExists(movedPath);
+        forgetMalformedObservation(lockPath);
+        return;
+    }
+    catch (error) {
+        if (!isErrno(error, 'EEXIST'))
+            throw error;
+    }
+    const current = lockSnapshot(lockPath);
+    if (sameInode(current, moved)) {
+        removeFileIfExists(movedPath);
+        forgetMalformedObservation(lockPath);
+        return;
+    }
+    throw new Error(`文件锁在安全回收期间被替换，已保留候选文件: ${movedPath}`);
+}
+function removeUnchangedLock(lockPath, expected, kind) {
+    const movedPath = sidecarPath(lockPath, kind);
+    try {
+        renameSync(lockPath, movedPath);
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT'))
+            return false;
+        throw error;
+    }
+    const moved = lockSnapshot(movedPath);
+    if (!sameSnapshot(moved, expected)) {
+        if (moved !== null)
+            restoreMovedFile(lockPath, movedPath, moved);
+        return false;
+    }
+    removeFileIfExists(movedPath);
+    forgetMalformedObservation(lockPath);
+    return true;
+}
+function removeFileIfOwned(lockPath, owner) {
+    const snapshot = lockSnapshot(lockPath);
+    if (snapshot === null || !sameOwner(snapshot.owner, owner))
+        return false;
+    return removeUnchangedLock(lockPath, snapshot, 'released');
+}
 function createLockFile(lockPath, owner, trackOwnership) {
+    const guardPath = mutationGuardPath(lockPath);
+    if (trackOwnership && pathExists(guardPath))
+        return false;
     for (let permissionAttempt = 0; permissionAttempt < 2; permissionAttempt++) {
         try {
             writeFileSync(lockPath, serializeOwner(owner), { flag: 'wx', mode: 0o600 });
+            if (trackOwnership && pathExists(guardPath)) {
+                removeFileIfOwned(lockPath, owner);
+                return false;
+            }
             if (trackOwnership)
                 ownedLocks.set(lockKey(lockPath), { owner, releasePending: false });
+            forgetMalformedObservation(lockPath);
             return true;
         }
         catch (error) {
@@ -210,55 +314,25 @@ function tryAcquireMutationGuard(lockPath) {
     const guard = newOwner();
     if (createLockFile(guardPath, guard, false))
         return guard;
-    const owner = lockOwner(guardPath);
-    if (owner === null || owner.pid === process.pid || pidAlive(owner.pid))
+    const snapshot = lockSnapshot(guardPath);
+    if (snapshot === null || !reclaimableSnapshot(guardPath, snapshot))
         return null;
-    const stalePath = sidecarPath(guardPath, 'stale');
-    try {
-        renameSync(guardPath, stalePath);
-    }
-    catch (error) {
-        if (isErrno(error, 'ENOENT'))
-            return null;
-        throw error;
-    }
-    removeFileIfExists(stalePath);
+    if (!removeUnchangedLock(guardPath, snapshot, 'stale'))
+        return null;
     return createLockFile(guardPath, guard, false) ? guard : null;
 }
 function releaseMutationGuard(lockPath, guard) {
-    const guardPath = mutationGuardPath(lockPath);
-    if (!sameOwner(lockOwner(guardPath), guard))
-        return;
-    const releasedPath = sidecarPath(guardPath, 'released');
-    try {
-        renameSync(guardPath, releasedPath);
-    }
-    catch (error) {
-        if (isErrno(error, 'ENOENT'))
-            return;
-        throw error;
-    }
-    removeFileIfExists(releasedPath);
+    removeFileIfOwned(mutationGuardPath(lockPath), guard);
 }
 function reclaimStaleLock(lockPath) {
     const guard = tryAcquireMutationGuard(lockPath);
     if (guard === null)
         return false;
     try {
-        const owner = lockOwner(lockPath);
-        if (owner === null || owner.pid === process.pid || pidAlive(owner.pid))
+        const snapshot = lockSnapshot(lockPath);
+        if (snapshot === null || !reclaimableSnapshot(lockPath, snapshot))
             return false;
-        const stalePath = sidecarPath(lockPath, 'stale');
-        try {
-            renameSync(lockPath, stalePath);
-        }
-        catch (error) {
-            if (isErrno(error, 'ENOENT'))
-                return false;
-            throw error;
-        }
-        removeFileIfExists(stalePath);
-        return true;
+        return removeUnchangedLock(lockPath, snapshot, 'stale');
     }
     finally {
         releaseMutationGuard(lockPath, guard);
@@ -270,9 +344,11 @@ function reclaimStaleLock(lockPath) {
  * The lock file records the owner pid and token. If a waiter finds the lock held by a pid that is no longer
  * alive (the owner crashed without releaseLock), it reclaims the stale lock instead of spinning
  * until timeout — otherwise one crashed process would deadlock every future writer until the file
- * is removed by hand. Acquisition stays atomic (O_EXCL), and stale reclaim moves the old lock aside
- * under a mutation guard before deletion so waiters cannot delete each other's newly-created locks.
- * A live owner's lock (including this process's own) is never stolen.
+ * is removed by hand. Empty or truncated locks are reclaimed only after the same inode and contents
+ * remain malformed for a grace period, so a live creator can finish publishing its owner payload.
+ * Acquisition stays atomic (O_EXCL), and stale reclaim moves the old lock aside under a mutation
+ * guard, then verifies the inode snapshot before deletion. A live owner's lock (including this
+ * process's own) is never stolen.
  *
  * NOTE: still synchronous (blocks the event loop while waiting) by design — it guards short
  * synchronous critical sections (append-only writes).
@@ -291,11 +367,16 @@ export function acquireLock(lockPath, opts = {}) {
         if (createLockFile(lockPath, owner, true)) {
             return;
         }
-        const current = lockOwner(lockPath);
-        if (current !== null && current.pid !== process.pid && !pidAlive(current.pid)) {
+        const current = lockSnapshot(lockPath);
+        if (current !== null && reclaimableSnapshot(lockPath, current)) {
             if (!reclaimStaleLock(lockPath))
                 syncSleep(waitMs);
             continue;
+        }
+        if (current === null && pathExists(mutationGuardPath(lockPath))) {
+            const guard = tryAcquireMutationGuard(lockPath);
+            if (guard !== null)
+                releaseMutationGuard(lockPath, guard);
         }
         syncSleep(waitMs);
     }

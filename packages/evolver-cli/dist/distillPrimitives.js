@@ -147,7 +147,7 @@ export function draftGeneCandidate(turns, sigs, agent) {
 export function assessDraftAdmission(candidate, existing = [], opts = {}) {
     const minSignals = opts.minSignals ?? 2;
     const minStrategy = opts.minStrategy ?? 1;
-    const maxSimilarity = opts.maxSimilarity ?? 0.8;
+    const maxSimilarity = opts.maxSimilarity ?? 0.6;
     const sigs = [...new Set((candidate.signals_match ?? []).map((s) => String(s).toLowerCase()).filter(Boolean))];
     const strategy = (candidate.strategy ?? []).filter((s) => String(s).trim());
     if (sigs.length < minSignals)

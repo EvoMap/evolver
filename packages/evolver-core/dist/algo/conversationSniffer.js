@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { redactString } from '../hub/sanitize.js';
-const REUSABLE_RE = /\b(reusable|repeatable|workflow|playbook|runbook|capability|procedure|pattern|recipe|documented|future runs?|next time|can reuse|reuse this)\b|可复用|复用|能力|流程|工作流/i;
-const PROOF_RE = /\b(validated|verified|passed|green|success(?:ful|fully)?|succeeded|works?|completed|published|uploaded|recorded:true|exit code:?\s*0|all tests passed)\b|验证|通过|成功|已发布|可用/i;
+// The Chinese branches require compound/intentful phrases on purpose: everyday words (能力/流程/成功/通过)
+// occur in nearly every Chinese dev session, and matching them bare made this fallback the DOMINANT distill
+// path — 105 of 118 drafts in one bulk ingest (#562). English gets specificity from \b word boundaries;
+// Chinese has no \b, so specificity must come from the phrase itself.
+const REUSABLE_RE = /\b(reusable|repeatable|workflow|playbook|runbook|capability|procedure|pattern|recipe|documented|future runs?|next time|can reuse|reuse this)\b|复用|可重用|工作流|方法论|沉淀/i;
+const PROOF_RE = /\b(validated|verified|passed|green|success(?:ful|fully)?|succeeded|works?|completed|published|uploaded|recorded:true|exit code:?\s*0|all tests passed)\b|(?:验证|校验|测试|检查|构建|编译|运行|执行|部署|发布)(?:都|均|全部)?(?:通过|成功)|全部通过|跑通|已(?:验证|发布|上线)/i;
 const FAILURE_RE = /\b(failed|failure|error|exception|traceback|exit code:?\s*[1-9]|not working|unable to)\b|失败|错误|报错/i;
 const EXIT_ZERO_RE = /\bexit code:?\s*0\b/i;
 const EXIT_NON_ZERO_RE = /\bexit code:?\s*[1-9]\d*\b/i;

@@ -388,10 +388,31 @@ async function findAssetInStore(ref, store) {
 }
 function loadLocalAssetsReadOnly(baseDir) {
     return [
-        ...readJsonLines(`${baseDir}/genes.jsonl`, 'Gene'),
+        ...loadLocalGenesReadOnly(baseDir),
         ...readJsonLines(`${baseDir}/capsules.jsonl`, 'Capsule'),
         ...readJsonLines(`${baseDir}/events.jsonl`, 'EvolutionEvent'),
     ];
+}
+function loadLocalGenesReadOnly(baseDir) {
+    const byId = new Map();
+    for (const gene of [...readGenesEnvelopeReadOnly(`${baseDir}/genes.json`), ...readJsonLines(`${baseDir}/genes.jsonl`, 'Gene')]) {
+        const id = stringField(gene, 'id') ?? gene.asset_id;
+        if (id && !byId.has(id))
+            byId.set(id, gene);
+    }
+    return [...byId.values()];
+}
+function readGenesEnvelopeReadOnly(filePath) {
+    if (!existsSync(filePath))
+        return [];
+    try {
+        const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+        const envelopeGenes = isRecord(parsed) && Array.isArray(parsed['genes']) ? parsed['genes'] : [];
+        return envelopeGenes.filter(isRecord).map((gene) => normalizeAsset({ ...gene, type: 'Gene' }));
+    }
+    catch {
+        throw new ContractError('schema_invalid', 'asset schema is invalid');
+    }
 }
 function readJsonLines(filePath, type) {
     if (!existsSync(filePath))

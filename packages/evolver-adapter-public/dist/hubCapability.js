@@ -120,10 +120,12 @@ export class PublicHubCapability {
             // cleanly; retrying with the diverged secret never can. Signals the caller NOT to arm reauth
             // backoff. Only legacy node_secret auth exposes this hook — enterprise_token is a no-op.
             if (isSecretDivergenceRejection(body, payload)) {
-                this.auth.notifyNodeSecretDiverged?.();
+                if (!opts.preserveCredentials) {
+                    this.auth.notifyNodeSecretDiverged?.();
+                }
                 return {
                     ok: false,
-                    error: 'secret_diverged_cleared',
+                    error: opts.preserveCredentials ? 'secret_diverged' : 'secret_diverged_cleared',
                     secretDiverged: true,
                     ...(rateLimitUntilMs !== undefined ? { rateLimitUntilMs } : {}),
                     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
@@ -139,11 +141,13 @@ export class PublicHubCapability {
                 ?? this.opts.senderId();
             const nodeSecret = stringField(payload, 'node_secret') ?? stringField(payload, 'nodeSecret');
             const nodeSecretVersion = parseNodeSecretVersion(payload['node_secret_version'] ?? payload['nodeSecretVersion']);
-            if (nodeSecret && isNodeSecret(nodeSecret)) {
-                this.auth.adoptNodeSecret?.(nodeSecret, nodeSecretVersion);
-            }
-            else {
-                this.auth.adoptNodeSecretVersion?.(nodeSecretVersion);
+            if (!opts.preserveCredentials) {
+                if (nodeSecret && isNodeSecret(nodeSecret)) {
+                    this.auth.adoptNodeSecret?.(nodeSecret, nodeSecretVersion);
+                }
+                else {
+                    this.auth.adoptNodeSecretVersion?.(nodeSecretVersion);
+                }
             }
             return {
                 ok: payload['ok'] !== false && Boolean(nodeId),
@@ -715,7 +719,38 @@ function assetsFromBody(body) {
         ...(Array.isArray(payload?.['assets']) ? payload['assets'] : []),
         ...(Array.isArray(payload?.['results']) ? payload['results'] : []),
     ];
-    return candidates.filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)));
+    return candidates
+        .filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)))
+        .map(unwrapFetchDeliveryRow);
+}
+// Delivery-row ranking metadata carried over onto the unwrapped GEP record: hubReuse's candidate
+// ranking reads these from the row (toRankedCandidate), and reuse's ingest strips them before
+// hashing, so carrying them is both useful and integrity-safe. Do not carry `confidence`: it is
+// transport metadata on Gene rows but canonical content on Capsules, so overloading it here can
+// either poison a Gene hash or overwrite the meaning of Capsule content (#565).
+const FETCH_ROW_CARRYOVER_KEYS = ['gdi_score', 'success_rate', 'reuse_count', 'source_node_id'];
+/**
+ * The live hub's /a2a/fetch results are DELIVERY ROWS, not raw GEP records (#565, observed on
+ * evomap.ai 2026-07-22): the record itself nests under `payload`, while the row's own keys are
+ * delivery metadata (asset_type, bundle_id, confidence, gdi_score_mean, callable, …). Treating the
+ * row as the asset made reuse's integrity check (computeAssetId over the row) fail on every
+ * delivered asset. A GEP record always carries a string `type`; delivery rows carry `asset_type`
+ * instead — so unwrap exactly when the row has no `type` and nests an object payload that looks
+ * like a GEP record. Rows that already ARE raw records (older hubs, tests) pass through unchanged.
+ */
+function unwrapFetchDeliveryRow(row) {
+    const record = row;
+    if (typeof record['type'] === 'string')
+        return row;
+    const inner = asRecord(record['payload']);
+    if (!inner || typeof inner['type'] !== 'string' || typeof inner['asset_id'] !== 'string')
+        return row;
+    const carryover = {};
+    for (const key of FETCH_ROW_CARRYOVER_KEYS) {
+        if (record[key] !== undefined && inner[key] === undefined)
+            carryover[key] = record[key];
+    }
+    return { ...inner, ...carryover };
 }
 function accountAssetsFromPayload(payload) {
     const candidates = [

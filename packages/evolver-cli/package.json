@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-cli",
-  "version": "2.0.0-beta.6",
+  "version": "2.0.0-beta.7",
   "private": false,
   "type": "module",
   "description": "evolver CLI (status/watch/cycles/rebuild-views/...)",
@@ -20,12 +20,12 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.6",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.6",
-    "@evomap/evolver-mcp": "2.0.0-beta.6",
-    "@evomap/evolver-proxy": "2.0.0-beta.6",
-    "@evomap/evolver-runtime-adapters": "2.0.0-beta.6",
-    "@evomap/evolver-webui": "2.0.0-beta.6"
+    "@evomap/evolver-core": "2.0.0-beta.7",
+    "@evomap/evolver-adapter-public": "2.0.0-beta.7",
+    "@evomap/evolver-mcp": "2.0.0-beta.7",
+    "@evomap/evolver-proxy": "2.0.0-beta.7",
+    "@evomap/evolver-runtime-adapters": "2.0.0-beta.7",
+    "@evomap/evolver-webui": "2.0.0-beta.7"
   },
   "repository": {
     "type": "git",

@@ -73,6 +73,52 @@ function requireGet(req, res) {
     res.end(JSON.stringify({ error: 'method_not_allowed' }));
     return false;
 }
+const STABLE_WORKFLOW_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function boundedString(value, maxLength = 256) {
+    return typeof value === 'string' ? value.slice(0, maxLength) : '';
+}
+function safeRunSummary(value) {
+    const runId = boundedString(value.runId, 128);
+    const workflowId = boundedString(value.workflowId, 128);
+    if (!STABLE_WORKFLOW_ID.test(runId) || !STABLE_WORKFLOW_ID.test(workflowId))
+        return null;
+    const currentStep = value.currentStep === null ? null : boundedString(value.currentStep);
+    const completedAt = value.completedAt === null ? null : boundedString(value.completedAt, 64);
+    return {
+        runId,
+        workflowId,
+        status: boundedString(value.status, 64),
+        currentStep,
+        createdAt: boundedString(value.createdAt, 64),
+        updatedAt: boundedString(value.updatedAt, 64),
+        completedAt,
+    };
+}
+function safeHistoryEntry(value) {
+    if (!Number.isSafeInteger(value.sequence) || value.sequence < 0)
+        return null;
+    const optional = (candidate, maxLength = 256) => {
+        if (candidate === undefined)
+            return undefined;
+        if (candidate === null)
+            return null;
+        return boundedString(candidate, maxLength);
+    };
+    return {
+        sequence: value.sequence,
+        timestamp: boundedString(value.timestamp, 64),
+        type: boundedString(value.type, 128),
+        ...(value.status !== undefined ? { status: optional(value.status, 64) } : {}),
+        ...(value.stepId !== undefined ? { stepId: optional(value.stepId) } : {}),
+        ...(value.executionId !== undefined ? { executionId: optional(value.executionId) } : {}),
+        ...(value.gateId !== undefined ? { gateId: optional(value.gateId) } : {}),
+        ...(value.attempt !== undefined && (value.attempt === null || (Number.isSafeInteger(value.attempt) && value.attempt >= 0))
+            ? { attempt: value.attempt }
+            : {}),
+        ...(value.actorId !== undefined ? { actorId: optional(value.actorId, 128) } : {}),
+        ...(value.errorClass !== undefined ? { errorClass: optional(value.errorClass, 64) } : {}),
+    };
+}
 const HUMAN_ACTIONS = {
     observe: 'actor.human.observe', nudge: 'actor.human.nudge', intervene: 'actor.human.intervene', teach: 'actor.human.teach',
 };
@@ -271,6 +317,47 @@ export class WebUIServer {
                     }));
                 }
             }
+            if (p === '/api/workflows') {
+                if (req.method !== 'GET')
+                    return this.methodNotAllowed(res, 'GET');
+                if (!this.deps.workflow)
+                    return this.json(res, { workflows: [] });
+                try {
+                    const workflows = (await this.deps.workflow.listRuns())
+                        .map(safeRunSummary)
+                        .filter((run) => run !== null);
+                    return this.json(res, { workflows });
+                }
+                catch {
+                    return this.apiError(res, 503, 'workflow_unavailable');
+                }
+            }
+            if (p === '/api/workflow' || p === '/api/workflow/history') {
+                if (req.method !== 'GET')
+                    return this.methodNotAllowed(res, 'GET');
+                const runId = url.searchParams.get('id') ?? '';
+                if (!STABLE_WORKFLOW_ID.test(runId))
+                    return this.apiError(res, 400, 'invalid_workflow_id');
+                if (!this.deps.workflow)
+                    return this.apiError(res, 503, 'workflow_unavailable');
+                try {
+                    if (p === '/api/workflow') {
+                        const candidate = await this.deps.workflow.getRun(runId);
+                        const run = candidate === null ? null : safeRunSummary(candidate);
+                        return run ? this.json(res, { workflow: run }) : this.apiError(res, 404, 'workflow_not_found');
+                    }
+                    const history = await this.deps.workflow.getHistory(runId);
+                    if (history === null)
+                        return this.apiError(res, 404, 'workflow_not_found');
+                    return this.json(res, {
+                        runId,
+                        history: history.map(safeHistoryEntry).filter((entry) => entry !== null),
+                    });
+                }
+                catch {
+                    return this.apiError(res, 503, 'workflow_unavailable');
+                }
+            }
             if (p === '/api/mailbox') {
                 if (!this.deps.mailbox)
                     return this.json(res, { pending: 0, dlq: 0, messages: [] });
@@ -407,5 +494,10 @@ export class WebUIServer {
         });
     }
     json(res, body) { this.send(res, 200, 'application/json', JSON.stringify(body)); }
+    apiError(res, code, error) { this.send(res, code, 'application/json', JSON.stringify({ error })); }
+    methodNotAllowed(res, allow) {
+        res.writeHead(405, { allow, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+    }
     send(res, code, ct, body) { res.writeHead(code, { 'content-type': ct }); res.end(body); }
 }

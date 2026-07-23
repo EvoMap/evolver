@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve as resolvePath, sep, join as joinPath } from 'node:path';
 import { tmpdir } from 'node:os';
-import { closeSync, existsSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, lstatSync, mkdtempSync, openSync, realpathSync, rmdirSync, rmSync, writeFileSync, } from 'node:fs';
 import { renderExecPrompt } from './prompt.js';
 import { parseGitShortstat, gitDiffProof } from './proofOfWork.js';
 // Policy enforcement core (#107): checkPolicy runs the always-on global guards (blast hard cap +
@@ -54,6 +54,112 @@ export class UnsandboxedFullAccessRequiresIsolationError extends Error {
         super('a full-access or unverified agent run (codex --sandbox danger-full-access, or any cursor scaffold run) can auto-approve shell+write and requires isolation: "worktree" — refusing to run it against the real working tree');
         this.name = 'UnsandboxedFullAccessRequiresIsolationError';
     }
+}
+export class UnsafeWorktreePathError extends Error {
+    constructor(reason) {
+        super(`worktree isolation refused: ${reason}`);
+        this.name = 'UnsafeWorktreePathError';
+    }
+}
+function errorCode(error) {
+    return typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : undefined;
+}
+function assertPathAbsent(path) {
+    try {
+        lstatSync(path);
+    }
+    catch (error) {
+        if (errorCode(error) === 'ENOENT')
+            return;
+        throw error;
+    }
+    throw new UnsafeWorktreePathError('reserved destination already exists');
+}
+function reserveWorktreePath() {
+    // The random 0700 container is atomically created by the OS. The git destination remains absent inside it,
+    // so `git worktree add` cannot adopt an attacker-precreated path from the shared temp directory.
+    const container = mkdtempSync(joinPath(tmpdir(), 'evolver-wt-'));
+    const containerStat = lstatSync(container);
+    if (containerStat.isSymbolicLink() || !containerStat.isDirectory()) {
+        throw new UnsafeWorktreePathError('temporary reservation is not a real directory');
+    }
+    const workDir = joinPath(container, 'worktree');
+    assertPathAbsent(workDir);
+    return {
+        container,
+        containerDev: containerStat.dev,
+        containerIno: containerStat.ino,
+        workDir,
+        expectedRealPath: joinPath(realpathSync(container), 'worktree'),
+    };
+}
+function verifyWorktreePath(reservation) {
+    const stat = lstatSync(reservation.workDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new UnsafeWorktreePathError('git worktree destination is not a real directory');
+    }
+    if (realpathSync(reservation.workDir) !== reservation.expectedRealPath) {
+        throw new UnsafeWorktreePathError('git worktree destination resolves outside its reservation');
+    }
+    return { dev: stat.dev, ino: stat.ino };
+}
+function worktreePathStillOwned(reservation, identity) {
+    try {
+        const stat = lstatSync(reservation.workDir);
+        return !stat.isSymbolicLink()
+            && stat.isDirectory()
+            && stat.dev === identity.dev
+            && stat.ino === identity.ino
+            && realpathSync(reservation.workDir) === reservation.expectedRealPath;
+    }
+    catch {
+        return false;
+    }
+}
+function removeEmptyReservation(reservation) {
+    try {
+        const stat = lstatSync(reservation.container);
+        if (stat.isSymbolicLink() || !stat.isDirectory()
+            || stat.dev !== reservation.containerDev || stat.ino !== reservation.containerIno)
+            return;
+        rmdirSync(reservation.container);
+    }
+    catch (error) {
+        // Never recurse through a path that may have been replaced. Empty, owned reservations are the only thing
+        // removed directly; non-empty or already-gone containers are intentionally left for safe diagnosis.
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(errorCode(error) ?? ''))
+            throw error;
+    }
+}
+async function cleanupWorktreeReservation(reservation, identity, git, repoCwd) {
+    let cleanupIdentity = identity;
+    if (!cleanupIdentity) {
+        try {
+            cleanupIdentity = verifyWorktreePath(reservation);
+        }
+        catch (error) {
+            if (errorCode(error) !== 'ENOENT')
+                throw error;
+            // `git worktree add` may register metadata before failing without creating the destination. Give Git a
+            // signal-shielded chance to prune that partial registration, then reclaim only the still-empty container.
+            try {
+                await git(['worktree', 'remove', '--force', reservation.workDir], repoCwd, undefined, { processSignalMode: 'ignore' });
+            }
+            catch { /* no child exists, so an unregistered cleanup failure is harmless */ }
+            removeEmptyReservation(reservation);
+            return;
+        }
+    }
+    if (cleanupIdentity) {
+        if (!worktreePathStillOwned(reservation, cleanupIdentity)) {
+            throw new UnsafeWorktreePathError('verified worktree path changed before cleanup');
+        }
+        await git(['worktree', 'remove', '--force', reservation.workDir], repoCwd, undefined, { processSignalMode: 'ignore' });
+        assertPathAbsent(reservation.workDir);
+    }
+    removeEmptyReservation(reservation);
 }
 /** Whether `child` is the same as, or nested under, `root` (both resolved to absolute paths). */
 function isWithinRoot(child, root) {
@@ -278,27 +384,26 @@ export function makeClaudeExecBridge(opts) {
             // use-case ①: inject the personality style block from the state applySelectForRun just persisted.
             ...(opts.personality ? { personality: opts.personality.currentState() } : {}),
         });
-        // Isolation: run in a throwaway git worktree so the agent's edits never touch the real working tree.
+        // Isolation: atomically reserve an unpredictable private temp container, then let git create the absent
+        // worktree path inside it. Cleanup is armed only after git succeeds and the resulting directory is verified.
         const isolate = opts.isolation === 'worktree';
         if (opts.signal?.aborted)
             return cancelledExecutionResult(undefined);
-        // Reserve a parent namespace atomically before handing its child path to Git. The parent stays owned until
-        // cleanup completes, so another run cannot reuse the worktree path between Git removal and disk cleanup.
-        const worktreeReservation = isolate ? mkdtempSync(joinPath(tmpdir(), 'evolver-wt-')) : undefined;
-        const workDir = worktreeReservation ? joinPath(worktreeReservation, 'worktree') : opts.cwd;
-        let worktreeRegistered = false;
+        const reservation = isolate ? reserveWorktreePath() : undefined;
+        const workDir = reservation?.workDir ?? opts.cwd;
+        let worktreeIdentity;
+        let result;
         let observedRun;
         let patchRef;
         let ownsPatchRef = false;
         let preservePatchRef = false;
         let failedProof;
-        const proofGit = async (args, cwd, onResolved) => {
+        const proofGit = async (args, cwd, checkCancellationAfter = true) => {
             if (opts.signal?.aborted)
                 throw new ExecBridgeRunCancelledError();
             try {
                 const output = await git(args, cwd, opts.signal);
-                onResolved?.();
-                if (opts.signal?.aborted)
+                if (checkCancellationAfter && opts.signal?.aborted)
                     throw new ExecBridgeRunCancelledError();
                 return output;
             }
@@ -311,8 +416,11 @@ export function makeClaudeExecBridge(opts) {
             }
         };
         try {
-            if (isolate) {
-                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd, () => { worktreeRegistered = true; });
+            if (reservation) {
+                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd, false);
+                worktreeIdentity = verifyWorktreePath(reservation);
+                if (opts.signal?.aborted)
+                    throw new ExecBridgeRunCancelledError();
             }
             const run = await agent(prompt, {
                 cwd: workDir,
@@ -443,7 +551,7 @@ export function makeClaudeExecBridge(opts) {
                 reason = summarizeViolations(violations);
             }
             preservePatchRef = patchRef !== undefined && ownsPatchRef;
-            return {
+            result = {
                 outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
                 proofOfWork: proof,
                 strongEvidence: passed && stat.files > 0,
@@ -457,12 +565,22 @@ export function makeClaudeExecBridge(opts) {
         }
         catch (error) {
             if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
-                return cancelledExecutionResult(observedRun);
+                result = cancelledExecutionResult(observedRun);
             }
-            if (error instanceof GitProofError && observedRun) {
-                return failedProofExecutionResult(observedRun, error, failedProof);
+            else if (error instanceof GitProofError && observedRun) {
+                result = failedProofExecutionResult(observedRun, error, failedProof);
             }
-            throw error;
+            else {
+                if (reservation) {
+                    try {
+                        await cleanupWorktreeReservation(reservation, worktreeIdentity, git, opts.cwd);
+                    }
+                    catch {
+                        // Preserve the primary execution error. The abandoned reservation remains private and diagnosable.
+                    }
+                }
+                throw error;
+            }
         }
         finally {
             if (!preservePatchRef && ownsPatchRef && patchRef) {
@@ -471,21 +589,18 @@ export function makeClaudeExecBridge(opts) {
                 }
                 catch { /* best-effort cleanup must not replace the execution result or its primary failure */ }
             }
-            if (isolate) {
-                let worktreeRemoved = false;
-                try {
-                    await git(['worktree', 'remove', '--force', workDir], opts.cwd, undefined, { processSignalMode: 'ignore' });
-                    worktreeRemoved = true;
-                }
-                catch { /* best-effort cleanup */ }
-                const addFailedBeforeCreatingWorktree = !worktreeRegistered && !existsSync(workDir);
-                if (worktreeReservation && (worktreeRemoved || addFailedBeforeCreatingWorktree)) {
-                    try {
-                        rmSync(worktreeReservation, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-                    }
-                    catch { /* best-effort cleanup of the owned reservation */ }
-                }
+        }
+        if (reservation) {
+            try {
+                await cleanupWorktreeReservation(reservation, worktreeIdentity, git, opts.cwd);
+            }
+            catch (error) {
+                // A successful run must not hide abandoned edits/resources. Failed and cancelled results retain their
+                // primary classification; the private reservation remains available for diagnosis.
+                if (result.outcome.status === 'success')
+                    throw error;
             }
         }
+        return result;
     };
 }

@@ -1,5 +1,5 @@
 import { assetstore, hub as hubNs } from '@evomap/evolver-core';
-import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
+import type { ConnectPublicOptions, PublicHelloOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
 declare const REUSE_CONTRACT = "reuse.v1";
 export type ReuseStatus = 'ok' | 'dry_run' | 'invalid_arg' | 'missing_id' | 'unsupported' | 'not_found' | 'unauthorized' | 'unavailable' | 'network' | 'rate_limited' | 'internal_error';
 /** The stable reuse.v1 machine contract printed to stdout on success AND failure. Field set is locked by the
@@ -15,10 +15,7 @@ export interface ReuseEnvelope {
  *  (PublicHubCapability satisfies both; a bare fetcher in tests may omit hello). */
 type AssetByIdFetcher = {
     fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
-    hello?(opts: {
-        rotate: boolean;
-        evolverVersion?: string;
-    }): Promise<unknown>;
+    hello?(opts: PublicHelloOptions): Promise<unknown>;
 };
 export interface ReuseCliDeps {
     store?: assetstore.AssetStoreProvider;

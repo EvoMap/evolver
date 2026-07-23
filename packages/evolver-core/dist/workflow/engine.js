@@ -68,6 +68,9 @@ export class WorkflowEngine {
                 await this.runSteps(branch, ctx);
                 return;
             }
+            case 'approval': {
+                throw new WorkflowError('approval steps require DurableWorkflowRuntime');
+            }
             case 'foreach': {
                 const items = resolveRef(step.over.ref, ctx);
                 if (!Array.isArray(items))

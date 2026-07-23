@@ -108,6 +108,9 @@ export declare class ExecBridgeForbiddenError extends Error {
 export declare class UnsandboxedFullAccessRequiresIsolationError extends Error {
     constructor();
 }
+export declare class UnsafeWorktreePathError extends Error {
+    constructor(reason: string);
+}
 /**
  * Whitelist-filter `env` for a spawned agent/tool: keep ONLY the minimal runtime env + the caller-declared
  * extras (the runner's own auth via allowPrefixes/allowKeys); drop everything else. Fail-safe by construction —

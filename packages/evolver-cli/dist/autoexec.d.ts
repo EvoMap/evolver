@@ -9,22 +9,15 @@ import { type AutoDistillLlmResult, type LlmDistillRunner } from './autoDistillL
 import { type AutoDistillAntiGeneMode, type AutoDistillAntiGeneResult } from './autoDistillAntiGene.js';
 import { type AutoDistillTranscriptMode, type TranscriptDistillTickResult } from './autoDistillTranscript.js';
 import { type SessionIngestTickResult } from './index.js';
+export { readAutoExecConfig, type AutoExecConfig } from './autoexecConfig.js';
 export interface AutoExecDirs {
     base: string;
     tasks: string;
     done: string;
     refused: string;
 }
-export interface AutoExecConfig {
-    allowedRoots: string[];
-    pollMs: number;
-    timeoutMs: number;
-    runner: 'claude' | 'codex' | 'cursor' | 'gemini';
-}
 /** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
 export declare function ensureAutoExecDirs(base: string): AutoExecDirs;
-/** Read <base>/config.json; deny-by-default (empty allowedRoots) when absent. Default runner 'claude' (#66). */
-export declare function readAutoExecConfig(base: string): AutoExecConfig;
 export declare function summarizeSandboxedValidation(result: verify.SandboxedValidationResult): string | null;
 /**
  * One queue pass: drain every tasks/*.json through `runOne`, route the verdict to done/ (success or failure)
@@ -244,4 +237,3 @@ export declare function runIdleTranscriptDistillForBeat(beat: Pick<Beat, 'intens
  * <home>/autoexec/config.json (allowedRoots) — empty by default = nothing runs.
  */
 export declare function runAutoExec(argv: readonly string[]): Promise<number>;
-export {};

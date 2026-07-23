@@ -24,6 +24,8 @@ const REUSE_USAGE = [
 // Flags that consume the following token as their value. firstPositional must skip those values so a flag value
 // (e.g. the `reference` in `--mode reference`) is never mistaken for a bare positional asset id.
 const VALUE_FLAGS = new Set(['--id', '--mode', '--run']);
+// Keep this list limited to Hub-only fields. `confidence` is canonical Capsule content and must
+// survive integrity verification even though delivery rows also use a field with that name.
 const HUB_METADATA_KEYS = new Set([
     'credit_cost',
     'gdi_score',
@@ -89,7 +91,8 @@ export async function runReuseCommand(argv, deps = {}) {
         const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
         // One-shot CLIs never heartbeat, so the hub may hold no env fingerprint for this node and its anti-abuse
         // layer then 403s /a2a/fetch (`bulk_fetch_blocked: IP antibody`, #555). A fingerprinted hello
-        // (rotate:false — never requests secret rotation) establishes that trust first. Best-effort by design:
+        // (rotate:false + preserveCredentials:true) neither requests nor applies credential mutation while establishing
+        // trust. Best-effort by design:
         // a hello failure must not block the fetch — the fetch's own error path classifies precisely.
         await establishReuseTrust(hub);
         const asset = await hub.fetchAssetById(opts.id);
@@ -165,7 +168,7 @@ export function parseReuseArgs(argv) {
     return { ok: true, value: { id, mode: modeRaw === 'direct' ? 'direct' : 'reference', ...(runId ? { runId } : {}) } };
 }
 async function ingestHubAsset(store, deps, asset, requestedId) {
-    const cleaned = stripHubMetadata(asset);
+    const cleaned = stripHubMetadata(unwrapHubAssetContent(asset));
     const actualAssetId = wire.computeAssetId(cleaned);
     const contentAssetId = stringField(cleaned, 'asset_id');
     if (!actualAssetId || !contentAssetId || actualAssetId !== contentAssetId) {
@@ -209,6 +212,13 @@ async function assertNoLocalReuseIdConflict(asset, store) {
     if (incomingAssetId !== localAssetId)
         throw new Error('local asset id conflict');
 }
+function unwrapHubAssetContent(asset) {
+    const payload = asset.payload;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload) && stringField(payload, 'asset_id')) {
+        return payload;
+    }
+    return asset;
+}
 function stripHubMetadata(asset) {
     const out = {};
     for (const [key, value] of Object.entries(asset))
@@ -242,7 +252,7 @@ async function establishReuseTrust(hub) {
     if (typeof hub.hello !== 'function')
         return;
     try {
-        await hub.hello({ rotate: false, evolverVersion: getCliVersion() });
+        await hub.hello({ rotate: false, evolverVersion: getCliVersion(), preserveCredentials: true });
     }
     catch { /* fetch decides the outcome */ }
 }

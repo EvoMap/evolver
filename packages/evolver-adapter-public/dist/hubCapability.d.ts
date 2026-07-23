@@ -81,6 +81,12 @@ export interface PublicHelloResult {
     httpStatus?: number;
     secretDiverged?: boolean;
 }
+export interface PublicHelloOptions {
+    rotate: boolean;
+    evolverVersion?: string;
+    /** Keep trust probes from adopting or clearing local credential state. */
+    preserveCredentials?: boolean;
+}
 export interface PublicHeartbeatOptions {
     evolverVersion?: string;
     lastUpdate?: PublicLastUpdatePayload;
@@ -129,10 +135,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
     readonly auth: hub.AuthProvider;
     readonly recipes: hub.RecipeCapability;
     constructor(opts: PublicHubOptions);
-    hello(opts: {
-        rotate: boolean;
-        evolverVersion?: string;
-    }): Promise<PublicHelloResult>;
+    hello(opts: PublicHelloOptions): Promise<PublicHelloResult>;
     heartbeat(opts?: PublicHeartbeatOptions): Promise<PublicHeartbeatResult>;
     private heartbeatMeta;
     publish(bundle: hub.AssetRecord[]): Promise<hub.PublishReceipt>;

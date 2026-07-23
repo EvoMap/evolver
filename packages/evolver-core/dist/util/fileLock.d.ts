@@ -20,9 +20,11 @@ export interface AcquireLockOptions {
  * The lock file records the owner pid and token. If a waiter finds the lock held by a pid that is no longer
  * alive (the owner crashed without releaseLock), it reclaims the stale lock instead of spinning
  * until timeout — otherwise one crashed process would deadlock every future writer until the file
- * is removed by hand. Acquisition stays atomic (O_EXCL), and stale reclaim moves the old lock aside
- * under a mutation guard before deletion so waiters cannot delete each other's newly-created locks.
- * A live owner's lock (including this process's own) is never stolen.
+ * is removed by hand. Empty or truncated locks are reclaimed only after the same inode and contents
+ * remain malformed for a grace period, so a live creator can finish publishing its owner payload.
+ * Acquisition stays atomic (O_EXCL), and stale reclaim moves the old lock aside under a mutation
+ * guard, then verifies the inode snapshot before deletion. A live owner's lock (including this
+ * process's own) is never stolen.
  *
  * NOTE: still synchronous (blocks the event loop while waiting) by design — it guards short
  * synchronous critical sections (append-only writes).
