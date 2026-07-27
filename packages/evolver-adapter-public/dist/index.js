@@ -14,6 +14,7 @@ export * from './antiAbuseTelemetry.js';
 export * from './offlinePermit.js';
 export * from './hubReuse.js';
 export * from './hubUrl.js';
+export * from './learningPacketSink.js';
 export * from './atp.js';
 export * from './pricing/modelPrices.js';
 export * from './connect.js';

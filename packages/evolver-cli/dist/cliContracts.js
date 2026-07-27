@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { inspect, format } from 'node:util';
-import { assetstore, events, hub, wire } from '@evomap/evolver-core';
+import { assetstore, events, hub, wire, algo } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
-import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
-import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
+import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
+import { resolveAtpSenderId } from './atp.js';
+import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
 const REUSE_CONTRACT = 'reuse.v1';
 const PUBLISH_CONTRACT = 'publish.v1';
 const REVERSIBILITY = 'irreversible';
@@ -27,6 +28,7 @@ const STABLE_CONTRACT_REASONS = new Set([
     'schema_invalid',
     'bundle_required',
     'quality_gate_failed',
+    'gene_unproven',
     'insufficient_credits',
 ]);
 const HUB_METADATA_KEYS = new Set([
@@ -64,23 +66,38 @@ class ContractError extends Error {
 export async function runReuseCommand(args, deps = {}) {
     const out = deps.out ?? process.stdout;
     const parsed = parseReuseArgs(args);
-    const write = (value, code) => writeJson(out, value, code, deps);
-    if (!parsed.ok || !parsed.assetId)
-        return write(reuseFailure(parsed.reason ?? 'missing_id', parsed.message ?? 'reuse requires --id <asset_id>'), 1);
+    if (!parsed.ok || !parsed.assetId) {
+        return writeJson(out, reuseFailure(parsed.reason ?? 'missing_id', parsed.message ?? 'reuse requires --id <asset_id>'), 1, deps);
+    }
+    let runtimeDeps;
+    try {
+        runtimeDeps = { ...deps, env: loadContractEnv(deps) };
+    }
+    catch (err) {
+        const failure = classifyError(err, 'reuse');
+        return writeJson(out, reuseFailure(failure.reason, failure.message), 1, deps);
+    }
+    const write = (value, code) => writeJson(out, value, code, runtimeDeps);
     const assetId = parsed.assetId;
-    return withMachineJsonConsole(Boolean(parsed.jsonOut), deps, async () => {
+    return withMachineJsonConsole(Boolean(parsed.jsonOut), runtimeDeps, async () => {
         try {
-            const fetcher = deps.fetchAssetById ?? deps.transport?.fetchAssetById ?? createDefaultTransport(deps).fetchAssetById;
+            const fetcher = runtimeDeps.fetchAssetById
+                ?? runtimeDeps.transport?.fetchAssetById
+                ?? createDefaultTransport(runtimeDeps).fetchAssetById;
             const asset = await fetcher(assetId);
             if (!asset)
                 return write(reuseFailure('not_found', 'asset not found'), 1);
             const cleaned = stripHubMetadata(asset);
-            if (wire.computeAssetId(cleaned) !== assetId) {
+            const computedAssetId = wire.computeAssetId(cleaned);
+            const identityMatches = assetId.startsWith('sha256:')
+                ? computedAssetId === assetId
+                : stringField(cleaned, 'id') === assetId && computedAssetId === cleaned.asset_id;
+            if (!identityMatches) {
                 return write(reuseFailure('internal_error', 'asset integrity verification failed'), 1);
             }
-            const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(deps.assetsDir ?? events.assetsDir());
+            const store = runtimeDeps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(runtimeDeps));
             await assertNoLocalReuseIdConflict(cleaned, store);
-            const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, deps));
+            const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, runtimeDeps));
             const stored = await assetstore.ingestUntrusted(store, provenance, cleaned, 'hub');
             return write({
                 ok: true,
@@ -111,14 +128,27 @@ export async function runPublishCommand(args, deps = {}) {
         return 0;
     }
     const parsed = parsePublishArgs(args);
-    const write = (value, code) => writeJson(out, value, code, deps);
     if (!parsed.ok || !parsed.assetRefs) {
-        return write(publishFailure(parsed.reason ?? 'bundle_required', parsed.message ?? publishReasonMessage('bundle_required'), { retryable: false }), 1);
+        return writeJson(out, publishFailure(parsed.reason ?? 'bundle_required', parsed.message ?? publishReasonMessage('bundle_required'), { retryable: false }), 1, deps);
     }
     const assetRefs = parsed.assetRefs;
-    return withMachineJsonConsole(Boolean(parsed.jsonOut), deps, async () => {
+    let runtimeDeps;
+    try {
+        const inheritedEnv = deps.env ?? process.env;
+        const runtimeEnv = loadContractEnv(deps);
+        runtimeDeps = { ...deps, env: preserveInheritedSecrets(runtimeEnv, inheritedEnv) };
+    }
+    catch (err) {
+        const failure = classifyError(err, 'publish');
+        return writeJson(out, publishFailure(failure.reason, failure.message, {
+            retryable: failure.retryable,
+            mode: parsed.dryRun ? 'dry_run' : 'publish',
+        }), 1, deps);
+    }
+    const write = (value, code) => writeJson(out, value, code, runtimeDeps);
+    return withMachineJsonConsole(Boolean(parsed.jsonOut), runtimeDeps, async () => {
         try {
-            const bundle = await buildPublishBundle(assetRefs, deps);
+            const bundle = await buildPublishBundle(assetRefs, runtimeDeps);
             if (!bundle.ok) {
                 return write(publishFailure(bundle.reason, bundle.message, { retryable: false, gates: bundle.gates }), 1);
             }
@@ -133,11 +163,22 @@ export async function runPublishCommand(args, deps = {}) {
                     assets: bundle.assets,
                 }), 1);
             }
-            const transport = deps.transport ?? createDefaultTransport(deps);
+            const transport = deps.transport ?? createDefaultTransport(runtimeDeps);
             const validate = deps.validate ?? transport.validate;
             const validation = await validate(bundle.sanitized);
             const validationCredits = extractCredits(validation.body);
-            if (!validation.ok) {
+            const validationUnavailable = transport.validationCapabilityOptional === true
+                && isValidationCapabilityUnavailable(validation.body);
+            if (!validation.ok && !(validationUnavailable && !parsed.dryRun)) {
+                if (validationUnavailable) {
+                    return write(publishFailure('unsupported', publishReasonMessage('unsupported'), {
+                        retryable: false,
+                        mode: 'dry_run',
+                        gates: bundle.gates,
+                        assets: bundle.assets,
+                        detail: 'Private Hub validation is not configured',
+                    }), 1);
+                }
                 const reason = publishReasonFromResponse(validation.status, validation.body);
                 const detail = hubDetailFromBody(validation.body);
                 if (parsed.dryRun && reason === 'quality_gate_failed') {
@@ -173,16 +214,21 @@ export async function runPublishCommand(args, deps = {}) {
                 }), 1);
             }
             const payload = payloadRecord(published.body);
-            if (stringField(payload, 'decision') === 'quarantine') {
+            const decision = stringField(payload, 'decision');
+            const hubReason = stringField(payload, 'reason');
+            const safetyCandidate = decision === 'quarantine' && hubReason === 'safety_candidate';
+            if (decision === 'quarantine' && !safetyCandidate) {
+                const detail = hubDetailFromBody(published.body);
                 return write(publishFailure('quality_gate_failed', publishReasonMessage('quality_gate_failed'), {
                     retryable: false,
                     mode: 'publish',
                     gates: { ...bundle.gates, quality: 'fail' },
                     assets: bundle.assets,
+                    ...(detail ? { detail } : {}),
                     ...(publishCredits ? { credits: publishCredits } : {}),
                 }), 1);
             }
-            const status = normalizePublishStatus(published.body);
+            const status = safetyCandidate ? 'queued' : normalizePublishStatus(published.body);
             if (!status) {
                 return write(publishFailure('internal_error', 'Hub publish response missing lifecycle status', {
                     retryable: false,
@@ -202,6 +248,7 @@ export async function runPublishCommand(args, deps = {}) {
                 reversibility: REVERSIBILITY,
                 ...(receiptId ? { receipt_id: receiptId } : {}),
                 ...(bundleId ? { bundle_id: bundleId } : {}),
+                ...(safetyCandidate ? { hub_reason: hubReason } : {}),
                 assets: bundle.assets,
                 ...(publishCredits ? { credits: publishCredits } : {}),
             }, 0);
@@ -317,21 +364,64 @@ export async function buildPublishBundle(refs, deps = {}) {
         return { ok: false, reason: 'bundle_required', message: finalBundleCheck.message, gates: { redaction: 'pass', schema: 'pass', bundle: 'fail' } };
     }
     const leak = finalPayloadLeakCheck(sanitized, deps.env ?? process.env);
+    // Local quality gate: a gene may only publish once it has TRULY succeeded at
+    // least once. Minting sets `confidence` from self-report / text completeness,
+    // which never proves the gene worked; without this check an unproven gene
+    // leaks to the Hub and comes back as an opaque `quality_gate_failed` after a
+    // round-trip. Assessing the gene's outcome evidence here fails fast, locally,
+    // with a precise reason. Read-only: aggregates the local capsule history.
+    const geneEvidence = await assessPublishGeneEvidence(original, deps);
+    const geneProven = geneEvidence?.eligible ?? true;
     const gates = {
         redaction: 'pass',
         leak: leak.blocked ? 'fail' : 'pass',
         schema: 'pass',
         bundle: 'pass',
-        quality: 'pass',
+        quality: geneProven ? 'pass' : 'fail',
     };
+    const blockReasons = [];
+    if (leak.blocked)
+        blockReasons.push('leak_detected');
+    if (!geneProven)
+        blockReasons.push('gene_unproven');
     return {
         ok: true,
         original,
         sanitized,
-        blockReasons: leak.blocked ? ['leak_detected'] : [],
+        blockReasons,
         gates,
         assets: summarizePublishAssets(sanitized),
     };
+}
+// Assess whether the bundle's Gene has proven success in the local capsule
+// history. Fail-open (returns null) when there is no gene id or the store read
+// throws — the pre-check only ADDS a local gate; the Hub still gates, so an
+// infra hiccup must not block an otherwise-valid publish.
+async function assessPublishGeneEvidence(original, deps) {
+    const gene = original.find((asset) => asset.type === 'Gene');
+    if (!gene)
+        return null;
+    const businessId = stringField(gene, 'id');
+    const assetId = typeof gene.asset_id === 'string' ? gene.asset_id : undefined;
+    const geneId = businessId ?? assetId;
+    if (!geneId)
+        return null;
+    try {
+        const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(deps));
+        const primary = await algo.assessGenePublishEvidence(store, geneId);
+        // Capsules key their `gene` link by the gene's business id in production;
+        // some stores (and legacy fixtures) key it by asset_id. If the business-id
+        // lookup found no history, retry by asset_id before concluding "unproven".
+        if (primary.total === 0 && assetId && assetId !== geneId) {
+            const byAssetId = await algo.assessGenePublishEvidence(store, assetId);
+            if (byAssetId.total > 0)
+                return byAssetId;
+        }
+        return primary;
+    }
+    catch {
+        return null;
+    }
 }
 function sanitizePublishBundle(original) {
     const sanitized = original.map((asset) => hub.sanitizeAsset(stripPublishMetadata(asset)));
@@ -372,7 +462,7 @@ async function loadAssetRef(ref, deps) {
             throw new ContractError('schema_invalid', 'asset not found');
         return normalizeAsset(fromStore);
     }
-    const readOnly = loadLocalAssetsReadOnly(deps.assetsDir ?? events.assetsDir());
+    const readOnly = loadLocalAssetsReadOnly(contractAssetsDir(deps));
     const found = readOnly.find((asset) => asset.asset_id === ref || stringField(asset, 'id') === ref);
     if (!found)
         throw new ContractError('schema_invalid', 'asset not found');
@@ -490,7 +580,10 @@ function stripPublishMetadata(asset) {
     return stripHubMetadata(asset);
 }
 function storeBaseDir(store, deps) {
-    return store instanceof assetstore.LocalJsonlProvider ? store.baseDir : deps.assetsDir ?? events.assetsDir();
+    return store instanceof assetstore.LocalJsonlProvider ? store.baseDir : contractAssetsDir(deps);
+}
+function contractAssetsDir(deps) {
+    return deps.assetsDir ?? events.assetsDir(deps.env ?? process.env);
 }
 function dryRunEnvelope(bundle, credits, blockDetail) {
     const suppressPayload = bundle.blockReasons.includes('leak_detected');
@@ -595,13 +688,19 @@ async function withMachineJsonConsole(enabled, deps, fn) {
     }
 }
 function createDefaultTransport(deps) {
-    const env = deps.env ?? process.env;
-    loadEnvFileFromEnv(env);
+    const env = loadContractEnv(deps);
+    const hubMode = configuredHubMode(env);
+    if (hubMode === 'private') {
+        return createPrivateTransport(env, deps.resolveProxyClient ?? resolveDefaultPrivateProxy);
+    }
     const hubUrl = resolveHubUrl(env);
-    const evomapDir = resolveAtpHome(env);
-    const sender = resolveAtpSenderId(env);
-    const senderId = () => sender ?? env['A2A_NODE_ID']?.trim();
-    const nodeSecret = env['EVOMAP_NODE_SECRET']?.trim() || env['A2A_NODE_SECRET']?.trim();
+    const evomapDir = resolveIdentityHome(env);
+    const explicitCredentials = resolveExplicitNodeCredentials(env);
+    const { nodeSecret } = explicitCredentials;
+    const sender = nodeSecret
+        ? explicitCredentials.senderId ?? resolveAtpSenderId(env)
+        : resolveAtpSenderId(env);
+    const senderId = () => sender;
     const connected = nodeSecret
         ? connectPublicHub({ hubUrl, authMode: 'legacy', evomapDir, nodeSecret, senderId })
         : connectPublicHub({ hubUrl, authMode: 'oauth', evomapDir, senderId });
@@ -630,6 +729,127 @@ function createDefaultTransport(deps) {
         validate: (bundle) => call('/a2a/validate', 'validate', bundle),
         publish: (bundle) => call('/a2a/publish', 'publish', bundle),
     };
+}
+function loadContractEnv(deps) {
+    const env = { ...(deps.env ?? process.env) };
+    const envFile = loadEnvFileFromEnv(env);
+    if (envFile.error)
+        throw new Error('failed to load EVOLVER_ENV_FILE');
+    return env;
+}
+function preserveInheritedSecrets(runtimeEnv, inheritedEnv) {
+    const env = { ...runtimeEnv };
+    let index = 0;
+    for (const [key, value] of Object.entries(inheritedEnv)) {
+        if (!value || value === runtimeEnv[key] || !/SECRET|TOKEN|API[_-]?KEY|PASSWORD|AUTH|CREDENTIAL/i.test(key))
+            continue;
+        env[`EVOLVER_INHERITED_SECRET_${index++}`] = value;
+    }
+    return env;
+}
+function configuredHubMode(env) {
+    const value = String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase();
+    if (value === 'public' || value === 'private')
+        return value;
+    throw new Error('EVOMAP_HUB_MODE must be public or private');
+}
+function resolveDefaultPrivateProxy(env) {
+    return proxyClientFromEnv(env);
+}
+function createPrivateTransport(env, resolveProxy) {
+    const proxy = resolveProxy(env);
+    if (!proxy)
+        throw new Error('private Hub proxy credentials are not configured');
+    const privateModeReady = assertPrivateProxyMode(proxy);
+    return {
+        validationCapabilityOptional: true,
+        fetchAssetById: async (assetId) => {
+            try {
+                await privateModeReady;
+                const body = await proxy.fetchAsset({ assetId, expectedHubMode: 'private' });
+                return privateProxyAssets(body).find((asset) => (asset.asset_id === assetId || stringField(asset, 'id') === assetId)) ?? null;
+            }
+            catch (err) {
+                if (err instanceof ContractError)
+                    throw err;
+                const message = err instanceof Error ? err.message : String(err);
+                if (message === 'proxy_hub_mode_mismatch' || isAuthLikeError(err)) {
+                    throw new ContractError('auth_required', 'private Hub proxy authentication required');
+                }
+                throw new ContractError('network_error', 'Hub unreachable');
+            }
+        },
+        validate: async (bundle) => {
+            try {
+                await privateModeReady;
+                const body = await proxy.validateAssetBundle({ assets: [...bundle], expected_hub_mode: 'private' });
+                return { ok: hasExplicitValidatePass(body), status: 200, body };
+            }
+            catch (err) {
+                if (err instanceof ContractError)
+                    throw err;
+                return privateProxyFailure(err);
+            }
+        },
+        publish: async (bundle) => {
+            try {
+                await privateModeReady;
+                const body = normalizePrivatePublishBody(await proxy.submitAssetBundle({
+                    assets: [...bundle],
+                    expected_hub_mode: 'private',
+                }));
+                return { ok: !privatePublishExplicitFailure(body) && normalizePublishStatus(body) !== undefined, status: 200, body };
+            }
+            catch (err) {
+                if (err instanceof ContractError)
+                    throw err;
+                return privateProxyFailure(err);
+            }
+        },
+    };
+}
+async function assertPrivateProxyMode(proxy) {
+    const status = asRecord(await proxy.status()) ?? {};
+    if (status['hub_mode'] !== 'private') {
+        throw new ContractError('auth_required', 'private Hub proxy mode mismatch');
+    }
+}
+function isValidationCapabilityUnavailable(body) {
+    const root = asRecord(body) ?? {};
+    const payload = asRecord(root['payload']) ?? {};
+    return (root['reason'] ?? payload['reason']) === 'validate_not_configured';
+}
+function privateProxyAssets(body) {
+    const root = asRecord(body) ?? {};
+    const payload = asRecord(root['payload']) ?? {};
+    const rows = Array.isArray(root['assets']) ? root['assets'] : Array.isArray(payload['assets']) ? payload['assets'] : [];
+    return rows.filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)));
+}
+function normalizePrivatePublishBody(body) {
+    const root = asRecord(body);
+    if (!root)
+        return body;
+    const payload = asRecord(root['payload']);
+    if (payload) {
+        return { ...root, payload: normalizePrivatePublishLayer(payload) };
+    }
+    return normalizePrivatePublishLayer(root);
+}
+function normalizePrivatePublishLayer(body) {
+    const receiptId = stringField(body, 'receipt_id') ?? stringField(body, 'receiptId');
+    return {
+        ...body,
+        ...(stringField(body, 'status') === 'pending' ? { status: 'queued' } : {}),
+        ...(receiptId ? { receipt_id: receiptId } : {}),
+    };
+}
+function privatePublishExplicitFailure(body) {
+    const root = asRecord(body) ?? {};
+    const payload = asRecord(root['payload']) ?? {};
+    return root['ok'] === false || root['stored'] === false || payload['ok'] === false || payload['stored'] === false;
+}
+function privateProxyFailure(err) {
+    return { ok: false, status: isAuthLikeError(err) ? 401 : 0 };
 }
 function isAuthLikeError(err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -691,6 +911,7 @@ function publishReasonMessage(reason) {
         schema_invalid: 'asset schema is invalid',
         bundle_required: 'publish requires a complete asset bundle',
         quality_gate_failed: 'Hub quality gate failed',
+        gene_unproven: 'gene has no proven success yet — run it to a successful outcome before publishing',
         insufficient_credits: 'insufficient credits',
     };
     return map[reason] ?? map.internal_error;
@@ -746,6 +967,8 @@ export function hasExplicitValidatePass(body) {
 function normalizePublishStatus(body) {
     const payload = payloadRecord(body);
     const status = stringField(payload, 'status');
+    if (status === 'candidate')
+        return 'queued';
     if (status === 'queued' || status === 'accepted' || status === 'published')
         return status;
     if (status)

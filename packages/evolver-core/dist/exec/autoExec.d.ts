@@ -10,6 +10,7 @@ import { type OpenPrLister } from './openPrRegistry.js';
 import type { ReuseOutcomeSummary, ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { PersonalityStore } from '../personality/store.js';
 import type { MemoryGraphProvider } from '../algo/memoryGraph.js';
+import { type LearningPacketSink, type TraceSink } from '../trace/learningTrace.js';
 export interface AutoExecTask {
     id: string;
     repo: string;
@@ -110,6 +111,20 @@ export interface AutoExecDeps {
     agent?: AgentRunner;
     /** Test/custom seam: inject git instead of spawning git. */
     git?: GitRunner;
+    /**
+     * Learning trace (Learning Ops slice 2): when set, each task run gets its own AgentRunTraceRecorder
+     * (traceId = the cycleId) emitting run.started/model.called/tool.failed/run.completed, and a
+     * LearningPacket draft is submitted here after the cycle. Best-effort: trace/packet failures never
+     * change the verdict. Omit → zero trace work, byte-identical to today.
+     */
+    learningTrace?: {
+        /** Where packet drafts go (file/memory/hub-adapter implementation). */
+        packetSink: LearningPacketSink;
+        /** Optional live per-event sink (e.g. FileTraceSink JSONL tail). */
+        traceSink?: TraceSink;
+        /** Hub packet sourceRepo column; default 'evolver-v2'. */
+        sourceRepo?: string;
+    };
 }
 export interface ForcedGeneFields {
     forcedGeneId?: unknown;

@@ -20,3 +20,5 @@ export declare function tracesDir(env?: Readonly<Record<string, string | undefin
  *  NOTE(reuse/#234): confirm this matches where the proxy/RecallHistory reads — best-effort append, so a path
  *  mismatch degrades the audit line, never the reuse write itself. */
 export declare function assetCallLogPath(env?: Readonly<Record<string, string | undefined>>): string;
+/** Learning Ops local output dir: per-run LearningPacket drafts + trace-event JSONL (hub upload is a later slice). */
+export declare function learningTraceDir(env?: Readonly<Record<string, string | undefined>>): string;

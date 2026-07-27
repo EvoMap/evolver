@@ -67,6 +67,7 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         enabled: true,
         ...(opts.agent ? { agent: opts.agent } : {}),
         ...(opts.git ? { git: opts.git } : {}),
+        ...(opts.traceRecorder ? { traceRecorder: opts.traceRecorder } : {}),
         allowedRoots: safety.allowedRoots,
         ...(safety.runner ? { runner: safety.runner } : {}),
         ...(safety.isolation === 'none' ? {} : { isolation: 'worktree' }),

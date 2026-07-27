@@ -5,10 +5,12 @@ export class EvolverProxyClient {
     baseUrl;
     token;
     fetchFn;
+    expectedHubMode;
     reloadSettings;
     constructor(opts) {
         this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
         this.token = opts.token;
+        this.expectedHubMode = opts.expectedHubMode;
         this.fetchFn = opts.fetchFn ?? globalFetch;
         this.reloadSettings = opts.reloadSettings;
     }
@@ -16,6 +18,7 @@ export class EvolverProxyClient {
         return this.call('GET', '/proxy/status', undefined, opts);
     }
     search(args) {
+        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
         return this.call('POST', '/asset/search', {
             ...(args.text ? { text: args.text } : {}),
             ...(args.signalsAny && args.signalsAny.length > 0 ? { signals: args.signalsAny } : {}),
@@ -23,12 +26,15 @@ export class EvolverProxyClient {
             ...(args.category ? { category: args.category } : {}),
             ...(args.gene ? { gene: args.gene } : {}),
             ...(args.limit !== undefined ? { limit: args.limit } : {}),
+            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
         });
     }
     fetchAsset(args) {
+        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
         return this.call('POST', '/asset/fetch', {
             ...(args.assetId ? { asset_id: args.assetId } : {}),
             ...(args.assetIds ? { asset_ids: args.assetIds } : {}),
+            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
         });
     }
     searchAgents(args) {
@@ -45,19 +51,23 @@ export class EvolverProxyClient {
         });
     }
     submitAsset(asset) {
-        return this.call('POST', '/asset/submit', { assets: [asset] });
+        return this.submitAssetBundle({ assets: [asset] });
+    }
+    submitAssetBundle(bundle) {
+        return this.call('POST', '/asset/submit', this.modeBoundBody(bundle));
     }
     /** Pre-publish dry-run: the hub runs its quality + content-safety gate but stores nothing and charges no credits. */
     validateAsset(asset) {
         return this.validateAssetBundle({ assets: [asset] });
     }
     validateAssetBundle(bundle) {
-        return this.call('POST', '/asset/validate', bundle);
+        return this.call('POST', '/asset/validate', this.modeBoundBody(bundle));
     }
     distillConversation(input) {
-        return this.call('POST', '/conversation/distill', input);
+        return this.call('POST', '/conversation/distill', this.modeBoundBody(input));
     }
     recordReuseResult(args) {
+        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
         return this.call('POST', '/asset/reuse-result', {
             asset_id: args.assetId,
             outcome: args.outcome,
@@ -65,42 +75,83 @@ export class EvolverProxyClient {
             ...(args.traceId ? { trace_id: args.traceId } : {}),
             ...(args.timeSavedSeconds !== undefined ? { time_saved_seconds: args.timeSavedSeconds } : {}),
             ...(args.reason ? { reason: args.reason } : {}),
+            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
         });
     }
+    modeBoundBody(input) {
+        if (!this.expectedHubMode || !input || typeof input !== 'object' || Array.isArray(input))
+            return input;
+        const body = input;
+        return { ...body, expected_hub_mode: body['expected_hub_mode'] ?? this.expectedHubMode };
+    }
     async call(method, path, body, opts = {}) {
+        let connection = this.connectionSnapshot();
         try {
-            const result = await this.callOnce(method, path, body, opts);
+            if (path !== '/proxy/status' && this.expectedHubMode === 'private') {
+                await this.verifyExpectedHubMode(connection, opts);
+            }
+            const result = await this.callOnce(method, path, body, opts, connection);
             if (result.ok)
-                return result.parsed;
+                return this.acceptResult(result, path);
             if (result.status === 401 && this.reloadFromSettings()) {
-                const retry = await this.callOnce(method, path, body, opts);
+                connection = this.connectionSnapshot();
+                await this.verifyReloadedHubMode(path, connection, opts);
+                const retry = await this.callOnce(method, path, body, opts, connection);
                 if (retry.ok)
-                    return retry.parsed;
+                    return this.acceptResult(retry, path);
                 throw this.proxyError(retry, path);
             }
             throw this.proxyError(result, path);
         }
         catch (err) {
             if (this.reloadFromSettings()) {
-                const retry = await this.callOnce(method, path, body, opts);
+                connection = this.connectionSnapshot();
+                await this.verifyReloadedHubMode(path, connection, opts);
+                const retry = await this.callOnce(method, path, body, opts, connection);
                 if (retry.ok)
-                    return retry.parsed;
+                    return this.acceptResult(retry, path);
                 throw this.proxyError(retry, path);
             }
             throw err;
         }
     }
-    async callOnce(method, path, body, opts) {
-        const res = await this.fetchFn(`${this.baseUrl}${path}`, {
+    async verifyExpectedHubMode(connection, opts) {
+        // A proxy can restart on the same loopback URL with the same operator-supplied token. Verify every private
+        // operation against the same immutable connection snapshot used for its payload. This prevents a concurrent
+        // settings reload from moving the payload to an endpoint that the status probe never verified.
+        const result = await this.callOnce('GET', '/proxy/status', undefined, opts, connection);
+        if (!result.ok)
+            throw this.proxyError(result, '/proxy/status');
+        this.acceptResult(result, '/proxy/status');
+    }
+    async verifyReloadedHubMode(path, connection, opts) {
+        if (path !== '/proxy/status' && this.expectedHubMode === 'private') {
+            await this.verifyExpectedHubMode(connection, opts);
+        }
+    }
+    acceptResult(result, path) {
+        if (path === '/proxy/status' && this.expectedHubMode === 'private') {
+            const status = recordValue(result.parsed);
+            if (status['hub_mode'] !== 'private')
+                throw new Error('proxy_hub_mode_mismatch');
+        }
+        return result.parsed;
+    }
+    async callOnce(method, path, body, opts, connection) {
+        const res = await this.fetchFn(`${connection.baseUrl}${path}`, {
             method,
             headers: {
-                authorization: `Bearer ${this.token}`,
+                authorization: `Bearer ${connection.token}`,
                 'content-type': 'application/json',
+                ...(this.expectedHubMode ? { 'x-evomap-expected-hub-mode': this.expectedHubMode } : {}),
             },
             ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
         });
         return { ok: res.ok, status: res.status, parsed: await res.json() };
+    }
+    connectionSnapshot() {
+        return { baseUrl: this.baseUrl, token: this.token };
     }
     reloadFromSettings() {
         const next = this.reloadSettings?.();
@@ -133,38 +184,51 @@ function agentDirectoryBody(args) {
     };
 }
 export function proxyClientFromEnv(env = process.env) {
+    const expectedHubMode = expectedHubModeFromEnv(env);
+    if (!expectedHubMode)
+        return undefined;
     const token = env['EVOLVER_IPC_TOKEN']?.trim();
     if (!token)
-        return proxyClientFromSettings(env, env === process.env);
-    const explicitUrl = env['EVOLVER_PROXY_URL']?.trim();
-    const port = env['EVOLVER_IPC_PORT']?.trim() || env['EVOMAP_PROXY_PORT']?.trim() || '19820';
-    return new EvolverProxyClient({ baseUrl: explicitUrl || `http://127.0.0.1:${port}`, token });
+        return proxyClientFromSettings(env, env === process.env, undefined, expectedHubMode);
+    const baseUrl = proxyBaseUrlFromEnv(env);
+    return baseUrl ? new EvolverProxyClient({ baseUrl, token, expectedHubMode }) : undefined;
 }
 export async function reachableProxyClientFromEnv(env = process.env, opts = {}) {
+    const expectedHubMode = expectedHubModeFromEnv(env);
+    if (!expectedHubMode)
+        return undefined;
     const token = env['EVOLVER_IPC_TOKEN']?.trim();
     if (token) {
-        const explicitUrl = env['EVOLVER_PROXY_URL']?.trim();
-        const port = env['EVOLVER_IPC_PORT']?.trim() || env['EVOMAP_PROXY_PORT']?.trim() || '19820';
-        return new EvolverProxyClient({ baseUrl: explicitUrl || `http://127.0.0.1:${port}`, token, ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}) });
+        const baseUrl = proxyBaseUrlFromEnv(env);
+        return baseUrl ? new EvolverProxyClient({ baseUrl, token, expectedHubMode, ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}) }) : undefined;
     }
-    const client = proxyClientFromSettings(env, env === process.env, opts.fetchFn);
+    const client = proxyClientFromSettings(env, env === process.env, opts.fetchFn, expectedHubMode);
     if (!client)
         return undefined;
     return await proxyClientReachable(client, opts.timeoutMs ?? 250) ? client : undefined;
 }
-function proxyClientFromSettings(env, allowDefaultHome, fetchFn) {
+function proxyClientFromSettings(env, allowDefaultHome, fetchFn, expectedHubMode = 'public') {
     const settings = readProxySettings(env, allowDefaultHome);
     return settings ? new EvolverProxyClient({
         ...settings,
+        expectedHubMode,
         ...(fetchFn ? { fetchFn } : {}),
         reloadSettings: () => readProxySettings(env, allowDefaultHome),
     }) : undefined;
 }
+function expectedHubModeFromEnv(env) {
+    const value = env['EVOMAP_HUB_MODE']?.trim().toLowerCase() || 'public';
+    return value === 'public' || value === 'private' ? value : undefined;
+}
 function readProxySettings(env, allowDefaultHome) {
+    const explicitPath = env['EVOLVER_PROXY_SETTINGS_FILE']?.trim();
+    const settingsDir = env['EVOLVER_SETTINGS_DIR']?.trim();
     const homeDir = env['HOME']?.trim() || (allowDefaultHome ? homedir() : '');
-    if (!homeDir)
+    const settingsPath = explicitPath
+        || (settingsDir ? join(settingsDir, 'settings.json') : undefined)
+        || (homeDir ? join(homeDir, '.evolver', 'settings.json') : undefined);
+    if (!settingsPath)
         return undefined;
-    const settingsPath = join(homeDir, '.evolver', 'settings.json');
     try {
         if (!lstatSync(settingsPath).isFile())
             return undefined;
@@ -185,6 +249,8 @@ function isLoopbackHttpUrl(raw) {
         const url = new URL(raw);
         if (url.protocol !== 'http:' && url.protocol !== 'https:')
             return false;
+        if (url.username || url.password || url.search || url.hash || (url.pathname && url.pathname !== '/'))
+            return false;
         const hostname = url.hostname.toLowerCase();
         return hostname === '127.0.0.1'
             || hostname === 'localhost'
@@ -194,6 +260,19 @@ function isLoopbackHttpUrl(raw) {
     catch {
         return false;
     }
+}
+function proxyBaseUrlFromEnv(env) {
+    const explicitUrl = env['EVOLVER_PROXY_URL']?.trim();
+    if (explicitUrl)
+        return isLoopbackHttpUrl(explicitUrl) ? explicitUrl : undefined;
+    const rawPort = env['EVOLVER_IPC_PORT']?.trim() || env['EVOMAP_PROXY_PORT']?.trim() || '19820';
+    if (!/^\d+$/.test(rawPort))
+        return undefined;
+    const port = Number(rawPort);
+    if (!Number.isInteger(port) || port < 0 || port > 65_535)
+        return undefined;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    return isLoopbackHttpUrl(baseUrl) ? baseUrl : undefined;
 }
 function recordValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -205,7 +284,9 @@ async function proxyClientReachable(client, timeoutMs) {
         await client.status({ signal: controller.signal });
         return true;
     }
-    catch {
+    catch (error) {
+        if (error instanceof Error && error.message === 'proxy_hub_mode_mismatch')
+            throw error;
         return false;
     }
     finally {
@@ -214,5 +295,5 @@ async function proxyClientReachable(client, timeoutMs) {
     }
 }
 async function globalFetch(url, init) {
-    return fetch(url, init);
+    return fetch(url, { ...init, redirect: 'error' });
 }

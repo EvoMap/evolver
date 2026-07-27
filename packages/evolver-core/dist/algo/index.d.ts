@@ -8,6 +8,7 @@ export * from './conversationSniffer.js';
 export * from './geneIntake.js';
 export * from './candidateAssembly.js';
 export * from './genePromotion.js';
+export * from './publishEligibility.js';
 export * from './bans.js';
 export * from './antiDistill.js';
 export * from './orchestrator.js';

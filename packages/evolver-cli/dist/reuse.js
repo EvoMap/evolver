@@ -12,7 +12,7 @@
 //   2. NEVER let a token/secret reach any stream — error text is mapped to fixed messages / redacted.
 import { assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled } from '@evomap/evolver-adapter-public';
-import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv } from './recipe.js';
 import { getCliVersion } from './version.js';
 const REUSE_CONTRACT = 'reuse.v1';
@@ -75,8 +75,10 @@ export async function runReuseCommand(argv, deps = {}) {
         const env = deps.env ?? process.env;
         // Keep the native reuse path aligned with publish/contract transport: env-file values must be present before
         // dry-run checks and Hub construction. The loader mutates `env` and does not expose secret values.
-        loadEnvFileFromEnv(env);
-        const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
+        const envFile = loadEnvFileFromEnv(env);
+        if (envFile.error)
+            throw new Error('failed to load EVOLVER_ENV_FILE');
+        const store = deps.store ?? new assetstore.LocalJsonlProvider(deps.assetsDir ?? events.assetsDir(env));
         // 1) Already in the local recall library → reuse is idempotent: log + ok, no hub round-trip.
         const local = await resolveLocalReuseAsset(store, opts.id);
         if (local) {
@@ -88,7 +90,7 @@ export async function runReuseCommand(argv, deps = {}) {
             return emit({ ok: true, status: 'dry_run', message: `would fetch ${opts.id} and write it to the local recall library` }, ctx);
         }
         // 3) Pull the global asset by id, write it into the local recall library (put dedups → idempotent on repeat).
-        const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
+        const hub = deps.hub ?? createReuseFetcherFromEnv(env, deps);
         // One-shot CLIs never heartbeat, so the hub may hold no env fingerprint for this node and its anti-abuse
         // layer then 403s /a2a/fetch (`bulk_fetch_blocked: IP antibody`, #555). A fingerprinted hello
         // (rotate:false + preserveCredentials:true) neither requests nor applies credential mutation while establishing
@@ -116,6 +118,34 @@ export async function runReuseCommand(argv, deps = {}) {
     catch (e) {
         return emit(mapError(e), ctx);
     }
+}
+function createReuseFetcherFromEnv(env, deps) {
+    const hubMode = configuredHubMode(env);
+    if (hubMode === 'public') {
+        return createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
+    }
+    const proxy = (deps.resolveProxyClient ?? proxyClientFromEnv)(env);
+    if (!proxy)
+        throw new Error('private Hub proxy is not configured');
+    return {
+        fetchAssetById: async (assetId) => {
+            const body = await proxy.fetchAsset({ assetId, expectedHubMode: 'private' });
+            const root = recordValue(body);
+            const payload = recordValue(root['payload']);
+            const assets = Array.isArray(root['assets']) ? root['assets'] : Array.isArray(payload['assets']) ? payload['assets'] : [];
+            const asset = assets.find((candidate) => {
+                const record = recordValue(candidate);
+                return record['asset_id'] === assetId || record['id'] === assetId;
+            });
+            return asset && typeof asset === 'object' && !Array.isArray(asset) ? asset : null;
+        },
+    };
+}
+function configuredHubMode(env) {
+    const value = String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase();
+    if (value === 'public' || value === 'private')
+        return value;
+    throw new Error('EVOMAP_HUB_MODE must be public or private');
 }
 /** Flags this CLI understands. parseReuseArgs walks argv and rejects anything outside this set with reason
  *  `unsupported` so a typoed flag never silently falls through to a Hub round-trip — review blocker on V1 #283
@@ -288,7 +318,9 @@ function stripHubMetadata(asset) {
     return out;
 }
 function storeBaseDir(store, deps) {
-    return store instanceof assetstore.LocalJsonlProvider ? store.baseDir : deps.assetsDir ?? events.assetsDir();
+    return store instanceof assetstore.LocalJsonlProvider
+        ? store.baseDir
+        : deps.assetsDir ?? events.assetsDir(deps.env ?? process.env);
 }
 function stringField(record, key) {
     const value = record[key];
@@ -299,7 +331,7 @@ function isContentAssetId(value) {
 }
 function logReuse(deps, opts, asset, source) {
     // AssetCallLog.append is best-effort (never throws) — a logging failure must not break the reuse write.
-    const callLog = deps.callLog ?? new hubNs.AssetCallLog(events.assetCallLogPath());
+    const callLog = deps.callLog ?? new hubNs.AssetCallLog(events.assetCallLogPath(deps.env ?? process.env));
     callLog.append({
         action: 'asset_reuse',
         asset_id: asset.asset_id,
@@ -329,6 +361,9 @@ function hubErrorField(body) {
         return undefined;
     const err = body['error'];
     return typeof err === 'string' ? err : undefined;
+}
+function recordValue(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 function mapError(e) {
     if (e instanceof ReuseIntegrityError) {
@@ -361,6 +396,15 @@ function mapError(e) {
     // a bad URL is a configuration gap, NOT an auth failure — conflating them would tell the operator/desktop adapter
     // to "log in" when the real fix is to correct the Hub URL.
     const msg = e instanceof Error ? e.message : String(e);
+    if (/failed to load EVOLVER_ENV_FILE/i.test(msg)) {
+        return { ok: false, status: 'unavailable', message: 'failed to load EVOLVER_ENV_FILE' };
+    }
+    if (/EVOMAP_HUB_MODE must be public or private/i.test(msg)) {
+        return { ok: false, status: 'unavailable', message: 'EVOMAP_HUB_MODE must be public or private' };
+    }
+    if (/private Hub proxy is not configured/i.test(msg)) {
+        return { ok: false, status: 'unavailable', message: 'private Hub proxy is not configured' };
+    }
     if (/Hub URL|EVOMAP_HUB_URL|A2A_HUB_URL/i.test(msg)) {
         return { ok: false, status: 'unavailable', message: redact(msg) };
     }

@@ -13,12 +13,21 @@ const SKILL2GEP_ID_PREFIX = 'gene_s2g_';
 const SKILL_MAX_FILES = 12;
 /** Validation-command allowlist prefixes (v1 policyCheck): only `node …` is a runnable Gene.validation entry. */
 const VALIDATION_ALLOWED_PREFIXES = ['node '];
+function sectionHeadingMatches(heading, keyword) {
+    if (/^[a-z0-9 ]+$/i.test(keyword)) {
+        const forms = keyword === 'verify'
+            ? ['verify', 'verification', 'verifications']
+            : [keyword, `${keyword}s`];
+        return forms.some((form) => new RegExp('(^|[^a-z0-9])' + form + '($|[^a-z0-9])', 'i').test(heading));
+    }
+    return heading.includes(keyword);
+}
 /**
  * Parse a SKILL.md into a structured intermediate — faithful port of v1 `parseSkillMd`. Pure. Section keywords are
  * matched against lower-cased headings and include CJK synonyms (skills authored in Chinese), though the signal
  * tokenizer keeps ASCII `[a-z0-9_]` only, so a CJK skill's signals come from its (English) frontmatter description.
  */
-export function parseSkillMd(skillMd) {
+export function parseSkillMd(skillMd, opts = {}) {
     const text = String(skillMd || '');
     // --- frontmatter (--- … --- block of key: value lines, keys lower-cased) ---
     const frontmatter = {};
@@ -35,15 +44,20 @@ export function parseSkillMd(skillMd) {
     // --- sections: split by `##+ heading`; content before the first heading is `_preamble`. A repeated heading
     //     resets its block (last occurrence wins), matching v1. ---
     const lines = { _preamble: [] };
+    const sectionOccurrences = [{ key: '_preamble', lines: [] }];
     let currentKey = '_preamble';
+    let currentOccurrence = sectionOccurrences[0];
     body.split(/\n/).forEach((line) => {
         const hdr = line.match(/^##+\s+(.+?)\s*$/);
         if (hdr) {
             currentKey = hdr[1].toLowerCase().trim();
             lines[currentKey] = [];
+            currentOccurrence = { key: currentKey, lines: [] };
+            sectionOccurrences.push(currentOccurrence);
         }
         else {
             (lines[currentKey] ??= []).push(line);
+            currentOccurrence.lines.push(line);
         }
     });
     const sections = {};
@@ -70,6 +84,11 @@ export function parseSkillMd(skillMd) {
         }
         return out.join('\n');
     };
+    /** Every matching section occurrence, including repeated headings, in document order. */
+    const pickSectionOccurrencesAll = (keywords) => sectionOccurrences
+        .filter(({ key }) => keywords.some((kw) => sectionHeadingMatches(key, kw)))
+        .map(({ lines: occurrenceLines }) => occurrenceLines.join('\n').trim())
+        .join('\n');
     /** Every markdown list item → one step, in document order, length-bounded (default 5..300). */
     const extractSteps = (block, opts) => {
         const minLen = opts && typeof opts.minLen === 'number' ? opts.minLen : 5;
@@ -109,7 +128,10 @@ export function parseSkillMd(skillMd) {
     ]));
     // --- validation: the bash/sh fenced commands in the validation/test section (non-comment, ≤300) ---
     const validation = [];
-    const valBlock = pickSection(['validation', 'test', 'verify', 'check', '校验', '验证', '测试', '检查']);
+    const validationKeywords = ['validation', 'test', 'verify', 'check', '校验', '验证', '测试', '检查'];
+    const valBlock = opts.completeValidationPlan
+        ? pickSectionOccurrencesAll(validationKeywords)
+        : pickSection(validationKeywords);
     const fenceRe = /```(?:bash|sh|shell)?\s*\n([\s\S]*?)\n```/g;
     let fence;
     while ((fence = fenceRe.exec(valBlock)) !== null) {
@@ -129,7 +151,7 @@ export function parseSkillMd(skillMd) {
         signals_match: signals.slice(0, 8),
         strategy: strategy.slice(0, MAX_STRATEGY_STEPS),
         avoid: avoid.slice(0, 5),
-        validation: validation.slice(0, 5),
+        validation: opts.completeValidationPlan ? validation : validation.slice(0, 5),
         preconditions: preconditions.slice(0, 4),
     };
 }
@@ -351,7 +373,7 @@ const shortHash = (s) => createHash('sha256').update(String(s ?? '')).digest('he
  * hallucinating a successful run to pad the registry. Non-success executions are honest, so not checked. Returns
  * the rejection reason, or null when clean.
  */
-export function detectForgery(execution) {
+export function detectForgery(execution, evidenceMode = 'workflow_execution') {
     const trace = Array.isArray(execution?.trace) ? execution.trace : [];
     const files = Number(execution?.blast_radius?.files ?? 0);
     const lines = Number(execution?.blast_radius?.lines ?? 0);
@@ -359,7 +381,7 @@ export function detectForgery(execution) {
         return null;
     if (trace.length === 0)
         return 'empty_execution_trace';
-    if (files === 0 && lines === 0)
+    if (evidenceMode === 'workflow_execution' && files === 0 && lines === 0)
         return 'zero_blast_radius_with_success';
     if (!trace.some((t) => Number.isInteger(t?.exit)))
         return 'no_exit_code_in_trace';
@@ -410,9 +432,13 @@ export function assembleCapsule(gene, execution, opts = {}) {
         confidence: Math.max(0, Math.min(1, score)),
         blast_radius: { files, lines },
         outcome: { status, score },
-        success_reason: status === 'success' ? (execution?.success_reason || 'Skill workflow completed and all declared validations passed.') : null,
+        success_reason: status === 'success'
+            ? (execution?.success_reason || (opts.evidenceMode === 'validation_only'
+                ? 'All declared validation commands passed in the local verifier.'
+                : 'Skill workflow completed and all declared validations passed.'))
+            : null,
         env_fingerprint: bootstrap.captureEnvFingerprint(),
-        source_type: 'skill2gep_hook',
+        source_type: opts.evidenceMode === 'validation_only' ? 'skill2gep_validation' : 'skill2gep_hook',
         strategy: Array.isArray(gene.strategy) ? [...gene.strategy] : [],
         content: execution?.content_summary || buildContentSummary(trace, execution?.blast_radius),
         execution_trace: trace.map((t, i) => ({
@@ -438,12 +464,15 @@ export function reverseDistill(parsed, execution = {}, opts = {}) {
     let capsule = null;
     let capsuleDiagnostic = null;
     if (execution?.status) {
-        const forgery = detectForgery(execution);
+        const forgery = detectForgery(execution, opts.evidenceMode);
         if (forgery) {
             capsuleDiagnostic = { reason: 'capsule_rejected_forgery', detail: forgery };
         }
         else {
-            const r = assembleCapsule(gene, execution, opts.scenario ? { scenario: opts.scenario } : {});
+            const r = assembleCapsule(gene, execution, {
+                ...(opts.scenario ? { scenario: opts.scenario } : {}),
+                ...(opts.evidenceMode ? { evidenceMode: opts.evidenceMode } : {}),
+            });
             if (r.ok)
                 capsule = r.capsule;
             else

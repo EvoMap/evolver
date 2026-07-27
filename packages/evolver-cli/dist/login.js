@@ -1,12 +1,12 @@
 import { existsSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PublicOAuthProvider, createOAuthHttpTransport, resolveHubUrl } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { resolveIdentityHome } from './identityHome.js';
 const LOGIN_USAGE = 'usage: evolver login\n';
 function publicAuthDir(opts = {}) {
     const env = opts.env ?? process.env;
-    return env.EVOMAP_DIR ?? env.EVOLVER_HOME ?? env.EVOMAP_HOME ?? join(opts.homeDir ?? homedir(), '.evomap');
+    return resolveIdentityHome(env, opts.homeDir);
 }
 export function publicOAuthTokenPath(opts = {}) {
     return join(publicAuthDir(opts), 'token.json');
@@ -18,7 +18,7 @@ export function publicOAuthTokenPath(opts = {}) {
  *
  * Hub URL follows A2A_HUB_URL -> EVOMAP_HUB_URL -> EVOLVER_DEFAULT_HUB_URL -> https://evomap.ai. Credential
  * home follows the same public Hub precedence as publish/ATP:
- * EVOMAP_DIR → EVOLVER_HOME → EVOMAP_HOME → ~/.evomap. The token replaces
+ * EVOMAP_HOME → EVOMAP_DIR → EVOLVER_HOME → ~/.evomap. The token replaces
  * node_secret for publish + /a2a calls (it carries the `a2a` scope).
  */
 export async function runLogin(argv) {

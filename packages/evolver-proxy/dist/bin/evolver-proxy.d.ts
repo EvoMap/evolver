@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mailbox } from '@evomap/evolver-core';
+import { PrivateNodeCredentialStore } from '../private/nodeCredentialStore.js';
 import { loadEnvFileFromEnv } from './envFile.js';
 import { type SelfUpdatePolicy } from '../selfUpdate/policy.js';
 import { type ReleaseBinaryOptions } from '../selfUpdate/releaseBinary.js';
@@ -11,8 +12,9 @@ import type { AtpProxyClient, ProxyDaemonDeps, ProxyTickReport } from '../daemon
 import type { HelloLifecycleMode, HelloResult, HeartbeatOptions, HeartbeatResult } from '../lifecycle/manager.js';
 import type { InboundResult } from '../sync/engine.js';
 /** evolver-proxy 系统级 daemon 入口(M6-7). EVOMAP_HUB_MODE/URL/NODE_SECRET 选址. */
-interface RunProxyMainOptions {
+export interface RunProxyMainOptions {
     environmentPrepared?: boolean;
+    recoveryPrepared?: SelfUpdateRecoveryResult;
 }
 export declare function runProxyMain(options?: RunProxyMainOptions): Promise<void>;
 export declare function recoverBoundDurableSelfUpdate(options: Omit<SelfUpdateRecoveryOptions, 'beforeJournalMutation'>): Promise<SelfUpdateRecoveryResult>;
@@ -45,7 +47,8 @@ export interface RunProxyCliOptions {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     processExecPath?: string;
-    runMain?: () => Promise<void>;
+    runMain?: (options?: RunProxyMainOptions) => Promise<void>;
+    recoverStartup?: typeof recoverBoundDurableSelfUpdate;
     runUnixRecoveryController?: typeof maybeRunUnixRecoveryController;
     runWindowsRecoveryController?: typeof maybeRunWindowsRecoveryController;
     runWindowsUpdaterWorker?: typeof maybeRunWindowsUpdaterWorkerFromArgv;
@@ -73,14 +76,22 @@ export interface RuntimeDeps {
     env?: Record<string, string | undefined>;
     now?: () => number;
     privateImporter?: PrivateAdapterImporter;
+    privateNodeCredentialStore?: Pick<PrivateNodeCredentialStore, 'read' | 'write'>;
 }
 export type PublicNodeSecretSource = 'env' | 'store' | 'hub_rotate' | 'legacy_file';
 export interface PublicNodeSecretSelection {
     nodeSecret: string | undefined;
+    nodeId?: string;
     nodeSecretVersion?: number;
     source: PublicNodeSecretSource;
     storeSecret?: string;
 }
+export interface VerifiedPublicSender {
+    senderId: () => string | undefined;
+    adopt: (nodeId: string) => void;
+}
+export declare function createVerifiedPublicSender(initialNodeId?: string): VerifiedPublicSender;
+export declare function adoptVerifiedPublicNodeId(store: mailbox.MailboxStore, selection: PublicNodeSecretSelection, sender: VerifiedPublicSender, nodeId: string): void;
 export interface HubRuntime {
     hub: ProxyDaemonDeps['hub'];
     hello: (opts: {
@@ -113,6 +124,7 @@ export declare function runProxyLoop(daemon: ProxyLoopDaemon, options?: ProxyLoo
 interface CreateProxyDaemonDepsOptions {
     runtime: HubRuntime;
     store: mailbox.MailboxStore;
+    hubMode?: 'public' | 'private';
     ipcToken: string;
     ipcPort?: number;
     evolverVersion: string;
@@ -139,6 +151,7 @@ export declare function resolvePublicNodeSecret(deps: RuntimeDeps): PublicNodeSe
  */
 export declare function clearDivergedPublicNodeSecret(store: mailbox.MailboxStore, env?: NodeJS.ProcessEnv): void;
 export declare function persistSelectedPublicNodeSecret(store: mailbox.MailboxStore, selection: PublicNodeSecretSelection): void;
+export declare function persistRotatedPublicNodeCredentials(store: mailbox.MailboxStore, selection: PublicNodeSecretSelection, secret: string, version: number | undefined): void;
 export declare function persistPublicNodeSecretVersion(store: mailbox.MailboxStore, selection: PublicNodeSecretSelection, version: number | undefined): void;
 export declare function connectHubRuntime(deps: RuntimeDeps): Promise<HubRuntime>;
 export declare function resolveLegacyNodeSecret(envNodeSecret: string | undefined, storedNodeSecret: string | undefined, storedSource: string | undefined): string | undefined;

@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { events, mailbox } from '@evomap/evolver-core';
+import { dirname, join, resolve } from 'node:path';
+import { mailbox } from '@evomap/evolver-core';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
 import { AtpHubClient, ATP_PROOF_STATUSES, ATP_ROLES, ATP_ROUTING_MODES, ATP_VERIFY_ACTIONS, ATP_VERIFY_MODES, connectPublicHub, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 export function parseBuyArgs(args) {
     if (args.length === 0)
@@ -229,17 +230,24 @@ export async function runAtpCommand(argv) {
 export function createAtpClientFromEnv(env = process.env) {
     loadEnvFileFromEnv(env);
     const hubUrl = resolveHubUrl(env);
-    const evomapDir = resolveAtpHome(env);
-    const resolvedSenderId = resolveAtpSenderId(env);
+    const evomapDir = resolveIdentityHome(env);
+    const explicitCredentials = resolveExplicitNodeCredentials(env);
+    const { nodeSecret } = explicitCredentials;
+    const resolvedSenderId = nodeSecret
+        ? explicitCredentials.senderId ?? resolveAtpSenderId(env)
+        : resolveAtpSenderId(env);
     const senderId = () => resolvedSenderId;
-    const nodeSecret = env['EVOMAP_NODE_SECRET']?.trim();
     const connected = nodeSecret
         ? connectPublicHub({ hubUrl, authMode: 'legacy', evomapDir, nodeSecret, senderId })
         : connectPublicHub({ hubUrl, authMode: 'oauth', evomapDir, senderId });
     return new AtpHubClient({ baseUrl: hubUrl, auth: connected.auth, fetchFn: globalFetchLike, senderId });
 }
+export { resolveIdentityHome as resolveAtpIdentityHome } from './identityHome.js';
 export function resolveAtpHome(env = process.env) {
-    return env['EVOMAP_DIR'] ?? env['EVOLVER_HOME'] ?? env['EVOMAP_HOME'] ?? events.evomapHome();
+    const configured = [env['EVOMAP_DIR'], env['EVOLVER_HOME'], env['EVOMAP_HOME']]
+        .map((value) => value?.trim())
+        .find((value) => Boolean(value));
+    return configured ?? join(homedir(), '.evomap');
 }
 export function atpConsentPath(env = process.env) {
     return join(resolveAtpHome(env), 'evolution', 'atp-autobuy-ack.json');
@@ -296,9 +304,23 @@ export function setAtpConsent(enabled, ackPath = atpConsentPath(), now = () => n
     return body;
 }
 export function resolveAtpSenderId(env = process.env) {
-    const direct = env['EVOMAP_NODE_ID']?.trim();
-    if (direct)
-        return direct;
+    const evomapNodeId = env['EVOMAP_NODE_ID']?.trim();
+    if (evomapNodeId)
+        return evomapNodeId;
+    try {
+        const nodeId = readFileSync(join(resolveIdentityHome(env), 'node_id'), 'utf8').trim();
+        if (/^node_[a-f0-9]{12,32}$/.test(nodeId))
+            return nodeId;
+    }
+    catch {
+        // Best effort only: missing or unreadable legacy identity files are optional.
+    }
+    const a2aNodeId = env['A2A_NODE_ID']?.trim();
+    if (a2aNodeId)
+        return a2aNodeId;
+    return resolveStoredAtpSenderId(env);
+}
+function resolveStoredAtpSenderId(env) {
     for (const p of proxyStoreCandidates(env)) {
         if (!existsSync(p))
             continue;
@@ -405,11 +427,11 @@ function envOverride(env) {
     return false; // ambiguous value on a spend gate → fail closed (never auto-enable spending on an unexpected/typo value)
 }
 function proxyStoreCandidates(env) {
-    const home = resolveAtpHome(env);
-    const candidates = [
-        env['EVOLVER_PROXY_STORE'],
-        join(home, 'proxy', 'mailbox.db'),
-        join(env['HOME'] ?? homedir(), '.evomap', 'proxy', 'mailbox.db'),
-    ].filter((x) => typeof x === 'string' && x.length > 0);
-    return [...new Set(candidates)];
+    const explicit = env['EVOLVER_PROXY_STORE']?.trim();
+    if (explicit)
+        return [explicit];
+    const stateHome = resolveAtpHome(env);
+    return resolve(stateHome) === resolve(resolveIdentityHome(env))
+        ? [join(stateHome, 'proxy', 'mailbox.db')]
+        : [];
 }

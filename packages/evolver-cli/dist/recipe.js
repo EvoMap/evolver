@@ -1,17 +1,26 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { assetstore, events, mailbox } from '@evomap/evolver-core';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { assetstore, events, mailbox, verify } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion, resolveHubUrl } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
-import { resolveAtpSenderId } from './atp.js';
-import { parseSkillMd, reverseDistill } from './skill2gep.js';
+import { resolveExplicitNodeCredentials } from './identityHome.js';
+import { getCliVersion } from './version.js';
+import { parseSkillMd, reverseDistill, synthesizeGene } from './skill2gep.js';
 import { recordSkillDistillation } from './skillDistill.js';
+import { buildPublishBundle } from './cliContracts.js';
 const MAX_RECIPE_STEPS = 20;
+const MAX_RECIPE_VALIDATION_COMMANDS = 5;
+const MAX_RECIPE_INPUT_BYTES = 1024 * 1024;
 const MAX_ID_LENGTH = 200;
 const SENSITIVE_ERROR_KEYS = new Set(['authorization', 'node_secret', 'nodesecret', 'token', 'access_token', 'refresh_token', 'secret']);
 const STALE_NODE_SECRET_ERRORS = new Set(['node_secret_invalid', 'node_secret_not_set']);
+function recipeIdempotencyKey(operation, value) {
+    const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    return `evolver-recipe-${operation}-${digest}`;
+}
+const recipeIdentityBootstraps = new WeakMap();
 export async function runRecipeCommand(argv, deps = {}) {
     const parsed = parseRecipeArgs(argv);
     const err = deps.err ?? ((line) => { process.stderr.write(`${line}\n`); });
@@ -22,6 +31,7 @@ export async function runRecipeCommand(argv, deps = {}) {
     }
     try {
         const env = deps.env ?? process.env;
+        loadEnvFileFromEnv(env);
         if (isHubDryRunEnabled(env)) {
             if (parsed.value.sub === 'build')
                 return await runRecipeBuildDryRun(parsed.value, deps.store, { log, err });
@@ -30,6 +40,7 @@ export async function runRecipeCommand(argv, deps = {}) {
             return runRecipeReuseDryRun(parsed.value, { log });
         }
         const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
+        await recipeIdentityBootstraps.get(hub)?.();
         if (!hub.recipes) {
             err('recipe capability is not available for the configured Hub adapter');
             return 1;
@@ -83,6 +94,7 @@ export function createRecipeHubFromEnv(env = process.env, connectHub = connectPu
     if (!credentials.nodeSecret && !credentials.senderId) {
         throw new Error('recipe OAuth mode requires a node identity: register a node first, set EVOMAP_NODE_ID or A2A_NODE_ID, or ensure the Evolver proxy store contains node_id');
     }
+    let senderId = credentials.senderId;
     const connected = credentials.nodeSecret
         ? connectHub({
             hubUrl,
@@ -90,11 +102,26 @@ export function createRecipeHubFromEnv(env = process.env, connectHub = connectPu
             evomapDir: credentials.evomapDir,
             nodeSecret: credentials.nodeSecret,
             ...(credentials.nodeSecretVersion !== undefined ? { nodeSecretVersion: credentials.nodeSecretVersion } : {}),
-            senderId: () => credentials.senderId,
-            onNodeSecretRotated: (secret, version) => persistRotatedNodeSecret(secret, version, env, credentials.rotatePersistDir),
+            senderId: () => senderId,
+            onNodeSecretRotated: (secret, version) => persistRotatedNodeSecret(secret, version, senderId, env, credentials.rotatePersistDir),
             onNodeSecretVersionUpdated: (version) => persistNodeSecretVersion(version, env, credentials.rotatePersistDir),
         })
-        : connectHub({ hubUrl, authMode: 'oauth', evomapDir: credentials.evomapDir, senderId: () => credentials.senderId });
+        : connectHub({ hubUrl, authMode: 'oauth', evomapDir: credentials.evomapDir, senderId: () => senderId });
+    if (credentials.nodeSecret && !senderId) {
+        recipeIdentityBootstraps.set(connected.hub, async () => {
+            const hello = await connected.hub.hello({
+                rotate: false,
+                evolverVersion: getCliVersion(),
+                preserveCredentials: true,
+            });
+            if (!hello.ok || !hello.nodeId) {
+                throw new Error(`recipe could not establish Hub node identity: ${hello.error ?? 'node_id_missing'}`);
+            }
+            senderId = hello.nodeId;
+            persistRecipeNodeId(senderId, env, credentials.rotatePersistDir);
+            recipeIdentityBootstraps.delete(connected.hub);
+        });
+    }
     return connected.hub;
 }
 /** Opaque identity for resume isolation; raw credentials, account ids, and local paths never leave this helper. */
@@ -141,20 +168,32 @@ async function runRecipeBuild(opts, hub, store, io) {
         io.err('recipe build requires at least one asset id');
         return 1;
     }
-    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.create({
+    const createRequest = {
         title: opts.title,
         steps,
         ...(opts.description ? { description: opts.description } : {}),
         ...(opts.pricePerExecution !== undefined ? { pricePerExecution: opts.pricePerExecution } : {}),
-    }), io);
+    };
+    createRequest.idempotencyKey = recipeIdempotencyKey('create', createRequest);
+    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.create(createRequest), io);
     const recipeId = createReceipt.recipeId;
+    if (createReceipt.status !== 'draft') {
+        io.err(`[recipe build] Hub returned unexpected create status: ${createReceipt.status ?? 'unknown'}.`);
+        return 1;
+    }
     io.log(`[recipe build] Created DRAFT recipe ${recipeId ?? '(id pending)'} ("${opts.title}", ${steps.length} step${steps.length === 1 ? '' : 's'}).`);
     if (opts.publish) {
         if (!recipeId) {
             io.err('[recipe build] Hub did not return a recipe id; cannot publish.');
             return 1;
         }
-        await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.publish(recipeId), io);
+        const publishReceipt = await callRecipeWithAuthRetry(hub, 'recipe build', () => hub.recipes.publish(recipeId, {
+            idempotencyKey: recipeIdempotencyKey('publish', recipeId),
+        }), io);
+        if (publishReceipt.status !== 'published') {
+            io.err(`[recipe build] Hub returned unexpected publish status: ${publishReceipt.status ?? 'unknown'}.`);
+            return 1;
+        }
         io.log(`[recipe build] Published recipe ${recipeId}.`);
     }
     else {
@@ -168,7 +207,12 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
         io.err(loaded.error);
         return 1;
     }
-    const preflight = preflightRecipeFromSkillsSteps(loaded.value.steps);
+    const verified = await verifyRecipeFromSkillsSteps(loaded.value.steps, deps.runValidation ?? verify.runSandboxedValidation);
+    if (!verified.ok) {
+        io.err(verified.error);
+        return 1;
+    }
+    const preflight = preflightRecipeFromSkillsSteps(verified.value);
     if (!preflight.ok) {
         io.err(preflight.error);
         return 1;
@@ -188,7 +232,12 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
             store,
             ...(deps.review ? { review: deps.review } : {}),
             ingestor,
-        }, step.scenario ? { scenario: step.scenario } : {});
+        }, {
+            evidenceMode: 'validation_only',
+            geneIdentity: 'semantic',
+            completeValidationPlan: true,
+            ...(step.scenario ? { scenario: step.scenario } : {}),
+        });
         if (!res.geneId || !res.geneAssetId) {
             const recovered = await findReusableRecipeStep(store, prepared);
             if (recovered) {
@@ -213,6 +262,13 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
             capsuleId: res.capsuleId,
         });
     }
+    const publishPrepared = await prepareRecipeFromSkillsAssets(distilled, store, dryRun ? undefined : hub, deps.env ?? process.env, io);
+    if (!publishPrepared.ok) {
+        io.err(publishPrepared.error);
+        return 1;
+    }
+    steps.splice(0, steps.length, ...publishPrepared.value.steps);
+    distilled.splice(0, distilled.length, ...publishPrepared.value.distilled);
     if (dryRun) {
         const payload = recipeFromSkillsPayload({
             mode: 'dry_run',
@@ -235,13 +291,32 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
         io.err('recipe capability is not available for the configured Hub adapter');
         return 1;
     }
-    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.create({
+    const createRequest = {
         title: loaded.value.title,
         steps,
         ...(loaded.value.description ? { description: loaded.value.description } : {}),
         ...(loaded.value.pricePerExecution !== undefined ? { pricePerExecution: loaded.value.pricePerExecution } : {}),
-    }), io);
+    };
+    createRequest.idempotencyKey = recipeIdempotencyKey('create', createRequest);
+    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.create(createRequest), io);
     const recipeId = createReceipt.recipeId;
+    if (createReceipt.status !== 'draft') {
+        if (opts.jsonOut) {
+            io.log(JSON.stringify(recipeFromSkillsPayload({
+                ok: false,
+                mode: 'failed',
+                title: loaded.value.title,
+                publish: opts.publish,
+                steps: distilled,
+                recipeId,
+                error: 'create_failed',
+            }), null, 2));
+        }
+        else {
+            io.err(`[recipe from-skills] Hub did not confirm draft creation for recipe ${recipeId ?? '(id missing)'} (status: ${createReceipt.status ?? 'missing'}).`);
+        }
+        return 1;
+    }
     if (!opts.jsonOut) {
         io.log(`[recipe from-skills] Created DRAFT recipe ${recipeId ?? '(id pending)'} ("${loaded.value.title}", ${steps.length} step${steps.length === 1 ? '' : 's'}).`);
     }
@@ -251,7 +326,26 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
             return 1;
         }
         try {
-            await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.publish(recipeId), io);
+            const publishReceipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.publish(recipeId, {
+                idempotencyKey: recipeIdempotencyKey('publish', recipeId),
+            }), io);
+            if (publishReceipt.status !== 'published') {
+                if (opts.jsonOut) {
+                    io.log(JSON.stringify(recipeFromSkillsPayload({
+                        ok: false,
+                        mode: 'draft',
+                        title: loaded.value.title,
+                        publish: opts.publish,
+                        steps: distilled,
+                        recipeId,
+                        error: 'publish_failed',
+                    }), null, 2));
+                }
+                else {
+                    io.err(`[recipe from-skills] Created DRAFT recipe ${recipeId}; Hub did not confirm publish (status: ${publishReceipt.status ?? 'missing'}).`);
+                }
+                return 1;
+            }
         }
         catch (e) {
             if (opts.jsonOut) {
@@ -309,12 +403,96 @@ async function recipeStepsFromLocalAssets(assetIds, store) {
         return { assetId, assetType, position: index };
     });
 }
+async function verifyRecipeFromSkillsSteps(steps, runValidation) {
+    const verified = [];
+    for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i];
+        const parsed = parseSkillMd(step.skill, { completeValidationPlan: true });
+        if (parsed.validation.length > MAX_RECIPE_VALIDATION_COMMANDS) {
+            return {
+                ok: false,
+                error: `recipe from-skills step ${i + 1} supports at most ${MAX_RECIPE_VALIDATION_COMMANDS} validation commands`,
+            };
+        }
+        const synthesized = synthesizeGene(parsed, step.execution, { strict: true });
+        if (!synthesized.gene) {
+            return {
+                ok: false,
+                error: `recipe from-skills step ${i + 1} did not produce a Gene: ${synthesized.errors.join('; ') || 'refused'}`,
+            };
+        }
+        if (!recipeValidationPlanIsComplete(parsed.validation, synthesized.gene.validation)) {
+            return {
+                ok: false,
+                error: `recipe from-skills step ${i + 1} contains unsupported validation commands; every declared command must be allowed`,
+            };
+        }
+        const startedAt = new Date().toISOString();
+        let validation;
+        try {
+            validation = await runValidation(synthesized.gene.validation ?? [], step.validationCwd, {
+                requireIsolation: true,
+                readOnlyRoot: step.validationRoot,
+            });
+        }
+        catch {
+            return { ok: false, error: `recipe from-skills step ${i + 1} validation execution failed` };
+        }
+        if (!validation.isolated) {
+            return {
+                ok: false,
+                error: `recipe from-skills step ${i + 1} requires Linux namespace isolation and cgroup v2 resource limits`,
+            };
+        }
+        if (validation.skipped.length > 0) {
+            const skipped = validation.skipped.map((item) => item.script).join(', ');
+            return { ok: false, error: `recipe from-skills step ${i + 1} validation incomplete: missing ${skipped}` };
+        }
+        if (!validation.passed) {
+            return { ok: false, error: `recipe from-skills step ${i + 1} validation failed` };
+        }
+        const execution = {
+            ...(Array.isArray(step.execution.signals)
+                ? { signals: step.execution.signals.map((value) => String(value)).filter(Boolean) }
+                : {}),
+            ...(Array.isArray(step.execution.trigger)
+                ? { trigger: step.execution.trigger.map((value) => String(value)).filter(Boolean) }
+                : {}),
+            ...(typeof step.execution.summary === 'string' && step.execution.summary.trim()
+                ? { summary: step.execution.summary.trim() }
+                : {}),
+            status: 'success',
+            score: validation.score,
+            started_at: startedAt,
+            blast_radius: { files: 0, lines: 0 },
+            reference_distilled: true,
+            success_reason: 'All declared validation commands passed in the local verifier.',
+            trace: validation.results.map((result, index) => ({
+                step: index + 1,
+                cmd: result.cmd,
+                exit: result.exitCode ?? undefined,
+                stdout_tail: '',
+            })),
+        };
+        verified.push({ ...step, execution });
+    }
+    return { ok: true, value: verified };
+}
+function recipeValidationPlanIsComplete(declared, runnable) {
+    const declaredCommands = normalizedStringList(declared);
+    const runnableCommands = normalizedStringList(runnable);
+    return declaredCommands.length === runnableCommands.length &&
+        declaredCommands.every((command, index) => command === runnableCommands[index]);
+}
 function preflightRecipeFromSkillsSteps(steps) {
     const prepared = [];
     for (let i = 0; i < steps.length; i += 1) {
         const step = steps[i];
-        const parsed = parseSkillMd(step.skill);
-        const preview = reverseDistill(parsed, step.execution, step.scenario ? { scenario: step.scenario } : {});
+        const parsed = parseSkillMd(step.skill, { completeValidationPlan: true });
+        const preview = reverseDistill(parsed, step.execution, {
+            evidenceMode: 'validation_only',
+            ...(step.scenario ? { scenario: step.scenario } : {}),
+        });
         if (!preview.gene) {
             return {
                 ok: false,
@@ -334,10 +512,73 @@ function preflightRecipeFromSkillsSteps(steps) {
             position: i,
             step,
             candidateSignals: normalizedSignalList(preview.gene.signals_match),
-            candidateCapsuleId: preview.capsule.id,
+            candidateValidations: Array.isArray(preview.gene.validation) ? [...preview.gene.validation] : [],
+            candidateDefinition: reusableGeneDefinition(preview.gene),
         });
     }
     return { ok: true, value: prepared };
+}
+async function prepareRecipeFromSkillsAssets(distilled, store, hub, env, io) {
+    const steps = [];
+    const prepared = [];
+    const publishedByBundle = new Map();
+    for (const step of distilled) {
+        const bundle = await buildPublishBundle([step.geneAssetId, step.capsuleId], { assetStore: store, env });
+        if (!bundle.ok) {
+            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.reason}` };
+        }
+        if (bundle.blockReasons.length > 0) {
+            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.blockReasons.join(',')}` };
+        }
+        const gene = bundle.sanitized.find((asset) => asset.type === 'Gene');
+        const capsule = bundle.sanitized.find((asset) => asset.type === 'Capsule');
+        if (!gene?.asset_id || !capsule?.asset_id) {
+            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle is missing Gene or Capsule` };
+        }
+        const bundleKey = `${gene.asset_id}\n${capsule.asset_id}`;
+        let geneAssetId = publishedByBundle.get(bundleKey);
+        if (!geneAssetId && hub) {
+            const receipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills asset publish', () => hub.publish(bundle.sanitized), io);
+            if (!assetPublishSucceeded(receipt, bundle.sanitized)) {
+                const duplicateIsIncomplete = receipt.status === 'rejected' &&
+                    (receipt.reason === 'already_published' || receipt.reason === 'duplicate');
+                return {
+                    ok: false,
+                    error: duplicateIsIncomplete
+                        ? `recipe from-skills step ${step.position + 1} duplicate asset publish did not identify the published Gene and Capsule bundle`
+                        : `recipe from-skills step ${step.position + 1} asset publish rejected: ${receipt.reason ?? receipt.status}`,
+                };
+            }
+            geneAssetId = publishedGeneAssetId(receipt, gene.asset_id);
+            if (!geneAssetId) {
+                return {
+                    ok: false,
+                    error: `recipe from-skills step ${step.position + 1} duplicate asset publish did not identify the published Gene`,
+                };
+            }
+            publishedByBundle.set(bundleKey, geneAssetId);
+        }
+        geneAssetId ??= gene.asset_id;
+        steps.push({ assetId: geneAssetId, assetType: 'Gene', position: step.position });
+        prepared.push({ ...step, geneAssetId });
+    }
+    return { ok: true, value: { steps, distilled: prepared } };
+}
+function assetPublishSucceeded(receipt, submitted) {
+    if (receipt.status === 'accepted')
+        return true;
+    if (receipt.status !== 'rejected' ||
+        (receipt.reason !== 'already_published' && receipt.reason !== 'duplicate'))
+        return false;
+    const published = new Set(receipt.assetIds ?? []);
+    return submitted.every((asset) => typeof asset.asset_id === 'string' && published.has(asset.asset_id));
+}
+function publishedGeneAssetId(receipt, localAssetId) {
+    if (receipt.status === 'accepted')
+        return localAssetId;
+    if (receipt.assetId === localAssetId || receipt.assetIds?.includes(localAssetId))
+        return localAssetId;
+    return undefined;
 }
 async function findReusableRecipeStep(store, prepared) {
     const candidateSignals = prepared.candidateSignals;
@@ -346,8 +587,11 @@ async function findReusableRecipeStep(store, prepared) {
     const genes = await store.list('Gene', 10_000);
     const capsules = await store.list('Capsule', 10_000);
     for (const gene of genes) {
-        const signals = new Set(normalizedSignalList(gene['signals_match']));
-        if (!candidateSignals.every((signal) => signals.has(signal)))
+        const signals = normalizedSignalList(gene['signals_match']);
+        if (signals.length !== candidateSignals.length ||
+            !candidateSignals.every((signal, index) => signal === signals[index]))
+            continue;
+        if (reusableGeneDefinition(gene) !== prepared.candidateDefinition)
             continue;
         const geneId = typeof gene['id'] === 'string' && gene['id'].trim()
             ? gene['id'].trim()
@@ -355,8 +599,8 @@ async function findReusableRecipeStep(store, prepared) {
         const geneAssetId = typeof gene['asset_id'] === 'string' ? gene['asset_id'] : '';
         if (!geneId || !geneAssetId)
             continue;
-        const capsule = capsules.find((record) => String(record['id']) === prepared.candidateCapsuleId &&
-            String(record['gene']) === geneId);
+        const capsule = capsules.find((record) => String(record['gene']) === geneId &&
+            capsuleProvesValidations(record, prepared.candidateValidations));
         if (!capsule)
             continue;
         return {
@@ -367,6 +611,41 @@ async function findReusableRecipeStep(store, prepared) {
         };
     }
     return null;
+}
+function capsuleProvesValidations(capsule, validations) {
+    if (capsule['source_type'] !== 'skill2gep_validation')
+        return false;
+    const outcome = isPlainRecord(capsule['outcome']) ? capsule['outcome'] : null;
+    if (outcome?.['status'] !== 'success')
+        return false;
+    const trace = Array.isArray(capsule['execution_trace']) ? capsule['execution_trace'] : [];
+    return validations.every((validation) => trace.some((entry) => {
+        if (!isPlainRecord(entry))
+            return false;
+        return normalizeValidationCommand(entry['cmd']) === normalizeValidationCommand(validation) && entry['exit'] === 0;
+    }));
+}
+function normalizeValidationCommand(value) {
+    return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+function reusableGeneDefinition(gene) {
+    const constraints = isPlainRecord(gene['constraints']) ? gene['constraints'] : {};
+    return JSON.stringify({
+        category: String(gene['category'] ?? ''),
+        strategy: normalizedStringList(gene['strategy']),
+        summary: String(gene['summary'] ?? ''),
+        preconditions: normalizedStringList(gene['preconditions']),
+        constraints: {
+            maxFiles: Number(constraints['max_files'] ?? 0),
+            forbiddenPaths: normalizedStringList(constraints['forbidden_paths']),
+        },
+        validation: normalizedStringList(gene['validation']).map(normalizeValidationCommand),
+    });
+}
+function normalizedStringList(value) {
+    return Array.isArray(value)
+        ? value.map((item) => String(item).trim()).filter(Boolean)
+        : [];
 }
 function addRecipeFromSkillsStep(steps, distilled, result) {
     steps.push({ assetId: result.geneAssetId, assetType: 'Gene', position: result.position });
@@ -379,14 +658,14 @@ async function hasCapsuleEvidence(store, capsuleId, geneId) {
 }
 function normalizedSignalList(value) {
     return Array.isArray(value)
-        ? value.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
+        ? value.map((item) => String(item).trim().toLowerCase()).filter(Boolean).sort()
         : [];
 }
 function loadRecipeFromSkillsManifest(path) {
     let raw;
     const manifestPath = resolve(path);
     try {
-        raw = readFileSync(manifestPath, 'utf8');
+        raw = readRecipeInputFile(manifestPath);
     }
     catch {
         return { ok: false, error: 'recipe from-skills cannot read --manifest file' };
@@ -415,6 +694,13 @@ function loadRecipeFromSkillsManifest(path) {
     if (price !== undefined && (!Number.isFinite(price) || price < 0))
         return { ok: false, error: 'recipe from-skills pricePerExecution must be a non-negative number' };
     const baseDir = dirname(manifestPath);
+    let validationRoot;
+    try {
+        validationRoot = realpathSync(baseDir);
+    }
+    catch {
+        return { ok: false, error: 'recipe from-skills cannot resolve the manifest directory' };
+    }
     const steps = [];
     for (let i = 0; i < rawSteps.length; i += 1) {
         const rawStep = rawSteps[i];
@@ -423,14 +709,24 @@ function loadRecipeFromSkillsManifest(path) {
         const skillRef = typeof rawStep['skill'] === 'string' ? rawStep['skill'].trim() : '';
         if (!skillRef)
             return { ok: false, error: `recipe from-skills step ${i + 1} requires skill` };
-        let skill;
+        let skillPath;
         try {
-            skill = readFileSync(resolveManifestRef(baseDir, skillRef), 'utf8');
+            skillPath = realpathSync(resolveManifestRef(baseDir, skillRef));
         }
         catch {
             return { ok: false, error: `recipe from-skills step ${i + 1} cannot read skill` };
         }
-        const execution = loadSkillExecution(rawStep['execution'], baseDir, i + 1);
+        if (!pathIsWithin(validationRoot, skillPath)) {
+            return { ok: false, error: `recipe from-skills step ${i + 1} skill must stay within the manifest directory` };
+        }
+        let skill;
+        try {
+            skill = readRecipeInputFile(skillPath);
+        }
+        catch {
+            return { ok: false, error: `recipe from-skills step ${i + 1} cannot read skill` };
+        }
+        const execution = loadSkillExecution(rawStep['execution'], baseDir, validationRoot, i + 1);
         if (!execution.ok)
             return execution;
         const scenario = typeof rawStep['scenario'] === 'string' && rawStep['scenario'].trim()
@@ -439,6 +735,8 @@ function loadRecipeFromSkillsManifest(path) {
         steps.push({
             skill,
             execution: execution.value,
+            validationCwd: dirname(skillPath),
+            validationRoot,
             ...(scenario ? { scenario } : {}),
         });
     }
@@ -455,11 +753,25 @@ function loadRecipeFromSkillsManifest(path) {
         },
     };
 }
-function loadSkillExecution(raw, baseDir, stepNumber) {
+function pathIsWithin(root, target) {
+    const rel = relative(root, target);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+function loadSkillExecution(raw, baseDir, validationRoot, stepNumber) {
     if (typeof raw === 'string' && raw.trim()) {
+        let executionPath;
+        try {
+            executionPath = realpathSync(resolveManifestRef(baseDir, raw.trim()));
+        }
+        catch {
+            return { ok: false, error: `recipe from-skills step ${stepNumber} cannot read execution` };
+        }
+        if (!pathIsWithin(validationRoot, executionPath)) {
+            return { ok: false, error: `recipe from-skills step ${stepNumber} execution must stay within the manifest directory` };
+        }
         let text;
         try {
-            text = readFileSync(resolveManifestRef(baseDir, raw.trim()), 'utf8');
+            text = readRecipeInputFile(executionPath);
         }
         catch {
             return { ok: false, error: `recipe from-skills step ${stepNumber} cannot read execution` };
@@ -477,6 +789,12 @@ function loadSkillExecution(raw, baseDir, stepNumber) {
     if (isPlainRecord(raw))
         return { ok: true, value: raw };
     return { ok: false, error: `recipe from-skills step ${stepNumber} requires execution evidence` };
+}
+function readRecipeInputFile(path) {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > MAX_RECIPE_INPUT_BYTES)
+        throw new Error('invalid recipe input file');
+    return readFileSync(path, 'utf8');
 }
 function resolveManifestRef(baseDir, ref) {
     return isAbsolute(ref) ? ref : resolve(baseDir, ref);
@@ -510,7 +828,7 @@ async function callRecipeWithAuthRetry(hub, tag, fn, io) {
             throw e;
         if (!authErrorIndicatesStaleNodeSecret(e))
             throw e;
-        io.log(`[${tag}] Hub reported a stale node secret; rotating credentials once and retrying...`);
+        io.err(`[${tag}] Hub reported a stale node secret; rotating credentials once and retrying...`);
         const hello = await hub.hello({ rotate: true });
         if (!hello.ok) {
             io.err(`[${tag}] Could not auto-rotate credentials: ${hello.error ?? 'unknown'}`);
@@ -667,27 +985,38 @@ function redactSensitiveString(value) {
 function resolveRecipeHubCredentials(env) {
     const homeCandidates = recipeHomeCandidates(env);
     const defaultHome = homeCandidates[0] ?? events.evomapHome();
-    const fromEnv = env['EVOMAP_NODE_SECRET']?.trim() || env['A2A_NODE_SECRET']?.trim();
-    const envNodeSecretVersion = parseNodeSecretVersion(env['EVOMAP_NODE_SECRET_VERSION'] ?? env['A2A_NODE_SECRET_VERSION']);
-    const stored = readRecipeStoreNodeCredentials(env);
-    const explicitSenderId = explicitRecipeSenderId(env);
-    if (stored?.source === 'hub_rotate' && stored.nodeSecret) {
+    const explicitCredentials = resolveExplicitNodeCredentials(env);
+    const fromEnv = explicitCredentials.nodeSecret;
+    const envNodeSecretVersion = parseNodeSecretVersion(explicitCredentials.nodeSecretVersion);
+    const storedCandidate = readRecipeStoreNodeCredentials(env);
+    const stored = storedCandidate?.source?.startsWith('pending_') ? undefined : storedCandidate;
+    const explicitSenderId = explicitCredentials.senderId;
+    const legacy = firstLegacyNodeCredentials(homeCandidates);
+    const pairedStoredSenderId = stored?.nodeSecret
+        ? stored.nodeId
+            ?? (fromEnv === stored.nodeSecret ? explicitSenderId : undefined)
+            ?? (legacy?.nodeSecret === stored.nodeSecret ? legacy.nodeId : undefined)
+        : undefined;
+    const completeExplicitOverridesOrphan = Boolean(fromEnv
+        && explicitSenderId
+        && fromEnv !== stored?.nodeSecret
+        && pairedStoredSenderId !== explicitSenderId);
+    if (stored?.source === 'hub_rotate' && stored.nodeSecret && !completeExplicitOverridesOrphan) {
         return {
             evomapDir: defaultHome,
             nodeSecret: stored.nodeSecret,
             ...(stored.nodeSecretVersion !== undefined ? { nodeSecretVersion: stored.nodeSecretVersion } : {}),
-            senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            senderId: pairedStoredSenderId,
             rotatePersistDir: defaultHome,
         };
     }
     if (fromEnv) {
-        const legacyNodeId = firstLegacyNodeId(homeCandidates);
         const nodeSecretVersion = envNodeSecretVersion ?? pairedStoreNodeSecretVersion(fromEnv, stored) ?? pairedLegacyNodeSecretVersion(fromEnv, homeCandidates);
         return {
             evomapDir: defaultHome,
             nodeSecret: fromEnv,
             ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
-            senderId: explicitSenderId ?? legacyNodeId ?? resolveAtpSenderId(env),
+            senderId: explicitSenderId ?? (legacy?.nodeSecret === fromEnv ? legacy.nodeId : undefined),
             rotatePersistDir: defaultHome,
         };
     }
@@ -696,26 +1025,37 @@ function resolveRecipeHubCredentials(env) {
             evomapDir: defaultHome,
             nodeSecret: stored.nodeSecret,
             ...(stored.nodeSecretVersion !== undefined ? { nodeSecretVersion: stored.nodeSecretVersion } : {}),
-            senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            senderId: pairedStoredSenderId,
             rotatePersistDir: defaultHome,
         };
     }
-    const legacy = firstLegacyNodeCredentials(homeCandidates);
     if (legacy) {
         return {
             evomapDir: legacy.dir,
             nodeSecret: legacy.nodeSecret,
             ...(legacy.nodeSecretVersion !== undefined ? { nodeSecretVersion: legacy.nodeSecretVersion } : {}),
-            senderId: legacy.nodeId ?? explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+            senderId: legacy.nodeId,
             rotatePersistDir: legacy.dir,
         };
     }
     const oauthDir = homeCandidates.find((dir) => existsSync(join(dir, 'token.json'))) ?? defaultHome;
     return {
         evomapDir: oauthDir,
-        senderId: explicitSenderId ?? firstLegacyNodeId(homeCandidates) ?? resolveAtpSenderId(env),
+        senderId: resolveRecipeOAuthSenderId(env, oauthDir),
         rotatePersistDir: oauthDir,
     };
+}
+function resolveRecipeOAuthSenderId(env, oauthDir) {
+    const evomapNodeId = env['EVOMAP_NODE_ID']?.trim();
+    if (evomapNodeId)
+        return evomapNodeId;
+    const identityNodeId = readLegacyNodeId(oauthDir);
+    if (identityNodeId)
+        return identityNodeId;
+    const a2aNodeId = env['A2A_NODE_ID']?.trim();
+    if (a2aNodeId)
+        return a2aNodeId;
+    return readRecipeStoreNodeCredentials(env)?.nodeId;
 }
 /**
  * The EXPLICIT home overrides (EVOMAP_DIR / EVOLVER_HOME / EVOMAP_HOME) the recipe credential layer honors,
@@ -749,20 +1089,19 @@ function recipeHomeCandidates(env) {
     ];
     return uniqueStrings(candidates.map((value) => value?.trim()).filter((value) => Boolean(value)));
 }
-function explicitRecipeSenderId(env) {
-    return env['EVOMAP_NODE_ID']?.trim() || env['A2A_NODE_ID']?.trim();
-}
 function readRecipeStoreNodeCredentials(env) {
     const storePath = recipeProxyStorePath(env);
     if (!existsSync(storePath))
         return undefined;
     const store = new mailbox.MailboxStore({ path: storePath });
     try {
+        const nodeId = store.getState('node_id')?.trim() || undefined;
         const storedSecret = store.getState('node_secret');
         const nodeSecret = storedSecret && isNodeSecret(storedSecret) ? storedSecret : undefined;
         const nodeSecretVersion = parseNodeSecretVersion(store.getState('node_secret_version'));
         const source = store.getState('node_secret_source') || undefined;
         return {
+            ...(nodeId ? { nodeId } : {}),
             ...(nodeSecret ? { nodeSecret } : {}),
             ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
             ...(source ? { source } : {}),
@@ -814,14 +1153,6 @@ function firstLegacyNodeCredentials(dirs) {
     }
     return undefined;
 }
-function firstLegacyNodeId(dirs) {
-    for (const dir of dirs) {
-        const nodeId = readLegacyNodeId(dir);
-        if (nodeId)
-            return nodeId;
-    }
-    return undefined;
-}
 function uniqueStrings(values) {
     const seen = new Set();
     const out = [];
@@ -850,18 +1181,32 @@ function recipeProxyStorePath(env) {
 function setOptionalStoreState(store, key, value) {
     store.setState(key, value ?? '');
 }
-function persistRotatedNodeSecret(secret, version, env, legacyDir) {
+function persistRotatedNodeSecret(secret, version, nodeId, env, legacyDir) {
     const storePath = recipeProxyStorePath(env);
     const store = new mailbox.MailboxStore({ path: storePath });
     try {
+        store.setState('node_secret_source', 'pending_rotate');
+        if (nodeId)
+            store.setState('node_id', nodeId);
         store.setState('node_secret', secret);
-        store.setState('node_secret_source', 'hub_rotate');
         setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+        store.setState('node_secret_source', 'hub_rotate');
     }
     finally {
         store.close();
     }
     persistLegacyNodeSecret(secret, version, legacyDir);
+}
+function persistRecipeNodeId(nodeId, env, legacyDir) {
+    const store = new mailbox.MailboxStore({ path: recipeProxyStorePath(env) });
+    try {
+        store.setState('node_id', nodeId);
+    }
+    finally {
+        store.close();
+    }
+    mkdirSync(legacyDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(legacyDir, 'node_id'), nodeId, { encoding: 'utf8', mode: 0o600 });
 }
 function persistNodeSecretVersion(version, env, legacyDir) {
     const storePath = recipeProxyStorePath(env);

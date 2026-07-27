@@ -1,3 +1,4 @@
+import { type SandboxResourceGroup } from './sandboxRunner.js';
 import { type ValidationResult } from './validation.js';
 export interface SandboxedValidationSkippedCommand {
     cmd: string;
@@ -19,11 +20,19 @@ export interface SandboxedValidationResult {
      */
     isolated: boolean;
 }
+export declare function readOnlyFilesystemIsolationAvailable(): boolean;
+export declare function readOnlyIsolationAvailable(): boolean;
 export interface SandboxedValidationOptions {
     /** Per-command timeout (ms), forwarded to the sandbox runner. */
     timeoutMs?: number;
     /** Test seam: override the unprivileged-namespace availability probe. */
     unshareCheck?: () => boolean;
+    /** Refuse before spawning when network/home namespace isolation is unavailable. */
+    requireIsolation?: boolean;
+    /** Checkout root to preserve read-only at its original absolute path. */
+    readOnlyRoot?: string;
+    /** Injected cgroup allocator (test seam). */
+    resourceGroupFactory?: () => SandboxResourceGroup | null;
 }
 /**
  * Run validation commands in the hardened sandbox. Isolation (no-network + hidden home secrets) is requested only

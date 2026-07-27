@@ -111,6 +111,75 @@ export interface ReuseResultReceipt {
     reason?: string;
     id?: string;
 }
+export type LearningAssetType = 'memory' | 'skill' | 'playbook' | 'eval';
+export type LearningAssetStatus = 'pending_review' | 'active' | 'disabled' | 'stale' | 'archived';
+export type LearningAssetEffectiveStatus = LearningAssetStatus | 'expired';
+export type LearningAssetUsageOutcome = ReuseResultOutcome;
+export interface LearningAssetOwner {
+    node_id?: string | null;
+    user_id?: string | null;
+    org_id?: string | null;
+    workspace_id?: string | null;
+}
+/** Hub-owned learning asset record. Core keeps it opaque; adapters own wire shape and auth. */
+export interface LearningAssetRecord {
+    asset_id: string;
+    type: LearningAssetType;
+    source_packet_id?: string;
+    scope?: string[];
+    owner?: LearningAssetOwner;
+    title?: string;
+    summary?: string;
+    confidence?: number;
+    last_used_at?: string | null;
+    usage_count?: number;
+    success_count?: number;
+    success_rate?: number;
+    expires_at?: string | null;
+    conflicts_with?: string[];
+    status?: LearningAssetStatus;
+    effective_status?: LearningAssetEffectiveStatus;
+    status_reason?: string;
+    provenance?: Record<string, unknown>;
+    payload?: Record<string, unknown>;
+    created_at?: string | null;
+    updated_at?: string | null;
+    [k: string]: unknown;
+}
+export interface LearningAssetListOptions {
+    type?: LearningAssetType;
+    scope?: readonly string[];
+    status?: LearningAssetStatus | readonly LearningAssetStatus[];
+    includeExpired?: boolean;
+    includePayload?: boolean;
+    limit?: number;
+}
+export interface LearningAssetListResult {
+    assets: LearningAssetRecord[];
+    limit: number;
+    reason?: string;
+}
+export interface LearningAssetUsageReport {
+    assetId?: string;
+    usedAssetIds?: readonly string[];
+    outcome: LearningAssetUsageOutcome;
+    score?: number;
+    sourceEventId: string;
+    reason?: string;
+}
+export interface LearningAssetUsageResultRow {
+    asset_id: string;
+    recorded: boolean;
+    duplicated?: boolean;
+    error?: string;
+    [k: string]: unknown;
+}
+/** Learning-asset usage reporting is best-effort; failures must not break runtime solve paths. */
+export interface LearningAssetUsageReceipt {
+    recorded: boolean;
+    reason?: string;
+    results: LearningAssetUsageResultRow[];
+}
 /**
  * Pre-publish dry-run result. The hub runs the same hub-side quality + content-safety
  * gate as publish but stores nothing and charges no credits, so an agent can check a
@@ -141,6 +210,10 @@ export interface RecipeCreateRequest {
     pricePerExecution?: number;
     currency?: string;
     maxConcurrent?: number;
+    idempotencyKey?: string;
+}
+export interface RecipePublishOptions {
+    idempotencyKey?: string;
 }
 export interface RecipeReceipt {
     recipeId?: string;
@@ -159,11 +232,11 @@ export interface RecipeExpressionReceipt extends RecipeReceipt {
 /** Optional Hub recipe/DNA capability. Core stays wire-agnostic; adapters own REST shape. */
 export interface RecipeCapability {
     create(request: RecipeCreateRequest): Promise<RecipeReceipt>;
-    publish(recipeId: string): Promise<RecipeReceipt>;
+    publish(recipeId: string, options?: RecipePublishOptions): Promise<RecipeReceipt>;
     get(recipeId: string): Promise<RecipeFetchReceipt>;
     express(recipeId: string, request?: RecipeExpressRequest): Promise<RecipeExpressionReceipt>;
 }
-export type HubCapabilityName = 'publish' | 'fetch' | 'search' | 'task' | 'mailbox' | 'auth' | 'audit' | 'air_gap' | 'tenant_isolation' | 'marketplace' | 'economy' | 'questions' | 'recipes' | 'agent_directory';
+export type HubCapabilityName = 'publish' | 'fetch' | 'search' | 'task' | 'mailbox' | 'auth' | 'audit' | 'air_gap' | 'tenant_isolation' | 'marketplace' | 'economy' | 'questions' | 'recipes' | 'agent_directory' | 'learning_assets';
 /** hub 能力清单(可选). core 据此动态适配 UI/行为, "按需耦合". */
 export interface HubManifest {
     capabilities: HubCapabilityName[] | string[];
@@ -231,6 +304,10 @@ export interface HubCapability {
     fetchAssetById?(assetId: string): Promise<AssetRecord | null>;
     /** 可选: 报告某个资产被复用后的结果. PHub/enterprise adapter 实现; 不支持时 runtime 应明确降级. */
     recordReuseResult?(report: ReuseResultReport): Promise<ReuseResultReceipt>;
+    /** 可选: 列出 hub 端 runtime learning assets. Missing means the adapter does not support this MVP surface. */
+    listLearningAssets?(options?: LearningAssetListOptions): Promise<LearningAssetListResult>;
+    /** 可选: 上报 learning asset 使用结果. Best-effort; failures must never break solve paths. */
+    recordLearningAssetUsage?(report: LearningAssetUsageReport): Promise<LearningAssetUsageReceipt>;
     /**
      * 可选: 发布前 dry-run 校验(公版 POST /a2a/validate). 跑与 publish 相同的 hub 端质量门禁 + 内容安全扫描,
      * 但不落库、不计费; 经由 Proxy 暴露时调用方需先执行与 publish 相同的客户端脱敏/泄漏拦截.

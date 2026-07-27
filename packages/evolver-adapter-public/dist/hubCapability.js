@@ -9,7 +9,7 @@ export const INBOUND_LIMIT = 100;
 export const OUTBOUND_MAX_BATCH = 50;
 export const OUTBOUND_MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const PUBLIC_PROTOCOL_VERSION = 'gep-a2a/1.0.0';
-export const PUBLIC_HUB_CAPABILITIES = ['publish', 'fetch', 'search', 'task', 'mailbox', 'auth', 'marketplace', 'economy', 'questions', 'recipes', 'agent_directory'];
+export const PUBLIC_HUB_CAPABILITIES = ['publish', 'fetch', 'search', 'task', 'mailbox', 'auth', 'marketplace', 'economy', 'questions', 'recipes', 'agent_directory', 'learning_assets'];
 const QUESTION_SUBMIT_FAST_PATH_BYPASS_CONTENT_HASH = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
 const DRY_RUN_RECIPE_ID = 'dry-run-recipe';
 const HUB_DRY_RUN_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -18,6 +18,8 @@ const HUB_DRY_RUN_VALUES = new Set(['1', 'true', 'yes', 'on']);
 // equals what the hub will KEEP.
 export const USED_ASSET_IDS_MAX = 50;
 export const USED_ASSET_ID_MAX_LEN = 200;
+export const LEARNING_ASSET_IDS_MAX = 50;
+export const LEARNING_ASSET_ID_MAX_LEN = 128;
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
 export function gepEnvelope(messageType, payload) {
     return {
@@ -83,7 +85,7 @@ export class PublicHubCapability {
     auth;
     recipes = {
         create: async (request) => this.createRecipe(request),
-        publish: async (recipeId) => this.publishRecipe(recipeId),
+        publish: async (recipeId, options) => this.publishRecipe(recipeId, options),
         get: async (recipeId) => this.getRecipe(recipeId),
         express: async (recipeId, request = {}) => this.expressRecipe(recipeId, request),
     };
@@ -402,6 +404,52 @@ export class PublicHubCapability {
             return { recorded: false, reason: e instanceof Error ? e.message : String(e) };
         }
     }
+    async listLearningAssets(options = {}) {
+        const limit = normalizeLearningAssetLimit(options.limit);
+        if (!this.opts.senderId()?.trim())
+            return { assets: [], limit, reason: 'sender_id_required' };
+        try {
+            const body = await this.http.call('GET', '/a2a/learning-assets', undefined, learningAssetListQuery(options, limit));
+            const payload = asRecord(body['payload']) ?? body;
+            return {
+                assets: learningAssetsFromPayload(payload),
+                limit: numberField(payload, 'limit') ?? limit,
+            };
+        }
+        catch (e) {
+            return { assets: [], limit, reason: failureReason(e) };
+        }
+    }
+    async recordLearningAssetUsage(report) {
+        if (!this.opts.senderId()?.trim())
+            return { recorded: false, reason: 'sender_id_required', results: [] };
+        const sourceEventId = trimStringField(report.sourceEventId, 160);
+        if (!sourceEventId)
+            return { recorded: false, reason: 'source_event_id_required', results: [] };
+        const assetIds = normalizeLearningAssetIds(report.usedAssetIds && report.usedAssetIds.length > 0 ? report.usedAssetIds : [report.assetId]);
+        if (assetIds.length === 0)
+            return { recorded: false, reason: 'asset_id_required', results: [] };
+        const outcome = normalizeLearningAssetOutcome(report.outcome);
+        if (!outcome)
+            return { recorded: false, reason: 'invalid_learning_asset_outcome', results: [] };
+        const score = optionalLearningAssetScore(report.score);
+        if ('reason' in score)
+            return { recorded: false, reason: score.reason, results: [] };
+        const reason = trimStringField(report.reason, 2_000);
+        try {
+            const body = await this.http.call('POST', '/a2a/learning-assets/usage', {
+                ...(assetIds.length === 1 ? { asset_id: assetIds[0] } : { used_asset_ids: assetIds }),
+                outcome,
+                source_event_id: sourceEventId,
+                ...(score.value !== undefined ? { score: score.value } : {}),
+                ...(reason ? { reason } : {}),
+            });
+            return learningAssetUsageReceiptFromBody(body);
+        }
+        catch (e) {
+            return { recorded: false, reason: failureReason(e), results: [] };
+        }
+    }
     /**
      * Pre-publish dry-run (POST /a2a/validate). The hub runs the same hub-side quality +
      * content-safety gate as publish but stores nothing and charges no credits. This adapter is
@@ -457,14 +505,14 @@ export class PublicHubCapability {
             ...(request.pricePerExecution !== undefined ? { price_per_execution: request.pricePerExecution } : {}),
             ...(request.currency ? { currency: request.currency } : {}),
             ...(request.maxConcurrent !== undefined ? { max_concurrent: request.maxConcurrent } : {}),
-        });
+        }, undefined, request.idempotencyKey ? { 'idempotency-key': request.idempotencyKey } : undefined);
         return recipeReceiptFromBody(body);
     }
-    async publishRecipe(recipeId) {
+    async publishRecipe(recipeId, options) {
         if (isHubDryRunEnabled())
             return dryRunRecipeReceipt('publish_recipe', recipeId);
         const sender = this.opts.senderId();
-        const body = await this.http.call('POST', `/a2a/recipe/${encodeURIComponent(recipeId)}/publish`, { ...(sender ? { node_id: sender } : {}) });
+        const body = await this.http.call('POST', `/a2a/recipe/${encodeURIComponent(recipeId)}/publish`, { ...(sender ? { node_id: sender } : {}) }, undefined, options?.idempotencyKey ? { 'idempotency-key': options.idempotencyKey } : undefined);
         return recipeReceiptFromBody(body);
     }
     async getRecipe(recipeId) {
@@ -764,6 +812,105 @@ function accountAssetsFromPayload(payload) {
         return candidate.filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)));
     }
     return [];
+}
+function learningAssetsFromPayload(payload) {
+    const candidates = [
+        payload['assets'],
+        payload['results'],
+        payload['items'],
+    ];
+    for (const candidate of candidates) {
+        if (!Array.isArray(candidate))
+            continue;
+        return candidate.filter((asset) => isLearningAssetRecord(asset));
+    }
+    return [];
+}
+function isLearningAssetRecord(value) {
+    const record = asRecord(value);
+    return Boolean(record && typeof record['asset_id'] === 'string' && typeof record['type'] === 'string');
+}
+function normalizeLearningAssetLimit(value) {
+    if (!Number.isFinite(value))
+        return 20;
+    return Math.min(100, Math.max(1, Math.floor(value)));
+}
+function learningAssetListQuery(options, limit) {
+    const status = normalizeLearningAssetStatusParam(options.status);
+    const query = {
+        limit,
+        runtime: options.includeExpired === true ? undefined : 'true',
+        include_expired: options.includeExpired === true ? 'true' : undefined,
+        include_payload: options.includePayload === true ? 'true' : undefined,
+        ...(options.type ? { type: options.type } : {}),
+        ...(status ? { status } : options.includeExpired === true ? { status: 'active' } : {}),
+    };
+    const scope = compactLearningAssetParam(options.scope);
+    if (scope)
+        query['scope'] = scope;
+    return query;
+}
+function normalizeLearningAssetStatusParam(status) {
+    if (Array.isArray(status))
+        return compactLearningAssetParam(status);
+    return typeof status === 'string' && status.trim() ? status.trim() : undefined;
+}
+function compactLearningAssetParam(values) {
+    if (!values)
+        return undefined;
+    const out = [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+    return out.length > 0 ? out.join(',') : undefined;
+}
+function trimStringField(value, maxLen) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLen) : undefined;
+}
+function normalizeLearningAssetIds(values) {
+    const out = [];
+    const seen = new Set();
+    for (const value of values) {
+        if (typeof value !== 'string')
+            continue;
+        const trimmed = value.trim();
+        if (!trimmed || trimmed.length > LEARNING_ASSET_ID_MAX_LEN || seen.has(trimmed))
+            continue;
+        seen.add(trimmed);
+        out.push(trimmed);
+        if (out.length >= LEARNING_ASSET_IDS_MAX)
+            break;
+    }
+    return out;
+}
+function normalizeLearningAssetOutcome(value) {
+    if (value === 'success' || value === 'failed' || value === 'mismatched' || value === 'stale' || value === 'unsafe')
+        return value;
+    return undefined;
+}
+function optionalLearningAssetScore(value) {
+    if (value === undefined)
+        return { value: undefined };
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)
+        return { reason: 'invalid_score' };
+    return { value };
+}
+function learningAssetUsageReceiptFromBody(body) {
+    const payload = asRecord(body['payload']) ?? body;
+    const rows = Array.isArray(payload['results'])
+        ? payload['results'].filter((row) => Boolean(asRecord(row)))
+        : [];
+    const reason = stringField(payload, 'reason') ?? stringField(payload, 'error');
+    return {
+        recorded: rows.length > 0 && rows.some((row) => row.recorded === true),
+        ...(reason ? { reason } : {}),
+        results: rows,
+    };
+}
+function failureReason(error) {
+    if (error instanceof HubClientError) {
+        const body = asRecord(error.body) ?? {};
+        const payload = asRecord(body['payload']) ?? body;
+        return stringField(payload, 'reason') ?? stringField(payload, 'error') ?? `hub ${error.status}`;
+    }
+    return error instanceof Error ? error.message : String(error);
 }
 function assetMatchesId(asset, assetId) {
     return Boolean(asset && (asset.asset_id === assetId || stringField(asset, 'id') === assetId));

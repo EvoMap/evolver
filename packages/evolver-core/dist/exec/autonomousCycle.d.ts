@@ -6,6 +6,7 @@ import type { GeneDecision } from '../algo/geneSelection.js';
 import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneResolver, type ValidateHook, type AgentRunnerOptions, type RunnerName, type AgentRunner, type GitRunner } from './claudeBridge.js';
 import type { PersonalityStore } from '../personality/store.js';
+import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
 /**
  * Resolve a gene's strategy from the store and whether it is safe to EMBED into an autonomous agent's prompt —
  * the exec-side link from #30 (provenance ledger) and the review-state gate to #45 (requireTrustedGene gate). A
@@ -47,4 +48,6 @@ export declare function makeSafeExecute(repo: string, store: AssetStoreProvider,
     personality?: PersonalityStore;
     agent?: AgentRunner;
     git?: GitRunner;
+    /** Optional learning-trace recorder forwarded to the exec bridge (Learning Ops slice 2). */
+    traceRecorder?: AgentRunTraceRecorder;
 }): (mutation: Mutation, decision: GeneDecision) => Promise<ExecutionResult>;

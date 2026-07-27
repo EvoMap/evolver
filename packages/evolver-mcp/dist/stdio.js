@@ -8,10 +8,13 @@ import { buildEvolverTools } from './tools.js';
 import { buildEvolverPrimer } from './primer.js';
 import { EvolverMcpServer, UnknownToolError } from './server.js';
 import { reachableProxyClientFromEnv } from './proxyClient.js';
-import { loadEnvFileFromEnv } from './envFile.js';
-const envFile = loadEnvFileFromEnv(process.env);
-if (envFile.error) {
-    process.stderr.write(`[evolver-mcp] failed to load EVOLVER_ENV_FILE: ${envFile.error}\n`);
+import { loadEnvFileFromEnvOrThrow } from './envFile.js';
+try {
+    loadEnvFileFromEnvOrThrow(process.env);
+}
+catch {
+    process.stderr.write('[evolver-mcp] fatal: failed to load EVOLVER_ENV_FILE\n');
+    process.exit(1);
 }
 const store = new assetstore.LocalJsonlProvider(events.assetsDir());
 const mailboxPath = process.env['EVOLVER_MCP_MAILBOX'] ?? join(events.evomapHome(), 'mailbox', 'mcp.db');

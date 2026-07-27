@@ -62,11 +62,17 @@ export function atpRetryClass(status) {
 export function publishRespToReceipt(status, body) {
     const payload = body['payload'] ?? body;
     const assetIds = payload['asset_ids'];
-    const assetId = payload['asset_id'] ?? body['asset_id'] ?? assetIds?.[0];
+    const targetAssetId = payload['target_asset_id']
+        ?? body['target_asset_id'];
+    const assetId = (status === 409 ? targetAssetId : undefined)
+        ?? payload['asset_id']
+        ?? body['asset_id']
+        ?? assetIds?.[0]
+        ?? targetAssetId;
     const bundleId = payload['bundle_id'];
     if (status >= 200 && status < 300) {
         const decision = String(payload['decision'] ?? payload['status'] ?? 'accepted');
-        const accepted = decision === 'accepted' || decision === 'approved' || decision === 'ok';
+        const accepted = decision === 'accept' || decision === 'accepted' || decision === 'approved' || decision === 'ok';
         return {
             receiptId: String(payload['receipt_id'] ?? bundleId ?? payload['id'] ?? assetId ?? 'unknown'),
             status: accepted ? 'accepted' : (decision === 'quarantine' ? 'quarantine' : 'rejected'),
@@ -85,6 +91,7 @@ export function publishRespToReceipt(status, body) {
         status: 'rejected',
         reason: String(payload['reason'] ?? reasonByStatus[status] ?? `hub ${status}`),
         ...(assetId ? { assetId } : {}),
+        ...(assetIds ? { assetIds } : {}),
         terminal: true,
     };
     if (status === 402) {

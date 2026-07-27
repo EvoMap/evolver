@@ -18,7 +18,7 @@ export declare function publicOAuthTokenPath(opts?: PublicAuthPathOptions): stri
  *
  * Hub URL follows A2A_HUB_URL -> EVOMAP_HUB_URL -> EVOLVER_DEFAULT_HUB_URL -> https://evomap.ai. Credential
  * home follows the same public Hub precedence as publish/ATP:
- * EVOMAP_DIR → EVOLVER_HOME → EVOMAP_HOME → ~/.evomap. The token replaces
+ * EVOMAP_HOME → EVOMAP_DIR → EVOLVER_HOME → ~/.evomap. The token replaces
  * node_secret for publish + /a2a calls (it carries the `a2a` scope).
  */
 export declare function runLogin(argv: readonly string[]): Promise<number>;

@@ -81,6 +81,7 @@ export declare function runOrdersCommand(argv: readonly string[]): Promise<numbe
 export declare function runVerifyCommand(argv: readonly string[]): Promise<number>;
 export declare function runAtpCommand(argv: readonly string[]): Promise<number>;
 export declare function createAtpClientFromEnv(env?: NodeJS.ProcessEnv): AtpHubClient;
+export { resolveIdentityHome as resolveAtpIdentityHome } from './identityHome.js';
 export declare function resolveAtpHome(env?: NodeJS.ProcessEnv): string;
 export declare function atpConsentPath(env?: NodeJS.ProcessEnv): string;
 export declare function getAtpConsent(env?: NodeJS.ProcessEnv, ackPath?: string): AtpConsent;
@@ -119,4 +120,3 @@ export declare function setAtpConsent(enabled: boolean, ackPath?: string, now?: 
 };
 export declare function resolveAtpSenderId(env?: NodeJS.ProcessEnv): string | undefined;
 export declare function printAtpUsage(): string;
-export {};

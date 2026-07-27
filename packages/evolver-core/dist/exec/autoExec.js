@@ -11,6 +11,7 @@ import { intakeGene } from '../algo/geneIntake.js';
 import { runEvolutionCycle } from '../algo/orchestrator.js';
 import { makeSafeExecute, makeTrustedGeneResolver } from './autonomousCycle.js';
 import { findSignalHints } from './openPrRegistry.js';
+import { AgentRunTraceRecorder, buildLearningPacketDraft } from '../trace/learningTrace.js';
 /** Same path-containment as the bridge guard — used here to refuse before running anything (clean verdict). */
 function withinAllowlist(repo, roots) {
     const c = resolvePath(repo);
@@ -136,6 +137,20 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     // that throws degrades to solving fresh (no hub candidates) rather than failing the task.
     let hubCandidates = [];
     const cycleId = `autoexec-${task.id}`;
+    // Learning trace (slice 2): one recorder per task run, traceId = cycleId so the trace joins the event log.
+    // Purely observational — every recorder call and the packet submit are wrapped so they can never change
+    // the verdict or fail the task.
+    const traceRecorder = deps.learningTrace
+        ? new AgentRunTraceRecorder({
+            runId: cycleId,
+            taskId: task.id,
+            ...(deps.learningTrace.traceSink ? { sink: deps.learningTrace.traceSink } : {}),
+        })
+        : undefined;
+    try {
+        traceRecorder?.runStarted({ taskSummary: task.expectedEffect, signals: cycleSignals, metadata: { repo: task.repo, target: task.target } });
+    }
+    catch { /* observability only */ }
     if (deps.hubReuse) {
         try {
             hubCandidates = await executableHubCandidates(deps, await deps.hubReuse(cycleSignals, { cycleId }));
@@ -153,6 +168,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(deps.personality ? { personality: deps.personality } : {}),
         ...(deps.agent ? { agent: deps.agent } : {}),
         ...(deps.git ? { git: deps.git } : {}),
+        ...(traceRecorder ? { traceRecorder } : {}),
     });
     const strategyName = task.strategyName ?? deps.strategyName;
     // Intentional semantics (see #308 review M1): a task carrying `strategy` — even without an
@@ -194,6 +210,24 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     });
     const status = res.finalStage === 'solidified' ? 'solidified' : res.finalStage === 'failed' ? 'failed' : 'innovated';
     const cap = res.capsule;
+    if (traceRecorder && deps.learningTrace) {
+        try {
+            traceRecorder.runCompleted({
+                status: res.finalStage === 'solidified' ? 'success' : 'failed',
+                ...(cap?.outcome?.score !== undefined ? { score: cap.outcome.score } : {}),
+                ...(res.reasons.length > 0 ? { reason: res.reasons.join('; ') } : {}),
+                ...(res.producedValue !== undefined ? { producedValue: res.producedValue } : {}),
+                ...(res.failureKind !== undefined ? { failureKind: res.failureKind } : {}),
+            });
+            await deps.learningTrace.packetSink.submit(buildLearningPacketDraft(traceRecorder, {
+                sourceRepo: deps.learningTrace.sourceRepo ?? 'evolver-v2',
+                taskSummary: task.expectedEffect,
+                signals: cycleSignals,
+                environment: { repo: task.repo, runner: safety.runner ?? 'claude' },
+            }));
+        }
+        catch { /* packet delivery is best-effort; never fail the task */ }
+    }
     if (deps.memoryGraph && res.decision?.selectedGeneId && (res.finalStage === 'solidified' || res.finalStage === 'failed')) {
         const producedSuccess = res.finalStage === 'solidified' && res.producedValue === true;
         try {

@@ -17,6 +17,12 @@ type AssetByIdFetcher = {
     fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
     hello?(opts: PublicHelloOptions): Promise<unknown>;
 };
+type PrivateReuseProxy = {
+    fetchAsset(args: {
+        assetId: string;
+        expectedHubMode: 'private';
+    }): Promise<unknown>;
+};
 export interface ReuseCliDeps {
     store?: assetstore.AssetStoreProvider;
     assetsDir?: string;
@@ -31,6 +37,8 @@ export interface ReuseCliDeps {
         hub: PublicHubCapability;
         auth: hubNs.AuthProvider;
     };
+    /** Test seam for private-mode proxy discovery. */
+    resolveProxyClient?: (env: NodeJS.ProcessEnv) => PrivateReuseProxy | undefined;
 }
 interface ReuseOptions {
     id: string;

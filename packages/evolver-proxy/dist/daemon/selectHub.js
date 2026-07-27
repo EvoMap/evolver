@@ -12,10 +12,12 @@ export function resolveHubUrl(env) {
     return resolvePublicHubUrl(env);
 }
 function resolvePrivateHubUrl(env) {
-    return trimmed(env['EVOMAP_HUB_URL'])
+    const url = trimmed(env['EVOMAP_HUB_URL'])
         ?? trimmed(env['A2A_HUB_URL'])
-        ?? trimmed(env['EVOLVER_DEFAULT_HUB_URL'])
-        ?? resolvePublicHubUrl({});
+        ?? trimmed(env['EVOLVER_DEFAULT_HUB_URL']);
+    if (!url)
+        throw new Error('private Hub URL is not configured');
+    return url;
 }
 function trimmed(value) {
     const v = value?.trim();

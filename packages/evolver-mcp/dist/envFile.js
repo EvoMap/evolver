@@ -48,6 +48,12 @@ export function loadEnvFileFromEnv(env = process.env) {
         return { loaded: false, keys: [] };
     return loadEnvFile(path, env);
 }
+export function loadEnvFileFromEnvOrThrow(env = process.env) {
+    const result = loadEnvFileFromEnv(env);
+    if (result.error)
+        throw new Error('failed to load EVOLVER_ENV_FILE');
+    return result;
+}
 function unquoteEnvValue(value) {
     if (value.length >= 2) {
         const first = value[0];

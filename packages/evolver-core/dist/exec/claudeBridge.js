@@ -429,6 +429,23 @@ export function makeClaudeExecBridge(opts) {
                 ...(opts.signal ? { signal: opts.signal } : {}),
             });
             observedRun = run;
+            // Learning trace (slice 2): one model.called per agent spawn — the headless runner is one opaque
+            // model-driven turn from the bridge's viewpoint (per-request fidelity arrives via the proxy's llm_turn
+            // records; recordLlmTurn folds those when a caller has them). Best-effort: never affects the result.
+            try {
+                opts.traceRecorder?.modelCalled({
+                    ...(opts.runner !== undefined ? { provider: opts.runner } : { provider: 'claude' }),
+                    ...(opts.agentOptions?.model !== undefined ? { model: opts.agentOptions.model } : {}),
+                    ...(run.exitCode !== undefined && run.exitCode !== null ? { stopReason: `exit_${run.exitCode}` } : {}),
+                });
+                if (!run.ok) {
+                    opts.traceRecorder?.toolFailed({
+                        toolName: 'agent_runner',
+                        error: run.error ?? run.failureKind ?? 'agent run failed',
+                    });
+                }
+            }
+            catch { /* trace emission is observability only */ }
             if (run.failureKind === 'cancelled' || opts.signal?.aborted)
                 throw new ExecBridgeRunCancelledError();
             // A worktree can contain three independent change surfaces after the agent exits: staged tracked changes,

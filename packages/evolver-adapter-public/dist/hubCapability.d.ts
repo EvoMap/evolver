@@ -8,6 +8,8 @@ export declare const PUBLIC_PROTOCOL_VERSION = "gep-a2a/1.0.0";
 export declare const PUBLIC_HUB_CAPABILITIES: hub.HubCapabilityName[];
 export declare const USED_ASSET_IDS_MAX = 50;
 export declare const USED_ASSET_ID_MAX_LEN = 200;
+export declare const LEARNING_ASSET_IDS_MAX = 50;
+export declare const LEARNING_ASSET_ID_MAX_LEN = 128;
 /**
  * An outcome the agent reports back to the hub's memory graph after a cycle.
  * `usedAssetIds` is the fetch->outcome attribution claim: which hub assets the
@@ -159,6 +161,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     recordOutcome(report: OutcomeReport): Promise<OutcomeReceipt>;
     recordMemoryEvent(report: MemoryGraphEventReport): Promise<MemoryGraphEventReceipt>;
     recordReuseResult(report: hub.ReuseResultReport): Promise<hub.ReuseResultReceipt>;
+    listLearningAssets(options?: hub.LearningAssetListOptions): Promise<hub.LearningAssetListResult>;
+    recordLearningAssetUsage(report: hub.LearningAssetUsageReport): Promise<hub.LearningAssetUsageReceipt>;
     /**
      * Pre-publish dry-run (POST /a2a/validate). The hub runs the same hub-side quality +
      * content-safety gate as publish but stores nothing and charges no credits. This adapter is
@@ -171,7 +175,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
      */
     validate(bundle: hub.AssetRecord[]): Promise<hub.ValidateReceipt>;
     createRecipe(request: hub.RecipeCreateRequest): Promise<hub.RecipeReceipt>;
-    publishRecipe(recipeId: string): Promise<hub.RecipeReceipt>;
+    publishRecipe(recipeId: string, options?: hub.RecipePublishOptions): Promise<hub.RecipeReceipt>;
     getRecipe(recipeId: string): Promise<hub.RecipeFetchReceipt>;
     expressRecipe(recipeId: string, request?: hub.RecipeExpressRequest): Promise<hub.RecipeExpressionReceipt>;
     task: {

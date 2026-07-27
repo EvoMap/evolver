@@ -13,6 +13,7 @@ export interface ProxyFetch {
 export interface EvolverProxyClientOptions {
     baseUrl: string;
     token: string;
+    expectedHubMode?: 'public' | 'private';
     fetchFn?: ProxyFetch;
     reloadSettings?: () => EvolverProxyClientOptions | undefined;
 }
@@ -23,13 +24,16 @@ export interface ProxySearchArgs {
     category?: string;
     gene?: string;
     limit?: number;
+    expectedHubMode?: 'public' | 'private';
 }
 export interface ProxyFetchArgs {
     assetId?: string;
     assetIds?: string[];
+    expectedHubMode?: 'public' | 'private';
 }
 export interface ProxyAssetBundle {
     assets: unknown[];
+    expected_hub_mode?: 'public' | 'private';
 }
 export interface ProxyReuseResultArgs {
     assetId: string;
@@ -40,6 +44,7 @@ export interface ProxyReuseResultArgs {
     tokensSaved?: number;
     timeSavedSeconds?: number;
     reason?: string;
+    expectedHubMode?: 'public' | 'private';
 }
 export interface ProxyAgentSearchArgs {
     query?: string;
@@ -59,6 +64,7 @@ export declare class EvolverProxyClient {
     private baseUrl;
     private token;
     private readonly fetchFn;
+    private readonly expectedHubMode?;
     private readonly reloadSettings;
     constructor(opts: EvolverProxyClientOptions);
     status(opts?: {
@@ -70,15 +76,21 @@ export declare class EvolverProxyClient {
     getAgentProfile(agentId: string, timeoutMs?: number): Promise<unknown>;
     discoverAgentsForTask(args: ProxyAgentDiscoverArgs): Promise<unknown>;
     submitAsset(asset: unknown): Promise<unknown>;
+    submitAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;
     /** Pre-publish dry-run: the hub runs its quality + content-safety gate but stores nothing and charges no credits. */
     validateAsset(asset: unknown): Promise<unknown>;
     validateAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;
     distillConversation(input: unknown): Promise<unknown>;
     recordReuseResult(args: ProxyReuseResultArgs): Promise<unknown>;
+    private modeBoundBody;
     call(method: string, path: string, body?: unknown, opts?: {
         signal?: AbortSignal;
     }): Promise<unknown>;
+    private verifyExpectedHubMode;
+    private verifyReloadedHubMode;
+    private acceptResult;
     private callOnce;
+    private connectionSnapshot;
     private reloadFromSettings;
     private proxyError;
 }

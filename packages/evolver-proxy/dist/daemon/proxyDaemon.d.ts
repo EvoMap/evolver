@@ -8,6 +8,8 @@ type AssetStoreProvider = assetstore.AssetStoreProvider;
 export declare const DEFAULT_IPC_PORT = 19820;
 export interface ProxyDaemonDeps {
     hub: HubCapability;
+    /** Immutable Hub selection for IPC callers that must fail closed across public/private runtimes. */
+    hubMode?: 'public' | 'private';
     /** 二选一: 传 storePath 让 ProxyDaemon 建 store, 或传已建 store(供 hub senderId 共享同一 node_id). */
     storePath?: string;
     store?: mailbox.MailboxStore;

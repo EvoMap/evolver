@@ -69,7 +69,7 @@ export interface HubFetchDeps {
 export declare class HubFetch {
     private readonly deps;
     constructor(deps: HubFetchDeps);
-    call<T>(method: string, path: string, bodyObj?: Record<string, unknown>, query?: Record<string, string | number | undefined>): Promise<T>;
+    call<T>(method: string, path: string, bodyObj?: Record<string, unknown>, query?: Record<string, string | number | undefined>, requestHeaders?: Readonly<Record<string, string>>): Promise<T>;
 }
 export declare function hubResponseContentType(res: Pick<HubFetchResponse, 'headers'> | undefined): string;
 export declare function isHubApiResponse(res: Pick<HubFetchResponse, 'headers'> | undefined): boolean;

@@ -40,6 +40,24 @@ export class HubUnreachableError extends Error {
         return this.details.retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS;
     }
 }
+const PROTECTED_REQUEST_HEADERS = new Set([
+    'authorization',
+    'content-type',
+    'x-evomap-node-secret-version',
+    'x-evomap-signature',
+    'x-node-secret',
+]);
+function mergeRequestHeaders(requestHeaders, signedHeaders) {
+    const signedNames = new Set(Object.keys(signedHeaders ?? {}).map((name) => name.toLowerCase()));
+    const headers = {};
+    for (const [name, value] of Object.entries(requestHeaders ?? {})) {
+        const normalized = name.toLowerCase();
+        if (!PROTECTED_REQUEST_HEADERS.has(normalized) && !signedNames.has(normalized))
+            headers[normalized] = value;
+    }
+    headers['content-type'] = 'application/json';
+    return { ...headers, ...signedHeaders };
+}
 /**
  * 公版 hub HTTP 客户端(M6-6). 每请求经 AuthProvider 取凭证: POST 通常注入 body; GET 与 strict hello envelope
  * 走 **Authorization: Bearer <node_secret>** 头(hub 只从 header/body 读 node_secret, 绝不从 query — #8);
@@ -52,7 +70,7 @@ export class HubFetch {
     constructor(deps) {
         this.deps = deps;
     }
-    async call(method, path, bodyObj, query) {
+    async call(method, path, bodyObj, query, requestHeaders) {
         const draft = bodyObj !== undefined ? JSON.stringify(bodyObj) : '';
         const signed = await this.deps.auth.authenticate({ method, path, ...(draft ? { body: draft } : {}) });
         const sender = this.deps.senderId();
@@ -60,7 +78,7 @@ export class HubFetch {
         let url = `${this.deps.baseUrl}${path}`;
         assertHubUrlSecure(url); // request-level scheme guard (defense in depth): even a misconfigured injected fetchFn cannot egress in plaintext
         let body;
-        const headers = { 'content-type': 'application/json', ...signed.headers };
+        const headers = mergeRequestHeaders(requestHeaders, signed.headers);
         if (method === 'GET') {
             const qs = new URLSearchParams();
             if (sender)

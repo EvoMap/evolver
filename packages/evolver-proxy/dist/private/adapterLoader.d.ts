@@ -52,6 +52,14 @@ export interface ConnectPrivateProxyHubOptions {
     now?: () => number;
     importer?: DynamicImporter;
     fetchFn?: PrivateCompatibilityFetch;
+    /** Durable credential minted by a previous invitation/SSO enrollment. */
+    storedNodeSecret?: string;
+    /** Persist a newly minted credential before the process can restart. */
+    onNodeSecretAdopted?: (nodeSecret: string) => void;
+    /** Fingerprint of the last successfully redeemed one-shot invitation. */
+    storedInvitationFingerprint?: string;
+    /** Persist the non-secret fingerprint after an invitation is redeemed. */
+    onInvitationRedeemed?: (fingerprint: string) => void;
 }
 export declare function resolvePrivateEnterpriseToken(env: Record<string, string | undefined>): string | undefined;
 /** One-shot invitation token (evoinv_…), matching the hub's official onboarding script (A2A_INVITATION_TOKEN).

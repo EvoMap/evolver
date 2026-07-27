@@ -21,12 +21,14 @@ import { runSessionIngestTick, scanSessionDirs } from './index.js';
 import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
 import { resolveAtpAutoDeliver } from './atpAutoDeliver.js';
 import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
+import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
 import { runAutobuyPrompt } from './atpAutobuyPrompt.js';
 import * as solomode from './solo/mode.js';
 import * as gitGuard from './solo/gitGuard.js';
 import * as breaker from './solo/breaker.js';
 import { initializeWorkflowStartupRecovery } from './workflowRuntime.js';
 import { readAutoExecConfig } from './autoexecConfig.js';
+import { resolveLearningTrace } from './learningTrace.js';
 export { readAutoExecConfig } from './autoexecConfig.js';
 const ENV_FILE_UNAVAILABLE_DIAGNOSTIC = '[evolver-autoexec] env_file_unavailable\n';
 /** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
@@ -452,7 +454,9 @@ export function makeHubLink(cap, ingestor, reportEnabled = true) {
     };
 }
 function resolvePublicHub(env = process.env, connectHub = connectPublicHub) {
-    const dir = resolveAtpHome(env) ?? join(homedir(), '.evomap');
+    if (hubMode(env) !== 'public')
+        return undefined;
+    const dir = resolveIdentityHome(env);
     if (!existsSync(join(dir, 'token.json')))
         return undefined;
     try {
@@ -468,7 +472,8 @@ function resolvePublicHub(env = process.env, connectHub = connectPublicHub) {
     }
 }
 function hubMode(env) {
-    return String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase();
+    const mode = String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase();
+    return mode === 'public' || mode === 'private' ? mode : undefined;
 }
 /**
  * Resolve the hub link (reuse seam + outcome reporter) from the environment, or undefined when reuse is
@@ -498,6 +503,8 @@ export function resolveHubLink(env = process.env, ingestor, connectHub = connect
 }
 export function resolveHubQuestionLink(env = process.env, connectHub = connectPublicHub) {
     if (env['EVOLVER_OUTCOME_REPORT'] === '0')
+        return undefined;
+    if (hubMode(env) !== 'public')
         return undefined;
     const hub = resolvePublicHub(env, connectHub);
     if (!hub)
@@ -542,21 +549,35 @@ export function resolveSolidifyPermitGate(env = process.env, connectHub = connec
     const flag = solidifyVerifyFlag(env);
     if (flag === 'off')
         return undefined;
+    const mode = hubMode(env);
+    if (mode !== 'public') {
+        return flag === 'on'
+            ? () => ({
+                ok: false,
+                reason: mode === 'private'
+                    ? 'hub_solidify_verify_unavailable:private_hub_not_supported'
+                    : 'hub_solidify_verify_unavailable:invalid_hub_mode',
+            })
+            : undefined;
+    }
     const hubUrl = resolveConfiguredHubUrl(env) ?? (flag === 'on' ? resolveHubUrl(env) : undefined);
     if (!hubUrl) {
         if (flag === 'on')
             return () => ({ ok: false, reason: 'hub_solidify_verify_unavailable:no_hub_url' });
         return undefined;
     }
-    const senderId = resolveAtpSenderId(env);
+    const explicitCredentials = resolveExplicitNodeCredentials(env);
+    const { nodeSecret } = explicitCredentials;
+    const senderId = nodeSecret
+        ? explicitCredentials.senderId ?? resolveAtpSenderId(env)
+        : resolveAtpSenderId(env);
     if (!senderId) {
         if (flag === 'on')
             return () => ({ ok: false, reason: 'hub_solidify_verify_unavailable:no_sender_id' });
         return undefined;
     }
-    const nodeSecret = env['EVOMAP_NODE_SECRET']?.trim() || env['A2A_NODE_SECRET']?.trim();
     const authMode = nodeSecret ? 'legacy' : 'oauth';
-    const dir = resolveAtpHome(env);
+    const dir = resolveIdentityHome(env);
     if (authMode === 'oauth' && !existsSync(join(dir, 'token.json'))) {
         if (flag === 'on')
             return () => ({ ok: false, reason: 'hub_solidify_verify_unavailable:no_credentials' });
@@ -597,10 +618,16 @@ export function makeProxyHubCapability(proxy) {
     };
     return {
         auth,
-        search: async (query) => resultAssets(await proxy.search(proxySearchArgs(query))),
-        fetch: async (query) => resultAssets(await proxy.search(proxySearchArgs(query))),
+        search: async (query) => resultAssets(await proxy.search({
+            ...proxySearchArgs(query),
+            expectedHubMode: 'private',
+        })),
+        fetch: async (query) => resultAssets(await proxy.search({
+            ...proxySearchArgs(query),
+            expectedHubMode: 'private',
+        })),
         fetchAssetById: async (assetId) => {
-            const asset = firstAsset(await proxy.fetchAsset({ assetId }));
+            const asset = firstAsset(await proxy.fetchAsset({ assetId, expectedHubMode: 'private' }));
             return assetMatchesId(asset, assetId) ? asset : null;
         },
         publish: async () => ({ receiptId: 'proxy-disabled', status: 'rejected', terminal: true, reason: 'proxy_autoexec_publish_disabled' }),
@@ -612,6 +639,7 @@ export function makeProxyHubCapability(proxy) {
             ...(report.traceId ? { traceId: report.traceId } : {}),
             ...(report.timeSavedSeconds !== undefined ? { timeSavedSeconds: report.timeSavedSeconds } : {}),
             ...(report.reason ? { reason: report.reason } : {}),
+            expectedHubMode: 'private',
         })),
         task: {
             claim: async () => ({ claimId: 'proxy-disabled' }),
@@ -875,8 +903,13 @@ export async function runAutoExec(argv) {
     // hide home secrets — so a validation command there could phone home / read ~/.ssh. Don't let that be silent.
     let warnedNoIsolation = false;
     const probationOn = geneProbationEnabled();
+    // Learning trace (Learning Ops slice 2): per-task trace events + LearningPacket drafts to local files under
+    // evolution/learning-trace/ (traceId = cycleId). Default ON; kill switch EVOLVER_LEARNING_TRACE=0. Hub upload
+    // is a later slice — this wiring is file-only and best-effort, so it can never fail or slow a task.
+    const learningTrace = resolveLearningTrace(process.env);
     const deps = {
         engine, store, provenance, review, personality: personalityStore, memoryGraph,
+        ...(learningTrace.config ? { learningTrace: learningTrace.config } : {}),
         // Probation (#306, gated, default OFF via EVOLVER_GENE_PROBATION): try unproven auto-distilled genes (with their
         // strategy embedded) so the cross-AI loop self-closes — contained by the proven exec gates + worktree isolation.
         ...(probationOn ? { includeProbation: true } : {}),
@@ -931,7 +964,7 @@ export async function runAutoExec(argv) {
     const antiGeneDistill = resolveAutoDistillAntiGene(process.env, { store, review, ingestor });
     const transcriptDistill = resolveAutoDistillTranscript(process.env, { store, review, ingestor });
     const atpAutoDeliver = resolveAtpAutoDeliver(process.env);
-    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${hubLink ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
+    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${hubLink ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} learning-trace=${learningTrace.enabled ? `on(upload=${learningTrace.upload})` : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
     if (cfg.allowedRoots.length === 0)
         process.stdout.write('  (allowlist empty → deny-by-default: nothing runs until you add a repo to config.json)\n');
     // Single-instance lock (#106): a second daemon on the same home would double-process the queue. That is harmless

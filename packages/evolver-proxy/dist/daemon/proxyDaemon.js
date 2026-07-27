@@ -585,6 +585,11 @@ export class ProxyDaemon {
         return Number.isFinite(n) && n > 0 ? n : null;
     }
     async handleProxyRoute(ctx) {
+        const expectedHeader = singleHeader(ctx.req.headers['x-evomap-expected-hub-mode']);
+        if (hubModeMismatch(expectedHeader, this.deps.hubMode)) {
+            ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+            return true;
+        }
         if (await this.collaborationFacade.handle(ctx))
             return true;
         const handledAtp = await this.handleAtpRoute(ctx);
@@ -593,6 +598,7 @@ export class ProxyDaemon {
         if (ctx.route === 'GET /proxy/status') {
             ctx.json(200, {
                 running: true,
+                hub_mode: this.deps.hubMode ?? 'public',
                 node_id: this.lifecycle.nodeId ?? null,
                 outbound_pending: this.store.countPending('proxy', this.deps.runtimeNamespace),
                 inbound_pending: this.store.countPending('agent', this.deps.runtimeNamespace) + this.store.countPending('core', this.deps.runtimeNamespace),
@@ -616,6 +622,10 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /asset/search') {
             const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
             const limit = Math.max(1, Math.min(Number(body.limit ?? 5), 25));
             const rawSignals = Array.isArray(body.signals) ? body.signals : body.signalsAny;
             const signalsAny = Array.isArray(rawSignals) ? rawSignals.filter((s) => typeof s === 'string') : undefined;
@@ -638,6 +648,10 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /asset/fetch') {
             const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
             const ids = uniqueStrings([
                 ...(Array.isArray(body.asset_ids) ? body.asset_ids : []),
                 ...(typeof body.asset_id === 'string' ? [body.asset_id] : []),
@@ -664,6 +678,10 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /asset/submit') {
             const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { stored: false, error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
             if (!body.assets && !body.asset_id) {
                 ctx.json(400, { error: 'assets or asset_id is required' });
                 return true;
@@ -679,6 +697,10 @@ export class ProxyDaemon {
             // Pre-publish dry-run against the hub's quality + content-safety gate (nothing stored, no credits).
             // Same {assets:[…]} bundle shape as /asset/submit; the adapter wraps it in a GEP-A2A envelope.
             const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { valid: false, error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
             const bundle = Array.isArray(body.assets)
                 ? body.assets.filter((a) => Boolean(a && typeof a === 'object'))
                 : (body.asset && typeof body.asset === 'object' && !Array.isArray(body.asset) ? [body.asset] : []);
@@ -704,7 +726,12 @@ export class ProxyDaemon {
             return true;
         }
         if (ctx.route === 'POST /asset/reuse-result') {
-            const parsed = parseReuseResultReport(await ctx.readJson());
+            const body = await ctx.readJson();
+            if (hubModeMismatch(asRecord(body)['expected_hub_mode'], this.deps.hubMode)) {
+                ctx.json(409, { recorded: false, error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
+            const parsed = parseReuseResultReport(body);
             if ('error' in parsed) {
                 ctx.json(400, { recorded: false, error: parsed.error });
                 return true;
@@ -723,6 +750,10 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /conversation/distill') {
             const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
             const distill = await hubNs.distillConversation(body, { persist: body.persist === true, store: this.assetStore });
             if (!distill.ok) {
                 ctx.json(200, { ...distill, queued: false, submission: null });
@@ -929,7 +960,17 @@ function isValidator(value) {
     return Boolean(value && typeof value === 'object' && typeof value.validate === 'function');
 }
 function assetMatchesId(asset, assetId) {
-    return Boolean(asset && asset.asset_id === assetId);
+    if (!asset)
+        return false;
+    return assetId.startsWith('sha256:')
+        ? asset.asset_id === assetId
+        : asset.asset_id === assetId || asset['id'] === assetId;
+}
+function hubModeMismatch(expected, actual) {
+    return expected !== undefined && expected !== (actual ?? 'public');
+}
+function singleHeader(value) {
+    return Array.isArray(value) ? value[0] : value;
 }
 function uniqueStrings(values) {
     const seen = new Set();

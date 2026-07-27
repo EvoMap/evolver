@@ -2,7 +2,7 @@ import { assetstore } from '@evomap/evolver-core';
 type WritableLike = {
     write(chunk: string): unknown;
 };
-type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'insufficient_credits';
+type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'gene_unproven' | 'insufficient_credits';
 export interface ReuseParseResult {
     ok: boolean;
     assetId?: string;
@@ -48,9 +48,25 @@ interface HubCallResult {
     body?: unknown;
 }
 interface ContractHubTransport {
+    validationCapabilityOptional?: boolean;
     fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
     validate(bundle: readonly assetstore.AssetRecord[]): Promise<HubCallResult>;
     publish(bundle: readonly assetstore.AssetRecord[]): Promise<HubCallResult>;
+}
+interface PrivateContractProxy {
+    status(): Promise<unknown>;
+    fetchAsset(args: {
+        assetId: string;
+        expectedHubMode: 'private';
+    }): Promise<unknown>;
+    validateAssetBundle(bundle: {
+        assets: unknown[];
+        expected_hub_mode?: 'private';
+    }): Promise<unknown>;
+    submitAssetBundle(bundle: {
+        assets: unknown[];
+        expected_hub_mode?: 'private';
+    }): Promise<unknown>;
 }
 export interface CliContractDeps {
     out?: WritableLike;
@@ -61,6 +77,8 @@ export interface CliContractDeps {
     fetchAssetById?: (assetId: string) => Promise<assetstore.AssetRecord | null>;
     validate?: (bundle: readonly assetstore.AssetRecord[]) => Promise<HubCallResult>;
     publish?: (bundle: readonly assetstore.AssetRecord[]) => Promise<HubCallResult>;
+    /** Test seam for private-mode proxy discovery. Production resolves the loopback proxy from env/settings. */
+    resolveProxyClient?: (env: NodeJS.ProcessEnv) => PrivateContractProxy | undefined;
 }
 export declare function runReuseCommand(args: readonly string[], deps?: CliContractDeps): Promise<number>;
 export declare function runPublishCommand(args: readonly string[], deps?: CliContractDeps): Promise<number>;

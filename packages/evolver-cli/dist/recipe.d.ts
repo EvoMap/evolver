@@ -1,4 +1,4 @@
-import { assetstore, events, type hub as hubNs } from '@evomap/evolver-core';
+import { assetstore, events, verify, type hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
 export interface RecipeCliDeps {
     hub?: RecipeHub;
@@ -8,6 +8,7 @@ export interface RecipeCliDeps {
     err?: (line: string) => void;
     ingestor?: events.Ingestor;
     review?: assetstore.ReviewLedger;
+    runValidation?: typeof verify.runSandboxedValidation;
     connectHub?: (opts: ConnectPublicOptions) => {
         hub: PublicHubCapability;
         auth: hubNs.AuthProvider;
@@ -15,12 +16,15 @@ export interface RecipeCliDeps {
 }
 export interface RecipeHub {
     recipes?: hubNs.RecipeCapability;
+    publish(bundle: assetstore.AssetRecord[]): Promise<hubNs.PublishReceipt>;
     hello?(opts: {
         rotate: boolean;
         evolverVersion?: string;
+        preserveCredentials?: boolean;
     }): Promise<{
         ok: boolean;
         error?: string;
+        nodeId?: string;
     }>;
 }
 type ParseResult<T> = {

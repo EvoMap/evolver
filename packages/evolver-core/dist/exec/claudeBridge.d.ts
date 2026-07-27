@@ -3,6 +3,7 @@ import type { GeneDecision } from '../algo/geneSelection.js';
 import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneStrategyInfo } from './prompt.js';
 import type { PersonalityStore } from '../personality/store.js';
+import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
 import { type AgentRunner, type AgentRunnerOptions, type RunnerName } from './runnerRegistry.js';
 export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
 export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, } from './runnerRegistry.js';
@@ -86,6 +87,12 @@ export interface ExecBridgeOptions {
      * the store's default state (store.load never throws), it never fails the run.
      */
     personality?: PersonalityStore;
+    /**
+     * Optional learning-trace recorder (Learning Ops slice 2): when set, the bridge emits `model.called` around
+     * each agent spawn and `tool.failed`/`retry.attempted` metadata on failures. Best-effort observability — a
+     * recorder/sink failure must never affect the execution result, so every emission is wrapped defensively.
+     */
+    traceRecorder?: AgentRunTraceRecorder;
 }
 export declare class ExecBridgeDisabledError extends Error {
     constructor();

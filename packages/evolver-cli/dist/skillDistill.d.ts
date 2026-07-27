@@ -1,5 +1,5 @@
 import { assetstore, events } from '@evomap/evolver-core';
-import { type SkillExecution, type SynthesizeOptions } from './skill2gep.js';
+import { type SkillEvidenceMode, type SkillExecution, type SynthesizeOptions } from './skill2gep.js';
 export interface DiscoveredSkill {
     /** The skill's directory name (`<dir>/skills/<name>/`) — its canonical id, used for dedup. */
     name: string;
@@ -34,6 +34,12 @@ export interface SkillDistillResult {
     capsuleDiagnostic: string | null;
     errors: string[];
 }
+export interface SkillDistillationOptions extends SynthesizeOptions {
+    scenario?: string;
+    evidenceMode?: SkillEvidenceMode;
+    geneIdentity?: 'signals' | 'semantic';
+    completeValidationPlan?: boolean;
+}
 /**
  * Distill a SKILL.md + its real execution into a pooled gene (+ capsule evidence) (B3a). The gene lands
  * QUARANTINED — same human-review gate (A2a/A2b) as every auto-draft, so a skill-distilled gene never enters a
@@ -42,9 +48,7 @@ export interface SkillDistillResult {
  * diagnostic. Idempotent on the gene (intake dedups by signals; quarantine is sticky). NEVER throws on a bad
  * skill — returns errors instead, so a daemon scanning many skills is not broken by one.
  */
-export declare function recordSkillDistillation(skillMd: string, execution: SkillExecution, deps: SkillDistillDeps, opts?: SynthesizeOptions & {
-    scenario?: string;
-}): Promise<SkillDistillResult>;
+export declare function recordSkillDistillation(skillMd: string, execution: SkillExecution, deps: SkillDistillDeps, opts?: SkillDistillationOptions): Promise<SkillDistillResult>;
 /**
  * `evolver skill-distill --skill <SKILL.md|dir> [--execution <json|@file>] [--scenario <name>] [--strict]` (B3b-ii).
  *

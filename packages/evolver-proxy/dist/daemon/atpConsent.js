@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { events } from '@evomap/evolver-core';
 export class AtpProxySpendConsentError extends Error {
     source;
     constructor(source) {
@@ -10,7 +10,10 @@ export class AtpProxySpendConsentError extends Error {
     }
 }
 function atpProxyConsentPath(env = process.env) {
-    const home = env['EVOMAP_DIR'] ?? env['EVOLVER_HOME'] ?? env['EVOMAP_HOME'] ?? events.evomapHome();
+    const home = [env['EVOMAP_DIR'], env['EVOLVER_HOME'], env['EVOMAP_HOME']]
+        .map((value) => value?.trim())
+        .find((value) => Boolean(value))
+        ?? join(homedir(), '.evomap');
     return join(home, 'evolution', 'atp-autobuy-ack.json');
 }
 export function getAtpProxyConsent(env = process.env, ackPath = atpProxyConsentPath(env)) {

@@ -5,9 +5,10 @@
 // the gene.distilled audit event, and persisting the capsule evidence. The session→execution-trace extraction that
 // turns a discovered skill into a Capsule-bearing distillation is B3b-ii (a separate slice).
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { assetstore, algo, events } from '@evomap/evolver-core';
-import { parseSkillMd, reverseDistill } from './skill2gep.js';
+import { parseSkillMd, reverseDistill, } from './skill2gep.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 /**
  * Discover procedural skills under the given roots (B3b-i): each `<root>/skills/<name>/SKILL.md`. Pure enumeration
@@ -51,16 +52,20 @@ export function discoverSkills(roots) {
  */
 export async function recordSkillDistillation(skillMd, execution, deps, opts = {}) {
     const review = deps.review ?? reviewLedgerForStore(deps.store);
-    const parsed = parseSkillMd(skillMd);
+    const parsed = parseSkillMd(skillMd, { completeValidationPlan: opts.completeValidationPlan });
     const { gene, capsule, capsuleDiagnostic } = reverseDistill(parsed, execution, opts);
     const diag = capsuleDiagnostic ? (capsuleDiagnostic.detail ?? capsuleDiagnostic.reason) : null;
     if (!gene)
         return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: ['gene synthesis refused (strict mode or empty)'] };
-    const existing = (await deps.store.list('Gene', 1000)).map((g) => ({
-        id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
-        signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
-    }));
-    const r = algo.intakeGene(gene, existing);
+    const semanticIdentity = opts.geneIdentity === 'semantic';
+    const existing = semanticIdentity
+        ? []
+        : (await deps.store.list('Gene', 1000)).map((g) => ({
+            id: typeof g['id'] === 'string' ? String(g['id']) : undefined,
+            signals_match: Array.isArray(g['signals_match']) ? g['signals_match'] : [],
+        }));
+    const candidate = semanticIdentity ? { ...gene, id: semanticGeneId(gene) } : gene;
+    const r = algo.intakeGene(candidate, existing);
     if (!r.ok || !r.gene)
         return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: r.errors };
     const assetId = String(r.gene.asset_id);
@@ -78,7 +83,7 @@ export async function recordSkillDistillation(skillMd, execution, deps, opts = {
             await deps.ingestor.ingest({
                 type: 'gene.distilled',
                 payload: { geneId, assetId: r.gene.asset_id, category: r.gene.category, source: 'skill2gep', skill: parsed.name },
-                human: { title: `skill-distilled gene ${geneId} (UNPROVEN — awaiting review)`, severity: 'info' },
+                human: { title: `skill-distilled gene ${geneId} (UNPROVEN — awaiting review)`.slice(0, 80), severity: 'info' },
                 actor: { kind: 'machine', id: 'skill2gep' },
             });
         }
@@ -90,7 +95,11 @@ export async function recordSkillDistillation(skillMd, execution, deps, opts = {
             // intakeGene may REWRITE the gene id (it only keeps an id already in the distilled-prefix namespace), so the
             // capsule — built from the pre-intake candidate id — must be re-pointed to the POOLED gene id, else it
             // references a gene that is not in the store.
-            const pooledCapsule = { ...capsule, gene: geneId };
+            const pooledCapsule = {
+                ...capsule,
+                ...(semanticIdentity ? { id: semanticCapsuleId(geneId, capsule.id) } : {}),
+                gene: geneId,
+            };
             await deps.store.put(pooledCapsule); // evidence; references the (gated) gene
             capsuleId = pooledCapsule.id;
         }
@@ -101,6 +110,26 @@ export async function recordSkillDistillation(skillMd, execution, deps, opts = {
         // A write failed before the gene was committed → keep it recoverable: report the error so the caller retries.
         return { geneId: null, geneAssetId: null, quarantined: false, capsuleId: null, capsuleDiagnostic: diag, errors: [e instanceof Error ? e.message : String(e)] };
     }
+}
+function semanticGeneId(gene) {
+    const constraints = gene.constraints ?? {};
+    const normalized = JSON.stringify({
+        category: String(gene.category ?? ''),
+        signals: [...(gene.signals_match ?? [])].map((value) => String(value).trim().toLowerCase()).filter(Boolean).sort(),
+        strategy: [...(gene.strategy ?? [])].map((value) => String(value).trim()).filter(Boolean),
+        summary: String(gene.summary ?? ''),
+        preconditions: [...(gene.preconditions ?? [])].map((value) => String(value).trim()).filter(Boolean),
+        constraints: {
+            maxFiles: Number(constraints.max_files ?? 0),
+            forbiddenPaths: [...(constraints.forbidden_paths ?? [])].map((value) => String(value).trim()).filter(Boolean).sort(),
+        },
+        validation: [...(gene.validation ?? [])].map((value) => String(value).replace(/\s+/g, ' ').trim()).filter(Boolean),
+    });
+    return `gene_distilled_${createHash('sha256').update(normalized).digest('hex').slice(0, 24)}`;
+}
+function semanticCapsuleId(geneId, originalCapsuleId) {
+    const digest = createHash('sha256').update(`${geneId}|${originalCapsuleId}`).digest('hex').slice(0, 24);
+    return `cap_s2g_${digest}`;
 }
 /** Resolve a `--skill` argument (a SKILL.md file OR a skill directory) to the SKILL.md path. */
 function resolveSkillMdPath(skillArg) {

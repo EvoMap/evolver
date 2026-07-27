@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
@@ -10,12 +10,13 @@ import { ProxyDaemon } from '../daemon/proxyDaemon.js';
 import { resolveHubMode, resolveHubUrl } from '../daemon/selectHub.js';
 import { resolveIpcPort } from '../daemon/ipcConfig.js';
 import { traceCollectionEnabled } from '../llm/traceConfig.js';
-import { connectPrivateProxyHub } from '../private/adapterLoader.js';
+import { connectPrivateProxyHub, resolvePrivateEnterpriseToken, resolvePrivateInvitationToken, resolvePrivateNodeSecret, } from '../private/adapterLoader.js';
+import { PrivateNodeCredentialStore, PrivateNodeCredentialReadError, } from '../private/nodeCredentialStore.js';
 import { createAtpOrderConsentGate } from '../daemon/atpConsent.js';
 import { resolveProxyStorePath } from './proxyStorePath.js';
 import { publishProxySettings } from './proxySettings.js';
 import { expandHomePath, loadEnvFileFromEnv } from './envFile.js';
-import { resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
+import { readLegacyNodeId, resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
 import { getCurrentVersion } from '../selfUpdate/version.js';
 import { resolveSelfUpdatePolicy } from '../selfUpdate/policy.js';
 import { atomicReplaceExecutable, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, resolveSelfUpdateTarget, } from '../selfUpdate/releaseBinary.js';
@@ -30,19 +31,23 @@ export async function runProxyMain(options = {}) {
         process.stdout.write(proxyUsage());
         return;
     }
-    if (!options.environmentPrepared) {
-        const envFile = loadProxyEnvFile(process.env);
-        if (envFile.error)
-            process.stderr.write(`[evolver-proxy] failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(envFile.error)}\n`);
-    }
     // Recovery must run before any hub/store/runtime initialization. In particular,
-    // a broken store must not prevent a pending-health update from restoring the old binary.
-    const recovery = await recoverBoundDurableSelfUpdate({ env: process.env, processExecPath: process.execPath });
+    // a broken store or env-file pointer must not prevent a pending-health update from restoring the old binary.
+    const recovery = options.recoveryPrepared
+        ?? await recoverBoundDurableSelfUpdate({
+            env: proxyRecoveryEnvironment(process.env),
+            processExecPath: process.execPath,
+        });
     if (recovery.outcome === 'blocked') {
         throw new Error(`self_update_recovery_blocked:${recovery.failureCode ?? 'unknown'}`);
     }
     if (recovery.restartRequired)
         process.exit(78);
+    if (!options.environmentPrepared) {
+        const envFile = loadProxyEnvFile(process.env);
+        if (envFile.error)
+            throw new Error(`failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(envFile.error)}`);
+    }
     let storePath;
     let store;
     let proxyDaemon;
@@ -92,11 +97,21 @@ export async function runProxyMain(options = {}) {
                 },
             });
         };
-        const runtime = await connectHubRuntime({ mode, hubUrl, senderId, store });
+        const privateNodeCredentialStore = mode === 'private'
+            ? new PrivateNodeCredentialStore(storePath)
+            : undefined;
+        const runtime = await connectHubRuntime({
+            mode,
+            hubUrl,
+            senderId,
+            store,
+            ...(privateNodeCredentialStore ? { privateNodeCredentialStore } : {}),
+        });
         proxyDaemon = new ProxyDaemon({
             ...createProxyDaemonDeps({
                 runtime,
                 store,
+                hubMode: mode,
                 ipcToken,
                 ...(ipcPort !== undefined ? { ipcPort } : {}),
                 evolverVersion,
@@ -152,7 +167,17 @@ export function loadProxyEnvFile(env) {
     const supervisor = env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
     const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR'];
     const targetPath = env['EVOLVER_SELF_UPDATE_TARGET_PATH'];
+    const systemRootBindings = Object.entries(env)
+        .filter(([key]) => key.toLowerCase() === 'systemroot');
     const result = loadEnvFileFromEnv(env);
+    for (const key of Object.keys(env)) {
+        if (key.toLowerCase() === 'systemroot')
+            delete env[key];
+    }
+    for (const [key, value] of systemRootBindings) {
+        if (value !== undefined)
+            env[key] = value;
+    }
     if (supervisor === undefined) {
         delete env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
     }
@@ -164,6 +189,11 @@ export function loadProxyEnvFile(env) {
             env['EVOLVER_SELF_UPDATE_TARGET_PATH'] = targetPath;
     }
     return result;
+}
+function proxyRecoveryEnvironment(env) {
+    const recoveryEnv = { ...env };
+    loadProxyEnvFile(recoveryEnv);
+    return recoveryEnv;
 }
 function finalizeRecoveryTelemetry(store, recovery) {
     try {
@@ -302,6 +332,10 @@ export function prepareProxyCliEnvironment(argv, env) {
     if (options.envFile)
         env['EVOLVER_ENV_FILE'] = options.envFile;
     const envFile = loadProxyEnvFile(env);
+    applyProxyCliPathOptions(options, env);
+    return { options, envFile };
+}
+function applyProxyCliPathOptions(options, env) {
     if (options.home) {
         env['EVOMAP_DIR'] = options.home;
         env['EVOLVER_HOME'] = options.home;
@@ -320,7 +354,6 @@ export function prepareProxyCliEnvironment(argv, env) {
         env['EVOLVER_PROXY_STORE'] = options.store;
     if (options.settings)
         env['EVOLVER_PROXY_SETTINGS_FILE'] = options.settings;
-    return { options, envFile };
 }
 export async function runProxyCli(options = {}) {
     const argv = options.argv ?? process.argv.slice(2);
@@ -356,11 +389,28 @@ export async function runProxyCli(options = {}) {
             process.stdout.write(proxyUsage(argv[0] === 'proxy' ? 'evolver proxy' : 'evolver-proxy'));
             return 0;
         }
+        if (cliOptions.envFile)
+            env['EVOLVER_ENV_FILE'] = cliOptions.envFile;
+        applyProxyCliPathOptions(cliOptions, env);
+        const recovery = options.recoverStartup || !options.runMain
+            ? await (options.recoverStartup ?? recoverBoundDurableSelfUpdate)({
+                env: proxyRecoveryEnvironment(env),
+                processExecPath: options.processExecPath ?? process.execPath,
+            })
+            : undefined;
+        if (recovery?.outcome === 'blocked') {
+            throw new Error(`self_update_recovery_blocked:${recovery.failureCode ?? 'unknown'}`);
+        }
+        if (recovery?.restartRequired)
+            return 78;
         const prepared = prepareProxyCliEnvironment(argv, env);
         if (prepared.envFile.error) {
-            process.stderr.write(`[evolver-proxy] failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(prepared.envFile.error)}\n`);
+            throw new Error(`failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(prepared.envFile.error)}`);
         }
-        await (options.runMain ?? (() => runProxyMain({ environmentPrepared: true })))();
+        await (options.runMain ?? runProxyMain)({
+            environmentPrepared: true,
+            ...(recovery ? { recoveryPrepared: recovery } : {}),
+        });
         return 0;
     }
     catch (error) {
@@ -375,6 +425,20 @@ if (isDirectRun(import.meta.url, process.argv[1])) {
     void runProxyCli().then((exitCode) => {
         process.exitCode = exitCode;
     });
+}
+export function createVerifiedPublicSender(initialNodeId) {
+    let verifiedNodeId = initialNodeId;
+    return {
+        senderId: () => verifiedNodeId,
+        adopt: (nodeId) => {
+            verifiedNodeId = nodeId;
+        },
+    };
+}
+export function adoptVerifiedPublicNodeId(store, selection, sender, nodeId) {
+    store.setState('node_id', nodeId);
+    selection.nodeId = nodeId;
+    sender.adopt(nodeId);
 }
 export async function runProxyLoop(daemon, options = {}) {
     const minDelayMs = options.minDelayMs ?? 1_000;
@@ -451,6 +515,7 @@ export function createProxyDaemonDeps(options) {
     const traceBackfill = resolveTraceBackfillConfig(options.env ?? process.env);
     return {
         hub: options.runtime.hub,
+        ...(options.hubMode ? { hubMode: options.hubMode } : {}),
         store: options.store,
         ipcToken: options.ipcToken,
         ...(options.ipcPort !== undefined ? { ipcPort: options.ipcPort } : {}),
@@ -675,28 +740,79 @@ function selfUpdateSupervisorAttested(env) {
         || supervisor === 'windows-scheduled-task';
 }
 export function resolvePublicNodeSecret(deps) {
-    const envNodeSecret = process.env['EVOMAP_NODE_SECRET'] ?? process.env['A2A_NODE_SECRET'];
-    // version env precedence MUST mirror the node_secret precedence above (EVOMAP-first) so an operator
-    // who sets both env pairs always resolves a matched (secret, version). v2 standardizes on EVOMAP_*-first
-    // for BOTH secret and version; v1 uses A2A_*-first but pairs the two identically. Do not flip one alone.
-    const envNodeSecretVersion = parseNodeSecretVersion(process.env['EVOMAP_NODE_SECRET_VERSION'] ?? process.env['A2A_NODE_SECRET_VERSION']);
+    const explicit = resolveExplicitPublicNodeCredentials(process.env);
     const storedNodeSecret = deps.store.getState('node_secret');
+    const storedNodeId = deps.store.getState('node_id')?.trim() || undefined;
     const storedSource = deps.store.getState('node_secret_source');
     const storedNodeSecretVersion = parseNodeSecretVersion(deps.store.getState('node_secret_version'));
-    const storeSecret = storedNodeSecret && isNodeSecret(storedNodeSecret) ? storedNodeSecret : undefined;
-    if (storedSource === 'hub_rotate' && storeSecret) {
-        return { nodeSecret: storeSecret, nodeSecretVersion: storedNodeSecretVersion, source: 'hub_rotate', storeSecret };
-    }
-    if (envNodeSecret) {
-        const pairedStoreVersion = envNodeSecret === storeSecret ? storedNodeSecretVersion : undefined;
-        return { nodeSecret: envNodeSecret, nodeSecretVersion: envNodeSecretVersion ?? pairedStoreVersion, source: 'env', storeSecret };
-    }
-    if (storeSecret)
-        return { nodeSecret: storeSecret, nodeSecretVersion: storedNodeSecretVersion, source: 'store', storeSecret };
+    const storeSecret = storedSource?.startsWith('pending_')
+        ? undefined
+        : storedNodeSecret && isNodeSecret(storedNodeSecret) ? storedNodeSecret : undefined;
     const legacy = readLegacyNodeSecret(process.env);
+    const pairedStoreNodeId = storedNodeId
+        ?? (explicit.nodeSecret === storeSecret ? explicit.nodeId : undefined)
+        ?? (legacy && legacy.nodeSecret === storeSecret ? legacy.nodeId : undefined);
+    const completeExplicitOverridesOrphan = Boolean(explicit.nodeId
+        && explicit.nodeSecret
+        && explicit.nodeSecret !== storeSecret
+        && pairedStoreNodeId !== explicit.nodeId);
+    if (storedSource === 'hub_rotate' && storeSecret && !completeExplicitOverridesOrphan) {
+        return {
+            nodeSecret: storeSecret,
+            ...(pairedStoreNodeId ? { nodeId: pairedStoreNodeId } : {}),
+            nodeSecretVersion: storedNodeSecretVersion,
+            source: 'hub_rotate',
+            storeSecret,
+        };
+    }
+    if (explicit.nodeSecret) {
+        const pairedNodeId = explicit.nodeId
+            ?? (legacy?.nodeSecret === explicit.nodeSecret ? legacy.nodeId : undefined);
+        const pairedStoreVersion = explicit.nodeSecret === storeSecret ? storedNodeSecretVersion : undefined;
+        return {
+            nodeSecret: explicit.nodeSecret,
+            ...(pairedNodeId ? { nodeId: pairedNodeId } : {}),
+            nodeSecretVersion: explicit.nodeSecretVersion ?? pairedStoreVersion,
+            source: 'env',
+            storeSecret,
+        };
+    }
+    if (storeSecret) {
+        return {
+            nodeSecret: storeSecret,
+            ...(pairedStoreNodeId ? { nodeId: pairedStoreNodeId } : {}),
+            nodeSecretVersion: storedNodeSecretVersion,
+            source: 'store',
+            storeSecret,
+        };
+    }
     if (legacy)
         return { ...legacy, source: 'legacy_file' };
     return { nodeSecret: undefined, source: 'store' };
+}
+function resolveExplicitPublicNodeCredentials(env) {
+    const evomap = publicCredentialNamespace(env, 'EVOMAP');
+    const a2a = publicCredentialNamespace(env, 'A2A');
+    if (evomap.nodeId && evomap.nodeSecret)
+        return evomap;
+    if (a2a.nodeId && a2a.nodeSecret)
+        return a2a;
+    if (evomap.nodeId && a2a.nodeId && evomap.nodeId === a2a.nodeId) {
+        return evomap.nodeSecret ? evomap : a2a.nodeSecret ? a2a : {};
+    }
+    if (evomap.nodeId || a2a.nodeId)
+        return {};
+    return evomap.nodeSecret ? evomap : a2a.nodeSecret ? a2a : {};
+}
+function publicCredentialNamespace(env, prefix) {
+    const nodeId = env[`${prefix}_NODE_ID`]?.trim() || undefined;
+    const nodeSecret = env[`${prefix}_NODE_SECRET`]?.trim() || undefined;
+    const nodeSecretVersion = parseNodeSecretVersion(env[`${prefix}_NODE_SECRET_VERSION`]);
+    return {
+        ...(nodeId ? { nodeId } : {}),
+        ...(nodeSecret ? { nodeSecret } : {}),
+        ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
+    };
 }
 function setOptionalStoreState(store, key, value) {
     store.setState(key, value ?? '');
@@ -732,8 +848,13 @@ function readLegacyNodeSecret(env = process.env) {
         const nodeSecret = readTrimmedFile(join(home, 'node_secret'));
         if (!nodeSecret || !isNodeSecret(nodeSecret))
             continue;
+        const nodeId = readLegacyNodeId({ candidates: [join(home, 'node_id')] });
         const nodeSecretVersion = parseNodeSecretVersion(readTrimmedFile(join(home, 'node_secret_version')));
-        return { nodeSecret, ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}) };
+        return {
+            ...(nodeId ? { nodeId } : {}),
+            nodeSecret,
+            ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
+        };
     }
     return undefined;
 }
@@ -768,9 +889,20 @@ export function clearDivergedPublicNodeSecret(store, env = process.env) {
 export function persistSelectedPublicNodeSecret(store, selection) {
     if (selection.source !== 'legacy_file' || !selection.nodeSecret)
         return;
+    store.setState('node_secret_source', 'pending_legacy');
+    if (selection.nodeId)
+        store.setState('node_id', selection.nodeId);
     store.setState('node_secret', selection.nodeSecret);
-    store.setState('node_secret_source', 'legacy_file');
     setOptionalStoreState(store, 'node_secret_version', selection.nodeSecretVersion !== undefined ? String(selection.nodeSecretVersion) : undefined);
+    store.setState('node_secret_source', 'legacy_file');
+}
+export function persistRotatedPublicNodeCredentials(store, selection, secret, version) {
+    store.setState('node_secret_source', 'pending_rotate');
+    if (selection.nodeId)
+        store.setState('node_id', selection.nodeId);
+    store.setState('node_secret', secret);
+    setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+    store.setState('node_secret_source', 'hub_rotate');
 }
 export function persistPublicNodeSecretVersion(store, selection, version) {
     const currentStoreSecret = store.getState('node_secret');
@@ -801,10 +933,33 @@ function isDirectRun(metaUrl, argv1) {
 }
 export async function connectHubRuntime(deps) {
     if (deps.mode === 'private') {
+        const storedInvitationFingerprint = deps.store.getState('private_invitation_fingerprint')?.trim();
+        const runtimeEnv = deps.env ?? process.env;
+        let storedNodeSecret;
+        try {
+            storedNodeSecret = deps.privateNodeCredentialStore?.read();
+        }
+        catch (error) {
+            if (!(error instanceof PrivateNodeCredentialReadError)
+                || !hasPrivateEnrollmentFallback(runtimeEnv, storedInvitationFingerprint)) {
+                throw error;
+            }
+        }
         const runtime = await connectPrivateProxyHub({
             hubUrl: deps.hubUrl,
             senderId: deps.senderId,
-            env: deps.env ?? process.env,
+            env: runtimeEnv,
+            ...(storedNodeSecret ? { storedNodeSecret } : {}),
+            ...(storedInvitationFingerprint ? { storedInvitationFingerprint } : {}),
+            ...(deps.privateNodeCredentialStore ? {
+                onNodeSecretAdopted: (nodeSecret) => {
+                    deps.privateNodeCredentialStore?.write(nodeSecret);
+                    deps.store.setState('private_node_secret_source', 'hub_enrollment');
+                },
+            } : {}),
+            onInvitationRedeemed: (fingerprint) => {
+                deps.store.setState('private_invitation_fingerprint', fingerprint);
+            },
             ...(deps.now ? { now: deps.now } : {}),
             ...(deps.privateImporter ? { importer: deps.privateImporter } : {}),
         });
@@ -820,17 +975,17 @@ export async function connectHubRuntime(deps) {
     if (!nodeSecret)
         throw new Error('public legacy 模式需 EVOMAP_NODE_SECRET');
     persistSelectedPublicNodeSecret(deps.store, selection);
+    const verifiedSender = createVerifiedPublicSender(selection.nodeId);
+    const senderId = verifiedSender.senderId;
     const { hub, auth } = connectPublicHub({
         hubUrl: deps.hubUrl,
         authMode: 'legacy',
         nodeSecret,
         ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
-        senderId: deps.senderId,
+        senderId,
         antiAbuse: { source: 'evolver-proxy', proxyPortConfigured: true },
         onNodeSecretRotated: (secret, version) => {
-            deps.store.setState('node_secret', secret);
-            deps.store.setState('node_secret_source', 'hub_rotate');
-            setOptionalStoreState(deps.store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+            persistRotatedPublicNodeCredentials(deps.store, selection, secret, version);
         },
         onNodeSecretVersionUpdated: (version) => {
             persistPublicNodeSecretVersion(deps.store, selection, version);
@@ -843,10 +998,24 @@ export async function connectHubRuntime(deps) {
     });
     return {
         hub,
-        atp: new AtpHubClient({ baseUrl: deps.hubUrl, auth, fetchFn: globalFetchLike, senderId: deps.senderId }),
-        hello: (opts) => hub.hello(opts),
+        atp: new AtpHubClient({ baseUrl: deps.hubUrl, auth, fetchFn: globalFetchLike, senderId }),
+        hello: async (opts) => {
+            const result = await hub.hello(opts);
+            if (result.nodeId) {
+                adoptVerifiedPublicNodeId(deps.store, selection, verifiedSender, result.nodeId);
+            }
+            return result;
+        },
         heartbeat: (opts) => hub.heartbeat(opts),
     };
+}
+function hasPrivateEnrollmentFallback(env, storedInvitationFingerprint) {
+    if (resolvePrivateNodeSecret(env) || resolvePrivateEnterpriseToken(env))
+        return true;
+    const invitationToken = resolvePrivateInvitationToken(env);
+    if (!invitationToken)
+        return false;
+    return createHash('sha256').update(invitationToken).digest('hex') !== storedInvitationFingerprint;
 }
 export function resolveLegacyNodeSecret(envNodeSecret, storedNodeSecret, storedSource) {
     if (envNodeSecret)

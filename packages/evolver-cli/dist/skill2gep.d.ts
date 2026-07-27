@@ -14,12 +14,16 @@ export interface ParsedSkill {
     validation: string[];
     preconditions: string[];
 }
+export interface ParseSkillMdOptions {
+    /** Preserve validation commands from every matching section for fail-closed callers. */
+    completeValidationPlan?: boolean;
+}
 /**
  * Parse a SKILL.md into a structured intermediate — faithful port of v1 `parseSkillMd`. Pure. Section keywords are
  * matched against lower-cased headings and include CJK synonyms (skills authored in Chinese), though the signal
  * tokenizer keeps ASCII `[a-z0-9_]` only, so a CJK skill's signals come from its (English) frontmatter description.
  */
-export declare function parseSkillMd(skillMd: string): ParsedSkill;
+export declare function parseSkillMd(skillMd: string, opts?: ParseSkillMdOptions): ParsedSkill;
 /** Whether a validation command is safe to run as a Gene.validation entry (faithful port of v1
  *  policyCheck.isValidationCommandAllowed): a `node …` command with no command substitution, no shell
  *  metacharacters (outside quoted strings), and no node eval flags (-e/--eval/--print/-p). */
@@ -32,6 +36,7 @@ export interface SynthesizeOptions {
     skillName?: string;
     maxFiles?: number;
 }
+export type SkillEvidenceMode = 'workflow_execution' | 'validation_only';
 export interface SynthesizeResult {
     gene: algo.GeneCandidate | null;
     errors: string[];
@@ -103,7 +108,7 @@ export interface SkillExecution {
  * hallucinating a successful run to pad the registry. Non-success executions are honest, so not checked. Returns
  * the rejection reason, or null when clean.
  */
-export declare function detectForgery(execution: SkillExecution): string | null;
+export declare function detectForgery(execution: SkillExecution, evidenceMode?: SkillEvidenceMode): string | null;
 /** A synthesized Capsule (faithful to v1's shape; schema-conform / persistence is B3's concern). */
 export interface SkillCapsule {
     type: 'Capsule';
@@ -149,6 +154,7 @@ export type AssembleResult = {
  */
 export declare function assembleCapsule(gene: algo.GeneCandidate, execution: SkillExecution, opts?: {
     scenario?: string;
+    evidenceMode?: SkillEvidenceMode;
 }): AssembleResult;
 export interface ReverseDistillResult {
     gene: algo.GeneCandidate | null;
@@ -169,5 +175,6 @@ export interface ReverseDistillResult {
  */
 export declare function reverseDistill(parsed: ParsedSkill, execution?: SkillExecution, opts?: SynthesizeOptions & {
     scenario?: string;
+    evidenceMode?: SkillEvidenceMode;
 }): ReverseDistillResult;
 export {};

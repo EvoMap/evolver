@@ -31,8 +31,8 @@ export const RUNTIME_CAPABILITY_MATRIX = {
         runtime: 'gemini',
         ingest: supported('normalized Gemini CLI session adapter'),
         inject: unsupported('no Evolver Gemini injection installer'),
-        execute: experimental('hermetic Gemini CLI 0.46.0 headless JSON contract exists, but provider-backed live E2E smoke is not complete'),
-        verify: experimental('hermetic structured-result and git-diff proof contract exists, but provider-backed live E2E verification is not complete'),
+        execute: experimental('Gemini CLI 0.46.0 deterministic real-runtime cycle smoke passed; provider-backed live E2E smoke is not complete'),
+        verify: experimental('real CLI edit, independent validation, Git patch proof, and cleanup passed with deterministic responses; provider-backed live E2E verification is not complete'),
         resume: unsupported('Gemini resume accepts latest/index; ingested UUIDs cannot be mapped reliably'),
     },
     antigravity: {

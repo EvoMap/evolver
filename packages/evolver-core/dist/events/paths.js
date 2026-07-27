@@ -42,3 +42,7 @@ export function tracesDir(env = process.env) {
 export function assetCallLogPath(env = process.env) {
     return join(evomapHome(env), 'asset_call_log.jsonl');
 }
+/** Learning Ops local output dir: per-run LearningPacket drafts + trace-event JSONL (hub upload is a later slice). */
+export function learningTraceDir(env = process.env) {
+    return env['EVOLVER_LEARNING_TRACE_DIR'] ?? join(evomapHome(env), 'evolution', 'learning-trace');
+}

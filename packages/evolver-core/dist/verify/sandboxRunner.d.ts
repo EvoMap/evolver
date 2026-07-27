@@ -19,13 +19,41 @@ export interface SandboxOptions {
      * unprivileged mount namespaces are unavailable. Binaries live outside these dirs, so the command still runs.
      */
     hideHomeSecrets?: boolean;
+    /** Remount the inherited filesystem read-only inside the mount namespace, leaving only an isolated /tmp writable. */
+    readOnlyFilesystem?: boolean;
+    /** Host scratch directory exposed as the sandbox's only writable filesystem. */
+    writableTmpDir?: string;
+    /** Read-only checkout root remounted at its original absolute path after HOME and /tmp are hidden. */
+    readOnlyRoot?: string;
+    /** Put the full command tree in a bounded cgroup v2. Required by verified Skill execution. */
+    resourceLimits?: boolean;
     /** Injected unshare-availability probe (test seam). Default: a real `unshare -r -m -n true` check (cached). */
     unshareCheck?: () => boolean;
+    /** Injected cgroup allocator (test seam). */
+    resourceGroupFactory?: () => SandboxResourceGroup | null;
 }
+export interface SandboxResourceGroup {
+    procsFile: string;
+    cleanup: () => void;
+}
+/** Configure an already-created cgroup. Kept separate so limit values are testable without resource exhaustion. */
+export declare function configureSandboxResourceGroup(path: string): boolean;
+/** Allocate a delegated cgroup v2 for one validation command. Returns null unless every limit is enforceable. */
+export declare function createSandboxResourceGroup(): SandboxResourceGroup | null;
+/** Join the cgroup before exec, so attacker-controlled code never runs outside the aggregate resource budget. */
+export declare function resourceLimitedCommand(cmd: string, args: readonly string[], procsFile: string): {
+    cmd: string;
+    args: string[];
+};
+export declare function sandboxResourceLimitsAvailable(): boolean;
 /** Wrap an (executable,args) in unprivileged namespaces per the requested isolation (pure — testable). */
 export declare function isolationCommand(bin: string, args: readonly string[], opts: {
     noNetwork?: boolean;
     hideHomeSecrets?: boolean;
+    readOnlyFilesystem?: boolean;
+    writableTmpDir?: string;
+    readOnlyRoot?: string;
+    cwd?: string;
 }): {
     cmd: string;
     args: string[];
