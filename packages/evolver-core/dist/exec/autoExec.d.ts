@@ -11,6 +11,7 @@ import type { ReuseOutcomeSummary, ReuseOutcomeEvent } from '../ops/reuseOutcome
 import type { PersonalityStore } from '../personality/store.js';
 import type { MemoryGraphProvider } from '../algo/memoryGraph.js';
 import { type LearningPacketSink, type TraceSink } from '../trace/learningTrace.js';
+import type { TraceReadOptions } from '../trace/trajectoryExport.js';
 export interface AutoExecTask {
     id: string;
     repo: string;
@@ -124,6 +125,22 @@ export interface AutoExecDeps {
         traceSink?: TraceSink;
         /** Hub packet sourceRepo column; default 'evolver-v2'. */
         sourceRepo?: string;
+        /**
+         * Proxy llm_turn fold (Learning Ops slice 5): when set, after the cycle (and BEFORE run.completed, so
+         * sequence order holds) the run's wall-clock window of proxy trace records is read from `dir`
+         * (llm-trace-*.jsonl day-files) and folded into the recorder via recordLlmTurn — real per-request
+         * model.called + tool.called/tool.failed detail instead of only the bridge's coarse spawn event.
+         * Correlation is the time window + session-first-turn heuristic (see trace/proxyTurns.ts). Best-effort:
+         * a missing dir / unreadable file / no proxy degrades to zero folded turns, never a verdict change.
+         */
+        proxyTraces?: {
+            /** Proxy trace day-file dir (events/paths.ts tracesDir()). */
+            dir: string;
+            /** Decryption material for encrypted trace envelopes (allowPartial is always forced on). */
+            readOptions?: TraceReadOptions;
+            /** Injected clock for deterministic tests. Default Date.now. */
+            now?: () => number;
+        };
     };
 }
 export interface ForcedGeneFields {

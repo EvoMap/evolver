@@ -6,6 +6,10 @@ export interface LearningTraceWiring {
         packetSink: trace.LearningPacketSink;
         traceSink?: trace.TraceSink;
         sourceRepo?: string;
+        proxyTraces?: {
+            dir: string;
+            readOptions?: trace.TraceReadOptions;
+        };
     } | null;
 }
 export declare function resolveLearningTrace(env?: NodeJS.ProcessEnv): LearningTraceWiring;

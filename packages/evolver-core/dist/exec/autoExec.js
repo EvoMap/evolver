@@ -12,6 +12,7 @@ import { runEvolutionCycle } from '../algo/orchestrator.js';
 import { makeSafeExecute, makeTrustedGeneResolver } from './autonomousCycle.js';
 import { findSignalHints } from './openPrRegistry.js';
 import { AgentRunTraceRecorder, buildLearningPacketDraft } from '../trace/learningTrace.js';
+import { collectRunLlmTurns } from '../trace/proxyTurns.js';
 /** Same path-containment as the bridge guard — used here to refuse before running anything (clean verdict). */
 function withinAllowlist(repo, roots) {
     const c = resolvePath(repo);
@@ -147,6 +148,10 @@ export async function runAutoExecTask(deps, rawTask, safety) {
             ...(deps.learningTrace.traceSink ? { sink: deps.learningTrace.traceSink } : {}),
         })
         : undefined;
+    // Wall-clock window of this run, used to correlate the proxy's llm_turn records (slice 5). Captured
+    // unconditionally-cheaply only when the fold is configured.
+    const proxyTraceClock = deps.learningTrace?.proxyTraces?.now ?? Date.now;
+    const runStartMs = deps.learningTrace?.proxyTraces ? proxyTraceClock() : 0;
     try {
         traceRecorder?.runStarted({ taskSummary: task.expectedEffect, signals: cycleSignals, metadata: { repo: task.repo, target: task.target } });
     }
@@ -224,6 +229,18 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     const status = res.finalStage === 'solidified' ? 'solidified' : res.finalStage === 'failed' ? 'failed' : 'innovated';
     const cap = res.capsule;
     if (traceRecorder && deps.learningTrace) {
+        // Proxy llm_turn fold (slice 5): fold the run window's per-request turns BEFORE run.completed so the
+        // trajectory stays sequence-ordered (model/tool detail inside the run, completion last). Own try — a
+        // throwing sink mid-fold must not cost the run its completion event or packet draft.
+        try {
+            const proxyTraces = deps.learningTrace.proxyTraces;
+            if (proxyTraces) {
+                const turns = collectRunLlmTurns(proxyTraces.dir, { startMs: runStartMs, endMs: proxyTraceClock() }, proxyTraces.readOptions ? { readOptions: proxyTraces.readOptions } : {});
+                for (const turn of turns)
+                    traceRecorder.recordLlmTurn(turn);
+            }
+        }
+        catch { /* observability only */ }
         try {
             traceRecorder.runCompleted({
                 status: res.finalStage === 'solidified' ? 'success' : 'failed',
