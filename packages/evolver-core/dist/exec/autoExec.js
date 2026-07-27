@@ -159,12 +159,25 @@ export async function runAutoExecTask(deps, rawTask, safety) {
             hubCandidates = [];
         }
     }
+    // evaluation fill-in (slice 6): the validate hook is the run's external verifier (sandboxed validation
+    // commands), so its result — when it actually RAN — becomes the packet's evaluation.verification
+    // (verifier 'automated_test'). Observation is a pass-through wrapper: the hook's result reaches the
+    // bridge unchanged, and a run where validation never fired keeps the evaluation placeholder.
+    let observedVerification;
+    const baseValidate = deps.validate?.(task);
+    const observingValidate = baseValidate
+        ? async (mutation, decision, cwd) => {
+            const v = await baseValidate(mutation, decision, cwd);
+            observedVerification = { verifier: 'automated_test', passed: v.passed, ...(v.score !== undefined ? { score: v.score } : {}) };
+            return v;
+        }
+        : undefined;
     const execute = makeSafeExecute(task.repo, deps.store, safety, {
         ...(deps.provenance ? { provenance: deps.provenance } : {}),
         ...(deps.review ? { review: deps.review } : {}),
         ...(deps.includeProbation ? { includeProbation: true } : {}),
         ...(task.validationCmds ? { validationCmds: task.validationCmds } : {}),
-        ...(deps.validate ? { validate: deps.validate(task) } : {}),
+        ...(observingValidate ? { validate: observingValidate } : {}),
         ...(deps.personality ? { personality: deps.personality } : {}),
         ...(deps.agent ? { agent: deps.agent } : {}),
         ...(deps.git ? { git: deps.git } : {}),
@@ -224,6 +237,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
                 taskSummary: task.expectedEffect,
                 signals: cycleSignals,
                 environment: { repo: task.repo, runner: safety.runner ?? 'claude' },
+                ...(observedVerification !== undefined ? { verification: observedVerification } : {}),
             }));
         }
         catch { /* packet delivery is best-effort; never fail the task */ }

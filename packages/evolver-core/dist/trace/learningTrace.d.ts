@@ -128,12 +128,24 @@ export declare function learningTraceObserver(deps: {
     recorder: AgentRunTraceRecorder;
     timeoutMs?: number;
 }): Observer;
+/**
+ * Externally-verified run evidence (Learning Ops slice 6): the runtime's validate hook (sandboxed
+ * validation commands) is an `automated_test` verifier in the hub VERIFIERS vocabulary. Only a hook
+ * that actually RAN produces one of these — agent self-report never fills evaluation.
+ */
+export interface LearningPacketVerification {
+    verifier: 'automated_test';
+    passed: boolean;
+    score?: number;
+}
 export interface LearningPacketDraftInput {
     /** e.g. 'evolver-v2'. Hub column sourceRepo. */
     sourceRepo: string;
     taskSummary?: string;
     signals?: readonly string[];
     environment?: Record<string, unknown>;
+    /** When present, fills evaluation (placeholder → false). Omit when no external verifier ran. */
+    verification?: LearningPacketVerification;
 }
 /** Local draft aligned with hub LearningOpsPacket ingest fields; placeholders are explicit, not implied. */
 export interface LearningPacketDraft {
@@ -160,10 +172,13 @@ export interface LearningPacketDraft {
         placeholder: true;
         items: never[];
     };
+    /** placeholder:false ⇔ an external verifier ran (verification input) — then verifier/verifierPassed are set. */
     evaluation: {
-        placeholder: true;
+        placeholder: boolean;
         outcomeStatus: 'success' | 'failed' | 'unknown';
-        verifier: null;
+        verifier: 'automated_test' | null;
+        verifierPassed?: boolean;
+        verifierScore?: number;
         failureCategory: string | null;
     };
     governance: {

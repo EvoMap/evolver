@@ -11,6 +11,12 @@ export interface HubLearningPacketSinkOptions {
 }
 /** Deterministic content hash over the draft body (hub contentHash column, dedup aid). */
 export declare function learningPacketContentHash(draft: trace.LearningPacketDraft): string;
+/**
+ * Auth headers for the strict learning-packets routes (requireAuth reads Authorization only).
+ * A legacy body credential (bodyFields.node_secret) is promoted to Bearer — the strict schemas
+ * reject extra body fields, so credentials must never ride in the body here.
+ */
+export declare function learningOpsAuthHeaders(auth: hub.AuthProvider, method: string, path: string): Promise<Record<string, string>>;
 /** Map a core draft to the hub createLearningPacket body. Exported for tests and for the private adapter to reuse. */
 export declare function learningPacketWireBody(draft: trace.LearningPacketDraft, nodeId?: string): Record<string, unknown>;
 /**

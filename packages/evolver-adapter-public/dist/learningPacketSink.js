@@ -30,6 +30,19 @@ function outcomeStatusFor(status) {
 export function learningPacketContentHash(draft) {
     return `sha256:${createHash('sha256').update(JSON.stringify(draft)).digest('hex')}`;
 }
+/**
+ * Auth headers for the strict learning-packets routes (requireAuth reads Authorization only).
+ * A legacy body credential (bodyFields.node_secret) is promoted to Bearer — the strict schemas
+ * reject extra body fields, so credentials must never ride in the body here.
+ */
+export async function learningOpsAuthHeaders(auth, method, path) {
+    const signed = await auth.authenticate({ method, path });
+    const headers = { 'content-type': 'application/json', ...(signed.headers ?? {}) };
+    const bodySecret = signed.bodyFields?.['node_secret'];
+    if (headers['authorization'] === undefined && bodySecret !== undefined)
+        headers['authorization'] = `Bearer ${String(bodySecret)}`;
+    return headers;
+}
 /** Map a core draft to the hub createLearningPacket body. Exported for tests and for the private adapter to reuse. */
 export function learningPacketWireBody(draft, nodeId) {
     const truncated = draft.trajectory.length > HUB_TRACE_EVENTS_MAX;
@@ -48,6 +61,9 @@ export function learningPacketWireBody(draft, nodeId) {
         contentHash: learningPacketContentHash(draft),
         ...(nodeId ? { nodeId } : {}),
         ...(outcomeStatus ? { outcomeStatus } : {}),
+        // evaluation fill-in (slice 6): a non-placeholder evaluation carries the runtime's external verifier
+        // ('automated_test' is in the hub VERIFIERS enum); passed/score details ride inside payload.evaluation.
+        ...(draft.evaluation.verifier !== null ? { verifier: draft.evaluation.verifier } : {}),
         ...(failureCategory ? { failureCategory } : {}),
         ...(draft.task.summary !== null ? { summary: draft.task.summary } : {}),
         payload: {
@@ -93,13 +109,7 @@ export class HubLearningPacketSink {
         try {
             const url = `${this.opts.baseUrl}/api/learning-packets`;
             assertHubUrlSecure(url);
-            const signed = await this.opts.auth.authenticate({ method: 'POST', path: '/api/learning-packets' });
-            // The strict learning-packets schema rejects extra body fields, so a legacy body credential
-            // (bodyFields.node_secret) is promoted to Authorization: Bearer — the header requireAuth reads.
-            const headers = { 'content-type': 'application/json', ...(signed.headers ?? {}) };
-            const bodySecret = signed.bodyFields?.['node_secret'];
-            if (headers['authorization'] === undefined && bodySecret !== undefined)
-                headers['authorization'] = `Bearer ${String(bodySecret)}`;
+            const headers = await learningOpsAuthHeaders(this.opts.auth, 'POST', '/api/learning-packets');
             const res = await this.opts.fetchFn(url, {
                 method: 'POST',
                 headers,

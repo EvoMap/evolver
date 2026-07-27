@@ -244,9 +244,11 @@ export function buildLearningPacketDraft(recorder, input) {
         trajectory: events,
         artifacts: { placeholder: true, items: [] },
         evaluation: {
-            placeholder: true,
+            placeholder: input.verification === undefined,
             outcomeStatus: completedStatus === 'success' ? 'success' : completedStatus === 'failed' ? 'failed' : 'unknown',
-            verifier: null,
+            verifier: input.verification?.verifier ?? null,
+            ...(input.verification !== undefined ? { verifierPassed: input.verification.passed } : {}),
+            ...(input.verification?.score !== undefined ? { verifierScore: input.verification.score } : {}),
             failureCategory: typeof failureKind === 'string' ? failureKind : null,
         },
         governance: { placeholder: true, redactionStatus: 'metadata_only', consentStatus: 'unknown', trainingEligible: false, retentionPolicy: 'standard' },
