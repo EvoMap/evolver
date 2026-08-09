@@ -21,4 +21,5 @@ export declare function runV1RunCompat(argv: readonly string[], deps?: V1CompatD
 export declare function runV1SolidifyCompat(argv: readonly string[], deps?: V1CompatDeps): Promise<number>;
 export declare function runV1FetchCompat(argv: readonly string[], deps?: V1CompatDeps): Promise<number>;
 export declare function runV1WebuiCompat(argv: readonly string[], deps?: V1CompatDeps): Promise<number>;
+export declare function runV1ExecCompat(argv: readonly string[], deps?: V1CompatDeps): Promise<number>;
 export {};

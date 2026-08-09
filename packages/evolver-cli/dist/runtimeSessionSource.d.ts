@@ -3,6 +3,7 @@ export interface RuntimeSessionSource {
     agent: string;
     label: string;
     sessionId?: string;
+    resumeIdentityProvenance?: 'canonical_native_transcript';
     turns: NormalizedTurn[];
 }
 export interface RuntimeSessionParseDiagnostics {
@@ -15,5 +16,5 @@ export interface RuntimeSessionParseResult {
     diagnostics: RuntimeSessionParseDiagnostics;
 }
 export declare function isRuntimeSessionSourcePath(path: string): boolean;
-export declare function parseRuntimeSessionSourcesWithDiagnostics(path: string, readSource?: (path: string) => string): RuntimeSessionParseResult;
-export declare function parseRuntimeSessionSources(path: string, readSource?: (path: string) => string): RuntimeSessionSource[];
+export declare function parseRuntimeSessionSourcesWithDiagnostics(path: string, readSource?: (path: string) => string, nativeSessionHome?: string): RuntimeSessionParseResult;
+export declare function parseRuntimeSessionSources(path: string, readSource?: (path: string) => string, nativeSessionHome?: string): RuntimeSessionSource[];

@@ -16,6 +16,11 @@ export interface PublishReceipt {
     assetIds?: string[];
     /** 终态标记: true=不可重试(reject/quarantine/402), SyncEngine 不得 incrementRetry(money-safety risk). */
     terminal?: boolean;
+    /** Adapter-owned structured rejection metadata; callers must not infer policy from free-form `reason`. */
+    rejection?: {
+        code: 'invalid_request' | 'credit_shortage' | 'node_unauthorized' | 'not_found' | 'duplicate' | 'invalid_payload' | 'cooldown' | 'hub_rejected';
+        retryAfterMs?: number;
+    };
     /** M8-1: 公版经济侧只读回执(core 不解释经济语义, 仅透传供观测/UI). private hub 多为空. */
     economic?: {
         creditShortage?: boolean;
@@ -24,6 +29,10 @@ export interface PublishReceipt {
         balanceKind?: 'user_balance' | 'node_balance';
         gdiScore?: number;
     };
+}
+export interface PublishOptions {
+    /** Stable, non-blank per logical publish so adapters can make transport retries idempotent. */
+    idempotencyKey?: string;
 }
 /** 资产查询. 复用 assetstore SearchQuery, 不发明第二套查询 DSL. */
 export type HubQuery = SearchQuery;
@@ -274,6 +283,7 @@ export interface HttpRequestLike {
     method: string;
     path: string;
     body?: string;
+    signal?: AbortSignal;
 }
 /**
  * Pluggable auth. Example implementations: public OAuth device token / Ed25519 keypair / enterprise SSO (OIDC/LDAP).
@@ -295,7 +305,7 @@ export interface HubCapability {
      * 异步发布. 公版 /a2a/publish 收 **bundle**[Gene,Capsule,(EvolutionEvent)](一个 cycle 的产物一起发, +GDI);
      * 传单资产=[asset]。core 已 normalizeForPut(算/校验 asset_id), hub 做经济/治理/质量 gate。
      */
-    publish(bundle: AssetRecord[]): Promise<PublishReceipt>;
+    publish(bundle: AssetRecord[], options?: PublishOptions): Promise<PublishReceipt>;
     /** 拉取资产. hub 侧排序/scope(公版 GDI, 私有 RBAC); core 不重排. */
     fetch(query: HubQuery): Promise<AssetRecord[]>;
     /** 搜索资产. 与 fetch 同 shape, 差异在 hub 侧召回策略. */

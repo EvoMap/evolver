@@ -5,3 +5,4 @@ export * from './valueLedger.js';
 export * from './valueOutreach.js';
 export * from './recall.js';
 export * from './reuseOutcomes.js';
+export * from './evolutionGraphProjection.js';

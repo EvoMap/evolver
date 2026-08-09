@@ -35,6 +35,7 @@ export class HubLearningPacketFeedbackClient {
             const res = await this.opts.fetchFn(url, {
                 method: 'POST',
                 headers,
+                redirect: 'manual',
                 body: JSON.stringify({
                     decision: feedback.decision,
                     ...(feedback.feedbackType !== undefined ? { feedbackType: feedback.feedbackType } : {}),
@@ -66,7 +67,7 @@ export class HubLearningPacketFeedbackClient {
             const url = `${this.opts.baseUrl}${path}`;
             assertHubUrlSecure(url);
             const headers = await learningOpsAuthHeaders(this.opts.auth, 'GET', path);
-            const res = await this.opts.fetchFn(url, { method: 'GET', headers });
+            const res = await this.opts.fetchFn(url, { method: 'GET', headers, redirect: 'manual' });
             if (res.status !== 200)
                 return { ok: false, reason: await failureReason(res) };
             const body = await res.json().catch(() => null);

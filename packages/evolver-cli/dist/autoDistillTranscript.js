@@ -12,9 +12,10 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { algo, assetstore, events, hub, verify, signals } from '@evomap/evolver-core';
+import { algo, assetstore, events, hub, signals } from '@evomap/evolver-core';
 import { adapterForPath } from '@evomap/evolver-runtime-adapters';
 import { asGeneCandidate, parseDistillOutput, normalizeValidation, jaccardDuplicate, resolveDistillRunner, p3Decide, } from './autoDistillLlm.js';
+import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MIN_TURNS = 2;
 const DEFAULT_MIN_CHARS = 200;
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -169,7 +170,7 @@ export async function autoDistillTranscript(options) {
     const intake = algo.intakeGene(normalized, existing);
     if (!intake.ok || !intake.gene)
         return { ok: false, mode, reason: 'validation_failed', candidate: normalized };
-    const validation = await verify.runSandboxedValidation(intake.gene.validation, cwd, {
+    const validation = await runRequiredSandboxedValidation(intake.gene.validation, cwd, {
         timeoutMs: options.validationTimeoutMs ?? envInt(env, 'EVOLVE_DISTILL_VALIDATION_TIMEOUT_MS', DEFAULT_VALIDATION_TIMEOUT_MS),
     });
     if (!validation.passed)

@@ -1,8 +1,11 @@
 {
   "name": "@evomap/evolver-core",
-  "version": "2.0.0-beta.18",
+  "version": "2.0.2",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
   "description": "hub-无关核心: 算法引擎/原材料/mailbox/资产库/workflow",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,7 +26,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

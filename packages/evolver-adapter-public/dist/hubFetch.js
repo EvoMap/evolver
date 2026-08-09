@@ -5,6 +5,29 @@ export const HUB_ERROR_TEXT_MAX_BYTES = 8 * 1024;
 export const HUB_JSON_TEXT_MAX_BYTES = 4 * 1024 * 1024;
 export const HUB_UNREACHABLE_BACKOFF_BASE_MS = 60_000;
 export const HUB_UNREACHABLE_BACKOFF_MAX_MS = 10 * 60_000;
+export const HUB_GENERAL_TIMEOUT_MS = 15_000;
+export const HUB_SEARCH_TIMEOUT_MS = 8_000;
+export const HUB_HEARTBEAT_TIMEOUT_MS = 10_000;
+export const HUB_EVENT_POLL_TIMEOUT_MS = 60_000;
+export const HUB_HELLO_TIMEOUT_MS = 15_000;
+const HUB_OPERATION_TIMEOUT_KEYS = {
+    general: 'generalMs',
+    search: 'searchMs',
+    heartbeat: 'heartbeatMs',
+    poll: 'pollMs',
+    hello: 'helloMs',
+};
+const DEFAULT_AUTH_TIMEOUT_MS = 20_000;
+const DEFAULT_DEADLINE_SCHEDULER = {
+    set(callback, delayMs) {
+        const timer = setTimeout(callback, delayMs);
+        timer.unref?.();
+        return timer;
+    },
+    clear(handle) {
+        clearTimeout(handle);
+    },
+};
 export class AuthError extends Error {
     status;
     body;
@@ -21,10 +44,12 @@ export class AuthError extends Error {
 export class HubClientError extends Error {
     status;
     body;
-    constructor(status, body) {
+    retryAfterMs;
+    constructor(status, body, retryAfterMs) {
         super(`hub ${status}`);
         this.status = status;
         this.body = body;
+        this.retryAfterMs = retryAfterMs;
         this.name = 'HubClientError';
     }
 }
@@ -52,8 +77,17 @@ function mergeRequestHeaders(requestHeaders, signedHeaders) {
     const headers = {};
     for (const [name, value] of Object.entries(requestHeaders ?? {})) {
         const normalized = name.toLowerCase();
-        if (!PROTECTED_REQUEST_HEADERS.has(normalized) && !signedNames.has(normalized))
+        if (PROTECTED_REQUEST_HEADERS.has(normalized) || signedNames.has(normalized))
+            continue;
+        if (normalized === 'idempotency-key') {
+            const trimmed = value.trim();
+            if (!trimmed)
+                throw new Error('idempotency-key must be non-empty');
+            headers[normalized] = trimmed;
+        }
+        else {
             headers[normalized] = value;
+        }
     }
     headers['content-type'] = 'application/json';
     return { ...headers, ...signedHeaders };
@@ -67,69 +101,206 @@ function mergeRequestHeaders(requestHeaders, signedHeaders) {
  */
 export class HubFetch {
     deps;
+    operationTimeouts;
+    deadlineScheduler;
     constructor(deps) {
         this.deps = deps;
+        this.operationTimeouts = resolveHubOperationTimeouts(deps.env ?? process.env, deps.operationTimeouts);
+        this.deadlineScheduler = deps.deadlineScheduler ?? DEFAULT_DEADLINE_SCHEDULER;
     }
     async call(method, path, bodyObj, query, requestHeaders) {
+        const operation = hubOperationForRequest(path, bodyObj);
         const draft = bodyObj !== undefined ? JSON.stringify(bodyObj) : '';
-        const signed = await this.deps.auth.authenticate({ method, path, ...(draft ? { body: draft } : {}) });
-        const sender = this.deps.senderId();
-        const creds = signed.bodyFields ?? {};
-        let url = `${this.deps.baseUrl}${path}`;
-        assertHubUrlSecure(url); // request-level scheme guard (defense in depth): even a misconfigured injected fetchFn cannot egress in plaintext
-        let body;
-        const headers = mergeRequestHeaders(requestHeaders, signed.headers);
-        if (method === 'GET') {
-            const qs = new URLSearchParams();
-            if (sender)
-                qs.set('sender_id', sender); // identifier, not a credential — query is fine
-            if (query)
-                for (const [k, v] of Object.entries(query))
-                    if (v !== undefined)
-                        qs.set(k, String(v)); // non-credential GET params (e.g. semantic-search q)
-            // #8: credentials must NOT go in the query (leaks to access logs / proxies even over https).
-            // node_secret travels via Authorization: Bearer; the hub reads it there, never from the query.
-            const nodeSecret = creds['node_secret'];
-            if (nodeSecret !== undefined && headers['authorization'] === undefined)
-                headers['authorization'] = `Bearer ${String(nodeSecret)}`;
-            const q = qs.toString();
-            if (q)
-                url += `?${q}`;
-        }
-        else {
-            const postCreds = { ...creds };
-            const nodeSecret = postCreds['node_secret'];
-            if ((path === '/a2a/hello' || path === '/a2a/mailbox/outbound') && nodeSecret !== undefined) {
-                if (headers['authorization'] === undefined)
-                    headers['authorization'] = `Bearer ${String(nodeSecret)}`;
-                delete postCreds['node_secret'];
-            }
-            if (path === '/a2a/mailbox/outbound' && sender) {
-                const qs = new URLSearchParams({ sender_id: sender });
-                url += `?${qs.toString()}`;
-            }
-            body = JSON.stringify({ ...(sender ? { sender_id: sender } : {}), ...postCreds, ...(bodyObj ?? {}) });
-        }
-        let res;
+        const authDeadline = createHubDeadline(this.deadlineScheduler, method, path, operation, this.deps.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
+        let signed;
         try {
-            res = await this.deps.fetchFn(url, { method, headers, ...(body ? { body } : {}) });
+            signed = await awaitWithAbort(this.deps.auth.authenticate({ method, path, ...(draft ? { body: draft } : {}), signal: authDeadline.signal }), authDeadline.signal);
         }
-        catch (err) {
-            if (isHubUnreachableError(err)) {
-                throw new HubUnreachableError(`${method} ${path} failed before a Hub API response arrived`, { context: `${method} ${path}`, retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS });
+        catch (error) {
+            if (isAuthTransportTimeout(error)) {
+                throw new HubUnreachableError('hub authentication timed out', {
+                    context: `${method} ${path}`,
+                    retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+                    operation,
+                });
             }
-            throw err;
+            throw error;
         }
-        const parsed = await readHubResponseJsonForClassification(res);
-        throwIfParsedHubUnreachableResponse(res, parsed, `${method} ${path}`);
-        if (res.status === 401 || res.status === 403)
-            throw new AuthError(res.status, parsed.body);
-        if (res.status >= 400 && res.status < 500)
-            throw new HubClientError(res.status, parsed.ok ? parsed.body : {});
-        if (res.status >= 500)
-            throw new Error(`hub ${res.status}`);
-        return parsed.body;
+        finally {
+            authDeadline.dispose();
+        }
+        const timeoutMs = this.operationTimeouts[HUB_OPERATION_TIMEOUT_KEYS[operation]];
+        const deadline = createHubDeadline(this.deadlineScheduler, method, path, operation, timeoutMs);
+        try {
+            const sender = this.deps.senderId();
+            const creds = signed.bodyFields ?? {};
+            let url = `${this.deps.baseUrl}${path}`;
+            assertHubUrlSecure(url); // request-level scheme guard (defense in depth): even a misconfigured injected fetchFn cannot egress in plaintext
+            let body;
+            const headers = mergeRequestHeaders(requestHeaders, signed.headers);
+            if (method === 'GET') {
+                const qs = new URLSearchParams();
+                if (sender)
+                    qs.set('sender_id', sender); // identifier, not a credential — query is fine
+                if (query)
+                    for (const [k, v] of Object.entries(query))
+                        if (v !== undefined)
+                            qs.set(k, String(v)); // non-credential GET params (e.g. semantic-search q)
+                // #8: credentials must NOT go in the query (leaks to access logs / proxies even over https).
+                // node_secret travels via Authorization: Bearer; the hub reads it there, never from the query.
+                const nodeSecret = creds['node_secret'];
+                if (nodeSecret !== undefined && headers['authorization'] === undefined)
+                    headers['authorization'] = `Bearer ${String(nodeSecret)}`;
+                const q = qs.toString();
+                if (q)
+                    url += `?${q}`;
+            }
+            else {
+                const postCreds = { ...creds };
+                const nodeSecret = postCreds['node_secret'];
+                if ((path === '/a2a/hello' || path === '/a2a/mailbox/outbound') && nodeSecret !== undefined) {
+                    if (headers['authorization'] === undefined)
+                        headers['authorization'] = `Bearer ${String(nodeSecret)}`;
+                    delete postCreds['node_secret'];
+                }
+                if (path === '/a2a/mailbox/outbound' && sender) {
+                    const qs = new URLSearchParams({ sender_id: sender });
+                    url += `?${qs.toString()}`;
+                }
+                body = JSON.stringify({ ...(sender ? { sender_id: sender } : {}), ...postCreds, ...(bodyObj ?? {}) });
+            }
+            let res;
+            try {
+                res = await awaitWithAbort(this.deps.fetchFn(url, {
+                    method,
+                    headers,
+                    ...(body ? { body } : {}),
+                    signal: deadline.signal,
+                    redirect: 'manual',
+                }), deadline.signal);
+            }
+            catch (err) {
+                if (deadline.signal.aborted)
+                    throw deadline.error;
+                if (isHubUnreachableError(err)) {
+                    throw new HubUnreachableError(`${method} ${path} failed before a Hub API response arrived`, { context: `${method} ${path}`, retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS });
+                }
+                throw err;
+            }
+            if (deadline.signal.aborted)
+                throw deadline.error;
+            const retryAfterMs = parseRetryAfterMs(headerValue(res.headers, 'retry-after'), this.deps.now?.() ?? Date.now());
+            if (res.status >= 300 && res.status < 400) {
+                await drainHubResponse(res, { signal: deadline.signal });
+                if (deadline.signal.aborted)
+                    throw deadline.error;
+                throw new HubUnreachableError(`${method} ${path} refused an unexpected Hub redirect`, { status: res.status, context: `${method} ${path}`, retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS });
+            }
+            const parsed = await readHubResponseJsonForClassification(res, deadline.signal);
+            if (deadline.signal.aborted)
+                throw deadline.error;
+            throwIfParsedHubUnreachableResponse(res, parsed, `${method} ${path}`, retryAfterMs);
+            if (res.status === 401 || res.status === 403)
+                throw new AuthError(res.status, parsed.body);
+            if (res.status >= 400 && res.status < 500) {
+                throw new HubClientError(res.status, parsed.ok ? parsed.body : {}, retryAfterMs);
+            }
+            if (res.status >= 500)
+                throw new Error(`hub ${res.status}`);
+            return parsed.body;
+        }
+        finally {
+            deadline.dispose();
+        }
     }
+}
+function positiveTimeoutMs(value, fallback) {
+    if (value === undefined || value === '')
+        return fallback;
+    const raw = String(value);
+    if (!/^\d+$/.test(raw))
+        return fallback;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 && parsed < 2 ** 31 ? parsed : fallback;
+}
+export function resolveHubOperationTimeouts(env = process.env, overrides = {}) {
+    const fromEnv = {
+        generalMs: positiveTimeoutMs(env['EVOLVER_HTTP_TRANSPORT_TIMEOUT_MS'], HUB_GENERAL_TIMEOUT_MS),
+        searchMs: positiveTimeoutMs(env['EVOLVER_HUB_SEARCH_TIMEOUT_MS'], HUB_SEARCH_TIMEOUT_MS),
+        heartbeatMs: positiveTimeoutMs(env['EVOLVER_HEARTBEAT_TIMEOUT_MS'], HUB_HEARTBEAT_TIMEOUT_MS),
+        pollMs: positiveTimeoutMs(env['EVOLVER_EVENT_POLL_TIMEOUT_MS'], HUB_EVENT_POLL_TIMEOUT_MS),
+        helloMs: positiveTimeoutMs(env['EVOLVER_HELLO_TIMEOUT_MS'], HUB_HELLO_TIMEOUT_MS),
+    };
+    return {
+        generalMs: positiveTimeoutMs(overrides.generalMs, fromEnv.generalMs),
+        searchMs: positiveTimeoutMs(overrides.searchMs, fromEnv.searchMs),
+        heartbeatMs: positiveTimeoutMs(overrides.heartbeatMs, fromEnv.heartbeatMs),
+        pollMs: positiveTimeoutMs(overrides.pollMs, fromEnv.pollMs),
+        helloMs: positiveTimeoutMs(overrides.helloMs, fromEnv.helloMs),
+    };
+}
+function hubOperationForRequest(path, bodyObj) {
+    if (path === '/a2a/fetch') {
+        const payload = bodyObj?.['payload'];
+        if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+            && payload['search_only'] === true)
+            return 'search';
+    }
+    if (path === '/a2a/assets/semantic-search' || path === '/a2a/directory/search')
+        return 'search';
+    if (path === '/a2a/heartbeat')
+        return 'heartbeat';
+    if (path === '/a2a/events/poll')
+        return 'poll';
+    if (path === '/a2a/hello')
+        return 'hello';
+    return 'general';
+}
+function createHubDeadline(scheduler, method, path, operation, timeoutMs) {
+    const controller = new AbortController();
+    const error = new HubUnreachableError(`${method} ${path} timed out after ${timeoutMs}ms`, {
+        context: `${method} ${path}`,
+        retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+        operation,
+        timeoutMs,
+    });
+    const handle = scheduler.set(() => controller.abort(error), timeoutMs);
+    return {
+        signal: controller.signal,
+        error,
+        dispose: () => scheduler.clear(handle),
+    };
+}
+function abortReason(signal) {
+    if (signal.reason instanceof Error)
+        return signal.reason;
+    const error = new Error('Hub request aborted');
+    error.name = 'AbortError';
+    return error;
+}
+async function awaitWithAbort(promise, signal) {
+    const pending = Promise.resolve(promise);
+    if (!signal)
+        return await pending;
+    if (signal.aborted) {
+        void pending.catch(() => { });
+        throw abortReason(signal);
+    }
+    return await new Promise((resolve, reject) => {
+        const onAbort = () => {
+            cleanup();
+            reject(abortReason(signal));
+        };
+        const cleanup = () => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+        void pending.then((value) => {
+            cleanup();
+            resolve(value);
+        }, (error) => {
+            cleanup();
+            reject(error);
+        });
+    });
 }
 function hubErrorCode(body) {
     const record = body && typeof body === 'object' && !Array.isArray(body) ? body : undefined;
@@ -167,6 +338,19 @@ function headerValue(headers, name) {
         return '';
     }
 }
+function parseRetryAfterMs(value, now) {
+    const raw = value.trim();
+    if (!raw || !Number.isFinite(now))
+        return undefined;
+    if (/^\d+$/.test(raw)) {
+        const milliseconds = Number(raw) * 1_000;
+        return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+    }
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(raw))
+        return undefined;
+    const retryAt = Date.parse(raw);
+    return Number.isFinite(retryAt) ? Math.max(0, retryAt - now) : undefined;
+}
 export function hubResponseContentType(res) {
     return headerValue(res?.headers, 'content-type').toLowerCase();
 }
@@ -194,6 +378,10 @@ const NETWORK_DISRUPTION_CODES = new Set([
     'UND_ERR_HEADERS_TIMEOUT',
     'UND_ERR_BODY_TIMEOUT',
 ]);
+function isAuthTransportTimeout(error) {
+    return error instanceof Error
+        && (error.message === 'oauth_refresh_timeout' || error.message === 'device_flow_timeout');
+}
 export function isHubUnreachableError(err) {
     const e = err;
     if (!e)
@@ -225,11 +413,11 @@ function toBytes(value) {
         return Buffer.from(value, 'utf8');
     return Buffer.from(String(value ?? ''), 'utf8');
 }
-export async function drainHubResponse(res) {
+export async function drainHubResponse(res, opts = {}) {
     const body = res?.body;
     try {
         if (body && typeof body.cancel === 'function') {
-            await body.cancel();
+            await awaitWithAbort(Promise.resolve(body.cancel()), opts.signal);
         }
     }
     catch {
@@ -246,7 +434,7 @@ export async function readHubResponseText(res, opts = {}) {
         let truncated = false;
         try {
             for (;;) {
-                const part = await reader.read();
+                const part = await awaitWithAbort(reader.read(), opts.signal);
                 if (part.done)
                     break;
                 const bytes = toBytes(part.value);
@@ -257,7 +445,7 @@ export async function readHubResponseText(res, opts = {}) {
                         total += remaining;
                     }
                     truncated = true;
-                    await reader.cancel?.();
+                    await cancelReader(reader, opts.signal);
                     break;
                 }
                 chunks.push(bytes);
@@ -265,7 +453,7 @@ export async function readHubResponseText(res, opts = {}) {
             }
         }
         catch (err) {
-            await reader.cancel?.();
+            await cancelReader(reader, opts.signal);
             throw err;
         }
         finally {
@@ -278,14 +466,27 @@ export async function readHubResponseText(res, opts = {}) {
         return '';
     throw new Error('hub response body stream missing');
 }
+async function cancelReader(reader, signal) {
+    try {
+        if (reader.cancel)
+            await awaitWithAbort(Promise.resolve(reader.cancel()), signal);
+    }
+    catch {
+        // Cancellation is best-effort; preserve the read/timeout error.
+    }
+}
 export async function readHubResponseJson(res, opts = {}) {
-    const text = await readHubResponseText(res, { maxBytes: opts.maxBytes ?? HUB_JSON_TEXT_MAX_BYTES });
+    const text = await readHubResponseText(res, {
+        maxBytes: opts.maxBytes ?? HUB_JSON_TEXT_MAX_BYTES,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+    });
     return JSON.parse(text);
 }
 export async function throwIfHubUnreachableResponse(res, context = 'hub') {
+    const retryAfterMs = parseRetryAfterMs(headerValue(res.headers, 'retry-after'), Date.now());
     if (!isHubUnreachableResponse(res)) {
         const parsed = await readHubResponseJsonForClassification(res);
-        throwIfParsedHubUnreachableResponse(res, parsed, context);
+        throwIfParsedHubUnreachableResponse(res, parsed, context, retryAfterMs);
         return;
     }
     const status = Number(res.status) || undefined;
@@ -296,22 +497,30 @@ export async function throwIfHubUnreachableResponse(res, context = 'hub') {
     catch {
         // Best-effort pool hygiene only.
     }
-    throw new HubUnreachableError(`${context} returned a non-API Hub response (${status ?? 'unknown status'}, ${contentType})`, { ...(status !== undefined ? { status } : {}), contentType, context, retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS });
+    throw new HubUnreachableError(`${context} returned a non-API Hub response (${status ?? 'unknown status'}, ${contentType})`, {
+        ...(status !== undefined ? { status } : {}),
+        contentType,
+        context,
+        retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS,
+    });
 }
-async function readHubResponseJsonForClassification(res) {
+async function readHubResponseJsonForClassification(res, signal) {
     if (isHubUnreachableResponse(res)) {
-        await drainHubResponse(res);
+        await drainHubResponse(res, { ...(signal ? { signal } : {}) });
         return { ok: false, reason: 'non_api_content_type' };
     }
     try {
-        const text = await readHubResponseText(res, { maxBytes: HUB_JSON_TEXT_MAX_BYTES });
+        const text = await readHubResponseText(res, {
+            maxBytes: HUB_JSON_TEXT_MAX_BYTES,
+            ...(signal ? { signal } : {}),
+        });
         return { ok: true, body: JSON.parse(text) };
     }
     catch (err) {
         return { ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
 }
-function throwIfParsedHubUnreachableResponse(res, parsed, context) {
+function throwIfParsedHubUnreachableResponse(res, parsed, context, retryAfterMs) {
     const status = Number(res.status) || undefined;
     const contentType = hubResponseContentType(res);
     if (!isHubApiResponse(res) || !parsed.ok) {
@@ -319,7 +528,7 @@ function throwIfParsedHubUnreachableResponse(res, parsed, context) {
             ...(status !== undefined ? { status } : {}),
             contentType: contentType || 'unknown content-type',
             context,
-            retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+            retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS,
         });
     }
 }
@@ -355,6 +564,7 @@ export function assertHubUrlSecure(url, env = process.env) {
 }
 export const HUB_CONNECT_TIMEOUT_MS = 10_000;
 export const HUB_IPV4FIRST_PRIMARY_CONNECT_TIMEOUT_MS = 2_500;
+export const HUB_TCP_KEEPALIVE_IDLE_MS = 15_000;
 export function resolveHubIpFamily(env = process.env) {
     const raw = String(env['EVOMAP_HUB_IP_FAMILY'] ?? 'ipv4first').trim().toLowerCase();
     if (raw === 'ipv4' || raw === 'v4' || raw === '4' || raw === 'ipv4first' || raw === 'ipv4-first')
@@ -419,24 +629,41 @@ function errorCode(err) {
 function shouldFallbackFromIpv4(err, hubIpFamily) {
     return hubIpFamily === 'ipv4first' && IPV4_FALLBACK_CODES.has(errorCode(err) ?? '');
 }
+function configureHubSocket(socket) {
+    if (socket === null || typeof socket !== 'object')
+        return;
+    const setKeepAlive = socket.setKeepAlive;
+    if (typeof setKeepAlive !== 'function')
+        return;
+    try {
+        setKeepAlive.call(socket, true, HUB_TCP_KEEPALIVE_IDLE_MS);
+    }
+    catch {
+        // Kernel/socket support varies. A keepalive tuning failure must never turn a valid TLS connection into an outage.
+    }
+}
 function makeHubConnector(config) {
     const primaryConnect = buildConnector(config.primaryConnectOpts);
     const fallbackConnect = config.fallbackConnectOpts ? buildConnector(config.fallbackConnectOpts) : null;
     const connector = (opts, cb) => {
-        primaryConnect(opts, (err, socket) => {
-            if (err && fallbackConnect && shouldFallbackFromIpv4(err, config.hubIpFamily)) {
-                fallbackConnect(opts, cb);
-                return;
-            }
+        const finish = (err, socket) => {
             if (err) {
                 cb(err, null);
                 return;
             }
-            if (socket) {
-                cb(null, socket);
+            if (!socket) {
+                cb(new Error('[hubFetch] undici connector returned no socket'), null);
                 return;
             }
-            cb(new Error('[hubFetch] undici connector returned no socket'), null);
+            configureHubSocket(socket);
+            cb(null, socket);
+        };
+        primaryConnect(opts, (err, socket) => {
+            if (err && fallbackConnect && shouldFallbackFromIpv4(err, config.hubIpFamily)) {
+                fallbackConnect(opts, finish);
+                return;
+            }
+            finish(err, socket);
         });
     };
     const marked = connector;
@@ -447,7 +674,12 @@ const HUB_FETCH_CONFIG = makeHubFetchTransportConfig(process.env);
 // Singleton TLS-enforcing dispatcher: overrides a global NODE_TLS_REJECT_UNAUTHORIZED=0. The Agent and
 // fetch MUST come from the same undici package (mixing an npm-undici Agent with Node's built-in global.fetch
 // throws UND_ERR_INVALID_ARG). The connector applies TLS verification plus the selected Hub IP-family policy.
-const STRICT_TLS_AGENT = new Agent({ connect: makeHubConnector(HUB_FETCH_CONFIG) });
+const STRICT_TLS_AGENT = new Agent({
+    connect: makeHubConnector(HUB_FETCH_CONFIG),
+    keepAliveTimeout: 10_000,
+    keepAliveMaxTimeout: 60_000,
+    pipelining: 1,
+});
 export function _getHubFetchConfigForTest(env) {
     return env ? makeHubFetchTransportConfig(env) : {
         ...HUB_FETCH_CONFIG,
@@ -458,6 +690,9 @@ export function _getHubFetchConfigForTest(env) {
 }
 export function _shouldFallbackFromIpv4ForTest(err, hubIpFamily = HUB_FETCH_CONFIG.hubIpFamily) {
     return shouldFallbackFromIpv4(err, hubIpFamily);
+}
+export function _configureHubSocketForTest(socket) {
+    configureHubSocket(socket);
 }
 // Test seam: lets unit tests swap the underlying fetch without forking the call path; production must never reassign it from outside.
 let _fetchImpl = undiciFetch;
@@ -476,7 +711,7 @@ function warnInsecureOnce() {
 export function _resetInsecureWarningForTest() { _insecureWarned = false; }
 /** Default production transport: secure mode = https guard + forced TLS dispatcher; escape-hatch mode = skip both (local dev). */
 export const globalFetchLike = async (url, init) => {
-    const raw = init;
+    const raw = { ...init, redirect: 'manual' };
     if (insecureAllowed(process.env)) {
         warnInsecureOnce();
         return (await _fetchImpl(url, raw));

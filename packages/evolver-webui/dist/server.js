@@ -256,6 +256,39 @@ export class WebUIServer {
             }
             if (p === '/api/triggers')
                 return this.json(res, ev.listTriggers(await this.eventSnapshots.read()));
+            if (p === '/api/evolution-graph') {
+                // Read-only projection of the SAME event snapshot the other cards read. The WebUI never re-derives lineage:
+                // core owns the projector, the server only bounds the window and serializes the summary + edge list.
+                if (!requireGet(req, res))
+                    return;
+                try {
+                    const graph = ops.projectEvolutionGraph(await this.eventSnapshots.read(), {
+                        maxEvents: positiveIntParam(url.searchParams.get('maxEvents')),
+                    });
+                    return this.json(res, {
+                        available: true,
+                        graphId: graph.graphId,
+                        generatedAt: graph.generatedAt,
+                        dashboard: graph.dashboard,
+                        nodes: graph.nodes.map((node) => ({ id: node.id, kind: node.kind, label: redactDiagnosticText(node.label) })),
+                        edges: graph.edges.map((edge) => ({
+                            id: edge.id,
+                            kind: edge.kind,
+                            from: edge.from,
+                            to: edge.to,
+                            ...(edge.reason ? { reason: redactDiagnosticText(edge.reason) } : {}),
+                            ...(edge.metricDelta ? { metricDelta: edge.metricDelta } : {}),
+                            provenance: edge.provenance.map((entry) => ({ kind: entry.kind, ref: entry.ref })),
+                        })),
+                    });
+                }
+                catch {
+                    return this.send(res, 503, 'application/json', JSON.stringify({
+                        available: false,
+                        error: 'evolution_graph_unavailable',
+                    }));
+                }
+            }
             if (p === '/api/daily-summary') {
                 const day = url.searchParams.get('day') ?? new Date(this.now()).toISOString().slice(0, 10);
                 return this.json(res, ev.dailySummary(await this.eventSnapshots.read(), day));

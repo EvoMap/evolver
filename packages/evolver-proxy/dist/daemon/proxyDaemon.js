@@ -1,5 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { mailbox, hub as hubNs, shadow as shadow_, assetstore, util } from '@evomap/evolver-core';
+import { mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util } from '@evomap/evolver-core';
+import { AuthError, HubClientError, HubUnreachableError } from '@evomap/evolver-adapter-public';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
 import { executeForceUpdate } from '../selfUpdate/executor.js';
@@ -7,11 +9,40 @@ import { reportPendingSelfUpdateLastUpdate, reportSelfUpdateLastUpdate } from '.
 import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
+import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 export const DEFAULT_IPC_PORT = 19820;
+// V1 local-proxy compatibility contract; independent of the V2 mailbox envelope schema.
+const PROXY_PROTOCOL_VERSION = '0.1.0';
+const PROXY_STATUS_SCHEMA_VERSION = 1;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_PROXY_TICK_ERROR_LENGTH = 2_000;
 const MAX_HEARTBEAT_TICK_ERROR_LENGTH = 1_000;
 const MAX_EPHEMERAL_IPC_LISTEN_ATTEMPTS = 5;
+const DEFAULT_ASSET_SEARCH_CACHE_TTL_MS = 30_000;
+const DEFAULT_ASSET_SEARCH_CACHE_MAX = 256;
+const DEFAULT_ASSET_SEARCH_STALE_GRACE_MS = 5 * 60_000;
+const MAX_ASSET_SUBMIT_ITEMS = 50;
+const ASYNC_ASSET_SUBMIT_REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const ASYNC_ASSET_SUBMIT_PREFIX = 'async_asset_submit:';
+const OUTBOUND_HUB_MODE_FIELD = '__evolver_hub_mode';
+const SYNC_ASSET_SUBMIT_PREFIX = 'sync_asset_submit:';
+const SYNC_ASSET_SUBMIT_TYPE_RANK = {
+    Gene: 0,
+    Capsule: 1,
+    EvolutionEvent: 2,
+    AntiGene: 3,
+};
+const SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY = 'sync_asset_submit:idempotency_scope:v1';
+const SYNC_ASSET_SUBMIT_DIRECT_RETRY_GRACE_MS = 30_000;
+const DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS = 15_000;
+class OutboundHubModeMismatchError extends Error {
+    retryable = true;
+    retryAfterMs = 1_000;
+    constructor(expected, actual) {
+        super(`asset_submit hub mode mismatch: queued for ${expected}, running in ${actual}`);
+        this.name = 'OutboundHubModeMismatchError';
+    }
+}
 /**
  * ProxyDaemon(M6-4) 装配层: 把 core(MailboxStore/Dispatcher/MailboxDaemon/IpcServer) +
  * HubBindings(M6-1) + SyncEngine(M6-2) + LifecycleManager(M6-3) 拼成系统级 proxy.
@@ -31,9 +62,21 @@ export class ProxyDaemon {
     validator;
     atp;
     collaborationFacade;
+    publishRecallVerifier;
+    proxyHandler;
     ipc;
     now;
     random;
+    assetSearchCacheTtlMs;
+    assetSearchCacheMax;
+    assetSearchStaleGraceMs;
+    assetSubmitResponseTimeoutMs;
+    synchronousAssetSubmitScope;
+    shadowMode;
+    assetSearchCache = new Map();
+    assetSearchInflight = new Map();
+    synchronousAssetSubmitInflight = new Map();
+    assetSearchCooldownUntil = 0;
     nextHeartbeatAt;
     heartbeatFailures = 0;
     heartbeatGeneration = 0;
@@ -42,6 +85,10 @@ export class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     wakeRunnerPending = false;
     started = false;
+    lifecycleArmed = false;
+    lastTickAt;
+    nextTickDueAt;
+    consecutiveTickFailures = 0;
     storeClosed = false;
     forceUpdateTriggerInFlight = false;
     forceUpdateLastTriggeredAt;
@@ -55,20 +102,34 @@ export class ProxyDaemon {
         this.deps = deps;
         this.now = deps.now ?? (() => Date.now());
         this.random = deps.random ?? Math.random;
+        this.assetSearchCacheTtlMs = positiveIntegerOr(deps.assetSearchCacheTtlMs, DEFAULT_ASSET_SEARCH_CACHE_TTL_MS);
+        this.assetSearchCacheMax = positiveIntegerOr(deps.assetSearchCacheMax, DEFAULT_ASSET_SEARCH_CACHE_MAX);
+        this.assetSearchStaleGraceMs = positiveIntegerOr(deps.assetSearchStaleGraceMs, DEFAULT_ASSET_SEARCH_STALE_GRACE_MS);
+        this.assetSubmitResponseTimeoutMs = positiveIntegerOr(deps.assetSubmitResponseTimeoutMs, DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS);
         if (!deps.store && !deps.storePath)
             throw new Error('ProxyDaemon: 需 store 或 storePath 之一');
         const shadow = deps.shadowMode === 'shadow';
+        this.shadowMode = shadow;
         if (shadow && !deps.shadowSink)
             throw new Error('ProxyDaemon: shadow 模式需 shadowSink');
         // M8 shadow 装配: 在边界包 decorator, 下游 makeHubBindings/Dispatcher/SyncEngine/MailboxDaemon 零改.
         this.store = deps.store
             ?? (shadow ? new shadow_.ShadowMailboxStore({ path: deps.storePath }, deps.shadowSink, 'shadow') : new mailbox.MailboxStore({ path: deps.storePath }));
+        const existingSynchronousAssetSubmitScope = this.store.getState(SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY);
+        this.synchronousAssetSubmitScope = existingSynchronousAssetSubmitScope ?? randomUUID();
+        if (!existingSynchronousAssetSubmitScope) {
+            this.store.setState(SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY, this.synchronousAssetSubmitScope);
+        }
         const assetStoreDir = deps.assetStoreDir ?? (deps.storePath ? join(dirname(deps.storePath), 'assets') : undefined);
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
         this.atp = deps.atp;
         const hubToUse = shadow ? shadow_.shadowHubCapability(deps.hub, deps.shadowSink, 'shadow') : deps.hub;
-        const hubBindings = hubNs.makeHubBindings(hubToUse);
-        const proxyHandler = hubBindings.asProxyHandler();
+        const hubBindings = hubNs.makeHubBindings(hubToUse, deps.publishSanitizeEnv
+            ? { sanitize: { env: deps.publishSanitizeEnv } }
+            : {});
+        this.proxyHandler = hubBindings.asProxyHandler();
+        const proxyHandler = this.proxyHandler;
+        const syncProxyHandler = (envelope) => this.handleHubModeBoundOutbound(envelope);
         const assetByIdSource = isAssetByIdFetcher(deps.hub) ? deps.hub : (isAssetByIdFetcher(hubToUse) ? hubToUse : undefined);
         this.remoteAssetById = assetByIdSource
             ? async (assetId) => {
@@ -76,6 +137,17 @@ export class ProxyDaemon {
                 return assetMatchesId(fetched, assetId) ? fetched : null;
             }
             : undefined;
+        const publishRecallConfig = resolvePublishRecallConfig();
+        this.publishRecallVerifier = deps.publishRecallVerifier ?? new PublishRecallVerifier({
+            store: this.store,
+            ...(!shadow && assetByIdSource
+                ? { fetchAssetById: (assetId) => assetByIdSource.fetchAssetById(assetId) }
+                : {}),
+            config: shadow ? { ...publishRecallConfig, enabled: false } : publishRecallConfig,
+            now: this.now,
+            random: this.random,
+            stateKey: `publish_recall_verifier:${deps.runtimeNamespace ?? 'default'}:v1`,
+        });
         this.reuseResultReporter = isReuseResultReporter(hubToUse)
             ? hubToUse
             : (!shadow && isReuseResultReporter(deps.hub) ? deps.hub : undefined);
@@ -105,15 +177,50 @@ export class ProxyDaemon {
             ...(deps.collaborationOperationTimeoutMs !== undefined ? { operationTimeoutMs: deps.collaborationOperationTimeoutMs } : {}),
         });
         this.sync = new SyncEngine({
-            store: this.store, hub: hubToUse, proxyHandler, now: this.now,
+            store: this.store, hub: hubToUse, proxyHandler: syncProxyHandler, now: this.now,
             ...(deps.runtimeNamespace ? { runtimeNamespace: deps.runtimeNamespace } : {}),
-            onOutboundSucceeded: (envelope, result) => this.collaborationFacade.handleOutboundSucceeded(envelope, result),
-            onOutboundTerminal: (envelope, error) => this.collaborationFacade.handleOutboundTerminal(envelope, error),
+            onOutboundSucceeded: (envelope, result) => {
+                this.collaborationFacade.handleOutboundSucceeded(envelope, result);
+                let shouldObserve = true;
+                try {
+                    const cached = this.cacheSynchronousAssetSubmitSuccess(envelope, result);
+                    if (cached === false)
+                        shouldObserve = false;
+                }
+                catch { /* best-effort */ }
+                // Observability must never turn a Hub-accepted publish into a failed/retried economic action.
+                if (shouldObserve) {
+                    try {
+                        this.publishRecallVerifier.observeAcceptedPublish(envelope, result);
+                    }
+                    catch { /* best-effort */ }
+                }
+            },
+            onOutboundTerminal: (envelope, error) => {
+                this.collaborationFacade.handleOutboundTerminal(envelope, error);
+                try {
+                    this.cacheSynchronousAssetSubmitTerminal(envelope, error);
+                }
+                catch { /* best-effort */ }
+            },
+            acceptedOutcomeKey: (envelope) => !shadow && isSynchronousAssetSubmitEnvelope(envelope)
+                ? synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey)
+                : undefined,
+            terminalOutcome: (envelope, error) => {
+                if (shadow || !isSynchronousAssetSubmitEnvelope(envelope))
+                    return undefined;
+                const failure = mapSynchronousPublishFailure(error);
+                return {
+                    key: synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey),
+                    result: { kind: 'failed', ...failure },
+                };
+            },
             normalizeInboundEnvelope: (envelope) => this.collaborationFacade.normalizeInboundEnvelope(envelope),
             ...(deps.traceBackfill ? { onOutboundFlushed: () => { this.drainProxyTraceBackfill(); } } : {}),
         });
         this.lifecycle = new LifecycleManager({
             store: this.store, auth: hubToUse.auth, hello: deps.hello, heartbeat: deps.heartbeat, now: this.now,
+            ...(deps.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: deps.heartbeatIntervalMs } : {}),
             ...(deps.evolverVersion ? { evolverVersion: deps.evolverVersion } : {}),
             ...(deps.helloMode ? { helloMode: deps.helloMode } : {}),
             onForceUpdateDirective: (directive, source) => { this.triggerForceUpdateFromHeartbeat(directive, source); },
@@ -157,6 +264,7 @@ export class ProxyDaemon {
             this.daemon.start();
             this.ipc = new mailbox.MailboxIpcServer({
                 store: this.store, token: this.deps.ipcToken,
+                runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
                 ...(this.deps.ipcHost ? { host: this.deps.ipcHost } : {}), now: this.now,
                 onSend: (env, result) => {
                     if (result.stored && env.handler === 'proxy')
@@ -171,7 +279,12 @@ export class ProxyDaemon {
             }
             catch { /* local discovery publishing must not block daemon startup */ }
             await this.lifecycle.doHello();
+            this.lifecycleArmed = true;
             this.drainProxyTraceBackfill();
+            try {
+                this.publishRecallVerifier.start();
+            }
+            catch { /* verifier availability must not block proxy startup */ }
             this.started = true;
             return port;
         }
@@ -186,6 +299,7 @@ export class ProxyDaemon {
             }
             catch { /* best-effort cleanup */ }
             this.started = false;
+            this.lifecycleArmed = false;
             throw err;
         }
     }
@@ -296,11 +410,14 @@ export class ProxyDaemon {
             catch { /* ignore telemetry persistence failures */ }
         }
         const failedPhases = uniqueTickPhases(errors.map((err) => err.phase));
+        const fatalCandidate = errors.length > 0 && isFatalTickCandidate(outbound, inbound, failedPhases);
+        this.lastTickAt = this.now();
+        this.consecutiveTickFailures = fatalCandidate ? this.consecutiveTickFailures + 1 : 0;
         return {
             outbound,
             inbound,
             ...(heartbeat ? { heartbeat } : {}),
-            ...(errors.length > 0 ? { errors, failedPhases, fatalCandidate: isFatalTickCandidate(outbound, inbound, failedPhases) } : { failedPhases: [], fatalCandidate: false }),
+            ...(errors.length > 0 ? { errors, failedPhases, fatalCandidate } : { failedPhases: [], fatalCandidate: false }),
         };
     }
     /** 下一轮建议延时: inbound 背压/idle 与 outbound pending cadence 取更快者. */
@@ -316,6 +433,11 @@ export class ProxyDaemon {
     }
     setWakeHandler(wake) {
         this.loopWakeHandler = wake;
+    }
+    setExpectedNextTick(delayMs) {
+        this.nextTickDueAt = delayMs === undefined
+            ? undefined
+            : this.now() + Math.max(0, delayMs);
     }
     notifyNewOutbound() {
         if (this.loopWakeHandler) {
@@ -374,11 +496,18 @@ export class ProxyDaemon {
         return {
             running: this.started,
             ipcListening: !!this.ipc,
+            lifecycleArmed: this.lifecycleArmed,
             ...(this.lifecycle.nodeId ? { nodeId: this.lifecycle.nodeId } : {}),
             lastWriteAt: this.daemon.lastWriteAt(),
+            ...(this.lastTickAt !== undefined ? { lastTickAt: this.lastTickAt } : {}),
+            ...(this.nextTickDueAt !== undefined ? { nextTickDueAt: this.nextTickDueAt } : {}),
+            consecutiveFailures: this.consecutiveTickFailures,
         };
     }
     async stop() {
+        this.started = false;
+        this.lifecycleArmed = false;
+        this.nextTickDueAt = undefined;
         if (this.forceUpdateTimer) {
             clearTimeout(this.forceUpdateTimer);
             this.forceUpdateTimer = undefined;
@@ -388,6 +517,10 @@ export class ProxyDaemon {
         this.wakeRunnerPending = false;
         if (this.wakeRunnerResolve)
             this.wakeRunnerResolve();
+        try {
+            await this.publishRecallVerifier.stop();
+        }
+        catch { /* best-effort verifier shutdown */ }
         let stopError;
         try {
             await this.closeIpc();
@@ -407,7 +540,6 @@ export class ProxyDaemon {
         catch (err) {
             stopError = stopError ?? err;
         }
-        this.started = false;
         if (stopError)
             throw stopError;
     }
@@ -590,15 +722,17 @@ export class ProxyDaemon {
             ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
             return true;
         }
-        if (await this.collaborationFacade.handle(ctx))
-            return true;
         const handledAtp = await this.handleAtpRoute(ctx);
         if (handledAtp)
             return true;
         if (ctx.route === 'GET /proxy/status') {
             ctx.json(200, {
                 running: true,
+                status: 'running',
+                proxy_protocol_version: PROXY_PROTOCOL_VERSION,
+                schema_version: PROXY_STATUS_SCHEMA_VERSION,
                 hub_mode: this.deps.hubMode ?? 'public',
+                runtime_namespace: this.deps.runtimeNamespace ?? 'default',
                 node_id: this.lifecycle.nodeId ?? null,
                 outbound_pending: this.store.countPending('proxy', this.deps.runtimeNamespace),
                 inbound_pending: this.store.countPending('agent', this.deps.runtimeNamespace) + this.store.countPending('core', this.deps.runtimeNamespace),
@@ -607,26 +741,45 @@ export class ProxyDaemon {
                 hub_auth_status: this.store.getState('hub:auth_status') || null,
                 reauth_backoff_until: this.stateNumber('lifecycle:reauth_until'),
                 hello_rate_limit_until: this.stateNumber('lifecycle:hello_rl_until'),
+                publish_recall_verify: this.publishRecallVerifier.status(),
             });
             return true;
         }
         if (ctx.route === 'POST /mailbox/poll') {
-            const body = (await ctx.readJson());
-            const limit = Math.max(1, Math.min(Number(body.limit ?? 10), 50));
-            const messages = this.store.list({ status: 'pending', limit: 500 })
-                .filter((m) => (body.type ? m.type === body.type : true))
-                .filter((m) => (body.direction ? m.direction === body.direction : true))
-                .slice(0, limit);
+            const body = asRecord(await ctx.readJson());
+            const limit = boundedRequestLimit(body['limit'], 10, 50);
+            if (limit === undefined) {
+                ctx.json(400, { error: 'invalid_limit' });
+                return true;
+            }
+            const channel = typeof body['channel'] === 'string' ? body['channel'] : undefined;
+            const type = typeof body['type'] === 'string' && body['type'] ? body['type'] : undefined;
+            const runtimeNamespace = legacyMailboxRuntimeNamespace(channel, this.deps.runtimeNamespace ?? 'default');
+            const messages = runtimeNamespace === undefined
+                ? []
+                : this.store.list({
+                    status: 'pending',
+                    direction: mailboxDirection(body['direction']) ?? 'inbound',
+                    runtimeNamespace,
+                    ...(type ? { type } : {}),
+                    limit,
+                }).map(mailbox.legacyMailboxMessage);
             ctx.json(200, { messages, count: messages.length });
             return true;
         }
+        if (await this.collaborationFacade.handle(ctx))
+            return true;
         if (ctx.route === 'POST /asset/search') {
             const body = (await ctx.readJson());
             if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
                 ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
                 return true;
             }
-            const limit = Math.max(1, Math.min(Number(body.limit ?? 5), 25));
+            const limit = boundedRequestLimit(body.limit, 5, 25);
+            if (limit === undefined) {
+                ctx.json(400, { error: 'invalid_limit' });
+                return true;
+            }
             const rawSignals = Array.isArray(body.signals) ? body.signals : body.signalsAny;
             const signalsAny = Array.isArray(rawSignals) ? rawSignals.filter((s) => typeof s === 'string') : undefined;
             const kind = assetKind(body.kind);
@@ -677,20 +830,71 @@ export class ProxyDaemon {
             return true;
         }
         if (ctx.route === 'POST /asset/submit') {
-            const body = (await ctx.readJson());
-            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+            const body = asRecord(await ctx.readJson());
+            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
                 ctx.json(409, { stored: false, error: 'proxy_hub_mode_mismatch' });
                 return true;
             }
-            if (!body.assets && !body.asset_id) {
+            const bundle = normalizeAssetSubmitBundle(body);
+            const legacyAssetId = typeof body['asset_id'] === 'string' && body['asset_id'].trim()
+                ? body['asset_id'].trim()
+                : undefined;
+            if (!bundle && !legacyAssetId) {
                 ctx.json(400, { error: 'assets or asset_id is required' });
                 return true;
             }
-            const env = mailbox.createEnvelope({ type: 'asset_submit', payload: body, now: ctx.now });
+            let outboundBundle = bundle;
+            if (!outboundBundle && legacyAssetId) {
+                if (!this.assetStore) {
+                    ctx.json(503, { error: 'asset_store_unavailable' });
+                    return true;
+                }
+                const resolved = await this.assetStore.get(legacyAssetId);
+                if (!resolved) {
+                    ctx.json(404, { error: 'asset_not_found', asset_id: legacyAssetId });
+                    return true;
+                }
+                outboundBundle = [resolved];
+            }
+            if (outboundBundle && outboundBundle.length > MAX_ASSET_SUBMIT_ITEMS) {
+                ctx.json(400, { error: `asset submit accepts at most ${MAX_ASSET_SUBMIT_ITEMS} items` });
+                return true;
+            }
+            const requestedMode = ctx.url.searchParams.get('mode');
+            const mode = requestedMode ?? (bundle ? 'sync' : 'async');
+            if (mode !== 'sync' && mode !== 'async') {
+                ctx.json(400, { error: 'mode must be sync or async' });
+                return true;
+            }
+            if (mode === 'sync') {
+                if (!bundle) {
+                    ctx.json(400, { error: 'mode=sync requires a full asset bundle' });
+                    return true;
+                }
+                await this.publishAssetSubmitSynchronously(ctx, outboundBundle);
+                return true;
+            }
+            const payload = {
+                assets: outboundBundle,
+                [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
+            };
+            const requestId = typeof body['request_id'] === 'string' && ASYNC_ASSET_SUBMIT_REQUEST_ID.test(body['request_id'])
+                ? body['request_id']
+                : undefined;
+            delete payload['request_id'];
+            const runtimeNamespace = this.deps.runtimeNamespace ?? 'default';
+            const stableId = requestId ? asyncAssetSubmitEnvelopeId(runtimeNamespace, requestId) : undefined;
+            const env = mailbox.createEnvelope({
+                ...(stableId ? { id: stableId, idempotencyKey: stableId } : {}),
+                type: 'asset_submit',
+                payload,
+                runtimeNamespace,
+                now: ctx.now,
+            });
             const r = this.store.send(env);
             if (r.stored)
                 this.notifyNewOutbound();
-            ctx.json(200, { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored });
+            ctx.json(202, { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored });
             return true;
         }
         if (ctx.route === 'POST /asset/validate') {
@@ -763,7 +967,13 @@ export class ProxyDaemon {
             if (body['publish'] === true) {
                 const env = mailbox.createEnvelope({
                     type: 'asset_submit',
-                    payload: { source: 'conversation_distillation', distill_id: distill.distill_id, assets: [distill.gene, distill.capsule] },
+                    payload: {
+                        source: 'conversation_distillation',
+                        distill_id: distill.distill_id,
+                        assets: [distill.gene, distill.capsule],
+                        [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
+                    },
+                    runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
                     now: ctx.now,
                 });
                 const r = this.store.send(env);
@@ -837,7 +1047,7 @@ export class ProxyDaemon {
         const localSafe = local.filter((asset) => asset.type !== 'AntiGene');
         let remote;
         try {
-            remote = (await this.deps.hub.search(query)).filter((asset) => asset.type !== 'AntiGene');
+            remote = await this.searchRemoteAssets(query, limit);
         }
         catch (error) {
             if (localSafe.length === 0)
@@ -860,6 +1070,364 @@ export class ProxyDaemon {
                 break;
         }
         return out;
+    }
+    async searchRemoteAssets(query, limit) {
+        const key = assetSearchCacheKey(this.deps.runtimeNamespace, query, limit);
+        const now = this.now();
+        const cached = this.assetSearchCache.get(key);
+        if (cached && cached.expiresAt > now)
+            return cached.value;
+        if (now < this.assetSearchCooldownUntil) {
+            if (cached && cached.staleUntil > now)
+                return cached.value;
+            if (cached)
+                this.assetSearchCache.delete(key);
+            throw new HubClientError(429, { error: 'rate_limited', source: 'asset_search_client_cooldown' }, this.assetSearchCooldownUntil - now);
+        }
+        const inflight = this.assetSearchInflight.get(key);
+        if (inflight)
+            return inflight;
+        const request = (async () => {
+            try {
+                const value = (await this.deps.hub.search(query))
+                    .filter((asset) => asset.type !== 'AntiGene')
+                    .slice(0, limit);
+                this.cacheRemoteAssetSearch(key, value, this.now());
+                return value;
+            }
+            catch (error) {
+                const retryAfterMs = assetSearchRetryAfterMs(error, this.assetSearchCacheTtlMs);
+                if (retryAfterMs !== undefined) {
+                    const rateLimitedAt = this.now();
+                    this.assetSearchCooldownUntil = Math.max(this.assetSearchCooldownUntil, rateLimitedAt + retryAfterMs);
+                    const stale = this.assetSearchCache.get(key);
+                    if (stale && stale.staleUntil > rateLimitedAt)
+                        return stale.value;
+                }
+                throw error;
+            }
+        })();
+        this.assetSearchInflight.set(key, request);
+        const clearInflight = () => {
+            if (this.assetSearchInflight.get(key) === request)
+                this.assetSearchInflight.delete(key);
+        };
+        void request.then(clearInflight, clearInflight);
+        return request;
+    }
+    cacheRemoteAssetSearch(key, value, now) {
+        if (this.assetSearchCache.size >= this.assetSearchCacheMax && !this.assetSearchCache.has(key)) {
+            const oldest = this.assetSearchCache.keys().next().value;
+            if (oldest !== undefined)
+                this.assetSearchCache.delete(oldest);
+        }
+        this.assetSearchCache.delete(key);
+        this.assetSearchCache.set(key, {
+            value,
+            expiresAt: now + this.assetSearchCacheTtlMs,
+            staleUntil: now + this.assetSearchCacheTtlMs + this.assetSearchStaleGraceMs,
+        });
+    }
+    async publishAssetSubmitSynchronously(ctx, items) {
+        const classified = classifySynchronousAssetSubmit(items);
+        if (!classified.ok) {
+            ctx.json(422, { error: classified.error, code: 'invalid_asset_submit' });
+            return;
+        }
+        if (classified.kind === 'wire') {
+            const envelope = this.createSynchronousAssetSubmitEnvelope(classified.bundle, undefined, ctx.now);
+            this.writeSynchronousAssetSubmitOutcome(ctx, await this.publishSynchronousBundle(envelope));
+            return;
+        }
+        const results = [];
+        for (const item of classified.items) {
+            const converted = await convertLegacyLooseAsset(item);
+            if (!converted.ok) {
+                results.push({ ok: false, error: converted.error, statusCode: 422 });
+                continue;
+            }
+            const envelope = this.createSynchronousAssetSubmitEnvelope(converted.bundle, 'v1_loose_asset_compat', ctx.now);
+            const outcome = await this.publishSynchronousBundle(envelope);
+            if (outcome.kind === 'accepted') {
+                const receipt = outcome.receipt;
+                const publishedIds = submittedAssetIds(receipt, converted.bundle);
+                results.push({
+                    ok: true,
+                    gene_asset_id: publishedIds[0],
+                    capsule_asset_id: publishedIds[1],
+                    response: receipt,
+                });
+            }
+            else if (outcome.kind === 'failed') {
+                results.push({
+                    ok: false,
+                    error: String(outcome.body['error']),
+                    statusCode: outcome.statusCode,
+                    ...(typeof outcome.body['reason'] === 'string' ? { reason: outcome.body['reason'] } : {}),
+                });
+            }
+            else {
+                results.push({
+                    ok: false,
+                    error: 'publish_pending',
+                    statusCode: 202,
+                    reason: `durable recovery pending (${outcome.messageId})`,
+                });
+            }
+        }
+        ctx.json(200, {
+            published: results.filter((result) => result.ok).length,
+            total: results.length,
+            results,
+        });
+    }
+    createSynchronousAssetSubmitEnvelope(bundle, source, now) {
+        const canonicalBundle = [...bundle].sort(compareSynchronousAssetSubmitAssets);
+        const runtimeNamespace = this.deps.runtimeNamespace ?? 'default';
+        const idempotencyKey = synchronousAssetSubmitKey(this.synchronousAssetSubmitScope, runtimeNamespace, this.currentHubMode(), canonicalBundle);
+        return mailbox.createEnvelope({
+            id: `compat:asset_submit:${idempotencyKey.slice(SYNC_ASSET_SUBMIT_PREFIX.length)}`,
+            type: 'asset_submit',
+            payload: {
+                ...(source ? { source } : {}),
+                assets: canonicalBundle,
+                [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
+            },
+            idempotencyKey,
+            runtimeNamespace,
+            now,
+        });
+    }
+    currentHubMode() {
+        return this.deps.hubMode ?? 'public';
+    }
+    handleHubModeBoundOutbound(envelope) {
+        if (envelope.type !== 'asset_submit')
+            return this.handleSynchronousProxyOutbound(envelope);
+        const payload = asRecord(envelope.payload);
+        const rawQueuedMode = payload[OUTBOUND_HUB_MODE_FIELD];
+        const queuedMode = rawQueuedMode === undefined ? 'public' : String(rawQueuedMode);
+        const currentMode = this.currentHubMode();
+        if ((queuedMode !== 'public' && queuedMode !== 'private') || queuedMode !== currentMode) {
+            throw new OutboundHubModeMismatchError(queuedMode, currentMode);
+        }
+        const outboundPayload = { ...payload };
+        delete outboundPayload[OUTBOUND_HUB_MODE_FIELD];
+        return this.handleSynchronousProxyOutbound({ ...envelope, payload: outboundPayload });
+    }
+    async publishSynchronousBundle(envelope) {
+        const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+        if (cached)
+            return cached;
+        const inflight = this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey);
+        if (inflight)
+            return this.waitForSynchronousAssetSubmit(inflight, envelope.id);
+        const { stored } = this.store.send(envelope);
+        const cachedAfterInsert = this.readSynchronousAssetSubmitOutcome(envelope);
+        if (cachedAfterInsert)
+            return cachedAfterInsert;
+        if (!stored) {
+            const existingInflight = this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey);
+            return existingInflight
+                ? this.waitForSynchronousAssetSubmit(existingInflight, envelope.id)
+                : { kind: 'pending', messageId: envelope.id };
+        }
+        this.store.defer(envelope.id, 'synchronous asset submit attempt in progress', this.now(), SYNC_ASSET_SUBMIT_DIRECT_RETRY_GRACE_MS);
+        this.notifyNewOutbound();
+        const request = this.executeSynchronousAssetSubmit(envelope);
+        this.synchronousAssetSubmitInflight.set(envelope.idempotencyKey, request);
+        void request.finally(() => {
+            if (this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey) === request) {
+                this.synchronousAssetSubmitInflight.delete(envelope.idempotencyKey);
+            }
+        }).catch(() => { });
+        return this.waitForSynchronousAssetSubmit(request, envelope.id);
+    }
+    waitForSynchronousAssetSubmit(request, messageId) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                resolve({ kind: 'pending', messageId });
+            }, this.assetSubmitResponseTimeoutMs);
+            timeout.unref?.();
+            void request.then((outcome) => {
+                clearTimeout(timeout);
+                resolve(outcome);
+            }, (error) => {
+                clearTimeout(timeout);
+                reject(error);
+            });
+        });
+    }
+    async executeSynchronousAssetSubmit(envelope) {
+        try {
+            const receipt = await this.proxyHandler(envelope);
+            const firstObservation = this.cacheSynchronousAssetSubmitSuccess(envelope, receipt);
+            if (firstObservation) {
+                try {
+                    this.publishRecallVerifier.observeAcceptedPublish(envelope, receipt);
+                }
+                catch { /* best-effort */ }
+            }
+            if (this.store.getById(envelope.id)?.status !== 'in_flight')
+                this.store.complete(envelope.id, this.now());
+            return { kind: 'accepted', receipt };
+        }
+        catch (error) {
+            const current = this.store.getById(envelope.id);
+            const currentStatus = this.store.getStatus(envelope.id);
+            const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+            // Once acceptance is durable, later publish or local-finalization errors cannot turn the external outcome
+            // into a failure. A late acceptance may also need to recover an intent that a racing rejection put in DLQ.
+            if (cached?.kind === 'accepted') {
+                if (currentStatus?.dlq) {
+                    try {
+                        this.store.replayDlq(envelope.id, this.now());
+                        this.notifyNewOutbound();
+                    }
+                    catch (recoveryError) {
+                        this.recordTickError('outbound', recoveryError);
+                    }
+                }
+                return cached;
+            }
+            const failure = mapSynchronousPublishFailure(error);
+            const outcome = { kind: 'failed', ...failure, error };
+            if (this.shadowMode)
+                return outcome;
+            if (current?.status !== 'in_flight') {
+                const message = safeDaemonMessage(JSON.stringify(failure.body), MAX_PROXY_TICK_ERROR_LENGTH);
+                const outcomeKey = synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey);
+                const acceptedKey = synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey);
+                const transitionNow = this.now();
+                const terminal = isTerminalSynchronousPublishFailure(error);
+                const transitioned = terminal
+                    ? this.store.failAndMarkProcessedUnlessProcessed(envelope.id, [acceptedKey], outcomeKey, { kind: 'failed', ...failure }, message, transitionNow, 1)
+                    : isRetryableSynchronousPublishFailure(error)
+                        ? this.store.deferUnlessProcessed(envelope.id, acceptedKey, message, transitionNow, synchronousPublishRetryAfterMs(error, failure))
+                        : this.store.failUnlessProcessed(envelope.id, acceptedKey, message, transitionNow);
+                if (!transitioned) {
+                    const persisted = this.readSynchronousAssetSubmitOutcome(envelope);
+                    if (persisted)
+                        return persisted;
+                }
+                if (terminal) {
+                    const persisted = this.readSynchronousAssetSubmitOutcome(envelope);
+                    if (persisted?.kind === 'accepted')
+                        return persisted;
+                }
+                this.notifyNewOutbound();
+            }
+            return outcome;
+        }
+    }
+    async handleSynchronousProxyOutbound(envelope) {
+        if (!isSynchronousAssetSubmitEnvelope(envelope))
+            return this.proxyHandler(envelope);
+        const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+        if (cached?.kind === 'accepted')
+            return cached.receipt;
+        if (cached?.kind === 'failed')
+            throw cachedSynchronousAssetSubmitFailure(cached);
+        const inflight = this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey);
+        if (inflight) {
+            const outcome = await this.waitForSynchronousAssetSubmit(inflight, envelope.id);
+            if (outcome.kind === 'accepted')
+                return outcome.receipt;
+            if (outcome.kind === 'failed')
+                throw outcome.error ?? cachedSynchronousAssetSubmitFailure(outcome);
+            if (this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey) === inflight) {
+                this.synchronousAssetSubmitInflight.delete(envelope.idempotencyKey);
+            }
+            throw new HubUnreachableError('synchronous asset submit is still pending');
+        }
+        try {
+            const receipt = await this.proxyHandler(envelope);
+            const firstObservation = this.cacheSynchronousAssetSubmitSuccess(envelope, receipt);
+            if (firstObservation) {
+                try {
+                    this.publishRecallVerifier.observeAcceptedPublish(envelope, receipt);
+                }
+                catch { /* best-effort */ }
+            }
+            return receipt;
+        }
+        catch (error) {
+            const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+            if (cached?.kind === 'accepted')
+                return cached.receipt;
+            if (isTerminalSynchronousPublishFailure(error))
+                this.cacheSynchronousAssetSubmitTerminal(envelope, error);
+            throw error;
+        }
+    }
+    readSynchronousAssetSubmitOutcome(envelope) {
+        if (this.shadowMode || !isSynchronousAssetSubmitEnvelope(envelope))
+            return undefined;
+        const outcomeKey = synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey);
+        const value = asRecord(this.store.getProcessed(outcomeKey));
+        if (value['kind'] === 'accepted' && Object.prototype.hasOwnProperty.call(value, 'receipt')) {
+            const receipt = asRecord(value['receipt']);
+            if (receipt['bundleId'] === 'shadow-bundle'
+                && typeof receipt['receiptId'] === 'string'
+                && receipt['receiptId'].startsWith('shadow-')) {
+                this.store.deleteProcessed([
+                    outcomeKey,
+                    synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey),
+                ]);
+                return undefined;
+            }
+            const backfilled = this.store.markProcessedIf(outcomeKey, synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey), { accepted: true }, this.now(), (current) => {
+                const record = asRecord(current);
+                return record['kind'] === 'accepted' && Object.prototype.hasOwnProperty.call(record, 'receipt');
+            });
+            if (!backfilled)
+                return this.readSynchronousAssetSubmitOutcome(envelope);
+            return { kind: 'accepted', receipt: value['receipt'] };
+        }
+        if (value['kind'] === 'failed') {
+            const statusCode = positiveFiniteNumber(value['statusCode']);
+            if (statusCode !== undefined && isRecordValue(value['body'])) {
+                return { kind: 'failed', statusCode, body: value['body'] };
+            }
+        }
+        return undefined;
+    }
+    cacheSynchronousAssetSubmitSuccess(envelope, receipt) {
+        if (this.shadowMode || !isSynchronousAssetSubmitEnvelope(envelope))
+            return undefined;
+        const key = synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey);
+        const acceptedKey = synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey);
+        const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+        if (cached?.kind === 'accepted')
+            return false;
+        // Acceptance is monotonic: a concurrent attempt may reject after another request reached the Hub, but a
+        // real acceptance must supersede an earlier rejection so replay reflects the economic side effect.
+        this.store.replaceProcessedWithMarker(key, { kind: 'accepted', receipt }, acceptedKey, { accepted: true }, this.now());
+        return true;
+    }
+    cacheSynchronousAssetSubmitTerminal(envelope, error) {
+        if (this.shadowMode || !isSynchronousAssetSubmitEnvelope(envelope))
+            return;
+        if (this.store.isProcessed(synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey)))
+            return;
+        if (this.readSynchronousAssetSubmitOutcome(envelope)?.kind === 'accepted')
+            return;
+        const failure = mapSynchronousPublishFailure(error);
+        this.store.markProcessed(synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey), {
+            kind: 'failed',
+            ...failure,
+        }, this.now());
+    }
+    writeSynchronousAssetSubmitOutcome(ctx, outcome) {
+        if (outcome.kind === 'accepted') {
+            ctx.json(200, outcome.receipt);
+        }
+        else if (outcome.kind === 'failed') {
+            ctx.json(outcome.statusCode, outcome.body);
+        }
+        else {
+            ctx.json(202, { status: 'pending', message_id: outcome.messageId, durable: true });
+        }
     }
     async handleAtpRoute(ctx) {
         if (!ctx.url.pathname.startsWith('/atp/'))
@@ -983,11 +1551,445 @@ function uniqueStrings(values) {
     }
     return out;
 }
+function assetSearchCacheKey(runtimeNamespace, query, limit) {
+    return JSON.stringify({
+        runtimeNamespace: runtimeNamespace ?? 'default',
+        kind: query.kind ?? null,
+        signalsAny: uniqueStrings(query.signalsAny ?? []).sort(),
+        category: query.category ?? null,
+        gene: query.gene ?? null,
+        text: query.text ?? null,
+        limit,
+    });
+}
+function assetSearchRetryAfterMs(error, fallbackMs) {
+    const structured = asRecord(error);
+    const details = asRecord(structured['details']);
+    const structuredStatus = structured['statusCode']
+        ?? structured['status']
+        ?? details['statusCode']
+        ?? details['status'];
+    const status = error instanceof HubClientError
+        ? error.status
+        : (typeof structuredStatus === 'number'
+            ? structuredStatus
+            : (typeof structuredStatus === 'string' ? Number(structuredStatus) : NaN));
+    if (status !== 429)
+        return undefined;
+    const body = asRecord(error instanceof HubClientError ? error.body : structured['body']);
+    const retryAfterMs = positiveFiniteNumber(error instanceof HubClientError
+        ? error.retryAfterMs
+        : structured['retryAfterMs'] ?? details['retryAfterMs']) ?? positiveFiniteNumber(body['retry_after_ms'] ?? body['retryAfterMs']);
+    const retryAfterSeconds = positiveFiniteNumber(body['retry_after'] ?? body['retryAfter']);
+    return Math.floor(Math.min(retryAfterMs ?? (retryAfterSeconds !== undefined ? retryAfterSeconds * 1_000 : fallbackMs), MAX_TIMER_DELAY_MS));
+}
+function positiveFiniteNumber(value) {
+    const parsed = typeof value === 'number'
+        ? value
+        : (typeof value === 'string' && value.trim().length > 0 ? Number(value) : NaN);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+function positiveIntegerOr(value, fallback) {
+    const parsed = positiveFiniteNumber(value);
+    return parsed === undefined ? fallback : Math.max(1, Math.floor(parsed));
+}
+function boundedRequestLimit(value, fallback, maximum) {
+    if (value === undefined)
+        return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+        return undefined;
+    return Math.min(value, maximum);
+}
+function legacyMailboxRuntimeNamespace(requestedChannel, runtimeNamespace) {
+    if (requestedChannel === undefined || requestedChannel === 'evomap-hub' || requestedChannel === runtimeNamespace) {
+        return runtimeNamespace;
+    }
+    return undefined;
+}
+function mailboxDirection(value) {
+    return value === 'inbound' || value === 'outbound' || value === 'local' ? value : undefined;
+}
 function assetKind(value) {
     return value === 'Gene' || value === 'Capsule' || value === 'EvolutionEvent' || value === 'AntiGene' ? value : undefined;
 }
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function normalizeAssetSubmitBundle(body) {
+    if (Object.prototype.hasOwnProperty.call(body, 'assets')) {
+        const assets = body['assets'];
+        return Array.isArray(assets) && assets.length > 0 && assets.every(isNonEmptyAssetRecord)
+            ? assets
+            : null;
+    }
+    return isNonEmptyAssetRecord(body['asset']) ? [body['asset']] : null;
+}
+function isNonEmptyAssetRecord(value) {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
+}
+function classifySynchronousAssetSubmit(items) {
+    const wireLooking = items.map(isWireLookingAsset);
+    const legacyLoose = items.map(isClearlyLegacyLooseAsset);
+    if (wireLooking.every(Boolean)) {
+        const bundle = [];
+        for (let index = 0; index < items.length; index += 1) {
+            const item = items[index];
+            if (!wire.validateWire(item).ok) {
+                return { ok: false, error: `asset ${index}: malformed V2 wire asset` };
+            }
+            try {
+                const normalized = assetstore.normalizeForPut(item);
+                if (!normalized.verified) {
+                    return { ok: false, error: `asset ${index}: a verified content-addressed asset_id is required` };
+                }
+                bundle.push(normalized.record);
+            }
+            catch {
+                return { ok: false, error: `asset ${index}: asset_id does not match its content` };
+            }
+        }
+        return { ok: true, kind: 'wire', bundle };
+    }
+    if (legacyLoose.every(Boolean))
+        return { ok: true, kind: 'legacy', items };
+    if (wireLooking.some(Boolean) && legacyLoose.some(Boolean)) {
+        return { ok: false, error: 'wire assets and legacy loose assets cannot be mixed in one request' };
+    }
+    if (wireLooking.some(Boolean)) {
+        return { ok: false, error: 'all wire-looking items must be valid content-addressed V2 assets' };
+    }
+    return { ok: false, error: 'unsupported asset input; provide V2 wire assets or legacy content/summary/strategy' };
+}
+function isWireLookingAsset(value) {
+    return Object.prototype.hasOwnProperty.call(value, 'schema_version')
+        || Object.prototype.hasOwnProperty.call(value, 'asset_id');
+}
+function isClearlyLegacyLooseAsset(value) {
+    if (Object.prototype.hasOwnProperty.call(value, 'schema_version')
+        || Object.prototype.hasOwnProperty.call(value, 'asset_id'))
+        return false;
+    return ['content', 'summary', 'strategy'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+async function convertLegacyLooseAsset(value) {
+    const normalized = legacyLooseDistillInput(value);
+    if (!normalized.ok)
+        return normalized;
+    try {
+        const distilled = await hubNs.distillConversation(normalized.input, { persist: false });
+        if (!distilled.ok) {
+            return { ok: false, error: `legacy_distill_${safeIdentifier(distilled.reason)}` };
+        }
+        const gene = {
+            ...distilled.gene,
+            ...(normalized.constraints
+                ? { constraints: mergeLegacyConstraints(distilled.gene['constraints'], normalized.constraints) }
+                : {}),
+            ...(normalized.category ? { category: normalized.category } : {}),
+        };
+        const bundle = [gene, distilled.capsule].map(deterministicDistilledAsset);
+        if (!bundle.every((asset) => wire.validateWire(asset).ok)) {
+            return { ok: false, error: 'legacy_distill_invalid_wire_output' };
+        }
+        return { ok: true, bundle };
+    }
+    catch {
+        return { ok: false, error: 'legacy_distill_failed' };
+    }
+}
+function legacyLooseDistillInput(value) {
+    const content = strictOptionalString(value, 'content');
+    const summary = strictOptionalString(value, 'summary');
+    if (!content.ok || !summary.ok)
+        return { ok: false, error: 'legacy content and summary must be strings' };
+    const strategy = strictOptionalStringList(value, 'strategy', 10, 220);
+    if (!strategy.ok)
+        return { ok: false, error: 'legacy strategy must be an array of strings' };
+    if (strategy.value && (strategy.value.length < 2 || strategy.value.some((step) => step.length < 15))) {
+        return { ok: false, error: 'legacy strategy requires at least two steps of 15 characters each' };
+    }
+    const text = [content.value, summary.value].filter(Boolean).join('\n').trim();
+    const suppliedSubstance = [text, ...(strategy.value ?? [])].join(' ').trim();
+    if (!strategy.value && text.length < 50) {
+        return { ok: false, error: 'legacy content or summary must contain at least 50 characters' };
+    }
+    if (suppliedSubstance.length < 50) {
+        return { ok: false, error: 'legacy input does not contain enough substantive content' };
+    }
+    const signals = strictOptionalStringList(value, 'signals', 12, 64);
+    const signalsMatch = strictOptionalStringList(value, 'signals_match', 12, 64);
+    const validation = strictOptionalStringList(value, 'validation', 8, 180);
+    const verification = strictOptionalStringList(value, 'verification', 8, 180);
+    const artifacts = strictOptionalStringList(value, 'artifacts', 12, 240);
+    if (!signals.ok || !signalsMatch.ok || !validation.ok || !verification.ok || !artifacts.ok) {
+        return { ok: false, error: 'legacy list fields must contain strings only' };
+    }
+    const constraints = parseLegacyConstraints(value['constraints']);
+    if (!constraints.ok)
+        return constraints;
+    const category = parseLegacyCategory(value['category']);
+    if (!category.ok)
+        return category;
+    const derivedSummary = summary.value
+        || content.value?.slice(0, 300)
+        || strategy.value?.join('; ').slice(0, 300)
+        || '';
+    const input = {
+        summary: derivedSummary,
+        transcript: content.value ?? derivedSummary,
+        ...(strategy.value ? { strategy: strategy.value } : {}),
+        ...((signals.value ?? signalsMatch.value) ? { signals: signals.value ?? signalsMatch.value } : {}),
+        ...((validation.value ?? verification.value) ? { validation: validation.value ?? verification.value } : {}),
+        ...(artifacts.value ? { artifacts: artifacts.value } : {}),
+        ...strictForwardString(value, 'title'),
+        ...strictForwardString(value, 'name'),
+        ...strictForwardString(value, 'platform'),
+        ...strictForwardString(value, 'model'),
+        ...strictForwardString(value, 'thread_id'),
+        ...(isRecordValue(value['execution']) ? { execution: value['execution'] } : {}),
+        ...(isRecordValue(value['blast_radius']) ? { blast_radius: value['blast_radius'] } : {}),
+        // Compatibility callers may not lower the V2 quality gate.
+        min_score: 5,
+        persist: false,
+    };
+    return {
+        ok: true,
+        input,
+        ...(constraints.value ? { constraints: constraints.value } : {}),
+        ...(category.value ? { category: category.value } : {}),
+    };
+}
+function parseLegacyConstraints(value) {
+    if (value === undefined)
+        return { ok: true };
+    if (!isRecordValue(value))
+        return { ok: false, error: 'legacy constraints must be an object' };
+    if (Object.keys(value).some((key) => key !== 'max_files' && key !== 'forbidden_paths')) {
+        return { ok: false, error: 'legacy constraints contains unsupported fields' };
+    }
+    const maxFiles = value['max_files'];
+    if (maxFiles !== undefined && (!Number.isInteger(maxFiles) || Number(maxFiles) < 1 || Number(maxFiles) > 10_000)) {
+        return { ok: false, error: 'legacy constraints.max_files must be an integer from 1 to 10000' };
+    }
+    const forbiddenPaths = value['forbidden_paths'];
+    if (forbiddenPaths !== undefined && (!Array.isArray(forbiddenPaths)
+        || forbiddenPaths.length > 50
+        || forbiddenPaths.some((path) => typeof path !== 'string' || path.trim().length === 0 || path.trim().length > 200))) {
+        return { ok: false, error: 'legacy constraints.forbidden_paths must be a bounded string array' };
+    }
+    const normalizedPaths = Array.isArray(forbiddenPaths)
+        ? uniqueStrings(forbiddenPaths.map((path) => String(path).trim()))
+        : undefined;
+    return {
+        ok: true,
+        value: {
+            ...(typeof maxFiles === 'number' ? { max_files: maxFiles } : {}),
+            ...(normalizedPaths ? { forbidden_paths: normalizedPaths } : {}),
+        },
+    };
+}
+function mergeLegacyConstraints(base, legacy) {
+    const current = isRecordValue(base) ? base : {};
+    const currentMax = Number.isInteger(current['max_files']) && Number(current['max_files']) > 0
+        ? Number(current['max_files'])
+        : 20;
+    const currentPaths = Array.isArray(current['forbidden_paths'])
+        ? current['forbidden_paths'].filter((path) => typeof path === 'string')
+        : [];
+    return {
+        max_files: Math.min(currentMax, legacy.max_files ?? currentMax),
+        forbidden_paths: uniqueStrings([...currentPaths, ...(legacy.forbidden_paths ?? [])]),
+    };
+}
+function parseLegacyCategory(value) {
+    if (value === undefined)
+        return { ok: true };
+    if (value === 'repair' || value === 'optimize' || value === 'innovate' || value === 'explore') {
+        return { ok: true, value };
+    }
+    return { ok: false, error: 'legacy category is invalid' };
+}
+function deterministicDistilledAsset(asset) {
+    const draft = { ...asset, asset_id: '' };
+    // `_source` is local distiller provenance and is not part of the current GEP Gene schema.
+    // It also contains a wall-clock timestamp, so it must not influence compatibility asset ids.
+    delete draft['_source'];
+    return assetstore.normalizeForPut(draft).record;
+}
+function strictOptionalString(value, key) {
+    if (!Object.prototype.hasOwnProperty.call(value, key))
+        return { ok: true };
+    const raw = value[key];
+    if (typeof raw !== 'string')
+        return { ok: false };
+    const trimmed = raw.trim();
+    return { ok: true, ...(trimmed ? { value: trimmed } : {}) };
+}
+function strictOptionalStringList(value, key, maxItems, maxLength) {
+    if (!Object.prototype.hasOwnProperty.call(value, key))
+        return { ok: true };
+    const raw = value[key];
+    if (!Array.isArray(raw) || raw.some((item) => typeof item !== 'string'))
+        return { ok: false };
+    const normalized = raw.map((item) => item.trim()).filter(Boolean).slice(0, maxItems);
+    if (normalized.some((item) => item.length > maxLength))
+        return { ok: false };
+    return { ok: true, ...(normalized.length > 0 ? { value: normalized } : {}) };
+}
+function strictForwardString(value, key) {
+    const parsed = strictOptionalString(value, key);
+    return parsed.ok && parsed.value ? { [key]: parsed.value } : {};
+}
+function isRecordValue(value) {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+function safeIdentifier(value) {
+    return value.replace(/[^a-z0-9_]+/gi, '_').slice(0, 80) || 'rejected';
+}
+function synchronousAssetSubmitKey(scope, runtimeNamespace, hubMode, bundle) {
+    const assetIds = bundle.map((asset) => asset.asset_id).sort();
+    const digestInput = hubMode === 'private'
+        ? [scope, runtimeNamespace, hubMode, assetIds]
+        : [scope, runtimeNamespace, assetIds];
+    const digest = createHash('sha256')
+        .update(JSON.stringify(digestInput))
+        .digest('hex');
+    return `${SYNC_ASSET_SUBMIT_PREFIX}${digest}`;
+}
+function asyncAssetSubmitEnvelopeId(runtimeNamespace, requestId) {
+    const digest = createHash('sha256')
+        .update(JSON.stringify([runtimeNamespace, requestId]))
+        .digest('hex');
+    return `${ASYNC_ASSET_SUBMIT_PREFIX}${digest}`;
+}
+function compareSynchronousAssetSubmitAssets(left, right) {
+    const typeOrder = SYNC_ASSET_SUBMIT_TYPE_RANK[left.type] - SYNC_ASSET_SUBMIT_TYPE_RANK[right.type];
+    if (typeOrder !== 0)
+        return typeOrder;
+    if (left.asset_id < right.asset_id)
+        return -1;
+    if (left.asset_id > right.asset_id)
+        return 1;
+    return 0;
+}
+function synchronousAssetSubmitOutcomeKey(idempotencyKey) {
+    return `${idempotencyKey}:outcome`;
+}
+function synchronousAssetSubmitAcceptanceKey(idempotencyKey) {
+    return `${idempotencyKey}:accepted`;
+}
+function cachedSynchronousAssetSubmitFailure(outcome) {
+    const retryAfterMs = positiveFiniteNumber(outcome.body['retry_after_ms']);
+    return new hubNs.PublishRejectedError(typeof outcome.body['status'] === 'string'
+        ? outcome.body['status']
+        : String(outcome.body['error'] ?? 'rejected'), true, typeof outcome.body['reason'] === 'string' ? outcome.body['reason'] : undefined, retryAfterMs, false);
+}
+function isSynchronousAssetSubmitEnvelope(envelope) {
+    return envelope.type === 'asset_submit'
+        && envelope.idempotencyKey.startsWith(SYNC_ASSET_SUBMIT_PREFIX);
+}
+function isTerminalSynchronousPublishFailure(error) {
+    return error instanceof hubNs.PublishRejectedError && error.terminal;
+}
+function isRetryableSynchronousPublishFailure(error) {
+    if (error instanceof AuthError || errorName(error) === 'AuthError')
+        return true;
+    if (error instanceof HubUnreachableError || errorName(error) === 'HubUnreachableError')
+        return true;
+    if (error instanceof hubNs.PublishRejectedError) {
+        return !error.terminal && (error.retryable === true || error.retryAfterMs !== undefined);
+    }
+    if (error instanceof HubClientError || errorName(error) === 'HubClientError') {
+        const status = error instanceof HubClientError ? error.status : Number(asRecord(error)['status']);
+        return status === 429 || (status >= 500 && status <= 599);
+    }
+    return false;
+}
+function synchronousPublishRetryAfterMs(error, failure) {
+    const fromBody = positiveFiniteNumber(failure.body['retry_after_ms']);
+    if (fromBody !== undefined)
+        return Math.max(1_000, fromBody);
+    if (error instanceof hubNs.PublishRejectedError && error.retryAfterMs !== undefined) {
+        return Math.max(1_000, error.retryAfterMs);
+    }
+    if (error instanceof HubUnreachableError)
+        return Math.max(1_000, error.retryAfterMs);
+    if (error instanceof HubClientError && error.retryAfterMs !== undefined) {
+        return Math.max(1_000, error.retryAfterMs);
+    }
+    return 60_000;
+}
+function submittedAssetIds(result, fallback) {
+    const record = asRecord(result);
+    for (const key of ['submittedAssetIds', 'assetIds']) {
+        const value = record[key];
+        if (Array.isArray(value) && value.every((item) => typeof item === 'string'))
+            return value;
+    }
+    return fallback.map((asset) => asset.asset_id);
+}
+function mapSynchronousPublishFailure(error) {
+    if (error instanceof hubNs.PublishRejectedError) {
+        const status = publishRejectionStatus(error.status);
+        if (status === 'cooldown') {
+            return {
+                statusCode: 429,
+                body: {
+                    error: 'hub_rate_limited',
+                    ...(error.retryAfterMs !== undefined ? { retry_after_ms: error.retryAfterMs } : {}),
+                },
+            };
+        }
+        if (status === 'credit_shortage') {
+            return { statusCode: 402, body: { error: 'hub_payment_required' } };
+        }
+        return {
+            statusCode: error.terminal ? 422 : 503,
+            body: {
+                error: 'publish_rejected',
+                status,
+                terminal: error.terminal,
+                reason: status === 'leak_blocked'
+                    ? 'sensitive data detected before publish'
+                    : 'Hub did not accept the publish',
+                ...(error.retryAfterMs !== undefined ? { retry_after_ms: error.retryAfterMs } : {}),
+            },
+        };
+    }
+    if (error instanceof AuthError || errorName(error) === 'AuthError') {
+        return { statusCode: 502, body: { error: 'hub_auth_failed' } };
+    }
+    if (error instanceof HubUnreachableError || errorName(error) === 'HubUnreachableError') {
+        const retryAfterMs = error instanceof HubUnreachableError ? error.retryAfterMs : positiveFiniteNumber(asRecord(error)['retryAfterMs']);
+        return {
+            statusCode: 503,
+            body: { error: 'hub_unreachable', ...(retryAfterMs !== undefined ? { retry_after_ms: retryAfterMs } : {}) },
+        };
+    }
+    if (error instanceof HubClientError || errorName(error) === 'HubClientError') {
+        const status = error instanceof HubClientError ? error.status : Number(asRecord(error)['status']);
+        if (status === 429) {
+            const retryAfterMs = error instanceof HubClientError ? error.retryAfterMs : positiveFiniteNumber(asRecord(error)['retryAfterMs']);
+            return {
+                statusCode: 429,
+                body: { error: 'hub_rate_limited', ...(retryAfterMs !== undefined ? { retry_after_ms: retryAfterMs } : {}) },
+            };
+        }
+        if (status === 402)
+            return { statusCode: 402, body: { error: 'hub_payment_required' } };
+        return { statusCode: status >= 500 ? 503 : 502, body: { error: 'hub_publish_failed' } };
+    }
+    return { statusCode: 502, body: { error: 'hub_publish_failed' } };
+}
+function errorName(value) {
+    return typeof asRecord(value)['name'] === 'string' ? String(asRecord(value)['name']) : undefined;
+}
+function publishRejectionStatus(value) {
+    return value === 'quarantine'
+        || value === 'leak_blocked'
+        || value === 'cooldown'
+        || value === 'credit_shortage'
+        ? value
+        : 'rejected';
 }
 function respondAgentDirectory(ctx, result) {
     if (result.ok) {

@@ -353,16 +353,19 @@ export class CollaborationFacade {
     async mailboxPoll(ctx) {
         const body = asRecord(await ctx.readJson());
         const type = optionalString(body['type']);
-        const direction = optionalDirection(body['direction']);
+        const channel = optionalString(body['channel']);
+        const direction = optionalDirection(body['direction']) ?? 'inbound';
         const limit = boundedMailboxPollLimit(body['limit']);
-        const messages = this.deps.store.list({
-            status: 'pending',
-            runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
-            ...(type ? { type } : {}),
-            ...(direction ? { direction } : {}),
-            limit,
-        })
-            .map((message) => TASK_RESULT_TYPES.has(message.type) ? v1Message(message) : message);
+        const runtimeNamespace = legacyMailboxRuntimeNamespace(channel, this.deps.runtimeNamespace ?? 'default');
+        const messages = runtimeNamespace === undefined
+            ? []
+            : this.deps.store.list({
+                status: 'pending',
+                runtimeNamespace,
+                ...(type ? { type } : {}),
+                direction,
+                limit,
+            }).map(v1Message);
         ctx.json(200, { messages, count: messages.length });
         return true;
     }
@@ -671,18 +674,19 @@ function v1Message(message) {
     return {
         id: message.id,
         message_id: message.id,
-        channel: 'evomap-hub',
+        channel: message.runtimeNamespace === 'default' ? 'evomap-hub' : message.runtimeNamespace,
         direction: message.direction,
         type: message.type === 'dm_outbound' || isDirectDialogMessage(message) ? 'dm' : message.type,
         status: message.status === 'done' ? (message.direction === 'inbound' ? 'delivered' : 'synced') : message.status,
         payload: message.payload,
-        priority: 'normal',
-        ref_id: message.replyTo,
+        priority: message.priority,
+        ref_id: message.replyTo ?? message.correlationId,
         created_at: message.createdAt,
         synced_at: message.status === 'done' ? message.updatedAt : null,
         expires_at: message.ttlAt,
         retry_count: message.attempts,
-        error: null,
+        next_retry_at: message.nextRetryAt,
+        error: message.lastError,
     };
 }
 function writeOperationError(ctx, error) {
@@ -793,6 +797,12 @@ function optionalString(value) {
 }
 function optionalDirection(value) {
     return value === 'inbound' || value === 'outbound' || value === 'local' ? value : undefined;
+}
+function legacyMailboxRuntimeNamespace(requestedChannel, runtimeNamespace) {
+    if (requestedChannel === undefined || requestedChannel === 'evomap-hub' || requestedChannel === runtimeNamespace) {
+        return runtimeNamespace;
+    }
+    return undefined;
 }
 function requiredValue(record, ...keys) {
     for (const key of keys) {

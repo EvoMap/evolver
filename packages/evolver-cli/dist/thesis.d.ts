@@ -35,7 +35,7 @@ export interface ThesisCommandDeps {
     now?: () => number;
 }
 /**
- * `evolver thesis --suite <file> [--repo <allowlisted>] [--min-samples N] [--min-delta D] [--interleave] [--json]`.
+ * `evolver thesis --suite <file> [--repo <allowlisted>] [--runner gemini] [--min-samples N] [--min-delta D] [--interleave] [--json]`.
  * Runs the controlled A/B and prints baseline-vs-evolver pass rates + the verdict. A LIVE run needs `--repo` (the
  * single allowlisted root the agent may touch); tests inject `deps.execute` instead.
  */

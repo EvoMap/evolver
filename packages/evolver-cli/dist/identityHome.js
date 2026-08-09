@@ -42,5 +42,6 @@ export function resolveIdentityHome(env = process.env, homeDir) {
     const explicit = [env['EVOMAP_HOME'], env['EVOMAP_DIR'], env['EVOLVER_HOME']]
         .map(nonBlank)
         .filter((value) => value !== undefined);
-    return explicit[0] ?? join(homeDir ?? homedir(), '.evomap');
+    const fallbackHome = nonBlank(env['HOME']) ?? homeDir ?? homedir();
+    return explicit[0] ?? join(fallbackHome, '.evomap');
 }

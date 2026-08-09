@@ -205,7 +205,10 @@ export function resolveSelfUpdateTarget(opts = {}) {
     if (explicitTarget)
         return { path: explicitTarget, explicit: true };
     const execPath = opts.processExecPath ?? process.execPath;
-    const name = basename(execPath).toLowerCase();
+    // Split on both separators so a win32-shaped path (backslashes) is classified
+    // correctly even when this check runs on a POSIX host (shape probes, tests).
+    const segments = execPath.split(/[/\\]+/).filter(Boolean);
+    const name = (segments.length > 0 ? segments[segments.length - 1] : basename(execPath)).toLowerCase();
     if (name.startsWith('evolver'))
         return { path: execPath, explicit: false };
     throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.INSTALL_GUARD_UNREADABLE, `self_update_target_required:${execPath}`);

@@ -6,6 +6,8 @@ export declare function inboundToAgentEvent(m: Record<string, unknown>): hub.Age
  * payload.signals, #69)。text 不是 fetch 字段(自由文本走 semantic-search 端点, 见 hubCapability.search)。
  */
 export declare function searchQueryToFetchWire(q: hub.HubQuery): Record<string, unknown>;
+/** Free discovery phase on /a2a/fetch. Keep this separate from the paid/full fetch mapper. */
+export declare function searchQueryToSearchOnlyWire(q: hub.HubQuery): Record<string, unknown>;
 /** core AgentEvent(出站) → 公版 outbound 消息(id+type 必填). */
 export declare function agentEventToOutbound(e: hub.AgentEvent): Record<string, unknown>;
 /** Retry policy for a non-2xx hub status, shared by every money-touching caller (anti-drift, #177). */
@@ -25,4 +27,4 @@ export type AtpRetryClass = 'permanent' | 'cooldown' | 'recoverable';
  */
 export declare function atpRetryClass(status: number): AtpRetryClass;
 /** /a2a/publish 响应 → PublishReceipt. 200=accepted; 402/4xx=rejected 终态. */
-export declare function publishRespToReceipt(status: number, body: Record<string, unknown>): hub.PublishReceipt;
+export declare function publishRespToReceipt(status: number, body: Record<string, unknown>, retryAfterMs?: number): hub.PublishReceipt;

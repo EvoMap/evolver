@@ -1,5 +1,5 @@
 import type { InjectionPlan, McpServerCmd, RuntimeId } from './injection.js';
-import { type InstallOptions, type InstallResult, type UninstallOptions } from './installer.js';
+import { type InstallOptions, type InstallResult, type UninstallOptions } from './installerShared.js';
 export declare const ANTIGRAVITY_NAMESPACES: readonly ["antigravity", "antigravity-ide"];
 export interface AntigravityConfigTarget {
     namespace: (typeof ANTIGRAVITY_NAMESPACES)[number];

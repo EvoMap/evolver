@@ -2,7 +2,7 @@ import { closeSync, existsSync, lstatSync, openSync, readSync, readdirSync, read
 import { basename, delimiter, dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { events, ops, trace } from '@evomap/evolver-core';
-import { ADAPTERS, adapterForPath, genericChatAdapter, isCursorStateVscdbPath, parseCursorStateVscdb, parseJsonlLines, parseJsonlLinesWithStats, } from '@evomap/evolver-runtime-adapters';
+import { ADAPTERS, isRemovedAdapter, adapterForPath, genericChatAdapter, isCursorStateVscdbPath, parseCursorStateVscdb, parseJsonlLines, parseJsonlLinesWithStats, } from '@evomap/evolver-runtime-adapters';
 const TRACE_FILE_RE = /(^|[/\\])llm-trace-[^/\\]*\.jsonl$/i;
 const RUNTIME_SESSION_ENABLE_ENV = 'EVOLVER_TRAJECTORY_RUNTIME_SESSIONS';
 const RUNTIME_SESSION_ENABLE_ENV_LEGACY = 'EVOLVER_TRAJECTORY_EXPORT_RUNTIME_SESSIONS';
@@ -165,7 +165,9 @@ function traceLikeContent(chunk) {
     return parseJsonlLines(chunk).some(isTraceLikeRow);
 }
 function adapterForContent(chunk) {
-    for (const adapter of [genericChatAdapter, ...ADAPTERS.filter((candidate) => candidate !== genericChatAdapter)]) {
+    // Never probe REMOVED_ADAPTERS / isRemovedAdapter agents — their parse() always throws.
+    const candidates = [genericChatAdapter, ...ADAPTERS.filter((candidate) => candidate !== genericChatAdapter && !isRemovedAdapter(candidate.agent))];
+    for (const adapter of candidates) {
         if (adapter.parse(chunk).some((turn) => turn.isMeta !== true))
             return adapter;
     }
@@ -194,6 +196,7 @@ function cursorGlobalStorageDir(home) {
 function cursorGlobalStorageDirs(home) {
     const dirs = [
         cursorGlobalStorageDir(home),
+        join(home, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage'),
         join(home, '.config', 'Cursor', 'User', 'globalStorage'),
     ];
     const appData = process.env['APPDATA'];
@@ -779,6 +782,7 @@ export async function runTrajectoryExport(argv) {
     let files = [];
     let sessionFileCount = 0;
     let sessionTurnCount = 0;
+    let cursorParseFailures = 0;
     let excludedUnmarked = 0;
     let excludedGatewayCaptured = 0;
     const discoveredRuntimeDirs = runtimeSessionDirs(flags);
@@ -807,7 +811,19 @@ export async function runTrajectoryExport(argv) {
                 // Read Cursor chat out of the sqlite db (read-only) and convert each composer to a trajectory. The
                 // marker/gateway gates run PER COMPOSER here (each composerId is its own session_id), so a state.vscdb
                 // holding many composers contributes only the ones evolver marked (and not already gateway-captured).
-                for (const parsedSession of parseCursorStateVscdb(file.path)) {
+                let parsedSessions;
+                try {
+                    parsedSessions = parseCursorStateVscdb(file.path);
+                }
+                catch (error) {
+                    // Default discovery spans several optional platform locations. One stale/corrupt profile must not block
+                    // healthy profiles or other runtime sources; explicit inputs still fail with the detailed parser error.
+                    if (!file.fromRuntimeDiscovery)
+                        throw error;
+                    cursorParseFailures += 1;
+                    continue;
+                }
+                for (const parsedSession of parsedSessions) {
                     const { turns, ...adapterMetadata } = parsedSession;
                     if (file.fromRuntimeDiscovery) {
                         const composerSessionId = typeof adapterMetadata.sessionId === 'string' ? adapterMetadata.sessionId : undefined;
@@ -898,6 +914,8 @@ export async function runTrajectoryExport(argv) {
     process.stdout.write(`[trajectory-export] Read ${allRows.length} trace row(s) and ${sessionTurnCount} session turn(s) from ${files.length} file(s).\n`);
     if (sessionFileCount > 0)
         process.stdout.write(`[trajectory-export] Converted ${sessionFileCount} runtime session file(s).\n`);
+    if (cursorParseFailures > 0)
+        process.stdout.write(`[trajectory-export] Skipped ${cursorParseFailures} unreadable Cursor state database(s).\n`);
     if (excludedUnmarked > 0 || excludedGatewayCaptured > 0) {
         process.stdout.write(`[trajectory-export] Runtime session gate: excluded ${excludedUnmarked} unmarked (no evolver value.inject) and ${excludedGatewayCaptured} already-gateway-captured session(s). Pass --include-unmarked / --include-gateway-captured to collect them.\n`);
     }

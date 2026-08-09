@@ -23,6 +23,10 @@ export declare const SELF_UPDATE_FAILURE_CODES: Readonly<{
     readonly RESTART_FAILED: "restart_failed";
     readonly READ_BACK_FAILED: "read_back_failed";
     readonly ROLLBACK_FAILED: "rollback_failed";
+    readonly MIGRATION_DOWNLOAD_FAILED: "migration_download_failed";
+    readonly MIGRATION_VERIFY_FAILED: "migration_verify_failed";
+    readonly MIGRATION_INSTALL_FAILED: "migration_install_failed";
+    readonly MIGRATION_REGISTER_FAILED: "migration_register_failed";
 }>;
 export type SelfUpdateFailureCode = typeof SELF_UPDATE_FAILURE_CODES[keyof typeof SELF_UPDATE_FAILURE_CODES];
 export interface ClassifiedSelfUpdateError {

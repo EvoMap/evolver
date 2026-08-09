@@ -1,15 +1,19 @@
 import { createRequire } from 'node:module';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, posix, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnvFile, loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { expandHomePath, loadEnvFile, loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 const requireFromHere = createRequire(import.meta.url);
 const DEFAULT_DAEMON_NAME = 'evolver-proxy';
 const DEFAULT_LABEL = 'com.evomap.evolver-proxy';
+const AUTOEXEC_LABEL = 'com.evomap.evolver-autoexec';
 const DEFAULT_HEALTH_TIMEOUT_MS = 700;
 const DEFAULT_WATCH_INTERVAL_MS = 120_000;
+const BOOTSTRAP_ENV_FILE_HANDOFF = 'EVOLVER_INTERNAL_BOOTSTRAP_ENV_FILE';
+const LIFECYCLE_USAGE = 'Usage: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows [--with-autoexec] [--autoexec-home=<path>]|bootstrap [--target=launchd|systemd|windows] [--dry-run]|remove-autoexec-service --target=launchd|systemd|windows [--dry-run]>\n';
 export function runLifecycleCommand(argv, deps = {}) {
     return runLifecycleCommandInner(argv, deps).catch((err) => {
         const stderr = deps.stderr ?? ((text) => { process.stderr.write(text); });
@@ -18,10 +22,14 @@ export function runLifecycleCommand(argv, deps = {}) {
     });
 }
 async function runLifecycleCommandInner(argv, deps) {
-    const action = argv[0];
     const env = deps.env ?? process.env;
     const stdout = deps.stdout ?? ((text) => { process.stdout.write(text); });
     const stderr = deps.stderr ?? ((text) => { process.stderr.write(text); });
+    if (argv[0] === '--help' || argv[0] === '-h') {
+        stdout(LIFECYCLE_USAGE);
+        return 0;
+    }
+    const action = argv[0];
     const flags = parseFlags(argv.slice(1));
     const paths = lifecyclePaths(env);
     switch (action) {
@@ -65,6 +73,17 @@ async function runLifecycleCommandInner(argv, deps) {
         }
         case 'watch':
             return runWatch(paths, env, flags, stdout, stderr);
+        case 'bootstrap': {
+            const requestedEnvFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : undefined;
+            const envFileResult = requestedEnvFile
+                ? loadEnvFile(requestedEnvFile, env)
+                : loadEnvFileFromEnv(env);
+            if (envFileResult.error)
+                throw new Error('failed to load lifecycle environment file');
+            const result = await bootstrapService(flags, env, deps.argv1 ?? process.argv[1], deps.bootstrap ?? {}, deps.loadUnixRecoveryController);
+            stdout(`${JSON.stringify(result, null, 2)}\n`);
+            return 0;
+        }
         case 'install-service': {
             const requestedEnvFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : undefined;
             const envFileResult = requestedEnvFile
@@ -77,8 +96,17 @@ async function runLifecycleCommandInner(argv, deps) {
             stdout(`${JSON.stringify(result, null, 2)}\n`);
             return 0;
         }
+        case 'remove-autoexec-service': {
+            if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
+                throw new Error('--dry-run is a boolean flag and does not accept a value');
+            }
+            const target = serviceTarget(flags);
+            const result = (deps.removeAutoexecService ?? removeAutoexecService)(target, flags['dry-run'] === true);
+            stdout(`${JSON.stringify(result, null, 2)}\n`);
+            return 0;
+        }
         default:
-            stderr('用法: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows>\n');
+            stderr(LIFECYCLE_USAGE);
             return action === undefined ? 0 : 1;
     }
 }
@@ -168,7 +196,7 @@ export function stopLifecycle(paths, deps = {}) {
         rmSync(paths.pidFile, { force: true });
         return { status: 'not_running' };
     }
-    if (!pidFile.owned || !waitForPidFileRecordMatch(pidFile, 1_000, deps.processCommandLine ?? processCommandLine, deps.processIdentity ?? processIdentity)) {
+    if (!pidFile.owned || !waitForPidFileRecordMatch(pidFile, 1_000, deps.processCommandLine ?? processCommandLine, deps.processIdentity ?? processIdentity, deps.platform ?? process.platform)) {
         return { status: 'not_owned', pid, reason: 'pidfile_owner_unconfirmed' };
     }
     try {
@@ -222,9 +250,39 @@ export async function lifecycleStatus(paths, env = process.env, options = {}) {
         logFile: paths.logFile,
     };
 }
+/** Fetch enriched connection status for the daily summary. Builds on lifecycleStatus, adding hub details. */
+export async function dailyConnectionStatus(paths, env = process.env, options = {}) {
+    const base = await lifecycleStatus(paths, env, { ...options, quietSettingsReadError: true });
+    if (!base.running || !base.healthy)
+        return base;
+    // Proxy is healthy — fetch /proxy/status for hub details
+    const settings = readProxySettings(paths.settingsFile, { quietReadError: true });
+    if (!settings.url || !settings.token)
+        return base;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS);
+    try {
+        const url = `${settings.url.replace(/\/+$/, '')}/proxy/status`;
+        const res = await fetch(url, { headers: { authorization: `Bearer ${settings.token}` }, signal: controller.signal });
+        if (!res.ok)
+            return base;
+        const body = await res.json();
+        return {
+            ...base,
+            hubAuthStatus: typeof body['hub_auth_status'] === 'string' ? body['hub_auth_status'] : undefined,
+            lastSyncAt: typeof body['last_sync_at'] === 'string' ? body['last_sync_at'] : undefined,
+        };
+    }
+    catch {
+        return base;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
 export function lifecyclePaths(env = process.env) {
     const home = env['EVOLVER_HOME'] ?? env['EVOMAP_HOME'] ?? join(homedir(), '.evomap');
-    const stateDir = env['EVOLVER_LIFECYCLE_STATE_DIR'] ?? join(home, 'lifecycle');
+    const stateDir = resolvePath(nonBlankEnv(env, 'EVOLVER_LIFECYCLE_STATE_DIR') ?? join(home, 'lifecycle'));
     const logDir = env['EVOLVER_LIFECYCLE_LOG_DIR'] ?? join(home, 'logs');
     const name = env['EVOLVER_LIFECYCLE_NAME'] ?? DEFAULT_DAEMON_NAME;
     const settingsHome = nonBlankEnv(env, 'EVOLVER_SETTINGS_DIR') ?? join(homedir(), '.evolver');
@@ -242,6 +300,10 @@ function nonBlankEnv(env, key) {
     return value ? value : undefined;
 }
 export function renderSystemdUnit(opts = {}) {
+    const execStart = assertSingleLine(opts.execStart ?? defaultServiceExecStart(), 'systemd ExecStart');
+    const workingDirectory = opts.workingDirectory === undefined
+        ? '%h'
+        : quoteSystemdArg(isAbsolute(opts.workingDirectory) ? opts.workingDirectory : resolvePath(opts.workingDirectory));
     return [
         '# Linux systemd user unit -- ~/.config/systemd/user/evolver-proxy.service',
         '[Unit]',
@@ -252,17 +314,23 @@ export function renderSystemdUnit(opts = {}) {
         'StartLimitIntervalSec=120s',
         '',
         '[Service]',
-        'Type=simple',
-        `WorkingDirectory=${opts.workingDirectory ?? '%h'}`,
+        'Type=notify',
+        '# The stable recovery controller may be MainPID; the proxy child invokes systemd-notify.',
+        'NotifyAccess=all',
+        'WatchdogSec=180s',
+        `WorkingDirectory=${workingDirectory}`,
         ...(opts.envFile ? [`Environment="EVOLVER_ENV_FILE=${escapeSystemdEnvValue(opts.envFile)}"`] : []),
         'Environment="EVOLVER_SELF_UPDATE_SUPERVISOR=systemd"',
+        ...(opts.lifecycleStateDir
+            ? [`Environment="EVOLVER_LIFECYCLE_STATE_DIR=${escapeSystemdEnvValue(opts.lifecycleStateDir)}"`]
+            : []),
         ...(opts.selfUpdateStateDir
             ? [`Environment="EVOLVER_SELF_UPDATE_STATE_DIR=${escapeSystemdEnvValue(opts.selfUpdateStateDir)}"`]
             : []),
         ...(opts.selfUpdateTarget
             ? [`Environment="EVOLVER_SELF_UPDATE_TARGET_PATH=${escapeSystemdEnvValue(opts.selfUpdateTarget)}"`]
             : []),
-        `ExecStart=${opts.execStart ?? defaultServiceExecStart()}`,
+        `ExecStart=${execStart}`,
         'Restart=on-failure',
         'RestartSec=5s',
         'RestartPreventExitStatus=0',
@@ -279,12 +347,49 @@ export function renderSystemdUnit(opts = {}) {
         '',
     ].join('\n');
 }
+export function renderAutoexecSystemdUnit(opts) {
+    const execStart = escapeSystemdPercent(assertSingleLine(opts.execStart, 'systemd ExecStart'));
+    const workingDirectory = opts.workingDirectory === undefined
+        ? '%h'
+        : escapeSystemdPercent(quoteSystemdArg(isAbsolute(opts.workingDirectory) ? opts.workingDirectory : resolvePath(opts.workingDirectory)));
+    return [
+        '# Linux systemd user unit -- ~/.config/systemd/user/evolver-autoexec.service',
+        '[Unit]',
+        'Description=EvoMap Evolver Autoexec Daemon',
+        'After=network-online.target evolver-proxy.service',
+        'Wants=network-online.target evolver-proxy.service',
+        'StartLimitBurst=5',
+        'StartLimitIntervalSec=120s',
+        '',
+        '[Service]',
+        'Type=simple',
+        `WorkingDirectory=${workingDirectory}`,
+        ...(opts.envFile ? [`Environment="EVOLVER_ENV_FILE=${escapeSystemdEnvValue(opts.envFile)}"`] : []),
+        `ExecStart=${execStart}`,
+        'Restart=on-failure',
+        'RestartSec=5s',
+        'RestartPreventExitStatus=0',
+        'TimeoutStopSec=30s',
+        'StandardOutput=journal',
+        'StandardError=journal',
+        'SyslogIdentifier=evolver-autoexec',
+        'NoNewPrivileges=true',
+        'PrivateTmp=true',
+        '',
+        '[Install]',
+        'WantedBy=default.target',
+        '',
+    ].join('\n');
+}
 export function renderLaunchdPlist(opts = {}) {
     const workingDirectory = opts.workingDirectory ?? '/Users/YOU/your-project';
     const nodePath = opts.nodePath ?? '/usr/local/bin/node';
     const proxyBin = opts.proxyBin ?? '/Users/YOU/your-project/node_modules/@evomap/evolver-proxy/dist/bin/evolver-proxy.js';
     const programArguments = opts.programArguments ?? [nodePath, proxyBin];
     const logDir = opts.logDir ?? '/Users/YOU/Library/Logs';
+    const label = opts.label ?? DEFAULT_LABEL;
+    const logName = opts.logName ?? 'evolver-proxy';
+    const selfUpdateSupervisor = opts.selfUpdateSupervisor ?? true;
     const envFileBlock = opts.envFile ? `        <key>EVOLVER_ENV_FILE</key>\n        <string>${escapeXml(opts.envFile)}</string>\n` : '';
     return [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -292,7 +397,7 @@ export function renderLaunchdPlist(opts = {}) {
         '<plist version="1.0">',
         '<dict>',
         '    <key>Label</key>',
-        `    <string>${DEFAULT_LABEL}</string>`,
+        `    <string>${escapeXml(label)}</string>`,
         '    <key>ProgramArguments</key>',
         '    <array>',
         ...programArguments.map((argument) => `        <string>${escapeXml(argument)}</string>`),
@@ -302,8 +407,14 @@ export function renderLaunchdPlist(opts = {}) {
         '    <key>EnvironmentVariables</key>',
         '    <dict>',
         envFileBlock.trimEnd(),
-        '        <key>EVOLVER_SELF_UPDATE_SUPERVISOR</key>',
-        '        <string>launchd</string>',
+        ...(opts.lifecycleStateDir ? [
+            '        <key>EVOLVER_LIFECYCLE_STATE_DIR</key>',
+            `        <string>${escapeXml(opts.lifecycleStateDir)}</string>`,
+        ] : []),
+        ...(selfUpdateSupervisor ? [
+            '        <key>EVOLVER_SELF_UPDATE_SUPERVISOR</key>',
+            '        <string>launchd</string>',
+        ] : []),
         ...(opts.selfUpdateStateDir ? [
             '        <key>EVOLVER_SELF_UPDATE_STATE_DIR</key>',
             `        <string>${escapeXml(opts.selfUpdateStateDir)}</string>`,
@@ -325,9 +436,9 @@ export function renderLaunchdPlist(opts = {}) {
         '    <key>ThrottleInterval</key>',
         '    <integer>5</integer>',
         '    <key>StandardOutPath</key>',
-        `    <string>${escapeXml(join(logDir, 'evolver-proxy.log'))}</string>`,
+        `    <string>${escapeXml(posix.join(logDir, `${logName}.log`))}</string>`,
         '    <key>StandardErrorPath</key>',
-        `    <string>${escapeXml(join(logDir, 'evolver-proxy.err.log'))}</string>`,
+        `    <string>${escapeXml(posix.join(logDir, `${logName}.err.log`))}</string>`,
         '    <key>ProcessType</key>',
         '    <string>Standard</string>',
         '    <key>LowPriorityIO</key>',
@@ -339,8 +450,16 @@ export function renderLaunchdPlist(opts = {}) {
         '',
     ].filter((line) => line !== '').join('\n');
 }
+export function renderAutoexecLaunchdPlist(opts) {
+    return renderLaunchdPlist({
+        ...opts,
+        label: AUTOEXEC_LABEL,
+        logName: 'evolver-autoexec',
+        selfUpdateSupervisor: false,
+    });
+}
 export function renderWindowsInstaller(defaults = {}) {
-    const ps = (value) => `'${(value ?? '').replaceAll("'", "''")}'`;
+    const ps = (value) => `'${assertSingleLine(value ?? '', 'Windows installer value').replaceAll("'", "''")}'`;
     return String.raw `param(
   [switch]$Install,
   [switch]$Uninstall,
@@ -349,6 +468,7 @@ export function renderWindowsInstaller(defaults = {}) {
   [string]$NodePath = ${ps(defaults.nodePath)},
   [string]$ProxyBin = ${ps(defaults.proxyBin)},
   [string]$EnvFile = ${ps(defaults.envFile)},
+  [string]$LifecycleStateDir = ${ps(defaults.lifecycleStateDir)},
   [string]$SelfUpdateStateDir = ${ps(defaults.selfUpdateStateDir)}
 )
 
@@ -362,7 +482,21 @@ if (-not ($Install -or $Uninstall)) {
 
 if ($Uninstall) {
   $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  if ($existing) { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false }
+  if ($existing) {
+    if ($existing.State -eq 'Running') {
+      Stop-ScheduledTask -TaskName $TaskName
+      $stopDeadline = [DateTime]::UtcNow.AddSeconds(15)
+      do {
+        Start-Sleep -Milliseconds 100
+        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      } while ($existing -and $existing.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
+      if ($existing -and $existing.State -eq 'Running') {
+        Write-Error 'Existing Evolver Scheduled Task did not stop; refusing to uninstall.'
+        exit 1
+      }
+    }
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+  }
   $launcher = Join-Path $env:LOCALAPPDATA 'EvoMap\evolver-proxy-task-launcher.vbs'
   if (Test-Path $launcher) { Remove-Item $launcher -Force -ErrorAction SilentlyContinue }
   exit 0
@@ -387,7 +521,7 @@ if ($EvolverBin) {
   }
 }
 
-foreach ($launcherValue in @($EvolverBin, $NodePath, $ProxyBin, $EnvFile, $SelfUpdateStateDir)) {
+foreach ($launcherValue in @($EvolverBin, $NodePath, $ProxyBin, $EnvFile, $LifecycleStateDir, $SelfUpdateStateDir)) {
   if ($launcherValue -match "[\r\n]") {
     Write-Error 'Launcher paths must not contain line breaks.'
     exit 1
@@ -428,6 +562,7 @@ $nodeEsc = if ($NodePath) { $NodePath.Replace('"', '""') } else { '' }
 $proxyEsc = if ($ProxyBin) { $ProxyBin.Replace('"', '""') } else { '' }
 $evolverEsc = if ($EvolverBin) { $EvolverBin.Replace('"', '""') } else { '' }
 $envEsc = if ($EnvFile) { $EnvFile.Replace('"', '""') } else { '' }
+$lifecycleStateDirEsc = if ($LifecycleStateDir) { $LifecycleStateDir.Replace('"', '""') } else { '' }
 $stateDirEsc = if ($SelfUpdateStateDir) { $SelfUpdateStateDir.Replace('"', '""') } else { '' }
 
 $launcherBody = @"
@@ -439,6 +574,7 @@ Set WshShell = CreateObject("WScript.Shell")
 Set env = WshShell.Environment("PROCESS")
 Set fso = CreateObject("Scripting.FileSystemObject")
 If "$envEsc" <> "" Then env("EVOLVER_ENV_FILE") = "$envEsc"
+If "$lifecycleStateDirEsc" <> "" Then env("EVOLVER_LIFECYCLE_STATE_DIR") = "$lifecycleStateDirEsc"
 env("EVOLVER_SELF_UPDATE_SUPERVISOR") = "windows-scheduled-task"
 If "$evolverEsc" <> "" Then
   stateDir = "$stateDirEsc"
@@ -465,6 +601,130 @@ $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"{0}"' -f $
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit (New-TimeSpan -Days 0)
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+$task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
+# The proxy hands off right after bootstrap; start the task now so the current session is
+# supervised immediately, while the -AtLogOn trigger keeps it durable across logins.
+Start-ScheduledTask -TaskName $TaskName
+Write-Host "Installed scheduled task '$TaskName' using hidden wscript launcher $launcherPath."
+`;
+}
+export function renderWindowsAutoexecInstaller(defaults = {}) {
+    const ps = (value) => `'${assertSingleLine(value ?? '', 'Windows installer value').replaceAll("'", "''")}'`;
+    return String.raw `param(
+  [switch]$Install,
+  [switch]$Uninstall,
+  [string]$TaskName = 'EvoMapEvolverAutoexecDaemon',
+  [string]$EvolverBin = ${ps(defaults.evolverBin)},
+  [string]$NodePath = ${ps(defaults.nodePath)},
+  [string]$CliBin = ${ps(defaults.cliBin)},
+  [string]$EnvFile = ${ps(defaults.envFile)},
+  [string]$AutoexecHome = ${ps(defaults.autoexecHome)},
+  [string]$WorkingDirectory = ${ps(defaults.workingDirectory)}
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not ($Install -or $Uninstall) -or ($Install -and $Uninstall)) {
+  Write-Host 'Usage: install-evolver-autoexec-windows.ps1 -Install [-EvolverBin ... | -NodePath ... -CliBin ...] [-EnvFile ...] [-AutoexecHome ...]'
+  Write-Host '       install-evolver-autoexec-windows.ps1 -Uninstall [-TaskName ...]'
+  exit 1
+}
+
+$launcherDir = Join-Path $env:LOCALAPPDATA 'EvoMap'
+$launcherPath = Join-Path $launcherDir 'evolver-autoexec-task-launcher.vbs'
+
+if ($Uninstall) {
+  $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if ($existing) {
+    if ($existing.State -eq 'Running') {
+      Stop-ScheduledTask -TaskName $TaskName
+      $stopDeadline = [DateTime]::UtcNow.AddSeconds(15)
+      do {
+        Start-Sleep -Milliseconds 100
+        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      } while ($existing -and $existing.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
+      if ($existing -and $existing.State -eq 'Running') {
+        Write-Error 'Existing Evolver Autoexec Scheduled Task did not stop; refusing to uninstall.'
+        exit 1
+      }
+    }
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+  }
+  if (Test-Path $launcherPath) { Remove-Item $launcherPath -Force -ErrorAction SilentlyContinue }
+  exit 0
+}
+
+if (-not $EvolverBin) {
+  if (-not $NodePath) {
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $cmd) { Write-Error 'Pass -EvolverBin, or install node.exe / pass -NodePath.'; exit 1 }
+    $NodePath = $cmd.Source
+  }
+  if (-not $CliBin) { Write-Error 'Pass -EvolverBin, or -CliBin pointing at evolver CLI cli.js.'; exit 1 }
+  if (-not (Test-Path $CliBin)) { Write-Error "Evolver CLI not found at $CliBin"; exit 1 }
+} elseif (-not (Test-Path $EvolverBin)) {
+  Write-Error "Evolver binary not found at $EvolverBin"
+  exit 1
+}
+
+foreach ($launcherValue in @($EvolverBin, $NodePath, $CliBin, $EnvFile, $AutoexecHome, $WorkingDirectory)) {
+  if ($launcherValue -match "[\r\n]") {
+    Write-Error 'Launcher paths must not contain line breaks.'
+    exit 1
+  }
+}
+
+if (-not $WorkingDirectory) { $WorkingDirectory = $env:USERPROFILE }
+if (-not (Test-Path $WorkingDirectory -PathType Container)) {
+  Write-Error 'WorkingDirectory must be an existing directory.'
+  exit 1
+}
+
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing -and $existing.State -eq 'Running') {
+  Stop-ScheduledTask -TaskName $TaskName
+  $stopDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 100
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  } while ($existing -and $existing.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
+  if ($existing -and $existing.State -eq 'Running') {
+    Write-Error 'Existing Evolver Autoexec Scheduled Task did not stop; refusing to replace it.'
+    exit 1
+  }
+}
+
+if (-not (Test-Path $launcherDir)) { New-Item -ItemType Directory -Path $launcherDir | Out-Null }
+
+$nodeEsc = if ($NodePath) { $NodePath.Replace('"', '""') } else { '' }
+$cliEsc = if ($CliBin) { $CliBin.Replace('"', '""') } else { '' }
+$evolverEsc = if ($EvolverBin) { $EvolverBin.Replace('"', '""') } else { '' }
+$envEsc = if ($EnvFile) { $EnvFile.Replace('"', '""') } else { '' }
+$homeEsc = if ($AutoexecHome) { $AutoexecHome.Replace('"', '""') } else { '' }
+
+$launcherBody = @"
+' AUTO-GENERATED by install-evolver-autoexec-windows.ps1 -- do not edit.
+Dim WshShell, env, cmd, rc
+Set WshShell = CreateObject("WScript.Shell")
+Set env = WshShell.Environment("PROCESS")
+If "$envEsc" <> "" Then env("EVOLVER_ENV_FILE") = "$envEsc"
+If "$evolverEsc" <> "" Then
+  cmd = """$evolverEsc"" autoexec"
+Else
+  cmd = """$nodeEsc"" ""$cliEsc"" autoexec"
+End If
+If "$homeEsc" <> "" Then cmd = cmd & " ""$homeEsc"""
+rc = WshShell.Run(cmd, 0, True)
+WScript.Quit rc
+"@
+Set-Content -Path $launcherPath -Value $launcherBody -Encoding Unicode
+
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"{0}"' -f $launcherPath) -WorkingDirectory $WorkingDirectory
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit (New-TimeSpan -Days 0) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
@@ -496,7 +756,23 @@ function serviceTarget(flags) {
 }
 async function installService(target, flags, env, argv1, loadUnixRecoveryController = () => import('@evomap/evolver-proxy')) {
     const dryRun = flags['dry-run'] === true;
-    const envFile = typeof flags['env-file'] === 'string' ? flags['env-file'] : env['EVOLVER_ENV_FILE'];
+    const lifecycleStateDir = lifecyclePaths(env).stateDir;
+    if (flags['with-autoexec'] !== undefined && flags['with-autoexec'] !== true) {
+        throw new Error('--with-autoexec is a boolean flag and does not accept a value');
+    }
+    if (flags['autoexec-home'] === true) {
+        throw new Error('--autoexec-home requires a path');
+    }
+    const withAutoexec = flags['with-autoexec'] === true;
+    if (!withAutoexec && flags['autoexec-home'] !== undefined) {
+        throw new Error('--autoexec-home requires --with-autoexec');
+    }
+    const configuredEnvFile = typeof flags['env-file'] === 'string'
+        ? flags['env-file'].trim()
+        : nonBlankEnv(env, 'EVOLVER_ENV_FILE');
+    const envFile = configuredEnvFile
+        ? resolvePath(expandHomePath(configuredEnvFile))
+        : undefined;
     const supervised = configuredSelfUpdateTarget(env)
         ? resolveDaemonCommand(env, process.execPath, argv1)
         : resolveSelfUpdatingExecutable(process.execPath, argv1);
@@ -522,11 +798,33 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         unixControllerStateDir = dirname(dirname(controllerPath));
     }
     const serviceCommand = unixController ?? supervised;
+    const autoexecHomeFlag = typeof flags['autoexec-home'] === 'string' ? flags['autoexec-home'].trim() : undefined;
+    if (autoexecHomeFlag !== undefined && !autoexecHomeFlag) {
+        throw new Error('--autoexec-home requires a non-empty path');
+    }
+    const companionWorkingDirectoryFlag = typeof flags['cwd'] === 'string'
+        ? assertSingleLine(flags['cwd'].trim(), 'service working directory')
+        : undefined;
+    const companionWorkingDirectory = companionWorkingDirectoryFlag
+        ? (isAbsolute(companionWorkingDirectoryFlag) ? companionWorkingDirectoryFlag : resolvePath(companionWorkingDirectoryFlag))
+        : process.cwd();
+    const autoexecHome = autoexecHomeFlag
+        ? assertSingleLine(isAbsolute(autoexecHomeFlag) ? autoexecHomeFlag : resolvePath(companionWorkingDirectory, autoexecHomeFlag), 'autoexec home')
+        : undefined;
+    const autoexecCommand = withAutoexec
+        ? resolveAutoexecDaemonCommand(env, process.execPath, argv1, autoexecHome)
+        : undefined;
+    if (withAutoexec && !autoexecCommand) {
+        throw new Error('cannot resolve the current evolver CLI for --with-autoexec; pass a standalone Evolver binary or run through cli.js');
+    }
     if (target === 'systemd') {
         const path = expandHome('~/.config/systemd/user/evolver-proxy.service');
+        const autoexecPath = expandHome('~/.config/systemd/user/evolver-autoexec.service');
+        const workingDirectory = typeof flags['cwd'] === 'string' ? flags['cwd'] : undefined;
         const unit = renderSystemdUnit({
             envFile,
-            workingDirectory: typeof flags['cwd'] === 'string' ? flags['cwd'] : undefined,
+            lifecycleStateDir,
+            workingDirectory,
             ...(serviceCommand
                 ? { execStart: [serviceCommand.command, ...serviceCommand.args].map(quoteSystemdArg).join(' ') }
                 : {}),
@@ -535,17 +833,31 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         });
         if (!dryRun)
             writeTextFile(path, unit, 0o644);
+        if (autoexecCommand) {
+            const autoexecUnit = renderAutoexecSystemdUnit({
+                envFile,
+                workingDirectory: companionWorkingDirectory,
+                execStart: [autoexecCommand.command, ...autoexecCommand.args].map(quoteSystemdArg).join(' '),
+            });
+            if (!dryRun)
+                writeTextFile(autoexecPath, autoexecUnit, 0o644);
+        }
         return {
             status: dryRun ? 'rendered' : 'installed',
-            files: [path, ...(unixController ? [unixController.command] : [])],
+            files: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
             service: 'systemd-user',
+            ...(autoexecHome ? { autoexecHome } : {}),
         };
     }
     if (target === 'launchd') {
         const path = expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
+        const autoexecPath = expandHome('~/Library/LaunchAgents/com.evomap.evolver-autoexec.plist');
+        const workingDirectory = companionWorkingDirectory;
+        const logDir = join(homedir(), 'Library', 'Logs');
         const plist = renderLaunchdPlist({
             envFile,
-            workingDirectory: typeof flags['cwd'] === 'string' ? flags['cwd'] : process.cwd(),
+            lifecycleStateDir,
+            workingDirectory,
             ...(serviceCommand
                 ? { programArguments: [serviceCommand.command, ...serviceCommand.args] }
                 : {}),
@@ -553,17 +865,29 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
             ...(unixControllerStateDir ? { selfUpdateStateDir: unixControllerStateDir } : {}),
             nodePath: resolveStableNodePath(),
             proxyBin: resolveProxyBinPath() ?? (argv1?.startsWith('/') ? argv1 : undefined) ?? '/ABSOLUTE/PATH/TO/evolver-proxy.js',
-            logDir: join(homedir(), 'Library', 'Logs'),
+            logDir,
         });
         if (!dryRun)
             writeTextFile(path, plist, 0o644);
+        if (autoexecCommand) {
+            const autoexecPlist = renderAutoexecLaunchdPlist({
+                envFile,
+                workingDirectory,
+                programArguments: [autoexecCommand.command, ...autoexecCommand.args],
+                logDir,
+            });
+            if (!dryRun)
+                writeTextFile(autoexecPath, autoexecPlist, 0o644);
+        }
         return {
             status: dryRun ? 'rendered' : 'installed',
-            files: [path, ...(unixController ? [unixController.command] : [])],
+            files: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
             service: 'launchd',
+            ...(autoexecHome ? { autoexecHome } : {}),
         };
     }
-    const path = expandHome('~/install-evolver-proxy-windows.ps1');
+    let path = expandHome('~/install-evolver-proxy-windows.ps1');
+    let autoexecPath = expandHome('~/install-evolver-autoexec-windows.ps1');
     const selfUpdateStateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim();
     const standalone = standaloneTarget;
     const script = renderWindowsInstaller({
@@ -572,11 +896,320 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
             proxyBin: resolveProxyBinPath(),
         }),
         ...(envFile ? { envFile } : {}),
+        lifecycleStateDir,
         ...(selfUpdateStateDir ? { selfUpdateStateDir } : {}),
     });
     if (!dryRun)
-        writeTextFile(path, script, 0o644);
-    return { status: dryRun ? 'rendered' : 'installed', files: [path], service: 'windows-scheduled-task' };
+        path = writeWindowsHelper(path, script);
+    if (autoexecCommand) {
+        const standaloneAutoexec = autoexecCommand.args[0] === 'autoexec';
+        const autoexecScript = renderWindowsAutoexecInstaller({
+            ...(standaloneAutoexec
+                ? { evolverBin: autoexecCommand.command }
+                : { nodePath: autoexecCommand.command, cliBin: autoexecCommand.args[0] }),
+            ...(envFile ? { envFile } : {}),
+            ...(autoexecHome ? { autoexecHome } : {}),
+            workingDirectory: companionWorkingDirectory,
+        });
+        if (!dryRun)
+            autoexecPath = writeWindowsHelper(autoexecPath, autoexecScript);
+    }
+    return {
+        status: dryRun ? 'rendered' : 'installed',
+        files: [path, ...(autoexecCommand ? [autoexecPath] : [])],
+        service: 'windows-scheduled-task',
+        ...(autoexecHome ? { autoexecHome } : {}),
+    };
+}
+function defaultBootstrapTarget(platform) {
+    if (platform === 'darwin')
+        return 'launchd';
+    if (platform === 'win32')
+        return 'windows';
+    return 'systemd';
+}
+/**
+ * First-run supervision bootstrap: render + write the durable launcher for the current platform
+ * (reusing install-service), then ACTIVATE it (user-level, no admin required) and persist a
+ * success marker the proxy consults before attempting another bootstrap. The generated launcher
+ * carries the EVOLVER_SELF_UPDATE_SUPERVISOR attestation, so self-update becomes eligible on the
+ * next supervised startup. Activation failures throw (fail closed) after a best-effort rollback of
+ * the launcher artifacts, so a half-activated unit/agent/task never survives a failed bootstrap.
+ */
+async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryController) {
+    if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
+        throw new Error('--dry-run is a boolean flag and does not accept a value');
+    }
+    const platform = deps.platform ?? process.platform;
+    const target = typeof flags['target'] === 'string' ? serviceTarget(flags) : defaultBootstrapTarget(platform);
+    const dryRun = flags['dry-run'] === true;
+    if (platform !== 'win32') {
+        const uid = deps.uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+        if (uid === 0) {
+            throw new Error('bootstrap must run as a regular (non-root) user: the systemd --user manager and the launchd gui domain do not exist for root; install as your normal user and, on headless hosts, run `loginctl enable-linger` for that user');
+        }
+    }
+    const install = deps.install ?? installService;
+    const handedOffEnvFile = nonBlankEnv(env, BOOTSTRAP_ENV_FILE_HANDOFF);
+    const installFlags = handedOffEnvFile && typeof flags['env-file'] !== 'string'
+        ? { ...flags, 'env-file': handedOffEnvFile }
+        : flags;
+    const installed = await install(target, installFlags, env, argv1, loadUnixRecoveryController);
+    const files = installed.files ?? [];
+    if (dryRun) {
+        return { status: 'planned', files, service: installed.service, actions: bootstrapActivationPlan(target, files, deps.uid) };
+    }
+    const run = deps.run ?? ((command, args) => {
+        const result = spawnSync(command, [...args], { stdio: 'ignore', timeout: 60_000, windowsHide: true });
+        return { status: result.status, ...(result.error ? { error: result.error } : {}) };
+    });
+    const preExisting = probePreExistingBootstrapService(target, run, deps.uid);
+    const markerPath = join(lifecyclePaths(env).stateDir, 'bootstrap.json');
+    let actions;
+    try {
+        actions = activateBootstrapTarget(target, files, run, deps.uid);
+    }
+    catch (error) {
+        const rollbackErrors = rollbackBootstrapArtifacts(target, files, run, deps.uid, preExisting);
+        // Activation failed, so supervision was never established and any success marker left over
+        // from a previous run is no longer true. Drop it (force, best-effort) so the proxy's
+        // shouldBootstrap no longer reports already_bootstrapped for a broken install; a failure here
+        // must not mask the original activation error.
+        try {
+            rmSync(markerPath, { force: true });
+        }
+        catch {
+            // best-effort: a stale marker is less harmful than swallowing the activation error
+        }
+        const rollbackSuffix = rollbackErrors.length > 0 ? ` (rollback also failed: ${rollbackErrors.join('; ')})` : '';
+        throw new Error(`${error.message}; launcher artifacts were rolled back${rollbackSuffix}`);
+    }
+    writeTextFile(markerPath, `${JSON.stringify({
+        bootstrappedAt: new Date().toISOString(),
+        target,
+        service: installed.service,
+        files,
+    })}\n`, 0o600);
+    return { status: 'bootstrapped', files: [...files, markerPath], service: installed.service, actions };
+}
+function bootstrapActivationPlan(target, files, uid) {
+    if (target === 'systemd') {
+        return [
+            'systemctl --user daemon-reload',
+            'systemctl --user enable --now evolver-proxy.service',
+        ];
+    }
+    if (target === 'launchd') {
+        const plist = expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
+        return [`launchctl bootstrap gui/${uid ?? '<uid>'} ${plist}`];
+    }
+    const installer = files[0] ?? expandHome('~/install-evolver-proxy-windows.ps1');
+    return [`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${installer} -Install`];
+}
+function activateBootstrapTarget(target, files, run, uid) {
+    if (target === 'systemd') {
+        requireBootstrapActivation(run('systemctl', ['--user', 'daemon-reload']), [0], 'reload systemd user manager');
+        requireBootstrapActivation(run('systemctl', ['--user', 'enable', '--now', 'evolver-proxy.service']), [0], 'enable systemd user service', 'if no user session bus exists, run `loginctl enable-linger` and retry');
+        return bootstrapActivationPlan(target, files, uid);
+    }
+    if (target === 'launchd') {
+        const userId = uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+        if (userId === undefined)
+            throw new Error('cannot determine the current user id for launchd bootstrap');
+        const plist = expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
+        // 3/113: already bootstrapped/loaded; 5: "Bootstrap failed: service already loaded". All three
+        // mean an identical agent is already registered, so a re-bootstrap stays idempotent instead of
+        // failing and rolling back a working install.
+        requireBootstrapActivation(run('launchctl', ['bootstrap', `gui/${userId}`, plist]), [0, 3, 5, 113], 'bootstrap launchd agent', 'launchctl bootstrap gui/<uid> requires an active GUI (Aqua) login session; log in at the console (or retry after your next GUI login)');
+        return [`launchctl bootstrap gui/${userId} ${plist}`];
+    }
+    const installer = files[0];
+    if (!installer)
+        throw new Error('bootstrap could not locate the generated Windows installer script');
+    requireBootstrapActivation(run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Install']), [0], 'register Windows scheduled task');
+    return [`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${installer} -Install`];
+}
+function requireBootstrapActivation(result, allowedStatuses, operation, hint) {
+    if (result.error || result.status === null || !allowedStatuses.includes(result.status)) {
+        throw new Error(`bootstrap activation failed during ${operation}${hint ? ` (hint: ${hint})` : ''}`);
+    }
+}
+/**
+ * Best-effort probe for a same-name service registration that existed before this bootstrap run.
+ * Only an unambiguous "not registered" exit status reports false; any error, inconclusive, or
+ * loaded-looking outcome reports true, so a later rollback conservatively leaves an existing
+ * registration intact instead of tearing down a working install. The probe must never block the
+ * bootstrap itself.
+ */
+function probePreExistingBootstrapService(target, run, uid) {
+    let result;
+    let absentStatuses;
+    try {
+        if (target === 'systemd') {
+            // 1: not enabled, 4: no such unit. A working install is enabled (exit 0).
+            result = run('systemctl', ['--user', 'is-enabled', '--quiet', 'evolver-proxy.service']);
+            absentStatuses = [1, 4];
+        }
+        else if (target === 'launchd') {
+            const userId = uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+            if (userId === undefined)
+                return true;
+            // 3: no such service, 113: the gui domain itself is absent (nothing can be loaded there).
+            result = run('launchctl', ['print', `gui/${userId}`, 'com.evomap.evolver-proxy']);
+            absentStatuses = [3, 113];
+        }
+        else {
+            // 1: Get-ScheduledTask raised because the task does not exist; 0 means it is registered.
+            result = run('powershell.exe', [
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                'Get-ScheduledTask -TaskName EvoMapEvolverProxyDaemon',
+            ]);
+            absentStatuses = [1];
+        }
+    }
+    catch {
+        return true;
+    }
+    if (result.error !== undefined || result.status === null)
+        return true;
+    return !absentStatuses.includes(result.status);
+}
+/**
+ * Best-effort rollback of the launcher artifacts written before a failed activation. Every step
+ * ignores its own failure (reported back to the caller instead of thrown), so the original
+ * activation error always surfaces. Uses the injected `run` so tests can observe the sequence.
+ * When the probe detected a pre-existing same-name registration, this rollback is a strict no-op:
+ * no teardown command, no file deletion, not even a systemd daemon-reload. installService already
+ * overwrote the canonical unit/plist/installer before the probe could run, so the on-disk content
+ * is inevitably the new rendering; deleting it would orphan a still-running service (no on-disk
+ * definition, so it would stop auto-loading after a reboot), which is strictly worse than leaving
+ * the updated content in place. The working install must survive a failed re-bootstrap untouched.
+ */
+function rollbackBootstrapArtifacts(target, files, run, uid, preExisting = false) {
+    const errors = [];
+    if (preExisting)
+        return errors;
+    const attempt = (label, action) => {
+        try {
+            action();
+        }
+        catch (error) {
+            errors.push(`${label}: ${error.message}`);
+        }
+    };
+    const removeFile = (file) => attempt(`remove ${file}`, () => { rmSync(file, { force: true }); });
+    if (target === 'systemd') {
+        attempt('disable systemd user service', () => { run('systemctl', ['--user', 'disable', '--now', 'evolver-proxy.service']); });
+        const unit = files.find((file) => basename(file) === 'evolver-proxy.service');
+        if (unit)
+            removeFile(unit);
+        attempt('reload systemd user manager', () => { run('systemctl', ['--user', 'daemon-reload']); });
+        return errors;
+    }
+    if (target === 'launchd') {
+        const plist = files.find((file) => file.endsWith('.plist')) ?? expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
+        const userId = uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+        if (userId !== undefined) {
+            attempt(`bootout launchd agent gui/${userId}`, () => { run('launchctl', ['bootout', `gui/${userId}`, plist]); });
+        }
+        removeFile(plist);
+        return errors;
+    }
+    const installer = files[0];
+    if (installer) {
+        attempt('unregister Windows scheduled task', () => {
+            run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Uninstall']);
+        });
+    }
+    for (const file of files)
+        removeFile(file);
+    return errors;
+}
+export function removeAutoexecService(target, dryRun, deps = {}) {
+    const paths = {
+        systemd: expandHome('~/.config/systemd/user/evolver-autoexec.service'),
+        launchd: expandHome('~/Library/LaunchAgents/com.evomap.evolver-autoexec.plist'),
+        windows: expandHome('~/install-evolver-autoexec-windows.ps1'),
+    };
+    const configuredPath = deps.paths?.[target] ?? paths[target];
+    const path = target === 'windows' && !dryRun ? randomWindowsHelperPath(configuredPath) : configuredPath;
+    const run = deps.run ?? ((command, args) => {
+        const result = spawnSync(command, [...args], { stdio: 'ignore', timeout: 30_000, windowsHide: true });
+        return { status: result.status, ...(result.error ? { error: result.error } : {}) };
+    });
+    const exists = deps.exists ?? existsSync;
+    const remove = deps.remove ?? ((file) => { rmSync(file, { force: true }); });
+    const write = deps.write ?? ((file, content, mode) => {
+        writeTextFile(file, content, mode, 'wx');
+    });
+    if (target === 'systemd') {
+        const actions = [
+            'systemctl --user disable --now evolver-autoexec.service',
+            `remove ${path}`,
+            'systemctl --user daemon-reload',
+        ];
+        if (dryRun)
+            return { status: 'planned', files: [path], service: 'systemd-user', actions };
+        const active = requireServiceControlStatus(run('systemctl', ['--user', 'is-active', '--quiet', 'evolver-autoexec.service']), [0, 3, 4], 'inspect systemd autoexec activity');
+        const enabled = requireServiceControlStatus(run('systemctl', ['--user', 'is-enabled', '--quiet', 'evolver-autoexec.service']), [0, 1, 4], 'inspect systemd autoexec enablement');
+        const hasUnit = exists(path);
+        if (active !== 0 && enabled !== 0 && !hasUnit) {
+            return { status: 'absent', files: [path], service: 'systemd-user', actions: [] };
+        }
+        requireServiceControlStatus(run('systemctl', ['--user', 'disable', '--now', 'evolver-autoexec.service']), [0], 'disable systemd autoexec service');
+        if (hasUnit)
+            remove(path);
+        requireServiceControlStatus(run('systemctl', ['--user', 'daemon-reload']), [0], 'reload systemd user services');
+        return { status: 'removed', files: [path], service: 'systemd-user', actions };
+    }
+    if (target === 'launchd') {
+        const uid = deps.uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+        const launchdTarget = `gui/${uid ?? '<uid>'}/${AUTOEXEC_LABEL}`;
+        const actions = [`launchctl bootout ${launchdTarget}`, `remove ${path}`];
+        if (dryRun)
+            return { status: 'planned', files: [path], service: 'launchd', actions };
+        if (uid === undefined)
+            throw new Error('cannot determine the current user id for launchd autoexec removal');
+        requireServiceControlStatus(run('launchctl', ['bootout', `gui/${uid}/${AUTOEXEC_LABEL}`]), [0, 3, 113], 'boot out launchd autoexec service');
+        const hasPlist = exists(path);
+        if (hasPlist)
+            remove(path);
+        return {
+            status: hasPlist ? 'removed' : 'absent',
+            files: [path],
+            service: 'launchd',
+            actions: hasPlist ? actions : actions.slice(0, 1),
+        };
+    }
+    const actions = [
+        `write ${path}`,
+        `powershell.exe -File ${path} -Uninstall`,
+        `remove ${path}`,
+    ];
+    if (dryRun)
+        return { status: 'planned', files: [path], service: 'windows-scheduled-task', actions };
+    write(path, renderWindowsAutoexecInstaller(), 0o644);
+    requireServiceControlStatus(run('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        path,
+        '-Uninstall',
+    ]), [0], 'uninstall Windows autoexec scheduled task');
+    remove(path);
+    return { status: 'removed', files: [path], service: 'windows-scheduled-task', actions };
+}
+function requireServiceControlStatus(result, allowedStatuses, operation) {
+    if (result.error || result.status === null || !allowedStatuses.includes(result.status)) {
+        throw new Error(`${operation} failed; companion artifact was retained`);
+    }
+    return result.status;
 }
 async function runWatch(paths, env, flags, stdout, stderr) {
     const once = flags['once'] === true;
@@ -675,6 +1308,23 @@ export function resolveSelfUpdatingExecutable(execPath, argv1) {
     }
     return undefined;
 }
+export function resolveAutoexecDaemonCommand(env, execPath = process.execPath, argv1 = process.argv[1], autoexecHome) {
+    const target = configuredSelfUpdateTarget(env);
+    const proxyCommand = target
+        ? standaloneProxyCommand(target)
+        : resolveSelfUpdatingExecutable(execPath, argv1);
+    if (!proxyCommand || proxyCommand.args.at(-1) !== 'proxy')
+        return undefined;
+    const args = [...proxyCommand.args.slice(0, -1), 'autoexec'];
+    const home = autoexecHome?.trim();
+    if (home)
+        args.push(home);
+    return {
+        command: proxyCommand.command,
+        args,
+        display: [proxyCommand.command, ...args].join(' '),
+    };
+}
 export function resolveProxyBinPath() {
     try {
         const entry = requireFromHere.resolve('@evomap/evolver-proxy');
@@ -756,23 +1406,32 @@ function readPidFile(path) {
         return { owned: false, legacy: false };
     }
 }
-function pidFileRecordMatchesProcess(pidFile, readCommandLine = processCommandLine, readIdentity = processIdentity) {
+function pidFileRecordMatchesProcess(pidFile, readCommandLine = processCommandLine, readIdentity = processIdentity, platform = process.platform) {
     if (!pidFile.owned || !pidFile.record)
         return false;
     const record = pidFile.record;
     const commandLine = readCommandLine(record.pid);
-    if (commandLine && commandLine.includes(basename(record.command)))
-        return record.args.every((arg) => commandLine.includes(arg));
-    return processIdentityMatchesRecord(record, readIdentity(record.pid));
+    const commandMatches = Boolean(commandLine
+        && commandLine.includes(basename(record.command))
+        && record.args.every((arg) => commandLine.includes(arg)));
+    const identity = readIdentity(record.pid);
+    if (commandLine?.includes(basename(record.command))) {
+        if (!commandMatches)
+            return false;
+        if (identity !== undefined)
+            return processIdentityMatchesRecord(record, identity);
+        return platform !== 'win32';
+    }
+    return processIdentityMatchesRecord(record, identity);
 }
-function waitForPidFileRecordMatch(pidFile, timeoutMs, readCommandLine = processCommandLine, readIdentity = processIdentity) {
+function waitForPidFileRecordMatch(pidFile, timeoutMs, readCommandLine = processCommandLine, readIdentity = processIdentity, platform = process.platform) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-        if (pidFileRecordMatchesProcess(pidFile, readCommandLine, readIdentity))
+        if (pidFileRecordMatchesProcess(pidFile, readCommandLine, readIdentity, platform))
             return true;
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
-    return pidFileRecordMatchesProcess(pidFile, readCommandLine, readIdentity);
+    return pidFileRecordMatchesProcess(pidFile, readCommandLine, readIdentity, platform);
 }
 function processCommandLine(pid) {
     if (process.platform === 'win32') {
@@ -1031,12 +1690,42 @@ function expandHome(path) {
         return join(homedir(), path.slice(2));
     return path;
 }
-function writeTextFile(path, content, mode) {
+function randomWindowsHelperPath(preferredPath) {
+    const extension = extname(preferredPath) || '.ps1';
+    const stem = basename(preferredPath, extension);
+    return join(dirname(preferredPath), `${stem}-${randomUUID()}${extension}`);
+}
+function writeWindowsHelper(preferredPath, content) {
+    try {
+        writeTextFile(preferredPath, content, 0o600, 'wx');
+        return preferredPath;
+    }
+    catch (error) {
+        if (error.code !== 'EEXIST')
+            throw error;
+    }
+    const fallbackPath = randomWindowsHelperPath(preferredPath);
+    writeTextFile(fallbackPath, content, 0o600, 'wx');
+    return fallbackPath;
+}
+export const _writeWindowsHelperForTest = writeWindowsHelper;
+function writeTextFile(path, content, mode = 0o600, flag = 'w') {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, content, { encoding: 'utf8', mode });
+    writeFileSync(path, content, { encoding: 'utf8', mode, flag });
+}
+function assertSingleLine(value, label) {
+    for (const character of value) {
+        const code = character.charCodeAt(0);
+        if (code <= 0x1f || code === 0x7f)
+            throw new Error(`${label} must not contain control characters`);
+    }
+    return value;
+}
+function escapeSystemdPercent(value) {
+    return value.replaceAll('%', '%%');
 }
 function escapeXml(value) {
-    return value
+    return assertSingleLine(value, 'launchd value')
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;')
@@ -1044,12 +1733,17 @@ function escapeXml(value) {
         .replaceAll("'", '&apos;');
 }
 function escapeSystemdEnvValue(value) {
-    return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$');
+    return assertSingleLine(value, 'systemd environment value')
+        .replaceAll('\\', '\\\\')
+        .replaceAll('"', '\\"')
+        .replaceAll('$', '\\$')
+        .replaceAll('%', '%%');
 }
 function quoteSystemdArg(value) {
-    return /^[A-Za-z0-9_/:.@%+=,-]+$/.test(value)
-        ? value
-        : `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$')}"`;
+    const safe = assertSingleLine(value, 'systemd argument');
+    return /^[A-Za-z0-9_/:.@%+=,-]+$/.test(safe)
+        ? safe
+        : `"${safe.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$')}"`;
 }
 function resolveCurrentCliPath() {
     return fileURLToPath(new URL('./cli.js', import.meta.url));

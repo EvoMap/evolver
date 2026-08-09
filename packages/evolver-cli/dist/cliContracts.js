@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { inspect, format } from 'node:util';
-import { assetstore, events, hub, wire, algo } from '@evomap/evolver-core';
+import { assetstore, events, hub, wire, algo, verify } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { resolveAtpSenderId } from './atp.js';
@@ -30,6 +30,7 @@ const STABLE_CONTRACT_REASONS = new Set([
     'quality_gate_failed',
     'gene_unproven',
     'insufficient_credits',
+    'unsafe_validation_command',
 ]);
 const HUB_METADATA_KEYS = new Set([
     'credit_cost',
@@ -156,7 +157,8 @@ export async function runPublishCommand(args, deps = {}) {
                 if (parsed.dryRun)
                     return write(dryRunEnvelope(bundle), 0);
                 const reason = bundle.blockReasons[0] ?? 'internal_error';
-                return write(publishFailure(reason, publishReasonMessage(reason), {
+                const detailMessage = bundle.blockMessages?.[reason];
+                return write(publishFailure(reason, detailMessage ?? publishReasonMessage(reason), {
                     retryable: false,
                     mode: 'publish',
                     gates: bundle.gates,
@@ -240,6 +242,7 @@ export async function runPublishCommand(args, deps = {}) {
             }
             const receiptId = stringField(payload, 'receipt_id');
             const bundleId = stringField(payload, 'bundle_id');
+            appendPublishedCapsuleCall(bundle, deps, { status, receiptId, bundleId });
             return write({
                 ok: true,
                 contract: PUBLISH_CONTRACT,
@@ -261,6 +264,35 @@ export async function runPublishCommand(args, deps = {}) {
             }), 1);
         }
     });
+}
+function appendPublishedCapsuleCall(bundle, deps, receipt) {
+    const capsuleIndex = bundle.sanitized.findIndex((asset) => asset.type === 'Capsule');
+    if (capsuleIndex < 0)
+        return;
+    const publishedCapsule = bundle.sanitized[capsuleIndex];
+    const originalCapsule = bundle.original[capsuleIndex];
+    if (!publishedCapsule)
+        return;
+    const tokensSpent = hub.assetDerivationTokenCost(originalCapsule);
+    const trigger = Array.isArray(publishedCapsule['trigger'])
+        ? publishedCapsule['trigger'].filter((value) => typeof value === 'string')
+        : undefined;
+    try {
+        const callLog = deps.callLog ?? new hub.AssetCallLog(events.assetCallLogPath(deps.env ?? process.env));
+        callLog.append({
+            action: 'asset_publish',
+            asset_id: publishedCapsule.asset_id,
+            asset_type: 'Capsule',
+            ...(trigger ? { signals: trigger } : {}),
+            ...(tokensSpent !== undefined ? { tokens_spent: tokensSpent } : {}),
+            extra: {
+                status: receipt.status,
+                ...(receipt.receiptId ? { receipt_id: receipt.receiptId } : {}),
+                ...(receipt.bundleId ? { bundle_id: receipt.bundleId } : {}),
+            },
+        });
+    }
+    catch { /* a local audit failure must never change an accepted Hub publish */ }
 }
 export function parseReuseArgs(args) {
     let id;
@@ -346,8 +378,18 @@ export async function buildPublishBundle(refs, deps = {}) {
         original = await Promise.all(refs.map((ref) => loadAssetRef(ref, deps)));
     }
     catch (err) {
-        const reason = err instanceof ContractError ? err.reason : 'schema_invalid';
-        return { ok: false, reason, message: reason === 'bundle_required' ? publishReasonMessage(reason) : 'asset schema is invalid', gates: { schema: 'fail' } };
+        // Report what actually went wrong. Overwriting every failure with "asset
+        // schema is invalid" hid the common case — a ref that resolved to nothing —
+        // behind a claim about a schema that was never read, leaving a user who
+        // could not publish with no way to tell a missing asset from a bad one.
+        const reason = err instanceof ContractError ? err.reason : 'internal_error';
+        const message = err instanceof ContractError ? err.safeMessage : publishReasonMessage(reason);
+        return {
+            ok: false,
+            reason,
+            message,
+            gates: reason === 'schema_invalid' ? { schema: 'fail' } : {},
+        };
     }
     const bundleCheck = checkBundle(original);
     if (!bundleCheck.ok)
@@ -372,23 +414,36 @@ export async function buildPublishBundle(refs, deps = {}) {
     // with a precise reason. Read-only: aggregates the local capsule history.
     const geneEvidence = await assessPublishGeneEvidence(original, deps);
     const geneProven = geneEvidence?.eligible ?? true;
+    // Local quality gate: validation command safety check.
+    // Only applies to Gene assets. Checks that all validation commands are safe
+    // (e.g., no `node -e`, no shell metacharacters).
+    const validationCommandResult = checkValidationCommands(original);
     const gates = {
         redaction: 'pass',
         leak: leak.blocked ? 'fail' : 'pass',
         schema: 'pass',
         bundle: 'pass',
         quality: geneProven ? 'pass' : 'fail',
+        validation_command: validationCommandResult.allowed ? 'pass' : 'fail',
     };
     const blockReasons = [];
+    const blockMessages = {};
     if (leak.blocked)
         blockReasons.push('leak_detected');
     if (!geneProven)
         blockReasons.push('gene_unproven');
+    if (!validationCommandResult.allowed) {
+        blockReasons.push('unsafe_validation_command');
+        if (validationCommandResult.message) {
+            blockMessages['unsafe_validation_command'] = validationCommandResult.message;
+        }
+    }
     return {
         ok: true,
         original,
         sanitized,
         blockReasons,
+        blockMessages,
         gates,
         assets: summarizePublishAssets(sanitized),
     };
@@ -410,18 +465,89 @@ async function assessPublishGeneEvidence(original, deps) {
         const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(deps));
         const primary = await algo.assessGenePublishEvidence(store, geneId);
         // Capsules key their `gene` link by the gene's business id in production;
-        // some stores (and legacy fixtures) key it by asset_id. If the business-id
-        // lookup found no history, retry by asset_id before concluding "unproven".
-        if (primary.total === 0 && assetId && assetId !== geneId) {
+        // some stores (and legacy fixtures) key it by asset_id. Mixed histories can
+        // contain failures under the business id and a success under asset_id, so
+        // both aliases must contribute to the gate rather than only falling back
+        // when the primary alias has no rows at all.
+        if (assetId && assetId !== geneId) {
             const byAssetId = await algo.assessGenePublishEvidence(store, assetId);
-            if (byAssetId.total > 0)
-                return byAssetId;
+            const combined = {
+                success: primary.success + byAssetId.success,
+                failed: primary.failed + byAssetId.failed,
+                inert: primary.inert + byAssetId.inert,
+                total: primary.total + byAssetId.total,
+            };
+            const eligible = algo.isGenePublishEligible(combined);
+            return {
+                geneId,
+                ...combined,
+                eligible,
+                reason: eligible ? 'eligible' : 'no_proven_success',
+            };
         }
         return primary;
     }
     catch {
         return null;
     }
+}
+/**
+ * 检查 Gene 资产中的验证命令是否安全。
+ * 只检查 Gene 类型的资产，不影响 Capsule 或 EvolutionEvent。
+ * 如果 Gene 有 validation 数组，会检查每条命令是否符合安全策略。
+ * 不安全的命令（如 `node -e`、包含 shell 元字符等）会阻止发布。
+ */
+function checkValidationCommands(original) {
+    const gene = original.find((asset) => asset.type === 'Gene');
+    if (!gene)
+        return { allowed: true, unsafeCommands: [] };
+    const validation = gene['validation'];
+    if (!Array.isArray(validation) || validation.length === 0) {
+        return { allowed: true, unsafeCommands: [] };
+    }
+    const unsafeCommands = [];
+    for (const cmd of validation) {
+        if (typeof cmd !== 'string')
+            continue;
+        if (!verify.isValidationCommandAllowed(cmd)) {
+            unsafeCommands.push(cmd);
+        }
+    }
+    if (unsafeCommands.length === 0) {
+        return { allowed: true, unsafeCommands: [] };
+    }
+    // 构建诊断信息（不暴露原始命令文本，避免泄露安全策略细节）
+    const reasons = new Set();
+    for (const cmd of unsafeCommands) {
+        if (/`|\$\(/.test(cmd)) {
+            reasons.add('command_substitution');
+            continue;
+        }
+        const stripped = cmd.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, '');
+        if (verify.SHELL_METACHARS.test(stripped)) {
+            reasons.add('shell_metacharacters');
+            continue;
+        }
+        const tokens = cmd.split(/\s+/);
+        const executable = tokens[0] ?? '';
+        const args = tokens.slice(1);
+        const badFlag = verify.isNodeExecutable(executable) ? verify.nodeFlagViolation(executable, args) : null;
+        if (badFlag) {
+            reasons.add('blocked_node_flag');
+            continue;
+        }
+        if (!cmd.trim().startsWith('node ')) {
+            reasons.add('non_node_command');
+        }
+        else {
+            reasons.add('unsafe_pattern');
+        }
+    }
+    return {
+        allowed: false,
+        unsafeCommands,
+        message: `validation command rejected: ${[...reasons].join(', ')}`,
+    };
 }
 function sanitizePublishBundle(original) {
     const sanitized = original.map((asset) => hub.sanitizeAsset(stripPublishMetadata(asset)));
@@ -453,19 +579,41 @@ function withRecomputedAssetId(asset) {
     return { ...asset, asset_id: assetId ?? asset.asset_id };
 }
 async function loadAssetRef(ref, deps) {
-    if (looksLikeFile(ref))
-        return normalizeAsset(JSON.parse(readFileSync(resolve(ref), 'utf8')));
+    if (looksLikeFile(ref)) {
+        try {
+            return normalizeAsset(JSON.parse(readFileSync(resolve(ref), 'utf8')));
+        }
+        catch (err) {
+            if (err instanceof ContractError)
+                throw err;
+            if (err instanceof SyntaxError)
+                throw new ContractError('schema_invalid', 'asset schema is invalid');
+            throw err;
+        }
+    }
     const store = deps.assetStore;
     if (store) {
         const fromStore = await findAssetInStore(ref, store);
-        if (!fromStore)
-            throw new ContractError('schema_invalid', 'asset not found');
+        // `not_found`, not `schema_invalid`: nothing was located, so no schema was
+        // ever read. `reuse` already reports this ref-resolution failure that way.
+        if (!fromStore) {
+            if (looksLikeAssetPath(ref))
+                throw new ContractError('not_found', `asset file not found: ${ref}`);
+            throw new ContractError('not_found', `asset not found: ${ref}`);
+        }
         return normalizeAsset(fromStore);
     }
-    const readOnly = loadLocalAssetsReadOnly(contractAssetsDir(deps));
+    const assetsDir = contractAssetsDir(deps);
+    const readOnly = loadLocalAssetsReadOnly(assetsDir, ref);
     const found = readOnly.find((asset) => asset.asset_id === ref || stringField(asset, 'id') === ref);
-    if (!found)
-        throw new ContractError('schema_invalid', 'asset not found');
+    // Name the directory that was searched: the common cause is a store written
+    // by an embedder under its own home while the CLI reads the default one, and
+    // without the path there is nothing for the user to compare against.
+    if (!found) {
+        if (looksLikeAssetPath(ref))
+            throw new ContractError('not_found', `asset file not found: ${ref}`);
+        throw new ContractError('not_found', `asset not found: ${ref} (searched ${assetsDir})`);
+    }
     return normalizeAsset(found);
 }
 async function findAssetInStore(ref, store) {
@@ -480,16 +628,19 @@ async function findAssetInStore(ref, store) {
     }
     return null;
 }
-function loadLocalAssetsReadOnly(baseDir) {
+function loadLocalAssetsReadOnly(baseDir, targetRef) {
     return [
-        ...loadLocalGenesReadOnly(baseDir),
-        ...readJsonLines(`${baseDir}/capsules.jsonl`, 'Capsule'),
-        ...readJsonLines(`${baseDir}/events.jsonl`, 'EvolutionEvent'),
+        ...loadLocalGenesReadOnly(baseDir, targetRef),
+        ...readJsonLines(`${baseDir}/capsules.jsonl`, 'Capsule', targetRef),
+        ...readJsonLines(`${baseDir}/events.jsonl`, 'EvolutionEvent', targetRef),
     ];
 }
-function loadLocalGenesReadOnly(baseDir) {
+function loadLocalGenesReadOnly(baseDir, targetRef) {
     const byId = new Map();
-    for (const gene of [...readGenesEnvelopeReadOnly(`${baseDir}/genes.json`), ...readJsonLines(`${baseDir}/genes.jsonl`, 'Gene')]) {
+    for (const gene of [
+        ...readGenesEnvelopeReadOnly(`${baseDir}/genes.json`),
+        ...readJsonLines(`${baseDir}/genes.jsonl`, 'Gene', targetRef),
+    ]) {
         const id = stringField(gene, 'id') ?? gene.asset_id;
         if (id && !byId.has(id))
             byId.set(id, gene);
@@ -504,11 +655,15 @@ function readGenesEnvelopeReadOnly(filePath) {
         const envelopeGenes = isRecord(parsed) && Array.isArray(parsed['genes']) ? parsed['genes'] : [];
         return envelopeGenes.filter(isRecord).map((gene) => normalizeAsset({ ...gene, type: 'Gene' }));
     }
-    catch {
-        throw new ContractError('schema_invalid', 'asset schema is invalid');
+    catch (err) {
+        if (err instanceof ContractError)
+            throw err;
+        if (err instanceof SyntaxError)
+            throw new ContractError('schema_invalid', 'asset schema is invalid');
+        throw err;
     }
 }
-function readJsonLines(filePath, type) {
+function readJsonLines(filePath, type, targetRef) {
     if (!existsSync(filePath))
         return [];
     try {
@@ -517,12 +672,24 @@ function readJsonLines(filePath, type) {
             .map((line) => line.trim())
             .filter(Boolean)
             .map((line) => JSON.parse(line))
-            .filter(isRecord)
-            .filter((asset) => asset['type'] === type)
+            .filter((asset) => {
+            if (!isRecord(asset))
+                return false;
+            if (asset['type'] === type)
+                return true;
+            if (stringField(asset, 'asset_id') === targetRef || stringField(asset, 'id') === targetRef) {
+                throw new ContractError('schema_invalid', 'asset schema is invalid');
+            }
+            return false;
+        })
             .map(normalizeAsset);
     }
-    catch {
-        throw new ContractError('schema_invalid', 'asset schema is invalid');
+    catch (err) {
+        if (err instanceof ContractError)
+            throw err;
+        if (err instanceof SyntaxError)
+            throw new ContractError('schema_invalid', 'asset schema is invalid');
+        throw err;
     }
 }
 function normalizeAsset(value) {
@@ -587,6 +754,16 @@ function contractAssetsDir(deps) {
 }
 function dryRunEnvelope(bundle, credits, blockDetail) {
     const suppressPayload = bundle.blockReasons.includes('leak_detected');
+    // Collect detailed messages for block reasons
+    const blockDetails = [];
+    if (blockDetail)
+        blockDetails.push(blockDetail);
+    for (const reason of bundle.blockReasons) {
+        const detailMessage = bundle.blockMessages?.[reason];
+        if (detailMessage && !blockDetails.includes(detailMessage)) {
+            blockDetails.push(detailMessage);
+        }
+    }
     return {
         ok: true,
         contract: PUBLISH_CONTRACT,
@@ -594,7 +771,7 @@ function dryRunEnvelope(bundle, credits, blockDetail) {
         reversibility: REVERSIBILITY,
         blocked: bundle.blockReasons.length > 0,
         block_reasons: bundle.blockReasons,
-        ...(blockDetail ? { block_details: [blockDetail] } : {}),
+        ...(blockDetails.length > 0 ? { block_details: blockDetails } : {}),
         assets: bundle.assets,
         ...(suppressPayload ? {} : { payload: { assets: bundle.sanitized } }),
         gates: bundle.gates,
@@ -913,6 +1090,7 @@ function publishReasonMessage(reason) {
         quality_gate_failed: 'Hub quality gate failed',
         gene_unproven: 'gene has no proven success yet — run it to a successful outcome before publishing',
         insufficient_credits: 'insufficient credits',
+        unsafe_validation_command: 'validation command contains unsafe patterns (e.g., node -e, shell metacharacters) blocked by sandbox security policy',
     };
     return map[reason] ?? map.internal_error;
 }
@@ -1081,6 +1259,12 @@ function looksLikeFile(value) {
     catch {
         return false;
     }
+}
+function looksLikeAssetPath(value) {
+    return isAbsolute(value)
+        || /^[A-Za-z]:/.test(value)
+        || /[\\/]/.test(value)
+        || /\.jsonl?$/i.test(value);
 }
 function isRecord(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));

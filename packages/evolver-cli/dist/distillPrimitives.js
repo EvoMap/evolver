@@ -74,8 +74,24 @@ const NARRATION_OPENER = /^(let me (take a (closer )?)?look|let me (check|see|in
  *  that opens with narration is dropped ONLY when it has none of these — so "let me check … the root cause is X,
  *  fix by Y" keeps its substantive remainder rather than being discarded for its opener. */
 const HAS_SUBSTANCE = /\b(because|so that|root cause|the (issue|bug|problem|fix|error)|fix(ed|es|ing)?|add(ed|ing)?|remov(e|ed|ing)|delet(e|ed|ing)|chang(e|ed|ing)?|updat(e|ed|ing)?|replac(e|ed|ing)?|renam(e|ed|ing)?|implement(ed|ing)?|revert(ed)?|switch(ed|ing)?|configur(e|ed|ing)?|install(ed|ing)?|return(s|ed)?|throw(s|n)?|catch|wrap(ped)?|guard|import(ed|s)?|export(ed|s)?|re-?run|retry|set\s)\b/i;
+const HAS_CJK_TEXT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+// Require whitespace after ASCII punctuation unless CJK starts immediately, so dots in paths stay intact.
+const NARRATION_SENTENCE_END = /^.*?(?:[.!?](?:\s+|(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]))|[。！？]\s*)/u;
+function narrationRemainder(raw) {
+    const boundary = NARRATION_SENTENCE_END.exec(raw);
+    if (!boundary)
+        return undefined;
+    const rest = raw.slice(boundary[0].length).trim();
+    return rest.length >= 40 ? rest : undefined;
+}
 function isNarrationOnly(raw) {
-    return NARRATION_OPENER.test(raw) && !HAS_SUBSTANCE.test(raw) && !/[`]|[\w/-]+\.[a-z]{2,5}\b|\/[\w./-]+/.test(raw);
+    if (!NARRATION_OPENER.test(raw))
+        return false;
+    const rest = narrationRemainder(raw);
+    const hasCjkRemainder = rest !== undefined && HAS_CJK_TEXT.test(rest);
+    return !hasCjkRemainder
+        && !HAS_SUBSTANCE.test(raw)
+        && !/[`]|[\w/-]+\.[a-z]{2,5}\b|\/[\w./-]+/.test(raw);
 }
 /** When a turn opens with narration but states real substance, drop the leading narration sentence so the step
  *  LEADS with the cause/fix — otherwise the (capped) step could be narration while the substance is trimmed off.
@@ -83,11 +99,7 @@ function isNarrationOnly(raw) {
 function dropNarrationOpener(raw) {
     if (!NARRATION_OPENER.test(raw))
         return raw;
-    const m = /^.*?[.!?。]\s+/.exec(raw);
-    if (!m)
-        return raw;
-    const rest = raw.slice(m[0].length).trim();
-    return rest.length >= 40 ? rest : raw;
+    return narrationRemainder(raw) ?? raw;
 }
 /** Draft strategy steps = the agent's own substantive (non-meta) turns — boundary-trimmed (never chopped
  *  mid-word); turns that are PURELY narration ("let me look around" with no cause/action) are dropped, and a

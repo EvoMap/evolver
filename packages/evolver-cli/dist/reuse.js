@@ -81,7 +81,7 @@ export async function runReuseCommand(argv, deps = {}) {
         const store = deps.store ?? new assetstore.LocalJsonlProvider(deps.assetsDir ?? events.assetsDir(env));
         // 1) Already in the local recall library → reuse is idempotent: log + ok, no hub round-trip.
         const local = await resolveLocalReuseAsset(store, opts.id);
-        if (local) {
+        if (local && !isUnsafeUnverifiedLocalAsset(local, store, deps)) {
             logReuse(deps, opts, local, 'local');
             return emit({ ok: true, status: 'ok', message: 'asset already in local recall library' }, ctx);
         }
@@ -246,7 +246,6 @@ async function ingestHubAsset(store, deps, asset, requestedId) {
     else if (stringField(cleaned, 'id') !== requestedId) {
         throw new ReuseIntegrityError(INTEGRITY_LOGICAL_ID_MESSAGE);
     }
-    await assertNoLocalReuseIdConflict(cleaned, store);
     const provenance = new assetstore.ProvenanceStore(storeBaseDir(store, deps));
     // Identity is confirmed; now content integrity. When the (marker-free) payload hashes to its declared id it
     // lands verified (still sidecar-marked untrusted per #30). When it does NOT, the hub rewrote the delivered
@@ -254,11 +253,15 @@ async function ingestHubAsset(store, deps, asset, requestedId) {
     // unverified so the save actually happens and the loop (which already reuses hub content without
     // re-verifying) can use it, while trust-first selection keeps it out of the reasoning pool until promotion.
     if (actualAssetId === contentAssetId) {
-        const stored = await assetstore.ingestUntrusted(store, provenance, cleaned, 'hub');
+        const stored = await assetstore.ingestUntrustedConditional(store, provenance, cleaned);
+        if (stored.status === 'logical_collision')
+            throw new Error('local asset id conflict');
         return { record: { ...cleaned, asset_id: stored.asset_id }, verified: true };
     }
     const reason = synthesized ? 'unverified_hub_synthesized' : 'unverified_hub_rewrite';
-    const stored = await assetstore.ingestUnverified(store, provenance, cleaned, reason, 'hub');
+    const stored = await assetstore.ingestUnverifiedConditional(store, provenance, cleaned, reason);
+    if (stored.status === 'logical_collision')
+        throw new Error('local asset id conflict');
     return { record: { ...cleaned, asset_id: stored.asset_id }, verified: false };
 }
 /**
@@ -272,31 +275,9 @@ function withoutHubDeliveryMarkers(asset) {
     return rest;
 }
 async function resolveLocalReuseAsset(store, id) {
-    const direct = await store.get(id);
-    if (direct)
-        return direct;
-    for (const kind of ['Gene', 'Capsule']) {
-        const rows = await store.list(kind, 10_000);
-        const match = rows.find((row) => stringField(row, 'id') === id || String(row.asset_id) === id);
-        if (match)
-            return match;
-    }
-    return null;
-}
-async function assertNoLocalReuseIdConflict(asset, store) {
-    if (asset.type !== 'Gene' && asset.type !== 'Capsule')
-        return;
-    const id = stringField(asset, 'id');
-    if (!id)
-        return;
-    const rows = await store.list(asset.type, 10_000);
-    const local = rows.find((row) => stringField(row, 'id') === id);
-    if (!local)
-        return;
-    const incomingAssetId = wire.computeAssetId(asset);
-    const localAssetId = wire.computeAssetId(local);
-    if (incomingAssetId !== localAssetId)
-        throw new Error('local asset id conflict');
+    // A logical id does not identify an asset type. Gene and Capsule ids may overlap, so only the Hub can resolve
+    // which remote asset the caller requested; treating either local type as a hit can silently reuse the wrong one.
+    return isContentAssetId(id) ? store.get(id) : null;
 }
 function unwrapHubAssetContent(asset) {
     const payload = asset.payload;
@@ -322,6 +303,22 @@ function storeBaseDir(store, deps) {
         ? store.baseDir
         : deps.assetsDir ?? events.assetsDir(deps.env ?? process.env);
 }
+function isUnsafeUnverifiedLocalAsset(asset, store, deps) {
+    if (wire.verifyAssetId(asset))
+        return false;
+    const record = new assetstore.ProvenanceStore(storeBaseDir(store, deps)).get(asset.asset_id);
+    if (record?.trusted === true || record?.decision !== undefined)
+        return false;
+    const supportedReason = (record?.source === 'hub'
+        && (record.reason === 'unverified_hub_rewrite' || record.reason === 'unverified_hub_synthesized')) || (record?.source === 'migrated' && record.reason === 'unverified_gepx_import');
+    const isActiveWaiver = supportedReason
+        && record.trusted === false
+        && record.decision === undefined
+        && record.decidedBy === undefined
+        && record.promotedBy === undefined
+        && record.frozenContentId === wire.computeAssetId(asset);
+    return !isActiveWaiver;
+}
 function stringField(record, key) {
     const value = record[key];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -332,14 +329,25 @@ function isContentAssetId(value) {
 function logReuse(deps, opts, asset, source) {
     // AssetCallLog.append is best-effort (never throws) — a logging failure must not break the reuse write.
     const callLog = deps.callLog ?? new hubNs.AssetCallLog(events.assetCallLogPath(deps.env ?? process.env));
-    callLog.append({
-        action: 'asset_reuse',
-        asset_id: asset.asset_id,
-        asset_type: asset.type,
-        mode: opts.mode,
-        ...(opts.runId ? { run_id: opts.runId } : {}),
-        extra: { source },
-    });
+    let indexedTokenCost;
+    try {
+        indexedTokenCost = callLog.assetCostIndex?.()[asset.asset_id];
+    }
+    catch { /* fall back to the estimator */ }
+    const savings = hubNs.reuseSavingsForAsset(asset, opts.mode, indexedTokenCost);
+    try {
+        callLog.append({
+            action: opts.mode === 'reference' ? 'asset_reference' : 'asset_reuse',
+            asset_id: asset.asset_id,
+            asset_type: asset.type,
+            mode: opts.mode,
+            tokens_saved: savings.tokens_saved,
+            tokens_saved_basis: savings.tokens_saved_basis,
+            ...(opts.runId ? { run_id: opts.runId } : {}),
+            extra: { source },
+        });
+    }
+    catch { /* an injected logger must preserve the production logger's non-fatal contract */ }
 }
 async function establishReuseTrust(hub) {
     if (typeof hub.hello !== 'function')

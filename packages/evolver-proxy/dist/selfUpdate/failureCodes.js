@@ -28,6 +28,13 @@ export const SELF_UPDATE_FAILURE_CODES = Object.freeze({
     RESTART_FAILED: 'restart_failed',
     READ_BACK_FAILED: 'read_back_failed',
     ROLLBACK_FAILED: 'rollback_failed',
+    // One-time npm/JS → standalone binary migration (migration.ts). Append-only:
+    // these surface in attempt-marker detail strings and operator messages so
+    // telemetry can attribute first-run migration failures by phase.
+    MIGRATION_DOWNLOAD_FAILED: 'migration_download_failed',
+    MIGRATION_VERIFY_FAILED: 'migration_verify_failed',
+    MIGRATION_INSTALL_FAILED: 'migration_install_failed',
+    MIGRATION_REGISTER_FAILED: 'migration_register_failed',
 });
 export class SelfUpdateFailureError extends Error {
     failureCode;

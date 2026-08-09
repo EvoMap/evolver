@@ -3,11 +3,12 @@ import type { ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { GepCategory } from '../wire/index.js';
 import type { ProblemPattern } from '../schema/problem.js';
-import type { GeneCandidateInput } from './geneSelection.js';
+import type { GeneCandidateInput, SelectionGuardMode } from './geneSelection.js';
 import { CycleEngine, type CycleInput, type CycleResult, type SolidifyPermitGate } from './cycleEngine.js';
 import { type PendingSignalsContext } from '../assetstore/pendingSignals.js';
 import { type ReuseOutcomeSummary, type ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { MemoryGraphAdvice } from './memoryGraph.js';
+import type { SelectionPolicy } from './ucb1.js';
 export interface RunCycleOptions {
     cycleId: string;
     problem: ProblemPattern;
@@ -20,6 +21,12 @@ export interface RunCycleOptions {
     summary: string;
     confidence: number;
     selectionFloor?: number;
+    /** Emergency rollback for semantic IDF. Also skips pre-admission corpus collection. */
+    disableSemanticIdf?: boolean;
+    /** Experimental plateau policy. Omit for current engine-health + random drift behavior. */
+    selectionPolicy?: SelectionPolicy;
+    /** Versioned relevance-guard rollout. Omit for legacy direct-call behavior. */
+    selectionGuard?: SelectionGuardMode;
     /** Optional explicit gene chosen by GEP / an external runtime; forwarded to CycleEngine after assembly. */
     forcedGeneId?: string;
     /** The agent runtime's work: run the mutation, return the outcome. */

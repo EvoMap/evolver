@@ -1,9 +1,11 @@
 import type { InjectionPlan, McpServerCmd, RuntimeId } from './injection.js';
-import { type InstallOptions, type InstallResult, type UninstallOptions } from './installer.js';
+import { type InstallOptions, type InstallResult, type UninstallOptions } from './installerShared.js';
 type BeforeReplaceHook = (path: string) => void;
 export declare function _setJsonMcpBeforeReplaceHookForTest(hook?: BeforeReplaceHook): void;
 export declare function _setJsonMcpAfterReplaceHookForTest(hook?: BeforeReplaceHook): void;
+export declare function _setJsonMcpAfterSharedFileValidateHookForTest(hook?: BeforeReplaceHook): void;
 export declare function _setJsonMcpBeforeBackupRemoveHookForTest(hook?: BeforeReplaceHook): void;
+export declare function _setJsonMcpBeforeSharedFileCommitHookForTest(hook?: BeforeReplaceHook): void;
 export interface JsonMcpRuntimeSpec {
     runtime: 'opencode' | 'kiro';
     configPath(opts: JsonMcpPathOptions): string;
@@ -70,6 +72,8 @@ export declare class McpConfigChangedError extends Error {
 export declare class McpServerValidationError extends Error {
     constructor(message: string);
 }
+declare function retrySharedConfigTransaction<T>(operation: () => T): T;
+export declare const _retrySharedConfigTransactionForTest: typeof retrySharedConfigTransaction;
 export declare function installJsonMcpRuntime(spec: JsonMcpRuntimeSpec, plan: InjectionPlan, opts: InstallOptions): InstallResult;
 export declare function uninstallJsonMcpRuntime(spec: JsonMcpRuntimeSpec, runtime: RuntimeId, opts: UninstallOptions): InstallResult;
 export {};

@@ -131,6 +131,9 @@ export function archiveRootEvents(opts) {
     }
 }
 export function readRootEventHistory(path, archiveDir = rootEventArchiveDir(path)) {
+    // Snapshot active first. Writers publish archive segments before replacing active, so this prevents a reader
+    // from combining an old archive inventory with the new active tail and temporarily dropping the rotated prefix.
+    const active = readEventsLenient(path);
     const bySeq = new Map();
     for (const file of archiveSegmentFiles(archiveDir)) {
         for (const event of readEventsLenient(join(archiveDir, file))) {
@@ -143,13 +146,20 @@ export function readRootEventHistory(path, archiveDir = rootEventArchiveDir(path
     }
     // Preserve the pre-archive fail-soft behavior for routine commands. The active log is the current writer
     // source, so it deterministically wins an active/archive conflict without crashing status/report readers.
-    for (const event of readEventsLenient(path))
+    for (const event of active)
         bySeq.set(event.seq, event);
     return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
-export function validateRootEventHistory(path) {
+/** Strict replay for control-plane decisions that must fail closed on partial or conflicting history. */
+export function readRootEventHistoryStrict(path) {
     const active = readActiveStrict(path);
-    readValidatedArchive(path, active);
+    const bySeq = readValidatedArchive(path, active);
+    for (const line of active)
+        bySeq.set(line.event.seq, line.event);
+    return [...bySeq.values()].sort((left, right) => left.seq - right.seq);
+}
+export function validateRootEventHistory(path) {
+    void readRootEventHistoryStrict(path);
 }
 export function inspectRootEventArchive(path) {
     const archiveDir = rootEventArchiveDir(path);

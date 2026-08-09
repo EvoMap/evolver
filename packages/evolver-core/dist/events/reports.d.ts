@@ -61,6 +61,8 @@ export interface DailySummary {
     suppressedFailures: number;
 }
 export declare function dailySummary(evts: readonly ReportEvent[], dayPrefix: string): DailySummary;
+/** 统计指定日期前缀的 capsule.produced 事件数. */
+export declare function dailyCapsuleCount(evts: readonly ReportEvent[], dayPrefix: string): number;
 export type NarrativeOutcome = 'success' | 'failed' | 'inert' | 'unknown';
 export interface NarrativeEntry {
     seq: number;

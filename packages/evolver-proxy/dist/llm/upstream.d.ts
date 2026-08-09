@@ -49,6 +49,9 @@ export interface BedrockRuntimeFactory {
     createInvokeModelCommand(input: BedrockInvokeInput): unknown;
     createInvokeModelWithResponseStreamCommand(input: BedrockInvokeInput): unknown;
 }
+declare function warnDeprecatedOpenAICompatible(env: NodeJS.ProcessEnv): void;
+/** Test helper: reset once-warn latch (unit tests only). */
+declare function resetDeprecatedOpenAICompatibleWarning(): void;
 export declare function resolveOpenAIUpstreamUrl(env?: NodeJS.ProcessEnv): string;
 /** Resolve the upstream base URL. OpenAI-compatible routes never inherit the Anthropic-wide override. */
 export declare function resolveUpstreamUrl(env?: NodeJS.ProcessEnv, upstreamMode?: string): string;
@@ -66,3 +69,4 @@ export declare function makeOpenAIUpstream(opts?: ProviderUpstreamOptions): Anth
 export declare function makeGeminiUpstream(opts?: ProviderUpstreamOptions): AnthropicProxy;
 export declare function makeOllamaUpstream(opts?: ProviderUpstreamOptions): AnthropicProxy;
 export declare function makeVertexUpstream(opts?: ProviderUpstreamOptions): AnthropicProxy;
+export { warnDeprecatedOpenAICompatible, resetDeprecatedOpenAICompatibleWarning };

@@ -4,7 +4,7 @@
 // (heartbeat, proxy path) touch the proxy and are a SEPARATE, gated step — not here.
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { events, issueReporter } from '@evomap/evolver-core';
+import { bootstrap, events, issueReporter } from '@evomap/evolver-core';
 import { expandHomePath, parseEnvFile } from '@evomap/evolver-mcp';
 import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
 // Secrets that must live ONLY behind the EVOLVER_ENV_FILE pointer — never inlined into a runtime config (#217).
@@ -109,10 +109,18 @@ const ENV_CATALOG_DEFINITIONS = [
         defaultValue: 'unset',
     },
     {
-        name: 'EVOLVER_HEARTBEAT_MS',
+        name: 'HEARTBEAT_INTERVAL_MS',
         group: 'hub-runtime',
-        purpose: 'Proxy heartbeat interval.',
+        purpose: 'Proxy heartbeat interval for the Hub lifecycle manager.',
         requiredFor: 'proxy daemon heartbeat tuning',
+        defaultValue: '360000',
+    },
+    {
+        name: 'EVOLVER_HEARTBEAT_MS',
+        group: 'observability',
+        purpose: 'Interval for autoexec cycle.heartbeat observability events.',
+        requiredFor: 'autoexec heartbeat log tuning',
+        defaultValue: '60000',
     },
     {
         name: 'EVOLVER_PROXY_URL',
@@ -163,6 +171,20 @@ const ENV_CATALOG_DEFINITIONS = [
         defaultValue: 'enabled unless set to 0',
     },
     {
+        name: 'EVOLVER_SEMANTIC_IDF',
+        group: 'autoexec-selection',
+        purpose: 'Emergency rollback for trusted-corpus IDF semantic weighting.',
+        requiredFor: 'selection ranking rollout',
+        defaultValue: 'enabled unless set to 0',
+    },
+    {
+        name: 'EVOLVER_SELECTION_POLICY',
+        group: 'autoexec-selection',
+        purpose: 'Controls plateau exploration: engine-health, UCB1 shadow, or explicit UCB1 canary.',
+        requiredFor: 'selection exploration rollout',
+        defaultValue: 'engine-health',
+    },
+    {
         name: 'EVOLVER_REUSE_MODE',
         group: 'autoexec-reuse',
         purpose: 'Controls reuse mode behavior for candidate selection.',
@@ -182,8 +204,14 @@ const ENV_CATALOG_DEFINITIONS = [
         defaultValue: '0',
     },
     {
+        name: 'EVOLVER_AUTO_DISTILL',
+        group: 'distill',
+        purpose: 'Controls structural distillation from completed evolution cycles.',
+        requiredFor: 'structural gene distill',
+        defaultValue: 'enabled unless set to 0',
+    },
+    {
         name: 'EVOLVER_AUTO_DISTILL_LLM',
-        aliases: ['EVOLVER_AUTO_DISTILL'],
         group: 'distill',
         purpose: 'Enables LLM distillation from successful capsules.',
         requiredFor: 'online gene distill',
@@ -286,8 +314,9 @@ const ENV_CATALOG_DEFINITIONS = [
     {
         name: 'EVOLVER_SESSION_SOURCE',
         group: 'trajectory-export',
-        purpose: 'Runtime session source selector.',
-        requiredFor: 'runtime adapter filtering',
+        purpose: 'Legacy V1 session collector selector; ignored by V2 runtime behavior, detected only for migration, and has no one-to-one replacement.',
+        requiredFor: 'none; review explicit runtime discovery or transcript directories before removing',
+        defaultValue: 'ignored',
     },
     {
         name: 'EVOLVER_TRAJECTORY_INCLUDE_UNMARKED',
@@ -379,9 +408,9 @@ const ENV_CATALOG_DEFINITIONS = [
     {
         name: 'EVOLVER_ATP',
         group: 'marketplace-atp',
-        purpose: 'Controls ATP marketplace/payment feature surface.',
-        requiredFor: 'ATP flows',
-        defaultValue: 'off unless explicitly enabled',
+        purpose: 'Legacy V1 merchant-agent mode; ignored by V2 runtime behavior, detected only for migration, and must not be mapped to buyer auto-spend consent.',
+        requiredFor: 'none; review the missing merchant workflow before removing',
+        defaultValue: 'ignored',
     },
     {
         name: 'EVOLVER_ATP_AUTOBUY',
@@ -391,11 +420,25 @@ const ENV_CATALOG_DEFINITIONS = [
         defaultValue: 'off',
     },
     {
+        name: 'ATP_AUTOBUY_DAILY_CAP_CREDITS',
+        group: 'marketplace-atp',
+        purpose: 'Hard UTC-day spending cap for automatic ATP purchases.',
+        requiredFor: 'ATP auto-buyer budget control',
+        defaultValue: '50',
+    },
+    {
+        name: 'ATP_AUTOBUY_PER_ORDER_CAP_CREDITS',
+        group: 'marketplace-atp',
+        purpose: 'Hard per-order spending cap for automatic ATP purchases.',
+        requiredFor: 'ATP auto-buyer budget control',
+        defaultValue: '10',
+    },
+    {
         name: 'EVOLVER_ATP_AUTODELIVER',
         group: 'marketplace-atp',
         purpose: 'Controls automatic ATP delivery behavior.',
         requiredFor: 'operator-approved ATP automation',
-        defaultValue: 'off',
+        defaultValue: 'on (opt-out)',
     },
     {
         name: 'EVOLVER_LIFECYCLE_COMMAND',
@@ -426,13 +469,35 @@ const ENV_CATALOG_DEFINITIONS = [
         group: 'self-update',
         purpose: 'Controls self-update behavior.',
         requiredFor: 'operator-controlled proxy update rollout',
-        defaultValue: 'off unless explicitly enabled',
+        defaultValue: 'auto unless explicitly disabled (gated by supervisor attestation; default auto degrades to off without it, after a one-shot first-run bootstrap attempt)',
+    },
+    {
+        name: 'EVOLVER_SELF_BOOTSTRAP',
+        group: 'self-update',
+        purpose: 'Kill switch for the first-run supervision bootstrap of unsupervised startups.',
+        requiredFor: 'opting out of automatic service registration',
+        defaultValue: 'on (exact 0 or off disables)',
+    },
+    {
+        name: 'EVOLVER_BOOTSTRAP_MIGRATION',
+        group: 'self-update',
+        purpose: 'Kill switch for the one-time npm/JS → standalone binary migration attempted by unsupervised startups.',
+        requiredFor: 'opting out of automatic standalone binary migration',
+        defaultValue: 'on (exact 0 or off disables)',
+    },
+    {
+        name: 'EVOLVER_BOOTSTRAP_MIGRATION_VERSION',
+        group: 'self-update',
+        purpose: 'Target version override for the one-time standalone binary migration.',
+        requiredFor: 'pinning the migrated standalone binary version',
+        defaultValue: 'current package version',
     },
     {
         name: 'EVOLVER_SELF_UPDATE_PUBLIC_KEY',
         group: 'self-update',
         purpose: 'Public key used to verify self-update artifacts.',
         requiredFor: 'self-update verification',
+        defaultValue: 'built-in official v2-beta release key',
     },
     {
         name: 'EVOLVER_SELF_UPDATE_SUPERVISOR',
@@ -458,6 +523,9 @@ const POINTER_RE = /EVOLVER_ENV_FILE"?\s*[:=]\s*"([^"]+)"/;
 /** Loopback hosts a NO_PROXY entry must EXACTLY be to cover local IPC/proxy ('*' = bypass all). Exact-entry match,
  *  not substring, so `127.0.0.10` / `notlocalhost.com` do not count (#279 Bugbot). */
 const LOOPBACK_ENTRIES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '*']);
+// Release asset names installed by the one-time npm/JS → standalone migration (mirrors evolver-proxy
+// releaseAssetName; kept dependency-free so doctor stays read-only and self-contained).
+const MIGRATION_BINARY_ASSET_NAMES = ['evolver-darwin-arm64', 'evolver-darwin-x64', 'evolver-linux-arm64', 'evolver-linux-x64', 'evolver-windows-x64.exe'];
 /**
  * Run the read-only doctor checks. Pure given its (injectable) deps — no config mutation, no env-file load into the
  * process. Returns the check list; the CLI formats + sets the exit code.
@@ -537,6 +605,36 @@ export function runDoctorChecks(deps = {}) {
             }
         }
     }
+    // 1b. v1-env-compat: warn when V1-only knobs are still set (process env and/or EVOLVER_ENV_FILE). Refs #698.
+    {
+        const merged = { ...env, ...envFileValues };
+        const compat = bootstrap.scanV1EnvCompat(merged);
+        if (compat.detected.length === 0) {
+            checks.push({
+                name: 'v1-env-compat',
+                status: 'pass',
+                detail: 'no deprecated V1-only env knobs detected (see `evolver migrate env`)',
+            });
+        }
+        else {
+            const names = compat.detected.map((d) => d.v1Name).join(', ');
+            const maps = compat.detected
+                .filter((d) => bootstrap.resolveV1EnvMigrationAction(d) === 'map' && d.v2Equivalent)
+                .map((d) => `${d.v1Name}→${d.v2Equivalent}`)
+                .join(', ');
+            const manual = compat.detected.filter((d) => bootstrap.resolveV1EnvMigrationAction(d) === 'manual').map((d) => d.v1Name).join(', ');
+            const drops = compat.detected.filter((d) => bootstrap.resolveV1EnvMigrationAction(d) === 'remove').map((d) => d.v1Name).join(', ');
+            const parts = [`${compat.detected.length} deprecated V1 env var(s): ${names}`];
+            if (maps)
+                parts.push(`map: ${maps}`);
+            if (manual)
+                parts.push(`manual: ${manual}`);
+            if (drops)
+                parts.push(`remove: ${drops}`);
+            parts.push('run `evolver migrate env` or see docs/migration-guide.md');
+            checks.push({ name: 'v1-env-compat', status: 'warn', detail: parts.join(' — ') });
+        }
+    }
     // 2. config-no-secrets: runtime config must reference creds via the EVOLVER_ENV_FILE pointer, never inline a secret.
     const offenders = [];
     for (const rel of CONFIG_FILES) {
@@ -572,6 +670,17 @@ export function runDoctorChecks(deps = {}) {
     }
     else {
         checks.push({ name: 'no-proxy-loopback', status: 'warn', detail: 'a system proxy is set but NO_PROXY lacks 127.0.0.1/localhost — local IPC/LLM-proxy traffic may be intercepted; add them to NO_PROXY' });
+    }
+    // 4. self-update-migration: read-only view of the one-time npm/JS → standalone migration — the
+    //    EVOLVER_BOOTSTRAP_MIGRATION switch state and any migrated binary already under <home>/bin.
+    {
+        const migrationSwitch = effectiveEnv['EVOLVER_BOOTSTRAP_MIGRATION']?.trim();
+        const switchState = migrationSwitch === '0' || migrationSwitch === 'off' ? 'disabled (exact 0/off)' : 'on';
+        const binDir = join(events.evomapHome(effectiveEnv), 'bin');
+        const installed = MIGRATION_BINARY_ASSET_NAMES.filter((name) => exists(join(binDir, name)));
+        checks.push(installed.length > 0
+            ? { name: 'self-update-migration', status: 'pass', detail: `EVOLVER_BOOTSTRAP_MIGRATION ${switchState}; migrated standalone binary present: ${installed.map((name) => redact(join(binDir, name))).join(', ')}` }
+            : { name: 'self-update-migration', status: 'pass', detail: `EVOLVER_BOOTSTRAP_MIGRATION ${switchState}; no migrated standalone binary under ${redact(binDir)} (the npm/JS first-run migration installs it there)` });
     }
     if (deps.profile === 'private-runtime') {
         checks.push(...privateRuntimeChecks(env, envFileValues, envFileReadiness));

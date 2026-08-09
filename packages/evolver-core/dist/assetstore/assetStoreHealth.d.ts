@@ -16,9 +16,8 @@ export interface AssetStoreFileHealth {
     corruptRows: number;
     hashMismatchRows: number;
     /**
-     * Rows that fail content-hash verification but are provenance-marked as an unverified hub reuse
-     * (evolver-v2#570). These are EXPECTED — the hub rewrote the delivered bytes and reuse froze them untrusted —
-     * so they are a benign category, counted separately and never degrading the store.
+     * Rows that fail content-hash verification but carry an active, content-bound unverified provenance waiver.
+     * They remain untrusted and are counted separately instead of being misclassified as store corruption.
      */
     unverifiedRows: number;
     schemaInvalidRows: number;

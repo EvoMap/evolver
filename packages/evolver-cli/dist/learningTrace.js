@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { HubLearningPacketSink, TeeLearningPacketSink, connectPublicHub, resolveHubUrl, globalFetchLike, } from '@evomap/evolver-adapter-public';
-import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
+import { resolveAtpSenderId } from './atp.js';
+import { resolveIdentityHome } from './identityHome.js';
 /** Same default node-secret resolution as trajectory export: env first, then ~/.evomap/node_secret. Best-effort —
  *  without a secret the fold still reads plaintext/metadata-only rows; encrypted envelopes are just skipped. */
 function defaultNodeSecret(env) {
@@ -26,7 +27,12 @@ function defaultNodeSecret(env) {
 function resolveHubUpload(env) {
     if (env['EVOLVER_LEARNING_TRACE_UPLOAD'] !== '1')
         return { sink: null, state: 'off' };
-    const dir = resolveAtpHome(env) ?? join(homedir(), '.evomap');
+    const configuredHubMode = env['EVOMAP_HUB_MODE'];
+    const publicUploadAllowed = configuredHubMode === undefined
+        || configuredHubMode.trim().toLowerCase() === 'public';
+    if (!publicUploadAllowed)
+        return { sink: null, state: 'off' };
+    const dir = resolveIdentityHome(env) ?? join(homedir(), '.evomap');
     if (!existsSync(join(dir, 'token.json')))
         return { sink: null, state: 'no_credentials' };
     try {

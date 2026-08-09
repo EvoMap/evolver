@@ -3,6 +3,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { algo, assetstore, events, exec, verify, wire, workflow } from '@evomap/evolver-core';
 import { readAutoExecConfig } from './autoexecConfig.js';
+import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 const MAX_MAX_CONCURRENT_RUNS = 64;
 const MAX_PROMPT_LENGTH = 4_000;
@@ -333,28 +334,29 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
         }
         const validate = validationCommands
             ? async (_mutation, _decision, cwd) => {
-                const result = await runValidation(validationCommands, cwd);
+                const result = await runRequiredSandboxedValidation(validationCommands, cwd, {}, runValidation);
                 return { passed: result.passed, score: result.score };
             }
             : undefined;
-        const execute = exec.makeSafeExecute(repo, store, {
-            allowedRoots,
-            runner: config.runner,
-            timeoutMs: config.timeoutMs,
-            scrubEnv: true,
-            isolation: 'worktree',
-            requireTrustedGene: true,
-            ...(bridgeOptions?.signal ? { signal: bridgeOptions.signal } : {}),
-        }, {
-            provenance,
-            review,
-            ...(validate ? { validate } : {}),
-            ...(validationCommands ? { validationCmds: validationCommands } : {}),
-            ...(options.agent ? { agent: options.agent } : {}),
-            ...(options.git ? { git: options.git } : {}),
-        });
+        let execute;
         let result;
         try {
+            execute = exec.makeSafeExecute(repo, store, {
+                allowedRoots,
+                runner: config.runner,
+                timeoutMs: config.timeoutMs,
+                scrubEnv: true,
+                isolation: 'worktree',
+                requireTrustedGene: true,
+                ...(bridgeOptions?.signal ? { signal: bridgeOptions.signal } : {}),
+            }, {
+                provenance,
+                review,
+                ...(validate ? { validate } : {}),
+                ...(validationCommands ? { validationCmds: validationCommands } : {}),
+                ...(options.agent ? { agent: options.agent } : {}),
+                ...(options.git ? { git: options.git } : {}),
+            });
             result = await execute(workflowMutation(prompt.trim(), context), {
                 selectedGeneId: logicalGeneId,
                 selectedAssetId: context.reviewedGeneAssetId,
@@ -367,7 +369,11 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
             if (error instanceof workflow.ClassifiedWorkflowError)
                 throw error;
             const name = error instanceof Error ? error.name : '';
-            if (name === 'ExecBridgeForbiddenError' || name === 'UnsandboxedFullAccessRequiresIsolationError') {
+            if (name === 'ExecBridgeForbiddenError'
+                || name === 'UnsandboxedFullAccessRequiresIsolationError'
+                || name === 'UnsupportedAutonomousClaudeRunnerError'
+                || name === 'UnsupportedAutonomousCodexRunnerError'
+                || name === 'UnsupportedCursorAutonomousIsolationError') {
                 throw classified('safety', 'workflow agent execution was denied by safety policy');
             }
             throw classified('unknown', 'workflow agent execution failed');

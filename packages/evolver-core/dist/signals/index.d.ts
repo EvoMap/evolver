@@ -4,3 +4,5 @@ export * from './expand.js';
 export * from './traceSignals.js';
 export * from './metaSignals.js';
 export * from './cycleHistoryFromEvents.js';
+export * from './curriculum.js';
+export * from './taskDomain.js';

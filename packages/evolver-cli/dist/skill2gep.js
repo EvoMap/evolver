@@ -4,15 +4,16 @@
 // faithful to v1 (golden-tested). B2 adds `synthesizeGene` + the Capsule contracts (trace-only / empty→Gene-only /
 // validation-coverage); the human-review + real-trace red lines live there.
 import { createHash } from 'node:crypto';
-import { bootstrap } from '@evomap/evolver-core';
+import { bootstrap, verify } from '@evomap/evolver-core';
+const { isValidationCommandAllowed } = verify;
+// Re-export for backward compatibility (used by tests)
+export { isValidationCommandAllowed };
 /** Max strategy steps kept from a skill (v1 parity: MAX_STRATEGY_STEPS). */
 export const MAX_STRATEGY_STEPS = 28;
 /** Gene id prefix for skill-distilled genes (v1 SKILL2GEP_ID_PREFIX). */
 const SKILL2GEP_ID_PREFIX = 'gene_s2g_';
 /** Default max-files constraint for a distilled gene (v1 skillDistiller.DISTILLED_MAX_FILES). */
 const SKILL_MAX_FILES = 12;
-/** Validation-command allowlist prefixes (v1 policyCheck): only `node …` is a runnable Gene.validation entry. */
-const VALIDATION_ALLOWED_PREFIXES = ['node '];
 function sectionHeadingMatches(heading, keyword) {
     if (/^[a-z0-9 ]+$/i.test(keyword)) {
         const forms = keyword === 'verify'
@@ -154,24 +155,6 @@ export function parseSkillMd(skillMd, opts = {}) {
         validation: opts.completeValidationPlan ? validation : validation.slice(0, 5),
         preconditions: preconditions.slice(0, 4),
     };
-}
-/** Whether a validation command is safe to run as a Gene.validation entry (faithful port of v1
- *  policyCheck.isValidationCommandAllowed): a `node …` command with no command substitution, no shell
- *  metacharacters (outside quoted strings), and no node eval flags (-e/--eval/--print/-p). */
-export function isValidationCommandAllowed(cmd) {
-    const c = String(cmd || '').trim();
-    if (!c)
-        return false;
-    if (!VALIDATION_ALLOWED_PREFIXES.some((p) => c.startsWith(p)))
-        return false;
-    if (/`|\$\(/.test(c))
-        return false; // no command substitution
-    const stripped = c.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, ''); // ignore metachars inside quotes
-    if (/[;&|><]/.test(stripped))
-        return false; // no chaining / redirection
-    if (/^node\s+(-e|--eval|--print|-p)\b/.test(c))
-        return false; // no inline eval
-    return true;
 }
 /** Stable slug for a skill-distilled gene id (v1 slugify). */
 function slugify(s) {

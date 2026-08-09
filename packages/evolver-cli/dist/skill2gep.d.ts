@@ -1,4 +1,6 @@
-import { type algo, type wire } from '@evomap/evolver-core';
+import { type algo, type wire, verify } from '@evomap/evolver-core';
+declare const isValidationCommandAllowed: typeof verify.isValidationCommandAllowed;
+export { isValidationCommandAllowed };
 type GenerationSource = wire.GenerationSource;
 /** Max strategy steps kept from a skill (v1 parity: MAX_STRATEGY_STEPS). */
 export declare const MAX_STRATEGY_STEPS = 28;
@@ -24,10 +26,6 @@ export interface ParseSkillMdOptions {
  * tokenizer keeps ASCII `[a-z0-9_]` only, so a CJK skill's signals come from its (English) frontmatter description.
  */
 export declare function parseSkillMd(skillMd: string, opts?: ParseSkillMdOptions): ParsedSkill;
-/** Whether a validation command is safe to run as a Gene.validation entry (faithful port of v1
- *  policyCheck.isValidationCommandAllowed): a `node …` command with no command substitution, no shell
- *  metacharacters (outside quoted strings), and no node eval flags (-e/--eval/--print/-p). */
-export declare function isValidationCommandAllowed(cmd: string): boolean;
 /** Infer a gene category from signals + description (v1 inferCategory): priority repair > innovate > optimize,
  *  substring match (catches inflections + underscore signal tokens like `log_error`). */
 export declare function inferCategory(signals: readonly string[], description: string): string;
@@ -177,4 +175,3 @@ export declare function reverseDistill(parsed: ParsedSkill, execution?: SkillExe
     scenario?: string;
     evidenceMode?: SkillEvidenceMode;
 }): ReverseDistillResult;
-export {};

@@ -1,3 +1,4 @@
+import type { SelectionPolicy, Ucb1History } from './ucb1.js';
 export type PlateauSeverity = 'suggested' | 'required';
 export interface PlateauState {
     active: boolean;
@@ -6,12 +7,16 @@ export interface PlateauState {
 }
 /** Exploration control fed into selection. Absent → pure deterministic top-score selection. */
 export interface ExplorationInput {
+    /** Selection policy requested by the composition layer. Default preserves legacy engine-health + drift. */
+    policy?: SelectionPolicy;
     /** Force drift on even without a plateau (e.g. an explicit explore policy). */
     driftEnabled?: boolean;
     /** Plateau detected upstream; an active plateau forces drift intensity up. */
     plateau?: PlateauState;
     /** Total attempts across the candidate pool (drives the maturity decay of the drift offset). */
     totalAttempts?: number;
+    /** Event-log-derived state for UCB1. Undefined means fail-safe to legacy drift. */
+    ucb1History?: Ucb1History;
 }
 /**
  * Adaptive drift intensity (ported v1): 1/sqrt(Ne) + an offset that decays from 0.3 → 0.02 as the pool
@@ -25,6 +30,8 @@ export interface DriftDecision {
     index: number;
     intensity: number;
 }
+/** Deterministic top-N window shared by legacy random drift and UCB1. */
+export declare function explorationWindowSize(eligibleCount: number, exp: ExplorationInput | undefined): number;
 /**
  * Pick which ranked candidate to take among `eligibleCount` above-floor candidates.
  * No exploration → deterministic top (index 0). With exploration → compute intensity (an active plateau

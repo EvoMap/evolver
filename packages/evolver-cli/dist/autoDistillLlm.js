@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { algo, assetstore, events, exec, hub, verify } from '@evomap/evolver-core';
+import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MIN_CAPSULES = 10;
 const DEFAULT_MAX_CAPSULES = 24;
 const DEFAULT_MIN_SUCCESS_SCORE = 0.7;
@@ -519,7 +520,7 @@ export async function autoDistillLlm(options) {
         patchState(statePath, input.dataHash, { failed_attempts_inc: true }, hashCap);
         return { ok: false, mode, reason: 'validation_failed', dataHash: input.dataHash };
     }
-    const validation = await verify.runSandboxedValidation(intake.gene.validation, cwd, {
+    const validation = await runRequiredSandboxedValidation(intake.gene.validation, cwd, {
         timeoutMs: options.validationTimeoutMs ?? envInt(env, 'EVOLVE_DISTILL_VALIDATION_TIMEOUT_MS', DEFAULT_VALIDATION_TIMEOUT_MS),
     });
     if (!validation.passed) {

@@ -1,5 +1,6 @@
 export * from './geneHealth.js';
 export * from './exploration.js';
+export * from './ucb1.js';
 export * from './epigenetics.js';
 export * from './confidence.js';
 export * from './memoryGraph.js';

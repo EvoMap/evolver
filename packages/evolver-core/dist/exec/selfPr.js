@@ -6,15 +6,9 @@
 //   3. leak scan of the diff before any push        6. cooldown + diff dedup
 // evaluateSelfPr is PURE (decision only); the `gh` call is an injected GhRunner seam so a test never creates a
 // real PR. Nothing here runs unless the caller has wired enabled:true AND a non-empty allowedRoots.
-import { resolve as resolvePath, sep } from 'node:path';
+import { isWithinRoot } from './claudeBridge.js';
 import { defaultReadManifest, isObfuscatedFile } from './selfPrObfuscation.js';
 export const DEFAULT_SELF_PR_GATES = { minScore: 0.9, minStreak: 2, maxFiles: 5, maxLines: 200, cooldownMs: 24 * 60 * 60 * 1000 };
-/** Whether `child` is the same as or nested under `root` (both resolved absolute). */
-function isWithinRoot(child, root) {
-    const c = resolvePath(child);
-    const r = resolvePath(root);
-    return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
-}
 /**
  * Decide whether a self-PR may be created. Pure — combines every gate and returns the FIRST failing reason, so
  * the default (disabled, empty allowlist) is always a clean refusal that runs nothing.

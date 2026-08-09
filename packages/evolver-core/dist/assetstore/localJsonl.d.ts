@@ -25,8 +25,9 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.
      */
     putFrozen(record: AssetRecord): Promise<PutResult>;
+    putFrozenConditional(record: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
-    findByLogicalId(id: string, limit?: number): Promise<AssetRecord[]>;
+    findByLogicalId(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
     search(q: SearchQuery): Promise<AssetRecord[]>;
     /**

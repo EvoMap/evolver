@@ -1,23 +1,33 @@
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, } from 'node:fs';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installer.js';
+import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
+import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
 const CONFIG_MODE = 0o600;
 const DIR_MODE = 0o700;
 const BACKUP_VERSION = 1;
 const ENV_FILE_KEY = 'EVOLVER_ENV_FILE';
+const SHARED_CONFIG_WRITE_RETRIES = 5;
 let beforeReplaceHookForTest;
 let afterReplaceHookForTest;
+let afterSharedFileValidateHookForTest;
 let beforeBackupRemoveHookForTest;
+let beforeSharedFileCommitHookForTest;
 export function _setJsonMcpBeforeReplaceHookForTest(hook) {
     beforeReplaceHookForTest = hook;
 }
 export function _setJsonMcpAfterReplaceHookForTest(hook) {
     afterReplaceHookForTest = hook;
 }
+export function _setJsonMcpAfterSharedFileValidateHookForTest(hook) {
+    afterSharedFileValidateHookForTest = hook;
+}
 export function _setJsonMcpBeforeBackupRemoveHookForTest(hook) {
     beforeBackupRemoveHookForTest = hook;
+}
+export function _setJsonMcpBeforeSharedFileCommitHookForTest(hook) {
+    beforeSharedFileCommitHookForTest = hook;
 }
 function removeBackup(path) {
     beforeBackupRemoveHookForTest?.(path);
@@ -361,25 +371,20 @@ function assertConfigTopologyUnchanged(runtime, safeRoot, snapshot) {
             throw new McpConfigChangedError(runtime, candidate.path);
     }
 }
-function atomicWrite(path, raw, mode, beforeRename) {
-    mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE });
-    const tempPath = join(dirname(path), `.${randomUUID()}.tmp`);
-    try {
-        writeFileSync(tempPath, raw, { encoding: 'utf8', mode, flag: 'wx' });
-        chmodSync(tempPath, mode);
-        beforeRename?.();
-        renameSync(tempPath, path);
-    }
-    finally {
-        rmSync(tempPath, { force: true });
-    }
-}
 function guardedAtomicWrite(runtime, safeRoot, path, raw, mode, expectedRaw, additionalGuard) {
-    atomicWrite(path, raw, mode, () => {
-        beforeReplaceHookForTest?.(path);
-        assertSafeParents(runtime, safeRoot, path);
-        assertUnchanged(runtime, path, expectedRaw);
-        additionalGuard?.();
+    beforeReplaceHookForTest?.(path);
+    assertSafeParents(runtime, safeRoot, path);
+    assertUnchanged(runtime, path, expectedRaw);
+    additionalGuard?.();
+    commitSharedFile({
+        path,
+        expectedRaw: expectedRaw ?? undefined,
+        nextRaw: raw,
+        mode,
+        ...(afterSharedFileValidateHookForTest ? { afterValidateForTest: () => afterSharedFileValidateHookForTest?.(path) } : {}),
+        ...(beforeSharedFileCommitHookForTest
+            ? { beforeCommitForTest: () => beforeSharedFileCommitHookForTest?.(path) }
+            : {}),
     });
 }
 function guardedRemove(runtime, safeRoot, path, expectedRaw, additionalGuard) {
@@ -387,7 +392,15 @@ function guardedRemove(runtime, safeRoot, path, expectedRaw, additionalGuard) {
     assertSafeParents(runtime, safeRoot, path);
     assertUnchanged(runtime, path, expectedRaw);
     additionalGuard?.();
-    rmSync(path);
+    commitSharedFile({
+        path,
+        expectedRaw: expectedRaw ?? undefined,
+        nextRaw: undefined,
+        ...(afterSharedFileValidateHookForTest ? { afterValidateForTest: () => afterSharedFileValidateHookForTest?.(path) } : {}),
+        ...(beforeSharedFileCommitHookForTest
+            ? { beforeCommitForTest: () => beforeSharedFileCommitHookForTest?.(path) }
+            : {}),
+    });
 }
 function backupPath(configPath) {
     return `${configPath}.evolver-backup.json`;
@@ -552,7 +565,24 @@ function looksLikeEnvFilePointer(value) {
         || /^[.~$%]/.test(value)
         || /\.(?:env|dotenv)(?:$|[._-])/i.test(value);
 }
+function retrySharedConfigTransaction(operation) {
+    for (let attempt = 1;; attempt += 1) {
+        try {
+            return operation();
+        }
+        catch (error) {
+            if (!(error instanceof SharedFileConflictError)
+                || error.recoveryPath !== undefined
+                || attempt >= SHARED_CONFIG_WRITE_RETRIES)
+                throw error;
+        }
+    }
+}
+export const _retrySharedConfigTransactionForTest = retrySharedConfigTransaction;
 export function installJsonMcpRuntime(spec, plan, opts) {
+    return retrySharedConfigTransaction(() => installJsonMcpRuntimeOnce(spec, plan, opts));
+}
+function installJsonMcpRuntimeOnce(spec, plan, opts) {
     validateServer(opts.server);
     const resolution = resolveInstallRuntimeConfig(spec, opts);
     const { configPath, safeRoot } = resolution;
@@ -707,6 +737,9 @@ function withoutEvolver(data, containerKey) {
     return next;
 }
 export function uninstallJsonMcpRuntime(spec, runtime, opts) {
+    return retrySharedConfigTransaction(() => uninstallJsonMcpRuntimeOnce(spec, runtime, opts));
+}
+function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
     const resolution = resolveUninstallRuntimeConfig(spec, opts);
     const { configPath, safeRoot } = resolution;
     assertSafeParents(spec.runtime, safeRoot, configPath);

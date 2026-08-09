@@ -3,7 +3,7 @@
 // this module holds the dispatch DATA so the surface is importable and assertable (see commandSurface.test.ts).
 // The "phantom command" trap this guards against: an installer baking `evolver <verb>` into a user's runtime
 // config for a verb the CLI never actually dispatches — a green build hides it, the user hits a usage error.
-import { runCli, runMigrate, runAssetLog, runDistill, runIngest, runInject, runReview, } from './index.js';
+import { runCli, runMigrate, runAssetLog, runDistill, runIngest, runInject, runReview, runDaily, } from './index.js';
 import { runAutoExec } from './autoexec.js';
 import { runAtpCommand, runBuyCommand, runOrdersCommand, runVerifyCommand } from './atp.js';
 import { runLogin, runLogout } from './login.js';
@@ -17,6 +17,7 @@ import { runReuseCommand } from './reuse.js';
 import { runPublishCommand } from './cliContracts.js';
 import { runRecallCommand } from './recall.js';
 import { runReuseReportCommand } from './reuseReport.js';
+import { runRecallVerifyReportCommand } from './recallVerifyReport.js';
 import { runDoctorCommand } from './doctor.js';
 import { runPhubCommand } from './phub.js';
 import { runTrajectoryExport } from './trajectoryExport.js';
@@ -31,8 +32,9 @@ import { runDashboardCommand } from './dashboard.js';
 import { runIssueReportCommand } from './issueReport.js';
 import { runAssetTrustCommand } from './assetTrust.js';
 import { runAssetHealthCommand } from './assetHealth.js';
-import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat } from './v1Compat.js';
+import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat, runV1ExecCompat } from './v1Compat.js';
 import { runWorkflowCommand } from './workflow.js';
+import { runMemoryGraphCommand } from './memoryGraphOps.js';
 export async function runProxyCommand(argv, importer = () => import('@evomap/evolver-proxy/bin/evolver-proxy')) {
     const { runProxyCli } = await importer();
     return runProxyCli({ argv: ['proxy', ...argv] });
@@ -45,6 +47,7 @@ export const ASYNC_COMMANDS = {
     ingest: runIngest,
     inject: runInject,
     review: runReview,
+    daily: runDaily,
     skill: runSkillCommand,
     'skill-distill': runSkillDistill,
     'skill-md-update': runSkillMdUpdate,
@@ -64,7 +67,9 @@ export const ASYNC_COMMANDS = {
     sync: runSyncCommand,
     recall: runRecallCommand,
     'reuse-report': runReuseReportCommand,
+    'recall-verify-report': runRecallVerifyReportCommand,
     doctor: runDoctorCommand,
+    'memory-graph': runMemoryGraphCommand,
     phub: runPhubCommand,
     lifecycle: runLifecycleCommand,
     cycle: runCycleCommand,
@@ -81,6 +86,7 @@ export const ASYNC_COMMANDS = {
     solidify: runV1SolidifyCompat,
     fetch: runV1FetchCompat,
     webui: runV1WebuiCompat,
+    exec: runV1ExecCompat,
     workflow: runWorkflowCommand,
 };
 /** Verbs handled by the synchronous runCli core (read-only views + local ops). Kept in sync with runCli's switch

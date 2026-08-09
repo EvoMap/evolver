@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { mailbox } from '@evomap/evolver-core';
@@ -61,8 +62,19 @@ export function parseVerifyArgs(args) {
 }
 export function parseAtpArgs(args) {
     const sub = firstPositional(args)?.toLowerCase();
+    if (sub === 'resolve') {
+        const positionals = args.filter((arg) => !arg.startsWith('--'));
+        const reservationId = positionals[1];
+        const outcome = parseNamed(args, '--outcome');
+        if (!reservationId)
+            return { ok: false, error: 'atp resolve requires <reservationId>' };
+        if (outcome !== 'success' && outcome !== 'failure') {
+            return { ok: false, error: 'atp resolve requires --outcome=success|failure' };
+        }
+        return { ok: true, opts: { sub, reservationId, outcome } };
+    }
     if (sub !== 'enable' && sub !== 'disable' && sub !== 'status') {
-        return { ok: false, error: `atp subcommand must be enable|disable|status (got: ${sub ?? '-'})` };
+        return { ok: false, error: `atp subcommand must be enable|disable|status|resolve (got: ${sub ?? '-'})` };
     }
     return { ok: true, opts: { sub } };
 }
@@ -176,18 +188,61 @@ export async function runAtp(opts, deps = {}) {
     const env = deps.env ?? process.env;
     const log = deps.log ?? ((s) => process.stdout.write(`${s}\n`));
     const err = deps.err ?? ((s) => process.stderr.write(`${s}\n`));
-    const ackPath = deps.consentPath ?? atpConsentPath(env);
     try {
+        const envFile = loadEnvFileFromEnv(env);
+        if (envFile.error && opts.sub !== 'disable') {
+            err('[ATP] atp command error: env_file_unavailable');
+            return { exitCode: 1, error: 'env_file_unavailable' };
+        }
+        if (envFile.error) {
+            err('[ATP] WARNING: env_file_unavailable; applying fail-safe local disable.');
+        }
+        const ackPath = deps.consentPath ?? atpConsentPath(env);
+        const dailyCap = boundedAtpCap(env['ATP_AUTOBUY_DAILY_CAP_CREDITS'], 50);
+        const perOrderCap = boundedAtpCap(env['ATP_AUTOBUY_PER_ORDER_CAP_CREDITS'], 10);
         if (opts.sub === 'status') {
             const consent = getAtpConsent(env, ackPath);
+            const autoBuyer = await import('./atpAutoBuyer.js');
+            const ledgerPath = deps.autoBuyerLedgerPath ?? autoBuyer.resolveAtpAutoBuyerLedgerPath(env, ackPath);
+            const ledger = existsSync(ledgerPath) ? autoBuyer.readAtpAutoBuyerLedger(ledgerPath) : undefined;
+            const reservations = ledger ? Object.values(ledger.reservations) : [];
             log(`[ATP] auto-spend: ${consent.enabled ? 'ENABLED' : 'DISABLED'}  (source: ${consent.source})`);
             log(`      ack file: ${consent.ackPath}`);
-            return { exitCode: 0, data: consent };
+            log(`      Caps: daily=${dailyCap}, per-order=${perOrderCap} credits`);
+            log(`      Unresolved reservations: ${reservations.length}`);
+            for (const reservation of reservations) {
+                const recoveryDeadline = reservation.resolveAfter === undefined
+                    ? ''
+                    : ` resolve-after=${new Date(reservation.resolveAfter).toISOString()}`;
+                log(`        ${reservation.id} state=${reservation.state} budget=${reservation.budget} hash=${reservation.hash} created=${new Date(reservation.createdAt).toISOString()}${recoveryDeadline}`);
+            }
+            return { exitCode: 0, data: { ...consent, reservations } };
+        }
+        if (opts.sub === 'resolve') {
+            const autoBuyer = await import('./atpAutoBuyer.js');
+            const ledgerPath = deps.autoBuyerLedgerPath ?? autoBuyer.resolveAtpAutoBuyerLedgerPath(env, ackPath);
+            const buyer = new autoBuyer.AtpAutoBuyer({
+                client: { placeOrder: async () => ({ ok: false, error: 'operator_only_client' }) },
+                ledgerPath,
+                env,
+                consentPath: ackPath,
+                now: () => (deps.now ?? (() => new Date()))().getTime(),
+            });
+            if (!buyer.resolveReservation(opts.reservationId, opts.outcome)) {
+                err('[ATP] reservation not found or its recovery/transport-settle deadline is still active. No ledger state changed.');
+                return { exitCode: 1, error: 'reservation_not_found' };
+            }
+            const capNote = opts.outcome === 'failure'
+                ? ' Ambiguous budget remains charged against the original day cap.'
+                : '';
+            log(`[ATP] reservation ${opts.reservationId} resolved as ${opts.outcome}; operator decision recorded in the bounded ledger audit.${capNote}`);
+            return { exitCode: 0, data: { reservationId: opts.reservationId, outcome: opts.outcome } };
         }
         const enabled = opts.sub === 'enable';
         const body = setAtpConsent(enabled, ackPath, deps.now ?? (() => new Date()));
         log(`[ATP] auto-spend ${enabled ? 'ENABLED' : 'DISABLED'} (consent recorded ${body.acknowledged_at}).`);
-        log('      Manual `evolver buy` orders are unaffected; this ack is for future auto-buyer wiring.');
+        log(`      Caps: daily=${dailyCap}, per-order=${perOrderCap} credits`);
+        log('      Manual `evolver buy` orders are unaffected; this consent gates the autoexec capability-gap auto-buyer.');
         const override = envOverride(env);
         if (override !== null && override !== enabled) {
             const label = override ? 'on' : 'off';
@@ -202,6 +257,12 @@ export async function runAtp(opts, deps = {}) {
         err(`[ATP] atp command error: ${msg}`);
         return { exitCode: 1, error: msg };
     }
+}
+function boundedAtpCap(value, fallback) {
+    const parsed = typeof value === 'string' && value.trim().length > 0 ? Number(value) : undefined;
+    return typeof parsed === 'number' && Number.isSafeInteger(Math.floor(parsed)) && parsed >= 0
+        ? Math.floor(parsed)
+        : fallback;
 }
 export async function runBuyCommand(argv) {
     const parsed = parseBuyArgs(argv);
@@ -247,7 +308,8 @@ export function resolveAtpHome(env = process.env) {
     const configured = [env['EVOMAP_DIR'], env['EVOLVER_HOME'], env['EVOMAP_HOME']]
         .map((value) => value?.trim())
         .find((value) => Boolean(value));
-    return configured ?? join(homedir(), '.evomap');
+    const home = env['HOME']?.trim();
+    return configured ?? join(home || homedir(), '.evomap');
 }
 export function atpConsentPath(env = process.env) {
     return join(resolveAtpHome(env), 'evolution', 'atp-autobuy-ack.json');
@@ -273,7 +335,7 @@ export class AtpSpendConsentError extends Error {
 /**
  * THE single enforced consent gate every ATP spend path MUST pass through (#177). One door, two callers:
  *  - explicit (a human ran `evolver buy`) → the invocation IS the consent, allowed through.
- *  - autonomous (future auto-buy / autoexec auto-order / swarm purchase) → must have getAtpConsent().enabled,
+ *  - autonomous (auto-buy / autoexec auto-order / swarm purchase) → must have getAtpConsent().enabled,
  *    else refused. This keeps consent enforcement UPSTREAM of money movement instead of a read-only status bit
  *    each caller might forget to check (the latent money-safety hole autogame-17 flagged). Any new autonomous
  *    spending path is required to call this (NOT client.placeOrder directly) — see placeAtpOrderWithConsent.
@@ -298,15 +360,23 @@ export async function placeAtpOrderWithConsent(client, order, consent = {}) {
 export function setAtpConsent(enabled, ackPath = atpConsentPath(), now = () => new Date()) {
     const body = { enabled, acknowledged_at: now().toISOString(), version: 1 };
     mkdirSync(dirname(ackPath), { recursive: true });
-    const tmp = `${ackPath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(body, null, 2));
-    renameSync(tmp, ackPath);
+    const tmp = `${ackPath}.${randomUUID()}.tmp`;
+    try {
+        writeFileSync(tmp, JSON.stringify(body, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        renameSync(tmp, ackPath);
+    }
+    finally {
+        rmSync(tmp, { force: true });
+    }
     return body;
 }
 export function resolveAtpSenderId(env = process.env) {
     const evomapNodeId = env['EVOMAP_NODE_ID']?.trim();
     if (evomapNodeId)
         return evomapNodeId;
+    const explicitCredentials = resolveExplicitNodeCredentials(env);
+    if (explicitCredentials.nodeSecret && explicitCredentials.senderId)
+        return explicitCredentials.senderId;
     try {
         const nodeId = readFileSync(join(resolveIdentityHome(env), 'node_id'), 'utf8').trim();
         if (/^node_[a-f0-9]{12,32}$/.test(nodeId))
@@ -345,7 +415,8 @@ export function printAtpUsage() {
         `  evolver orders [--role=${ATP_ROLES.join('|')}] [--status=${ATP_PROOF_STATUSES.join('|')}]`,
         '                 [--limit=N] [--json]',
         `  evolver verify <orderId> [--action=${ATP_VERIFY_ACTIONS.join('|')}]`,
-        '  evolver atp <enable|disable|status>   -- manage auto-spend consent',
+        '  evolver atp <enable|disable|status>   -- manage consent and inspect unresolved reservations',
+        '  evolver atp resolve <reservationId> --outcome=success|failure  -- reconcile spend (ambiguous failure remains cap-charged)',
     ].join('\n');
 }
 function parseNamed(args, longFlag, shortFlag) {

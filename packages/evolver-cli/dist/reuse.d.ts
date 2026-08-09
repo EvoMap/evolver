@@ -29,6 +29,7 @@ export interface ReuseCliDeps {
     hub?: AssetByIdFetcher;
     callLog?: {
         append(entry: hubNs.AssetCallEntry): void;
+        assetCostIndex?(): Record<string, number>;
     };
     env?: NodeJS.ProcessEnv;
     stdout?: (line: string) => void;

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { assetstore, events, ops, personality, workflow } from '@evomap/evolver-core';
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import { assetstore, events, mailbox, ops, personality, workflow } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { createGithubPrDiagnosticsProvider, readLogDiagnostics, readPersonalityDiagnostics, WebUIServer, } from '@evomap/evolver-webui';
@@ -201,9 +203,11 @@ export function createDashboardServer(memoryGraphStatus, env = process.env) {
     });
     const logFile = lifecyclePaths(resolvedEnv).logFile;
     const githubPrDiagnostics = createGithubPrDiagnosticsProvider({ cwd: process.cwd() });
-    return new WebUIServer({
+    const mailboxStore = openDashboardMailbox(resolvedEnv);
+    const server = new WebUIServer({
         eventsPath,
         store,
+        ...(mailboxStore ? { mailbox: mailboxStore } : {}),
         valueSummary: (window, eventSnapshot) => ops.loadValueSummary({
             traces: ops.readTraceRecords(tracesDir),
             events: eventSnapshot,
@@ -220,6 +224,42 @@ export function createDashboardServer(memoryGraphStatus, env = process.env) {
         memoryGraphStatus,
         workflow: createDashboardWorkflowProvider(resolvedEnv),
     });
+    if (!mailboxStore)
+        return server;
+    let closed = false;
+    return {
+        token: server.token,
+        launchTicket: server.launchTicket,
+        listen: (port) => server.listen(port),
+        close: async () => {
+            if (closed)
+                return;
+            closed = true;
+            try {
+                await server.close();
+            }
+            catch (error) {
+                if (error.code !== 'ERR_SERVER_NOT_RUNNING')
+                    throw error;
+            }
+            finally {
+                mailboxStore.close();
+            }
+        },
+    };
+}
+function openDashboardMailbox(env) {
+    const configured = env['EVOLVER_PROXY_STORE']?.trim();
+    const path = configured || join(events.evomapHome(env), 'proxy', 'mailbox.db');
+    try {
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink())
+            return undefined;
+        return new mailbox.MailboxStore({ path });
+    }
+    catch {
+        return undefined;
+    }
 }
 export function dashboardOpenCommand(url, platform = process.platform) {
     if (platform === 'win32')
@@ -340,13 +380,11 @@ export async function runDashboardCommand(argv, deps = {}, options = {}) {
         return 1;
     }
     finally {
-        if (listening) {
-            try {
-                await server.close();
-            }
-            catch {
-                // The process is already shutting down; avoid replacing the command result with a close race.
-            }
+        try {
+            await server.close();
+        }
+        catch {
+            // The command result takes precedence over a close race or an unbound HTTP server.
         }
     }
 }

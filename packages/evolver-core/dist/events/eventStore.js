@@ -2,7 +2,7 @@ import { openSync, writeSync, fsyncSync, closeSync, statSync, readSync, mkdirSyn
 import { dirname } from 'node:path';
 import { monotonicFactory } from 'ulid';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
-import { readRootEventHistory } from './eventArchive.js';
+import { readRootEventHistory, readRootEventHistoryStrict } from './eventArchive.js';
 // Monotonic ULIDs: plain ulid() randomizes the low 80 bits, so two ids minted in the SAME millisecond can sort
 // out of order — the event log wants time-sortable eventIds (and a flaky CI test proved it). The monotonic
 // factory increments within a millisecond, guaranteeing each successive eventId is strictly greater.
@@ -75,6 +75,10 @@ export class EventStore {
     /** 读全部事件 (跳过尾部半行/损坏行). */
     readAll() {
         return readRootEventHistory(this.path);
+    }
+    /** Fail-closed replay for decision policies that cannot safely consume a partial history. */
+    readAllStrict() {
+        return readRootEventHistoryStrict(this.path);
     }
     *iterate(fromSeq = 0) {
         for (const e of this.readAll())

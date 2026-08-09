@@ -1,4 +1,4 @@
-import { makeClaudeExecBridge } from './claudeBridge.js';
+import { CLAUDE_SAFE_AUTONOMOUS_TOOLS, hasBoundedClaudeFileAccess, makeClaudeExecBridge, validateAgentSessionResume } from './claudeBridge.js';
 const asStrings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 /**
  * Resolve a gene's strategy from the store and whether it is safe to EMBED into an autonomous agent's prompt —
@@ -33,19 +33,19 @@ export function makeTrustedGeneResolver(store, provenance, review, includeProbat
         return info;
     };
 }
-// Claude's safe default: bypass the permission prompts but BOUND the agent to file edits (#38/#40).
-const CLAUDE_DEFAULT_AGENT_OPTIONS = { skipPermissions: true, allowedTools: ['Read', 'Edit', 'Write'] };
-// Codex's safe default is SANDBOXED (no skip): the autonomous-bypass flag is gated until verified (#66), so
-// skipPermissions would throw at construction. `codex exec` still runs non-interactively under its own sandbox.
+// Keep Claude's project path checks enabled and expose only file/search tools.
+// Bash, web, task, and MCP tools remain unavailable.
+const CLAUDE_DEFAULT_AGENT_OPTIONS = {
+    permissionMode: 'acceptEdits',
+    tools: CLAUDE_SAFE_AUTONOMOUS_TOOLS,
+};
+// Codex workspace-write prevents host writes but does not contain host reads. It therefore remains explicit.
 const CODEX_DEFAULT_AGENT_OPTIONS = {};
-// Cursor's safe default keeps skip OFF (#66 SCAFFOLD). The runner is flag-confirmed via `cursor-agent --help`
-// but not yet run-verified end to end (needs an authed cursor-agent). The `-p --force --trust` bypass would
-// auto-approve shell+write, but Cursor has no verified per-run allowlist/sandbox mapping yet, so skipPermissions
-// is refused outright. Use default cursor with worktree isolation until the CLI is run-verified.
+// Cursor has no verified host filesystem/network sandbox. Worktree isolation cannot safely authorize `--trust`.
 const CURSOR_DEFAULT_AGENT_OPTIONS = {};
 // Gemini's verified safe default is `--approval-mode auto_edit`; shell remains gated and --yolo is refused.
 const GEMINI_DEFAULT_AGENT_OPTIONS = {};
-/** Per-runner safe default agent options — claude bypasses-with-bounds; codex + cursor stay non-bypassing (codex sandboxed; cursor skip refused, #66). */
+/** Per-runner safe default agent options. Host permission bypass is never enabled by default. */
 function defaultAgentOptions(runner) {
     if (runner === 'codex')
         return CODEX_DEFAULT_AGENT_OPTIONS;
@@ -55,13 +55,62 @@ function defaultAgentOptions(runner) {
         return GEMINI_DEFAULT_AGENT_OPTIONS;
     return CLAUDE_DEFAULT_AGENT_OPTIONS;
 }
+export class UnsupportedCursorAutonomousIsolationError extends Error {
+    constructor() {
+        super('Autonomous Cursor cannot use worktree isolation because --trust grants host filesystem and network access');
+        this.name = 'UnsupportedCursorAutonomousIsolationError';
+    }
+}
+export class UnsupportedAutonomousHostAccessError extends Error {
+    constructor() {
+        super('Autonomous Claude requires project-scoped acceptEdits with bounded file/search tools; host access bypass or unsupported tools are forbidden because a worktree is not a security boundary');
+        this.name = 'UnsupportedAutonomousHostAccessError';
+    }
+}
+export class UnsupportedAutonomousClaudeRunnerError extends Error {
+    constructor() {
+        super('Autonomous claude is disabled because its headless edit mode has no verified host filesystem sandbox; inject an externally sandboxed agent or explicitly select a runner after reviewing its host-access boundary');
+        this.name = 'UnsupportedAutonomousClaudeRunnerError';
+    }
+}
+export class UnsupportedAutonomousCodexRunnerError extends Error {
+    constructor() {
+        super('Autonomous codex is disabled because workspace-write does not restrict host filesystem reads; inject an externally sandboxed agent');
+        this.name = 'UnsupportedAutonomousCodexRunnerError';
+    }
+}
+export function resolveAutonomousAgentOptions(runner, isolation, overrides) {
+    const options = {
+        ...defaultAgentOptions(runner),
+        ...(isolation !== 'none' ? { workspaceTrust: 'isolated-worktree' } : {}),
+        ...(overrides ?? {}),
+    };
+    if (runner === 'cursor' && isolation !== 'none') {
+        throw new UnsupportedCursorAutonomousIsolationError();
+    }
+    const effectiveRunner = runner ?? 'claude';
+    const unsafeClaudeOptions = effectiveRunner === 'claude' && !hasBoundedClaudeFileAccess(options);
+    if (unsafeClaudeOptions) {
+        throw new UnsupportedAutonomousHostAccessError();
+    }
+    return options;
+}
 /**
  * Build the fully-hardened `execute` for an autonomous run against `repo`. Composes every exec-bridge control
  * with secure defaults so they can't be forgotten piecemeal: deny-by-default allowedRoots (#41) + worktree
- * isolation (#43) + env scrub (#42) + bounded skip-permissions agent (#38/#40) + trusted-gene gate fed by
+ * isolation (#43) + env scrub (#42) + non-bypassing agent permissions (#38/#40) + trusted-gene gate fed by
  * provenance (#45/#30). Pass the result as runEvolutionCycle's `execute`.
  */
 export function makeSafeExecute(repo, store, safety, opts = {}) {
+    const runner = safety.runner ?? (opts.agent ? undefined : 'claude');
+    if (safety.resume && runner)
+        validateAgentSessionResume(safety.resume, runner);
+    if (!opts.agent && runner === 'claude') {
+        throw new UnsupportedAutonomousClaudeRunnerError();
+    }
+    if (!opts.agent && runner === 'codex') {
+        throw new UnsupportedAutonomousCodexRunnerError();
+    }
     return makeClaudeExecBridge({
         cwd: repo,
         enabled: true,
@@ -69,11 +118,12 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         ...(opts.git ? { git: opts.git } : {}),
         ...(opts.traceRecorder ? { traceRecorder: opts.traceRecorder } : {}),
         allowedRoots: safety.allowedRoots,
-        ...(safety.runner ? { runner: safety.runner } : {}),
+        ...(runner ? { runner } : {}),
+        ...(safety.resume ? { resume: safety.resume } : {}),
         ...(safety.isolation === 'none' ? {} : { isolation: 'worktree' }),
         scrubEnv: safety.scrubEnv ?? true,
         requireTrustedGene: safety.requireTrustedGene ?? true,
-        agentOptions: safety.agentOptions ?? defaultAgentOptions(safety.runner),
+        agentOptions: resolveAutonomousAgentOptions(runner, safety.isolation, safety.agentOptions),
         ...(safety.timeoutMs !== undefined ? { timeoutMs: safety.timeoutMs } : {}),
         ...(safety.signal ? { signal: safety.signal } : {}),
         resolveGene: makeTrustedGeneResolver(store, opts.provenance, opts.review, opts.includeProbation ?? false),

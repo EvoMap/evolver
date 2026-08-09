@@ -1,6 +1,8 @@
 import { specForType, type Direction, type Handler } from './catalog.js';
 export type Status = 'pending' | 'in_flight' | 'done' | 'failed' | 'expired';
-export declare const ENVELOPE_SCHEMA_VERSION = "1.0.0";
+export type Priority = 'high' | 'normal' | 'low';
+export declare const PRIORITIES: readonly ["high", "normal", "low"];
+export declare const ENVELOPE_SCHEMA_VERSION = "1.1.0";
 export interface Envelope {
     id: string;
     type: string;
@@ -15,6 +17,7 @@ export interface Envelope {
     sourceAgent: string;
     targetAgent: string;
     runtimeNamespace: string;
+    priority: Priority;
     attempts: number;
     nextRetryAt: number | null;
     ttlAt: number | null;
@@ -22,6 +25,7 @@ export interface Envelope {
     updatedAt: number;
     schemaVersion: string;
     feedsMaterial: boolean;
+    lastError: string | null;
 }
 /** 固定 envelope 字段集 (schema-snapshot 锁; 增删字段必须改此处). */
 export declare const ENVELOPE_FIELDS: readonly (keyof Envelope)[];
@@ -37,7 +41,9 @@ export interface CreateEnvelopeInput {
     sourceAgent?: string;
     targetAgent?: string;
     runtimeNamespace?: string;
+    priority?: unknown;
     now?: number;
 }
+export declare function normalizePriority(value: unknown): Priority;
 export declare function createEnvelope(input: CreateEnvelopeInput): Envelope;
 export { specForType };

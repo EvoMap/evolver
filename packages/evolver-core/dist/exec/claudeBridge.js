@@ -12,19 +12,19 @@
 // or EVOLVE_EXEC_BRIDGE === '1'. Wiring it in by accident must fail loudly rather than silently spawn an
 // autonomous agent.
 import { randomUUID } from 'node:crypto';
-import { resolve as resolvePath, sep, join as joinPath } from 'node:path';
-import { tmpdir } from 'node:os';
-import { closeSync, lstatSync, mkdtempSync, openSync, realpathSync, rmdirSync, rmSync, writeFileSync, } from 'node:fs';
+import { basename, dirname, resolve as resolvePath, sep, join as joinPath } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync, } from 'node:fs';
 import { renderExecPrompt } from './prompt.js';
 import { parseGitShortstat, gitDiffProof } from './proofOfWork.js';
 // Policy enforcement core (#107): checkPolicy runs the always-on global guards (blast hard cap +
 // protected paths + destructive deletes) on EVERY exec — gene or not — plus the per-gene constraints when a
 // gene supplies them. It supersedes the old gene-gated `checkChangeConstraints` call (the no-gene-no-guard hole).
 import { checkPolicy, summarizeViolations } from './policy/index.js';
-import { spawnCapture, SpawnCaptureFinalizeError, getRunnerSpec, DEFAULT_TIMEOUT_MS } from './runnerRegistry.js';
+import { spawnCapture, SpawnCaptureFinalizeError, getRunnerSpec, validateAgentSessionResume, DEFAULT_TIMEOUT_MS } from './runnerRegistry.js';
 // Re-export the runner layer so existing importers of ./claudeBridge.js (and the `exec` namespace) keep their
 // surface after the #91-6 split — the registry simply has a clearer home now.
-export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, MAX_AGENT_SESSION_ID_CHARS, AgentSessionResumeError, validateAgentSessionResume, UnboundedSkipPermissionsError, UnsupportedCodexPermissionOptionsError, UnsupportedCursorAllowedToolsError, UnsupportedCursorSkipPermissionsError, UnsupportedCursorWorkspaceTrustError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, hasBoundedClaudeFileAccess, CLAUDE_SAFE_AUTONOMOUS_TOOLS, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
 export class ExecBridgeDisabledError extends Error {
     constructor() {
         super('exec bridge is disabled — set EVOLVE_EXEC_BRIDGE=1 or pass { enabled: true } to enable agent execution');
@@ -42,17 +42,41 @@ export class ExecBridgeForbiddenError extends Error {
  * Thrown when a FULL-ACCESS (or unverified) agent run is requested without worktree isolation. The throwaway
  * worktree is the containment WE control — allowedRoots gates the cwd but cannot stop an auto-approved or
  * unsandboxed process writing/running outside it. Gated runners:
- *  - codex with skipPermissions → `--sandbox danger-full-access` (no inner OS sandbox). Without skip it stays
- *    workspace-write, so only the skip path is gated.
+ *  - codex permission overrides are refused by the runner because it has no enforceable per-tool allowlist.
  *  - cursor default → gated UNCONDITIONALLY. cursor-agent base `-p` already documents write+shell access, cursor
  *    skipPermissions is rejected by the runner layer, and the scaffold remains unverified (#66/#181) — so default
  *    cursor still needs the wrapper worktree rather than risk mutating the real tree.
- * claude is exempt: its skip is bounded by --allowedTools (finding #80).
+ * Claude is fail-closed below because a tool-name allowlist does not constrain absolute filesystem paths.
  */
 export class UnsandboxedFullAccessRequiresIsolationError extends Error {
     constructor() {
         super('a full-access or unverified agent run (codex --sandbox danger-full-access, or any cursor scaffold run) can auto-approve shell+write and requires isolation: "worktree" — refusing to run it against the real working tree');
         this.name = 'UnsandboxedFullAccessRequiresIsolationError';
+    }
+}
+export class WorkspaceTrustRequiresIsolationError extends Error {
+    code = 'WORKSPACE_TRUST_REQUIRES_ISOLATION';
+    constructor() {
+        super('workspaceTrust=isolated-worktree requires isolation=worktree');
+        this.name = 'WorkspaceTrustRequiresIsolationError';
+    }
+}
+export class UnsupportedCursorBuiltInRunnerError extends Error {
+    constructor() {
+        super('built-in cursor autonomous execution is unsupported until host filesystem and network containment is verified');
+        this.name = 'UnsupportedCursorBuiltInRunnerError';
+    }
+}
+export class UnsupportedClaudeBuiltInRunnerError extends Error {
+    constructor() {
+        super('built-in claude autonomous execution is unsupported until host filesystem and network containment is verified');
+        this.name = 'UnsupportedClaudeBuiltInRunnerError';
+    }
+}
+export class UnsupportedCodexBuiltInRunnerError extends Error {
+    constructor() {
+        super('built-in codex autonomous execution is unsupported because workspace-write does not contain host filesystem reads');
+        this.name = 'UnsupportedCodexBuiltInRunnerError';
     }
 }
 export class UnsafeWorktreePathError extends Error {
@@ -118,6 +142,80 @@ function worktreePathStillOwned(reservation, identity) {
         return false;
     }
 }
+async function verifyManagedCursorWorktree(path, expectedName, repoCwd, git, managedRoot) {
+    const resolvedPath = resolvePath(path);
+    const cursorRoot = realpathSync(managedRoot);
+    if (resolvedPath !== path) {
+        throw new UnsafeWorktreePathError('Cursor reported a non-canonical worktree path');
+    }
+    const realPath = realpathSync(resolvedPath);
+    if (!isWithinRoot(realPath, cursorRoot)) {
+        throw new UnsafeWorktreePathError('Cursor reported a worktree outside its managed root');
+    }
+    if (basename(realPath) !== expectedName) {
+        throw new UnsafeWorktreePathError('Cursor reported an unexpected worktree name');
+    }
+    const stat = lstatSync(resolvedPath);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new UnsafeWorktreePathError('Cursor worktree is not a real directory');
+    }
+    const [repoCommonDir, worktreeCommonDir] = await Promise.all([
+        git(['rev-parse', '--path-format=absolute', '--git-common-dir'], repoCwd),
+        git(['rev-parse', '--path-format=absolute', '--git-common-dir'], realPath),
+    ]);
+    if (realpathSync(repoCommonDir.trim()) !== realpathSync(worktreeCommonDir.trim())) {
+        throw new UnsafeWorktreePathError('Cursor worktree belongs to a different repository');
+    }
+    return { path: realPath, dev: stat.dev, ino: stat.ino };
+}
+async function cleanupManagedCursorWorktree(identity, git, repoCwd) {
+    const stat = lstatSync(identity.path);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== identity.dev || stat.ino !== identity.ino) {
+        throw new UnsafeWorktreePathError('verified Cursor worktree path changed before cleanup');
+    }
+    await git(['worktree', 'remove', '--force', identity.path], repoCwd, undefined, { processSignalMode: 'ignore' });
+    assertPathAbsent(identity.path);
+}
+async function discoverManagedCursorWorktree(expectedName, repoCwd, git, managedRoot) {
+    const cursorRoot = managedRoot;
+    if (!existsSync(cursorRoot))
+        return undefined;
+    const verified = [];
+    let validationError;
+    for (const entry of readdirSync(cursorRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory())
+            continue;
+        const candidate = joinPath(cursorRoot, entry.name, expectedName);
+        if (!existsSync(candidate))
+            continue;
+        try {
+            verified.push(await verifyManagedCursorWorktree(candidate, expectedName, repoCwd, git, cursorRoot));
+        }
+        catch (error) {
+            // Unverified same-name paths are never read or removed.
+            validationError ??= error;
+        }
+    }
+    if (verified.length > 1) {
+        throw new UnsafeWorktreePathError('multiple verified Cursor worktrees matched the generated name');
+    }
+    if (verified.length === 0 && validationError)
+        throw validationError;
+    return verified[0];
+}
+async function resolveManagedCursorWorktree(reportedPath, expectedName, repoCwd, git, managedRoot) {
+    if (!reportedPath)
+        return discoverManagedCursorWorktree(expectedName, repoCwd, git, managedRoot);
+    try {
+        return await verifyManagedCursorWorktree(reportedPath, expectedName, repoCwd, git, managedRoot);
+    }
+    catch (reportedPathError) {
+        const discovered = await discoverManagedCursorWorktree(expectedName, repoCwd, git, managedRoot);
+        if (discovered)
+            return discovered;
+        throw reportedPathError;
+    }
+}
 function removeEmptyReservation(reservation) {
     try {
         const stat = lstatSync(reservation.container);
@@ -161,11 +259,38 @@ async function cleanupWorktreeReservation(reservation, identity, git, repoCwd) {
     }
     removeEmptyReservation(reservation);
 }
-/** Whether `child` is the same as, or nested under, `root` (both resolved to absolute paths). */
-function isWithinRoot(child, root) {
-    const c = resolvePath(child);
-    const r = resolvePath(root);
-    return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
+/** Resolve existing path components so an allowlisted symlink cannot redirect execution outside its root. */
+function canonicalPath(path) {
+    let current = resolvePath(path);
+    const missing = [];
+    while (true) {
+        try {
+            return resolvePath(realpathSync(current), ...missing.reverse());
+        }
+        catch (error) {
+            const code = error.code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR')
+                return undefined;
+            const parent = dirname(current);
+            if (parent === current)
+                return undefined;
+            missing.push(basename(current));
+            current = parent;
+        }
+    }
+}
+/** Whether `child` is the same as, or nested under, `root`, including filesystem symlink resolution. */
+export function isWithinRoot(child, root) {
+    return canonicalPathWithinRoots(child, [root]) !== undefined;
+}
+function canonicalPathWithinRoots(child, roots) {
+    const c = canonicalPath(child);
+    if (!c)
+        return undefined;
+    return roots.some((root) => {
+        const r = canonicalPath(root);
+        return Boolean(r && (c === r || c.startsWith(r.endsWith(sep) ? r : r + sep)));
+    }) ? c : undefined;
 }
 /**
  * Sensitive env keys to strip before spawning an agent/tool (finding #39.2): evolver/hub/cloud secrets must
@@ -237,6 +362,12 @@ class ExecBridgeRunCancelledError extends Error {
         this.name = 'ExecBridgeRunCancelledError';
     }
 }
+class AgentRunBeforeManagedWorktreeError extends Error {
+    constructor() {
+        super('agent run failed before a managed worktree was created');
+        this.name = 'AgentRunBeforeManagedWorktreeError';
+    }
+}
 class GitProofError extends Error {
     constructor(message) {
         super(message);
@@ -265,6 +396,15 @@ function failedProofExecutionResult(run, error, proofOfWork) {
         strongEvidence: false,
         failureKind: run.failureKind ?? 'runtime_error',
         exitCode: run.exitCode ?? null,
+        sessionLog: run.error ? `${run.output}\n${run.error}` : run.output,
+    };
+}
+function failedAgentRunResult(run) {
+    return {
+        outcome: { status: 'failed', score: 0.1, reason: run.error ?? run.failureKind ?? 'agent run failed' },
+        strongEvidence: false,
+        ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
+        ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
         sessionLog: run.error ? `${run.output}\n${run.error}` : run.output,
     };
 }
@@ -341,10 +481,29 @@ function writePrivatePatchFile(path, patch) {
  * Build the `execute` function CycleEngine/runEvolutionCycle consume. Default-off: throws
  * ExecBridgeDisabledError on first call unless enabled.
  */
-export function makeClaudeExecBridge(opts) {
+export function makeClaudeExecBridge(opts, internal) {
+    if (internal?.cursorWorktreeRoot && !opts.agent) {
+        throw new Error('custom Cursor worktree root requires an injected agent');
+    }
+    const cursorWorktreeRoot = internal?.cursorWorktreeRoot ?? joinPath(homedir(), '.cursor', 'worktrees');
     const enabled = opts.enabled ?? (process.env['EVOLVE_EXEC_BRIDGE'] === '1');
-    const spec = getRunnerSpec(opts.runner); // #66: claude (default, byte-identical) | codex
-    const agent = opts.agent ?? spec.makeRunner(opts.agentOptions);
+    if (opts.agentOptions?.workspaceTrust === 'isolated-worktree' && opts.isolation !== 'worktree') {
+        throw new WorkspaceTrustRequiresIsolationError();
+    }
+    const runnerName = opts.runner ?? 'claude';
+    const unsupportedBuiltInClaude = runnerName === 'claude' && !opts.agent;
+    const unsupportedBuiltInCodex = runnerName === 'codex' && !opts.agent;
+    const spec = getRunnerSpec(runnerName); // #66: provider-neutral runner registry
+    const resume = opts.resume ? validateAgentSessionResume(opts.resume, spec.name) : undefined;
+    // Do not construct uncontained built-in runners. Keep the bridge factory side-effect free so
+    // default-OFF callers retain the documented first-call failure semantics.
+    const agent = opts.agent ?? (unsupportedBuiltInClaude || unsupportedBuiltInCodex
+        ? (() => {
+            if (unsupportedBuiltInCodex)
+                throw new UnsupportedCodexBuiltInRunnerError();
+            throw new UnsupportedClaudeBuiltInRunnerError();
+        })
+        : spec.makeRunner(opts.agentOptions));
     const git = opts.git ?? defaultGitRunner;
     const gitPatchWriter = opts.gitPatchWriter ?? (git === defaultGitRunner ? defaultGitPatchWriter : undefined);
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -353,24 +512,39 @@ export function makeClaudeExecBridge(opts) {
     // Fail-fast when a run that can write/execute against the tree with no inner sandbox we control is requested
     // without the throwaway worktree as containment (allowedRoots gates the cwd but can't stop a write outside it).
     // Only when WE build the runner — an injected `agent` bypasses the built-in runner:
-    //  - codex: only its skip path emits --sandbox danger-full-access; without skip it stays workspace-write.
+    //  - codex: fail-closed above because workspace-write does not contain host reads.
     //  - cursor: gated UNCONDITIONALLY. cursor-agent base `-p` already has write+shell access, its skipPermissions
     //    path is refused by runnerRegistry, and the runner is an unverified scaffold (#66/#181), so we do not let
     //    default cursor touch the real tree until run-verified. (Bugbot High #181)
-    // claude is exempt — its skip is bounded by --allowedTools (finding #80).
-    const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini'
-        || (opts.runner === 'codex' && opts.agentOptions?.skipPermissions === true);
+    // Built-in Claude and Codex are fail-closed above.
+    const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini';
     if (!opts.agent && needsIsolation && opts.isolation !== 'worktree') {
         throw new UnsandboxedFullAccessRequiresIsolationError();
+    }
+    if (opts.runner === 'cursor' && !opts.agent) {
+        throw new UnsupportedCursorBuiltInRunnerError();
     }
     return async (mutation, decision) => {
         if (!enabled)
             throw new ExecBridgeDisabledError();
         // Deny-by-default guardrail: an autonomous agent may only edit allowlisted repos. Checked before the
         // agent is ever spawned, so a forbidden cwd never runs anything.
-        if (opts.allowedRoots !== undefined && !opts.allowedRoots.some((root) => isWithinRoot(opts.cwd, root))) {
+        const repoCwd = opts.allowedRoots === undefined
+            ? opts.cwd
+            : canonicalPathWithinRoots(opts.cwd, opts.allowedRoots);
+        if (!repoCwd) {
             throw new ExecBridgeForbiddenError(opts.cwd);
         }
+        if (unsupportedBuiltInClaude)
+            throw new UnsupportedClaudeBuiltInRunnerError();
+        if (unsupportedBuiltInCodex)
+            throw new UnsupportedCodexBuiltInRunnerError();
+        const assertRepoCwdStillAllowed = () => {
+            if (opts.allowedRoots !== undefined
+                && canonicalPathWithinRoots(repoCwd, opts.allowedRoots) !== repoCwd) {
+                throw new ExecBridgeForbiddenError(opts.cwd);
+            }
+        };
         const resolveId = decision.selectedAssetId ?? decision.selectedGeneId;
         const resolved = resolveId && opts.resolveGene ? await opts.resolveGene(resolveId) : null;
         // Trust gate (finding #39.3): for unattended runs, only embed a gene we trust — an untrusted gene's strategy
@@ -384,14 +558,18 @@ export function makeClaudeExecBridge(opts) {
             // use-case ①: inject the personality style block from the state applySelectForRun just persisted.
             ...(opts.personality ? { personality: opts.personality.currentState() } : {}),
         });
+        assertRepoCwdStillAllowed();
         // Isolation: atomically reserve an unpredictable private temp container, then let git create the absent
         // worktree path inside it. Cleanup is armed only after git succeeds and the resulting directory is verified.
         const isolate = opts.isolation === 'worktree';
+        const managedCursorIsolation = isolate && opts.runner === 'cursor' && resume?.runner === 'cursor';
         if (opts.signal?.aborted)
             return cancelledExecutionResult(undefined);
         const reservation = isolate ? reserveWorktreePath() : undefined;
-        const workDir = reservation?.workDir ?? opts.cwd;
+        let workDir = reservation?.workDir ?? repoCwd;
         let worktreeIdentity;
+        let managedCursorIdentity;
+        const managedWorktreeName = managedCursorIsolation ? `evolver-${randomUUID()}` : undefined;
         let result;
         let observedRun;
         let patchRef;
@@ -401,6 +579,8 @@ export function makeClaudeExecBridge(opts) {
         const proofGit = async (args, cwd, checkCancellationAfter = true) => {
             if (opts.signal?.aborted)
                 throw new ExecBridgeRunCancelledError();
+            if (cwd === repoCwd)
+                assertRepoCwdStillAllowed();
             try {
                 const output = await git(args, cwd, opts.signal);
                 if (checkCancellationAfter && opts.signal?.aborted)
@@ -417,18 +597,46 @@ export function makeClaudeExecBridge(opts) {
         };
         try {
             if (reservation) {
-                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], opts.cwd, false);
+                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], repoCwd, false);
                 worktreeIdentity = verifyWorktreePath(reservation);
                 if (opts.signal?.aborted)
                     throw new ExecBridgeRunCancelledError();
             }
+            if (!reservation)
+                assertRepoCwdStillAllowed();
             const run = await agent(prompt, {
                 cwd: workDir,
                 timeoutMs,
                 ...(agentEnv ? { env: agentEnv } : {}),
                 ...(opts.signal ? { signal: opts.signal } : {}),
+                ...(resume ? { resume } : {}),
+                ...(managedWorktreeName ? { managedWorktreeName } : {}),
             });
             observedRun = run;
+            if (managedWorktreeName) {
+                try {
+                    assertRepoCwdStillAllowed();
+                    managedCursorIdentity = await resolveManagedCursorWorktree(run.managedWorktreePath, managedWorktreeName, repoCwd, git, cursorWorktreeRoot);
+                }
+                catch (error) {
+                    if (run.failureKind === 'cancelled' || opts.signal?.aborted)
+                        throw new ExecBridgeRunCancelledError();
+                    if (!run.ok)
+                        throw new AgentRunBeforeManagedWorktreeError();
+                    if (error instanceof UnsafeWorktreePathError) {
+                        throw new GitProofError(`Cursor managed worktree verification failed: ${error.message}`);
+                    }
+                    throw error;
+                }
+                if (!managedCursorIdentity) {
+                    if (run.failureKind === 'cancelled' || opts.signal?.aborted)
+                        throw new ExecBridgeRunCancelledError();
+                    if (!run.ok)
+                        throw new AgentRunBeforeManagedWorktreeError();
+                    throw new GitProofError('Cursor managed worktree could not be verified');
+                }
+                workDir = managedCursorIdentity.path;
+            }
             // Learning trace (slice 2): one model.called per agent spawn — the headless runner is one opaque
             // model-driven turn from the bridge's viewpoint (per-request fidelity arrives via the proxy's llm_turn
             // records; recordLlmTurn folds those when a caller has them). Best-effort: never affects the result.
@@ -473,6 +681,8 @@ export function makeClaudeExecBridge(opts) {
                 numstat = await proofGit(['diff', '--numstat', 'HEAD'], workDir);
                 if (isolate && stat.files > 0) {
                     if (gitPatchWriter) {
+                        if (workDir === repoCwd)
+                            assertRepoCwdStillAllowed();
                         patchRef = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
                         try {
                             await gitPatchWriter(['diff', '--binary', '--full-index', 'HEAD'], workDir, patchRef, opts.signal, () => { ownsPatchRef = true; });
@@ -584,13 +794,26 @@ export function makeClaudeExecBridge(opts) {
             if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
                 result = cancelledExecutionResult(observedRun);
             }
+            else if (error instanceof AgentRunBeforeManagedWorktreeError && observedRun) {
+                result = failedAgentRunResult(observedRun);
+            }
             else if (error instanceof GitProofError && observedRun) {
                 result = failedProofExecutionResult(observedRun, error, failedProof);
             }
             else {
+                if (managedCursorIdentity) {
+                    try {
+                        assertRepoCwdStillAllowed();
+                        await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
+                    }
+                    catch {
+                        // Preserve the primary execution error; the verified worktree remains diagnosable.
+                    }
+                }
                 if (reservation) {
                     try {
-                        await cleanupWorktreeReservation(reservation, worktreeIdentity, git, opts.cwd);
+                        assertRepoCwdStillAllowed();
+                        await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
                     }
                     catch {
                         // Preserve the primary execution error. The abandoned reservation remains private and diagnosable.
@@ -607,17 +830,29 @@ export function makeClaudeExecBridge(opts) {
                 catch { /* best-effort cleanup must not replace the execution result or its primary failure */ }
             }
         }
-        if (reservation) {
+        let cleanupError;
+        if (managedCursorIdentity) {
             try {
-                await cleanupWorktreeReservation(reservation, worktreeIdentity, git, opts.cwd);
+                assertRepoCwdStillAllowed();
+                await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
             }
             catch (error) {
-                // A successful run must not hide abandoned edits/resources. Failed and cancelled results retain their
-                // primary classification; the private reservation remains available for diagnosis.
-                if (result.outcome.status === 'success')
-                    throw error;
+                cleanupError = error;
             }
         }
+        if (reservation) {
+            try {
+                assertRepoCwdStillAllowed();
+                await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
+            }
+            catch (error) {
+                cleanupError ??= error;
+            }
+        }
+        // A successful run must not hide abandoned edits/resources. Both cleanup paths are attempted first so one
+        // failure cannot strand the other worktree. Failed and cancelled results retain their primary classification.
+        if (cleanupError && result.outcome.status === 'success')
+            throw cleanupError;
         return result;
     };
 }

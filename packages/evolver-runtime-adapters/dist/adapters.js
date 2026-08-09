@@ -291,26 +291,71 @@ function anthropicSessionSystemPrompt(chunk) {
     }
     return undefined;
 }
-function anthropicStyleSession(chunk) {
+const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const CLAUDE_TRANSCRIPT_PATH = /(?:^|[/\\])\.claude[/\\]projects[/\\](?:[^/\\]+[/\\])*([A-Za-z0-9][A-Za-z0-9._-]{0,127})\.jsonl$/;
+const CURSOR_TRANSCRIPT_PATHS = [
+    /(?:^|[/\\])\.cursor[/\\]projects[/\\](?:[^/\\]+[/\\])*agent-transcripts[/\\]([A-Za-z0-9][A-Za-z0-9._-]{0,127})\.jsonl$/,
+    /(?:^|[/\\])\.cursor[/\\]projects[/\\](?:[^/\\]+[/\\])*agent-transcripts[/\\]([A-Za-z0-9][A-Za-z0-9._-]{0,127})[/\\]\1\.jsonl$/,
+];
+function transcriptSessionId(chunk, keys) {
+    const values = new Set();
+    for (const row of parseJsonlLines(chunk)) {
+        for (const key of keys) {
+            if (!hasOwn(row, key))
+                continue;
+            const value = row[key];
+            if (typeof value !== 'string' || !NATIVE_SESSION_ID.test(value))
+                return { invalid: true };
+            values.add(value);
+            if (values.size > 1)
+                return { invalid: true };
+        }
+    }
+    return { value: values.values().next().value, invalid: false };
+}
+function nativeResumeIdentity(harness, path, chunk, pathPattern, recordKeys) {
+    const pathId = pathPattern.exec(path)?.[1];
+    if (!pathId || !NATIVE_SESSION_ID.test(pathId))
+        return undefined;
+    const recordId = transcriptSessionId(chunk, recordKeys);
+    if (recordId.invalid || (recordId.value !== undefined && recordId.value !== pathId))
+        return undefined;
+    return { harness, sessionId: pathId };
+}
+function cursorResumeIdentity(path, chunk) {
+    for (const pattern of CURSOR_TRANSCRIPT_PATHS) {
+        const identity = nativeResumeIdentity('cursor', path, chunk, pattern, ['sessionId', 'session_id', 'conversationId', 'conversation_id']);
+        if (identity)
+            return identity;
+    }
+    return undefined;
+}
+function anthropicStyleSession(chunk, sessionIdKeys = []) {
     const systemPrompt = anthropicSessionSystemPrompt(chunk);
+    const sessionId = transcriptSessionId(chunk, sessionIdKeys);
     return {
         turns: anthropicStyleTranscript(chunk),
         ...(systemPrompt ? { systemPrompt } : {}),
+        ...(!sessionId.invalid && sessionId.value ? { sessionId: sessionId.value } : {}),
     };
 }
 export const claudeCodeAdapter = {
     agent: 'claude-code',
     detect: (p) => /\.claude[/\\]projects[/\\].*\.jsonl$/.test(p) || /claude.*\.jsonl$/i.test(p),
+    resumeIdentityFromSource: (path, chunk) => nativeResumeIdentity('claude-code', path, chunk, CLAUDE_TRANSCRIPT_PATH, ['sessionId', 'session_id']),
     parse: anthropicStyleTranscript,
-    parseSession: anthropicStyleSession,
+    parseSession: (chunk) => anthropicStyleSession(chunk, ['sessionId', 'session_id']),
 };
-// Verified against real cursor agent-transcripts (~/.cursor/projects/<proj>/agent-transcripts/<uuid>.jsonl):
+// Verified against real cursor agent-transcripts
+// (~/.cursor/projects/<proj>/agent-transcripts/<session-id>.jsonl, with newer nested layouts also accepted):
 // same Anthropic content-block shape as claude-code — observed blocks are text + tool_use (no tool_result). Other
 // .jsonl that live under .cursor (eval datasets: task_id/canonical_solution, no role) carry no turn and parse to [].
 export const cursorAdapter = {
     agent: 'cursor',
     detect: (p) => /\.cursor[/\\].*\.jsonl$/.test(p) || /cursor.*\.jsonl$/i.test(p),
+    resumeIdentityFromSource: cursorResumeIdentity,
     parse: anthropicStyleTranscript,
+    parseSession: (chunk) => anthropicStyleSession(chunk, ['sessionId', 'session_id', 'conversationId', 'conversation_id']),
 };
 // Verified against codex-cli 0.137.0 rollout logs (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl). Each line is
 // {timestamp, type, payload}. Codex writes the SAME conversation twice: a high-level `event_msg` stream
@@ -1217,7 +1262,42 @@ export const kimiAdapter = {
     parseSession: (chunk) => kimiSessions(chunk)[0] ?? { turns: [] },
     parseSessions: kimiSessions,
 };
-// Only verified adapters are registered. opencode/kiro live in git history — re-add with a real-log fixture.
+// ── Removed runtime adapters ─────────────────────────────────────────────────
+// Kiro and OpenCode transcript adapters were removed in V2: no sanitized real-log golden fixture exists for
+// either runtime, so shipping a guessed schema would silently yield 0 turns on real logs while appearing
+// supported. The MCP config installer (setup-hooks --runtime=kiro|opencode) remains functional for injection.
+//
+// Sentinels live in REMOVED_ADAPTERS (NOT in ADAPTERS) so content probes that walk ADAPTERS and call
+// parse() cannot throw "kiro removed" on unrelated JSON (trajectoryExport.adapterForContent).
+// Path-based selection uses adapterForPath, which checks REMOVED_ADAPTERS first; matching paths then fail
+// closed on parse with an actionable error.
+const REMOVED_ADAPTER_MESSAGE = (agent) => `${agent} transcript adapter was removed from evolver v2 — no sanitized real-log golden fixture exists. `
+    + `Re-add with a verified golden test (see adapters.test.ts). `
+    + `MCP injection (setup-hooks --runtime=${agent}) is still supported; only transcript ingest is blocked.`;
+function removedAdapter(agent, detect) {
+    return {
+        agent,
+        detect,
+        parse: () => { throw new Error(REMOVED_ADAPTER_MESSAGE(agent)); },
+        parseSession: () => { throw new Error(REMOVED_ADAPTER_MESSAGE(agent)); },
+        parseSessions: () => { throw new Error(REMOVED_ADAPTER_MESSAGE(agent)); },
+    };
+}
+export const kiroRemovedAdapter = removedAdapter('kiro', (p) => /(^|[/\\])\.kiro([/\\]|$)/i.test(p) || /(^|[/\\])kiro[^/\\]*\.jsonl?$/i.test(p));
+export const opencodeRemovedAdapter = removedAdapter('opencode', (p) => /(^|[/\\])\.opencode([/\\]|$)/i.test(p) || /(^|[/\\])opencode[^/\\]*\.jsonl?$/i.test(p));
+/** Explicitly removed transcript adapters — path fail-closed only. Never walk this list for content probes. */
+export const REMOVED_ADAPTERS = [kiroRemovedAdapter, opencodeRemovedAdapter];
+// Only verified adapters are registered for content/path discovery. Removed runtimes are listed in
+// REMOVED_ADAPTERS and selected only via adapterForPath path match (then parse throws).
 // genericChatAdapter is LAST so any tool-specific path (claude/cursor/codex/gemini/antigravity/kimi) resolves first.
 export const ADAPTERS = [claudeCodeAdapter, codexAdapter, cursorAdapter, geminiAdapter, antigravityAdapter, kimiAdapter, genericChatAdapter];
-export function adapterForPath(path) { return ADAPTERS.find((a) => a.detect(path)); }
+export function adapterForPath(path) {
+    const removed = REMOVED_ADAPTERS.find((a) => a.detect(path));
+    if (removed)
+        return removed;
+    return ADAPTERS.find((a) => a.detect(path));
+}
+/** True when the agent id has an explicit removed transcript sentinel (see REMOVED_ADAPTERS). */
+export function isRemovedAdapter(agent) {
+    return REMOVED_ADAPTERS.some((a) => a.agent === agent);
+}

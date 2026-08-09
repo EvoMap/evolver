@@ -3,6 +3,7 @@ import { SyncEngine, type OutboundResult, type InboundResult } from '../sync/eng
 import { LifecycleManager, type HelloLifecycleMode, type HelloResult, type HeartbeatOptions, type HeartbeatResult, type HeartbeatTickResult } from '../lifecycle/manager.js';
 import { type SelfUpdateDeps } from '../selfUpdate/executor.js';
 import type { AtpOrderConsentGate } from './atpConsent.js';
+import { type PublishRecallVerifierPort } from './publishRecallVerifier.js';
 type HubCapability = hubNs.HubCapability;
 type AssetStoreProvider = assetstore.AssetStoreProvider;
 export declare const DEFAULT_IPC_PORT = 19820;
@@ -18,6 +19,16 @@ export interface ProxyDaemonDeps {
     ipcHost?: string;
     runtimeNamespace?: string;
     now?: () => number;
+    /** Hub lifecycle heartbeat cadence. LifecycleManager applies its 30s safety floor and backoff policy. */
+    heartbeatIntervalMs?: number;
+    /** Remote asset-search cache TTL. Local asset-store reads are never cached. */
+    assetSearchCacheTtlMs?: number;
+    /** Maximum number of remote asset-search results cached by this daemon. */
+    assetSearchCacheMax?: number;
+    /** Time after cache expiry during which a rate-limited search may serve stale remote results. */
+    assetSearchStaleGraceMs?: number;
+    /** Maximum time the compatibility HTTP request waits before returning a durable pending receipt. */
+    assetSubmitResponseTimeoutMs?: number;
     /** Random source for heartbeat force_update staggering. Defaults to Math.random; tests inject a deterministic value. */
     random?: () => number;
     /** 注入 adapter 的 /a2a/hello + heartbeat wire 调用(M6-6 提供; M6-4 测试用 fake). evolverVersion 随报供 hub 观测. */
@@ -60,6 +71,10 @@ export interface ProxyDaemonDeps {
     };
     /** V1 collaboration task operations are synchronous; tests may shorten the Hub timeout. */
     collaborationOperationTimeoutMs?: number;
+    /** Optional test/composition seam. Production defaults to the restart-safe verifier backed by this daemon's store. */
+    publishRecallVerifier?: PublishRecallVerifierPort;
+    /** Optional deterministic sanitizer environment for composition tests. Production omits this to scan process.env. */
+    publishSanitizeEnv?: Record<string, string | undefined>;
 }
 export interface ProxyTickReport {
     outbound: OutboundResult;
@@ -77,8 +92,12 @@ export interface ProxyTickError {
 export interface ProxyHealth {
     running: boolean;
     ipcListening: boolean;
+    lifecycleArmed: boolean;
     nodeId?: string;
     lastWriteAt: number;
+    lastTickAt?: number;
+    nextTickDueAt?: number;
+    consecutiveFailures: number;
 }
 export interface AtpProxyClient {
     placeOrder(opts: {
@@ -123,9 +142,21 @@ export declare class ProxyDaemon {
     private readonly validator;
     private readonly atp;
     private readonly collaborationFacade;
+    private readonly publishRecallVerifier;
+    private readonly proxyHandler;
     private ipc;
     private readonly now;
     private readonly random;
+    private readonly assetSearchCacheTtlMs;
+    private readonly assetSearchCacheMax;
+    private readonly assetSearchStaleGraceMs;
+    private readonly assetSubmitResponseTimeoutMs;
+    private readonly synchronousAssetSubmitScope;
+    private readonly shadowMode;
+    private readonly assetSearchCache;
+    private readonly assetSearchInflight;
+    private readonly synchronousAssetSubmitInflight;
+    private assetSearchCooldownUntil;
     private nextHeartbeatAt;
     private heartbeatFailures;
     private heartbeatGeneration;
@@ -134,6 +165,10 @@ export declare class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     private wakeRunnerPending;
     private started;
+    private lifecycleArmed;
+    private lastTickAt;
+    private nextTickDueAt;
+    private consecutiveTickFailures;
     private storeClosed;
     private forceUpdateTriggerInFlight;
     private forceUpdateLastTriggeredAt;
@@ -159,6 +194,7 @@ export declare class ProxyDaemon {
     /** 下一轮建议延时: inbound 背压/idle 与 outbound pending cadence 取更快者. */
     nextDelay(last: InboundResult): number;
     setWakeHandler(wake: (() => void) | undefined): void;
+    setExpectedNextTick(delayMs: number | undefined): void;
     notifyNewOutbound(): void;
     /**
      * Expedite the next heartbeat: clear the failure backoff, mark the heartbeat due now, and wake an
@@ -191,6 +227,20 @@ export declare class ProxyDaemon {
     private stateNumber;
     private handleProxyRoute;
     private searchAssets;
+    private searchRemoteAssets;
+    private cacheRemoteAssetSearch;
+    private publishAssetSubmitSynchronously;
+    private createSynchronousAssetSubmitEnvelope;
+    private currentHubMode;
+    private handleHubModeBoundOutbound;
+    private publishSynchronousBundle;
+    private waitForSynchronousAssetSubmit;
+    private executeSynchronousAssetSubmit;
+    private handleSynchronousProxyOutbound;
+    private readSynchronousAssetSubmitOutcome;
+    private cacheSynchronousAssetSubmitSuccess;
+    private cacheSynchronousAssetSubmitTerminal;
+    private writeSynchronousAssetSubmitOutcome;
     private handleAtpRoute;
     private writeAtpJson;
 }

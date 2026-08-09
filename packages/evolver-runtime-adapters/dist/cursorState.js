@@ -1,6 +1,14 @@
 import { createRequire } from 'node:module';
 import { correlateToolNames, isMetaText } from './types.js';
 const nodeRequire = createRequire(import.meta.url);
+export class CursorStateVscdbError extends Error {
+    stage;
+    constructor(stage, message, cause) {
+        super(`Cursor state database ${stage} error: ${message}`, { cause });
+        this.name = 'CursorStateVscdbError';
+        this.stage = stage;
+    }
+}
 function isBunRuntime() {
     return typeof process.versions === 'object' && typeof process.versions.bun === 'string';
 }
@@ -37,11 +45,9 @@ function openReadOnlySqliteDatabase(path) {
 // bubbleId:<composer>:<bubble> rows; extracting user/assistant text, assistant `thinking` as a reasoning turn,
 // and `toolFormerData` as a tool_use + tool_result pair; per-bubble token counts; session model/createdAt.
 //
-// NOT yet covered / known gaps (the local machine's DB had only EMPTY composers, so these are schema-documented
-// but not golden-verified against real populated bubbles): Cursor's code-edit "diff" capability blocks
-// (codeBlockData / originalFileStates) are NOT reconstructed into before/after diffs; sub-composer / best-of-N
-// branch bubbles are read flat (no tree structure); attachment/context payloads are ignored. Extend with a real
-// populated-DB fixture before trusting those.
+// Composer roots can also carry an inline `conversation` array (including sub-composer roots). Attachment bodies
+// and explicit code-block content are preserved as turns. We intentionally do not synthesize before/after diffs
+// from codeBlockData/originalFileStates because those fields vary by Cursor version.
 function isRecord(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -90,9 +96,61 @@ function bubbleToolTurns(bubble, toolUseId) {
     }
     return turns;
 }
-function bubbleToTurns(bubble, bubbleId) {
-    if (!isRecord(bubble))
+function explicitBodyText(value) {
+    if (typeof value === 'string')
+        return value;
+    if (!isRecord(value))
+        return '';
+    return asString(value['text']) || asString(value['content']);
+}
+function bubbleAttachmentTexts(bubble) {
+    const directValue = bubble['attachments'];
+    if (directValue !== undefined && !Array.isArray(directValue)) {
+        throw new CursorStateVscdbError('schema', 'conversation attachments must be an array');
+    }
+    const direct = Array.isArray(directValue) ? directValue : [];
+    const toolValue = isRecord(bubble['toolFormerData']) ? bubble['toolFormerData']['attachments'] : undefined;
+    if (toolValue !== undefined && !Array.isArray(toolValue)) {
+        throw new CursorStateVscdbError('schema', 'tool attachments must be an array');
+    }
+    const tool = Array.isArray(toolValue) ? toolValue : [];
+    return [...direct, ...tool].map((attachment) => {
+        if (!isRecord(attachment)) {
+            throw new CursorStateVscdbError('schema', 'attachment must be an object');
+        }
+        return explicitBodyText(attachment['body']);
+    }).filter(Boolean);
+}
+function bubbleCodeBlockTexts(bubble) {
+    const codeBlocks = bubble['codeBlocks'];
+    if (codeBlocks === undefined)
         return [];
+    if (!Array.isArray(codeBlocks)) {
+        throw new CursorStateVscdbError('schema', 'conversation codeBlocks must be an array');
+    }
+    return codeBlocks.map(explicitContentText).filter(Boolean);
+}
+function explicitContentText(value) {
+    if (typeof value === 'string')
+        return value;
+    if (!isRecord(value))
+        return '';
+    return asString(value['content']) || asString(value['text']) || asString(value['code']) || explicitBodyText(value['body']);
+}
+function contentTurns(role, texts, existingText = '') {
+    const seen = new Set(existingText ? [existingText] : []);
+    return texts.flatMap((text) => {
+        const trimmed = text.trim();
+        if (!trimmed || seen.has(trimmed))
+            return [];
+        seen.add(trimmed);
+        return [{ role, text, isMeta: isMetaText(text) }];
+    });
+}
+function bubbleToTurns(bubble, bubbleId) {
+    if (!isRecord(bubble)) {
+        throw new CursorStateVscdbError('schema', `conversation bubble ${bubbleId} is missing or invalid`);
+    }
     const type = finiteNumber(bubble['type']);
     const inputTokens = isRecord(bubble['tokenCount']) ? finiteNumber(bubble['tokenCount']['inputTokens']) : undefined;
     const outputTokens = isRecord(bubble['tokenCount']) ? finiteNumber(bubble['tokenCount']['outputTokens']) : undefined;
@@ -101,9 +159,14 @@ function bubbleToTurns(bubble, bubbleId) {
     if (type === 1) {
         // user bubble
         turns.push({ role: 'user', text, isMeta: isMetaText(text) });
+        turns.push(...contentTurns('user', bubbleAttachmentTexts(bubble), text));
+        turns.push(...contentTurns('user', bubbleCodeBlockTexts(bubble), text));
         return turns;
     }
-    // assistant (type === 2) or unknown -> treat as assistant content
+    if (type !== 2) {
+        throw new CursorStateVscdbError('schema', `conversation bubble ${bubbleId} has an unsupported type`);
+    }
+    // assistant bubble
     const thinking = bubbleThinkingText(bubble);
     if (thinking) {
         turns.push({ role: 'assistant', text: thinking, reasoning: true, isMeta: false });
@@ -118,31 +181,139 @@ function bubbleToTurns(bubble, bubbleId) {
         });
     }
     turns.push(...bubbleToolTurns(bubble, bubbleId));
+    turns.push(...contentTurns('assistant', bubbleAttachmentTexts(bubble), text));
+    turns.push(...contentTurns('assistant', bubbleCodeBlockTexts(bubble), text));
     return turns;
 }
 function conversationHeaders(composer) {
     const headers = composer['fullConversationHeadersOnly'];
-    if (!Array.isArray(headers))
+    if (headers === undefined)
         return [];
-    return headers
-        .map((header) => (isRecord(header) ? { bubbleId: asString(header['bubbleId']), type: finiteNumber(header['type']) } : { bubbleId: '' }))
-        .filter((header) => header.bubbleId);
-}
-function composerToSession(composer, composerId, readBubble) {
-    const headers = conversationHeaders(composer);
-    const conversationMap = isRecord(composer['conversationMap']) ? composer['conversationMap'] : undefined;
-    const orderedBubbleIds = headers.length > 0
-        ? headers.map((header) => header.bubbleId)
-        : (conversationMap ? Object.keys(conversationMap) : []);
-    const turns = [];
-    for (const bubbleId of orderedBubbleIds) {
-        const bubble = (conversationMap && conversationMap[bubbleId] !== undefined)
-            ? conversationMap[bubbleId]
-            : readBubble(composerId, bubbleId);
-        turns.push(...bubbleToTurns(bubble, bubbleId));
+    if (!Array.isArray(headers)) {
+        throw new CursorStateVscdbError('schema', 'fullConversationHeadersOnly must be an array');
     }
+    return headers.map((header) => {
+        if (!isRecord(header))
+            throw new CursorStateVscdbError('schema', 'conversation header must be an object');
+        const bubbleId = asString(header['bubbleId']);
+        if (!bubbleId)
+            throw new CursorStateVscdbError('schema', 'conversation header bubbleId is missing');
+        return { bubbleId, type: finiteNumber(header['type']) };
+    });
+}
+function inlineConversation(composer) {
+    const conversation = composer['conversation'];
+    if (conversation === undefined)
+        return [];
+    if (!Array.isArray(conversation)) {
+        throw new CursorStateVscdbError('schema', 'conversation must be an array');
+    }
+    return conversation.map((bubble, index) => ({
+        bubbleId: isRecord(bubble) ? asString(bubble['bubbleId']) || `inline-${index + 1}` : `inline-${index + 1}`,
+        value: bubble,
+    }));
+}
+function codeBlockContentByBubble(composer, readCodeBlockDiff) {
+    const byBubble = new Map();
+    const trailing = [];
+    const codeBlockData = composer['codeBlockData'];
+    if (codeBlockData === undefined)
+        return { byBubble, trailing };
+    if (!isRecord(codeBlockData)) {
+        throw new CursorStateVscdbError('schema', 'codeBlockData must be an object');
+    }
+    const seen = new Set();
+    const add = (text, bubbleId) => {
+        const trimmed = text.trim();
+        const key = `${bubbleId}\0${trimmed}`;
+        if (!trimmed || seen.has(key))
+            return;
+        seen.add(key);
+        if (bubbleId) {
+            const texts = byBubble.get(bubbleId);
+            if (texts)
+                texts.push(text);
+            else
+                byBubble.set(bubbleId, [text]);
+        }
+        else
+            trailing.push(text);
+    };
+    const stack = Object.values(codeBlockData).reverse()
+        .map((value) => ({ value, bubbleId: '' }));
+    let visited = 0;
+    while (stack.length > 0) {
+        if (++visited > 100_000)
+            throw new CursorStateVscdbError('schema', 'codeBlockData is too deeply nested');
+        const current = stack.pop();
+        if (Array.isArray(current.value)) {
+            for (let index = current.value.length - 1; index >= 0; index--) {
+                stack.push({ value: current.value[index], bubbleId: current.bubbleId });
+            }
+            continue;
+        }
+        if (!isRecord(current.value))
+            continue;
+        const bubbleId = asString(current.value['bubbleId']) || current.bubbleId;
+        const directText = asString(current.value['content']) || asString(current.value['text'])
+            || asString(current.value['code']) || asString(current.value['body']);
+        if (directText)
+            add(directText, bubbleId);
+        const diffId = asString(current.value['diffId']);
+        if (diffId) {
+            const diff = readCodeBlockDiff(diffId);
+            if (!isRecord(diff) || !Array.isArray(diff['newModelDiffWrtV0'])) {
+                throw new CursorStateVscdbError('schema', 'code block diff must contain newModelDiffWrtV0');
+            }
+            for (const line of diff['newModelDiffWrtV0']) {
+                if (!isRecord(line)) {
+                    throw new CursorStateVscdbError('schema', 'code block diff line must be an object');
+                }
+                const modified = line['modified'];
+                if (typeof modified === 'string')
+                    add(modified, bubbleId);
+                else if (Array.isArray(modified) && modified.every((value) => typeof value === 'string')) {
+                    add(modified.join('\n'), bubbleId);
+                }
+                else
+                    throw new CursorStateVscdbError('schema', 'code block diff line must contain modified text');
+            }
+        }
+        const children = Object.values(current.value).filter((child) => Array.isArray(child) || isRecord(child));
+        for (let index = children.length - 1; index >= 0; index--) {
+            stack.push({ value: children[index], bubbleId });
+        }
+    }
+    return { byBubble, trailing };
+}
+function composerToSession(composer, composerId, readBubble, readCodeBlockDiff) {
+    const headers = conversationHeaders(composer);
+    const inline = inlineConversation(composer);
+    const inlineById = new Map(inline.map((bubble) => [bubble.bubbleId, bubble.value]));
+    const conversationMapValue = composer['conversationMap'];
+    if (conversationMapValue !== undefined && !isRecord(conversationMapValue)) {
+        throw new CursorStateVscdbError('schema', 'conversationMap must be an object');
+    }
+    const conversationMap = isRecord(conversationMapValue) ? conversationMapValue : undefined;
+    const codeBlocks = codeBlockContentByBubble(composer, (diffId) => readCodeBlockDiff(composerId, diffId));
+    const orderedBubbles = headers.length > 0
+        ? headers.map((header) => ({ bubbleId: header.bubbleId, value: (conversationMap && conversationMap[header.bubbleId] !== undefined)
+                ? conversationMap[header.bubbleId]
+                : readBubble(composerId, header.bubbleId) ?? inlineById.get(header.bubbleId) }))
+        : inline.length > 0
+            ? inline
+            : (conversationMap ? Object.entries(conversationMap).map(([bubbleId, value]) => ({ bubbleId, value })) : []);
+    const turns = [];
+    for (const bubble of orderedBubbles) {
+        turns.push(...bubbleToTurns(bubble.value, bubble.bubbleId));
+        turns.push(...contentTurns('assistant', codeBlocks.byBubble.get(bubble.bubbleId) ?? []));
+    }
+    turns.push(...contentTurns('assistant', codeBlocks.trailing));
     const model = isRecord(composer['modelConfig']) ? asString(composer['modelConfig']['modelName']) : '';
     const createdAt = finiteNumber(composer['createdAt']);
+    if (createdAt !== undefined && Math.abs(createdAt) > 8_640_000_000_000_000) {
+        throw new CursorStateVscdbError('schema', 'composer createdAt is outside the supported date range');
+    }
     return {
         turns: correlateToolNames(turns),
         sessionId: composerId,
@@ -155,50 +326,92 @@ function composerToSession(composer, composerId, readBubble) {
 }
 /**
  * Read Cursor chat sessions out of a `state.vscdb` sqlite database (read-only). Returns one NormalizedSession per
- * composer that has at least one real (non-meta) turn. Never throws on a malformed/locked db — returns []. The db
- * is opened read-only, so it is safe to run against a live Cursor profile.
+ * composer that has at least one real (non-meta) turn. A valid database with no sessions returns []; database open,
+ * query, and incompatible-schema failures throw CursorStateVscdbError. The database is always opened read-only.
  */
 export function parseCursorStateVscdb(dbPath) {
     let db;
     try {
-        db = openReadOnlySqliteDatabase(dbPath);
-        const composerRows = db
-            .prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
-            .all();
-        const bubbleStmt = db.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');
-        const readBubble = (composerId, bubbleId) => {
-            try {
-                const row = bubbleStmt.get(`bubbleId:${composerId}:${bubbleId}`);
-                if (!row || typeof row.value !== 'string')
-                    return undefined;
-                return JSON.parse(row.value);
+        try {
+            db = openReadOnlySqliteDatabase(dbPath);
+        }
+        catch (error) {
+            throw new CursorStateVscdbError('open', 'unable to open the file read-only', error);
+        }
+        let columns;
+        try {
+            columns = db.prepare('PRAGMA table_info(cursorDiskKV)').all();
+        }
+        catch (error) {
+            throw new CursorStateVscdbError('query', 'unable to inspect cursorDiskKV', error);
+        }
+        const columnNames = new Set(columns.flatMap((column) => isRecord(column) ? [asString(column['name'])] : []));
+        if (!columnNames.has('key') || !columnNames.has('value')) {
+            throw new CursorStateVscdbError('schema', 'cursorDiskKV with key and value columns is required');
+        }
+        let composerRows;
+        let valueStmt;
+        try {
+            composerRows = db.prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'").all();
+            valueStmt = db.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');
+        }
+        catch (error) {
+            throw new CursorStateVscdbError('query', 'unable to query Cursor conversations', error);
+        }
+        const parseJsonValue = (value, label) => {
+            const text = typeof value === 'string'
+                ? value
+                : value instanceof Uint8Array
+                    ? new TextDecoder().decode(value)
+                    : undefined;
+            if (text === undefined) {
+                throw new CursorStateVscdbError('schema', `${label} value must be JSON text or a UTF-8 blob`);
             }
-            catch {
-                return undefined;
+            try {
+                return JSON.parse(text);
+            }
+            catch (error) {
+                throw new CursorStateVscdbError('schema', `${label} contains invalid JSON`, error);
             }
         };
-        const sessions = [];
-        for (const row of composerRows) {
-            if (typeof row.value !== 'string')
-                continue;
-            let composer;
+        const readValue = (key, label) => {
+            let row;
             try {
-                composer = JSON.parse(row.value);
+                row = valueStmt.get(key);
             }
-            catch {
-                continue;
+            catch (error) {
+                throw new CursorStateVscdbError('query', `unable to query a Cursor ${label}`, error);
             }
-            if (!isRecord(composer))
-                continue;
-            const composerId = asString(row.key).replace(/^composerData:/, '') || asString(composer['composerId']);
-            const session = composerToSession(composer, composerId, readBubble);
-            if (session.turns.some((turn) => turn.isMeta !== true))
-                sessions.push(session);
+            if (!row)
+                return undefined;
+            return parseJsonValue(row.value, label);
+        };
+        const readBubble = (composerId, bubbleId) => readValue(`bubbleId:${composerId}:${bubbleId}`, 'conversation bubble');
+        const readCodeBlockDiff = (composerId, diffId) => readValue(`codeBlockDiff:${composerId}:${diffId}`, 'code block diff');
+        const sessions = [];
+        let firstComposerError;
+        for (const row of composerRows) {
+            try {
+                const composer = parseJsonValue(row.value, 'composer');
+                if (!isRecord(composer))
+                    throw new CursorStateVscdbError('schema', 'composer must be a JSON object');
+                const composerId = asString(row.key).replace(/^composerData:/, '') || asString(composer['composerId']);
+                if (!composerId)
+                    throw new CursorStateVscdbError('schema', 'composer id is missing');
+                const session = composerToSession(composer, composerId, readBubble, readCodeBlockDiff);
+                if (session.turns.some((turn) => turn.isMeta !== true))
+                    sessions.push(session);
+            }
+            catch (error) {
+                if (!(error instanceof CursorStateVscdbError) || error.stage !== 'schema')
+                    throw error;
+                firstComposerError ??= error;
+            }
         }
+        // Returning only the healthy composers would silently produce an incomplete archive.
+        if (firstComposerError)
+            throw firstComposerError;
         return sessions;
-    }
-    catch {
-        return [];
     }
     finally {
         try {

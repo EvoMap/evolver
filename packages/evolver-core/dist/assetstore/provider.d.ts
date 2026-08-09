@@ -10,6 +10,17 @@ export interface PutResult {
     stored: boolean;
     verified: boolean;
 }
+export declare class FrozenAssetIdCollisionError extends Error {
+    readonly assetId: string;
+    readonly code = "FROZEN_ASSET_ID_COLLISION";
+    constructor(assetId: string);
+}
+export declare class InvalidFrozenPutResultError extends Error {
+    readonly code = "INVALID_FROZEN_PUT_RESULT";
+    constructor();
+}
+export declare function frozenAssetRecordsEqual(left: AssetRecord, right: AssetRecord): boolean;
+export declare function validateFrozenPutResult(value: unknown, expectedAssetId: string): PutResult;
 export type ConditionalPutStatus = 'stored' | 'already_exists' | 'logical_collision';
 export interface ConditionalPutOptions {
     /** Only explicit force-like callers may keep multiple content versions for the same type + logical id. */
@@ -34,6 +45,8 @@ export interface SearchQuery {
     category?: string;
     gene?: string;
     text?: string;
+    /** Task-domain scope (hub taxonomy slug, e.g. "software_engineering"). Local providers may ignore it; the hub applies it as a recall fence. */
+    domain?: string;
     limit?: number;
 }
 /**
@@ -46,7 +59,7 @@ export interface AssetStoreProvider {
     putConditional?(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
     /** Optional direct lookup for non-content-addressed logical ids. Callers must handle 0, 1, or multiple matches. */
-    findByLogicalId?(id: string, limit?: number): Promise<AssetRecord[]>;
+    findByLogicalId?(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     /**
      * Optional frozen write: store the record under its OWN declared asset_id without recomputing or
      * normalizing it (bypasses {@link normalizeForPut}'s self-consistency check). Only providers backing a
@@ -55,6 +68,8 @@ export interface AssetStoreProvider {
      * feature-detect it rather than assuming it exists.
      */
     putFrozen?(record: AssetRecord): Promise<PutResult>;
+    /** Atomic frozen variant that also enforces the type + logical-id condition under the provider write lock. */
+    putFrozenConditional?(record: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     search(query: SearchQuery): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
 }
@@ -62,6 +77,10 @@ export type AtomicConditionalPutProvider = AssetStoreProvider & {
     putConditional(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
 };
 export declare function supportsAtomicConditionalPut(provider: AssetStoreProvider): provider is AtomicConditionalPutProvider;
+export type AtomicFrozenConditionalPutProvider = AssetStoreProvider & {
+    putFrozenConditional(record: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
+};
+export declare function supportsAtomicFrozenConditionalPut(provider: AssetStoreProvider): provider is AtomicFrozenConditionalPutProvider;
 export declare class AssetIdMismatchError extends Error {
     readonly claimed: string;
     readonly actual: string;

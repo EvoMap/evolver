@@ -63,6 +63,7 @@ export class Ingestor {
     }
     // 读 passthrough (写只能经 ingest)
     readAll() { return this.store.readAll(); }
+    readAllStrict() { return this.store.readAllStrict(); }
     iterate(fromSeq = 0) { return this.store.iterate(fromSeq); }
     tail(n = 1) { return this.store.tail(n); }
     recover() { return this.store.recover(); }

@@ -1,6 +1,6 @@
 import type { Envelope } from './envelope.js';
 import type { Handler } from './catalog.js';
-import type { MailboxStore } from './store.js';
+import { type MailboxStore } from './store.js';
 export interface DispatchResult {
     id: string;
     handler: Handler;

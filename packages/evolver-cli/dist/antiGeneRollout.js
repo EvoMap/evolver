@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { assetstore, benchmark, events, exec } from '@evomap/evolver-core';
-const usage = '用法: evolver anti-gene-rollout --suite <file> --repo <path> [--assets <dir>] [--review-dir <dir>] [--events <file>] [--runner claude|codex] [--json] [--min-samples N] [--min-failure-delta D]\n'
+import { semanticIdfEnabled } from './semanticIdfConfig.js';
+const usage = '用法: evolver anti-gene-rollout --suite <file> --repo <path> [--assets <dir>] [--review-dir <dir>] [--events <file>] [--runner claude|codex|gemini] [--json] [--min-samples N] [--min-failure-delta D]\n'
     + '   或: evolver anti-gene-rollout --report <events-file> [--json]\n';
 function parseFlags(argv) {
     const out = { json: false };
@@ -247,8 +248,8 @@ export async function runAntiGeneRolloutCommand(argv, deps = {}) {
         process.stderr.write('anti-gene-rollout: --min-failure-delta must be >= 0\n');
         return 1;
     }
-    if (flags.runner !== undefined && flags.runner !== 'claude' && flags.runner !== 'codex') {
-        process.stderr.write('anti-gene-rollout: --runner must be claude or codex\n');
+    if (flags.runner !== undefined && flags.runner !== 'claude' && flags.runner !== 'codex' && flags.runner !== 'gemini') {
+        process.stderr.write('anti-gene-rollout: --runner must be claude, codex, or gemini\n');
         return 1;
     }
     let suite;
@@ -268,6 +269,10 @@ export async function runAntiGeneRolloutCommand(argv, deps = {}) {
         process.stderr.write('anti-gene-rollout: live rollout requires a non-empty suite.validation[] external verifier; refusing to trust agent self-report\n');
         return 1;
     }
+    if (!injected && !deps.agent && flags.runner !== 'gemini') {
+        process.stderr.write('anti-gene-rollout: execute capability is unsupported for built-in Claude/Codex; select --runner gemini or inject an externally sandboxed agent\n');
+        return 1;
+    }
     const assetsDir = flags.assets ? resolve(flags.assets) : events.assetsDir();
     const reviewDir = flags.reviewDir ? resolve(flags.reviewDir) : assetsDir;
     const store = deps.store ?? new assetstore.LocalJsonlProvider(assetsDir);
@@ -277,6 +282,7 @@ export async function runAntiGeneRolloutCommand(argv, deps = {}) {
     const report = await benchmark.runAntiGeneRollout(suite, { store, review, makeExecute }, {
         eventsPath,
         now: deps.now,
+        ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),
         ...(flags.minSamples !== undefined ? { minSamples: flags.minSamples } : {}),
         ...(flags.minFailureDelta !== undefined ? { minFailureDelta: flags.minFailureDelta } : {}),
     });

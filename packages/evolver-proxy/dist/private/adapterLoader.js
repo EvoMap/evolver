@@ -1,6 +1,6 @@
 import { hub as hubNs } from '@evomap/evolver-core';
 import { createHash } from 'node:crypto';
-import { withPrivateAccountAssetCompatibility, } from './accountAssetCompatibility.js';
+import { normalizePrivateHubBaseUrl, withPrivateAccountAssetCompatibility, } from './accountAssetCompatibility.js';
 const DEFAULT_PRIVATE_ADAPTER_MODULE = '@evomap/evolver-adapter-private';
 export function resolvePrivateEnterpriseToken(env) {
     return firstEnv(env, 'EVOMAP_ENTERPRISE_TOKEN', 'EVOMAP_PRIVATE_HUB_TOKEN', 'PHUB_ENTERPRISE_TOKEN', 'PRIVATE_HUB_ENTERPRISE_TOKEN');
@@ -33,12 +33,13 @@ export async function connectPrivateProxyHub(opts) {
     if (!token && !usableInvitationToken && !nodeSecret) {
         throw new Error('EVOMAP_HUB_MODE=private 需要 A2A_NODE_SECRET / EVOMAP_NODE_SECRET、A2A_INVITATION_TOKEN 或 EVOMAP_ENTERPRISE_TOKEN');
     }
+    const hubUrl = normalizePrivateHubBaseUrl(opts.hubUrl, opts.env);
     const moduleName = opts.env['EVOMAP_PRIVATE_ADAPTER_MODULE']?.trim() || DEFAULT_PRIVATE_ADAPTER_MODULE;
     const connectPrivateHub = await loadConnectPrivateHub(moduleName, opts.importer ?? ((specifier) => import(specifier)));
     const now = opts.now ?? (() => Date.now());
     const subject = resolvePrivateEnterpriseSubject(opts.env);
     const baseConnectionOptions = {
-        hubUrl: opts.hubUrl,
+        hubUrl,
         senderId: opts.senderId,
         env: opts.env,
         now,
@@ -79,7 +80,7 @@ export async function connectPrivateProxyHub(opts) {
         hub.agentDirectory = hubNs.unsupportedAgentDirectoryCapability('private_hub_agent_directory_not_supported');
     }
     const compatibleHub = withPrivateAccountAssetCompatibility(hub, {
-        baseUrl: opts.hubUrl,
+        baseUrl: hubUrl,
         auth,
         senderId: opts.senderId,
         env: opts.env,

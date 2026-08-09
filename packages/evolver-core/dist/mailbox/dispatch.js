@@ -1,3 +1,4 @@
+import { mailboxClaimOwner } from './store.js';
 /**
  * 选择性 Material 判定(M2-7). 默认遵目录 feedsMaterial; 两类在 dispatch 决定:
  * - asset_publish_result: 仅 rejected 进(失败=养料 #40); 通过无需.
@@ -25,10 +26,16 @@ export class Dispatcher {
     }
     async dispatchOne(e) {
         const now = this.deps.now();
+        const claimOwner = mailboxClaimOwner(e);
+        if (!claimOwner) {
+            return { id: e.id, handler: e.handler, handled: false, fedMaterial: false, note: 'claim-owner-missing' };
+        }
         // 副作用幂等: 业务键(非默认=id)命中 → 跳过不二次执行, 直接 complete (money-safety A7/A13)
         const sideEffecting = e.handler !== 'agent' && e.idempotencyKey !== e.id;
         if (sideEffecting && this.deps.store.isProcessed(e.idempotencyKey)) {
-            this.deps.store.complete(e.id, now);
+            if (!this.deps.store.completeClaimed(e.id, now, claimOwner)) {
+                return { id: e.id, handler: e.handler, handled: false, fedMaterial: false, note: 'claim-lost' };
+            }
             return { id: e.id, handler: e.handler, handled: true, fedMaterial: false, note: 'idempotent-skip' };
         }
         try {
@@ -38,14 +45,23 @@ export class Dispatcher {
                 await this.deps.onMaterial(e);
                 fedMaterial = true;
             }
-            if (sideEffecting)
-                this.deps.store.markProcessed(e.idempotencyKey, result ?? null, now);
-            this.deps.store.complete(e.id, now);
+            const completed = sideEffecting
+                ? this.deps.store.completeClaimedAndMarkProcessed(e.id, e.idempotencyKey, result ?? null, now, claimOwner)
+                : this.deps.store.completeClaimed(e.id, now, claimOwner);
+            if (!completed) {
+                return { id: e.id, handler: e.handler, handled: false, fedMaterial, note: 'claim-lost' };
+            }
             return { id: e.id, handler: e.handler, handled: true, fedMaterial };
         }
         catch (err) {
-            this.deps.store.fail(e.id, err instanceof Error ? err.message : String(err), now);
-            return { id: e.id, handler: e.handler, handled: false, fedMaterial: false, note: 'failed' };
+            const failed = this.deps.store.failClaimed(e.id, err instanceof Error ? err.message : String(err), now, claimOwner);
+            return {
+                id: e.id,
+                handler: e.handler,
+                handled: false,
+                fedMaterial: false,
+                note: failed ? 'failed' : 'claim-lost',
+            };
         }
     }
     /** 拉一批并分派. 默认 daemon 侧 core+proxy; agent 由 runtime 经 IPC 拉取. */

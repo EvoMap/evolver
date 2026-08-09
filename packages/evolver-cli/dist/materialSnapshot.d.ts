@@ -13,6 +13,7 @@ interface SnapshotSource {
     agent: string;
     label: string;
     sessionId?: string;
+    resumeIdentityProvenance?: 'canonical_native_transcript';
     evidenceSummary: RuntimeSessionEvidenceSummary;
     turns: SnapshotTurn[];
 }
@@ -31,6 +32,7 @@ export interface RuntimeSessionEvidenceSummarySource {
     agent: string;
     label: string;
     sessionId?: string;
+    resumeIdentityProvenance?: 'canonical_native_transcript';
     evidenceSummary: RuntimeSessionEvidenceSummary;
 }
 export interface RuntimeSessionEvidenceAggregate {
@@ -50,5 +52,11 @@ export declare function runtimeSessionSourcesFromMaterialPayload(payload: unknow
 export declare function runtimeSessionEvidenceSummariesFromMaterialPayload(payload: unknown): RuntimeSessionEvidenceSummaryCollection | null;
 export declare function materialHasRuntimeSessionSnapshot(material: schema.Material): boolean;
 export declare function materialSourceAvailable(material: schema.Material): boolean;
-export declare function runtimeSessionSourcesForMaterial(material: schema.Material, readSource?: (path: string) => string): RuntimeSessionSource[];
+export interface RuntimeSessionMaterialSources {
+    sources: RuntimeSessionSource[];
+    liveSources?: RuntimeSessionSource[];
+    sourceError?: unknown;
+}
+export declare function runtimeSessionSourcesForMaterialDetails(material: schema.Material, readSource?: (path: string) => string, nativeSessionHome?: string): RuntimeSessionMaterialSources;
+export declare function runtimeSessionSourcesForMaterial(material: schema.Material, readSource?: (path: string) => string, nativeSessionHome?: string): RuntimeSessionSource[];
 export {};

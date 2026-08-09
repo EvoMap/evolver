@@ -1,8 +1,11 @@
 {
   "name": "@evomap/evolver-runtime-adapters",
-  "version": "2.0.0-beta.18",
+  "version": "2.0.2",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
   "description": "五 runtime 会话日志适配器 (CC/codex/cursor/kiro/opencode)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,7 +21,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

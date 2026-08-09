@@ -1,5 +1,5 @@
-import { events, ops, hooks, mailbox } from '@evomap/evolver-core';
-import { readEvents, statusReport, listCycles, showCycle, listTriggers, buildNarrativeSnapshot, buildRetentionReport } from './commands.js';
+import { events, ops, hooks, mailbox, hub as hubNs } from '@evomap/evolver-core';
+import { readEvents, statusReport, listCycles, showCycle, listTriggers, buildNarrativeSnapshot, buildRetentionReport, dailyCapsuleCount } from './commands.js';
 import { runGeneValue } from './geneValue.js';
 import { assetstore, algo, signals, material as materialNs } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
@@ -9,29 +9,20 @@ import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
 import { draftGeneCandidate } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
-import { emitSessionRecall } from './autoRecall.js';
-import { isRuntimeSessionSourcePath, parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync, mkdirSync, } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { importV1 } from './migrate/v1Import.js';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { applyImportV1Plan, planImportV1 } from './migrate/v1Import.js';
 import { explicitRecipeHomes } from './recipe.js';
-import { maybeAutoRestartProxyForSessionStart, sessionStartHookVerboseEnabled } from './lifecycle.js';
+import { maybeAutoRestartProxyForSessionStart, sessionStartHookVerboseEnabled, dailyConnectionStatus, lifecyclePaths } from './lifecycle.js';
 import { formatAntiGeneEvidenceAction, formatAntiGeneEvidenceSummary, summarizeAntiGeneEvidence } from './antiGeneEvidence.js';
 import { buildRuntimeSessionMaterialSnapshot } from './materialSnapshot.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
-/**
- * Material consumer group for ingest: the cycle is the downstream that claims material → signals. Kept in
- * one place so the recorded Material and any future cycle consumer agree on the group name.
- */
-const INGEST_CONSUMER_GROUP = 'cycle';
-function resolveIngestDeps(deps) {
-    return {
-        materialStore: deps.materialStore ?? new materialNs.MaterialStore({ path: events.materialStorePath() }),
-        watermarkStore: deps.watermarkStore ?? new materialNs.WatermarkStore(events.materialWatermarkPath()),
-        ingestor: deps.ingestor ?? new events.Ingestor({ path: events.rootEventsPath() }),
-    };
-}
+import { asGeneCandidate, parseDistillOutput } from './autoDistillLlm.js';
+import { runPromptRecallHook } from './promptRecallHook.js';
+import { INGEST_CONSUMER_GROUP, recordSessionMaterial, resolveIngestDeps, toMaterialSourceAgent, } from './sessionIngest.js';
+export { runSessionIngestTick, scanSessionDirs, } from './sessionIngest.js';
 /** Minimal `--flag value` parser (last wins); bare positionals are ignored. */
 function parseFlags(argv) {
     const out = {};
@@ -77,12 +68,13 @@ export function cliUsage() {
         'Commands:',
         '  Daemon:      proxy, lifecycle, proxy-token, doctor, setup-hooks',
         '  Evolution:   run, cycle, autoexec, solidify, distill, review, thesis',
-        '  Memory:      ingest, inject, recall, reuse, reuse-report, narrative, gene-value',
+        '  Memory:      ingest, inject, recall, reuse, reuse-report, recall-verify-report',
+        '               narrative, gene-value',
         '  Assets:      asset-log, asset-trust, asset-health, material, recipe, skill',
-        '  Hub:         login, logout, phub, sync, publish, fetch, buy, orders, atp',
-        '  Operations:  status, workflow status, cycles, trigger, value, retention, replay, rebuild-views',
-        '               issue-report',
-        '  Tools:       dashboard, webui, trajectory-export, migrate, verify',
+        '  Hub:         login, logout, phub, sync, publish, fetch, buy, orders, verify, atp',
+        '  Operations:  status, daily, workflow status, cycles, trigger, value,',
+        '               retention, replay, rebuild-views, issue-report',
+        '  Tools:       dashboard, webui, trajectory-export, migrate',
         '  Advanced:    anti-gene-benchmark, anti-gene-rollout, reset-local-secret',
         '               skill-distill, skill-md-update',
         '',
@@ -230,19 +222,64 @@ export function rebuildViews(opts = {}) {
     replayer.rebuild(ing.readAll());
     return { rebuilt: events.DEFAULT_PROJECTORS.map((p) => p.name) };
 }
-/** migrate import-v1 <v1dir> [outDir] --workspace <path>: v1→v2 read-only migration. */
-export async function runMigrate(argv) {
-    const usage = '用法: evolver migrate import-v1 <v1dir> [outDir] [--workspace <path>]\n';
-    if (argv[0] !== 'import-v1' || !argv[1]) {
+function migrationErrorCode(error) {
+    const structured = error;
+    const code = typeof structured?.code === 'string' ? structured.code : '';
+    if (code === 'LOCAL_ASSET_STORE_SNAPSHOT_CHANGED')
+        return 'migration_target_changed';
+    if (code === 'FROZEN_ASSET_ID_COLLISION')
+        return 'migration_asset_id_collision';
+    if (code === 'CORRUPT_LOCAL_ASSET_STORE')
+        return 'migration_corrupt_target';
+    if (code === 'LOCAL_ASSET_STORE_SNAPSHOT_LIMIT')
+        return 'migration_target_limit';
+    if (/^[a-z][a-z0-9_]{0,127}$/.test(code))
+        return `migration_${code}`;
+    const message = typeof structured?.message === 'string' ? structured.message : '';
+    return /^[a-z][a-z0-9_]{0,127}$/.test(message) ? message : 'migration_failed';
+}
+function writeMigrationFailure(code, json) {
+    process.stderr.write(json
+        ? `${JSON.stringify({ ok: false, error: code })}\n`
+        : `migrate: ${code}\n`);
+}
+/** migrate import-v1 | migrate env | migrate oauth — V1→V2 migration tools. */
+export async function runMigrate(argv, deps = {}) {
+    const usage = [
+        'Usage:',
+        '  evolver migrate import-v1 <v1dir> [outDir] [--workspace <path>] [--dry-run] [--json]',
+        '  evolver migrate gep-sdk <v1dir> [outDir] [--workspace <path>] [--json]  # import-v1 --dry-run alias',
+        '  evolver migrate --gep-sdk <v1dir> [outDir] [--workspace <path>] [--json]',
+        '  evolver migrate env [--file <dotenv>] [--json] [--write-suggestions <path>] [--no-process-env]',
+        '  evolver migrate oauth [--from <oauth_token.json>] [--to <token.json>] [--force] [--dry-run] [--json]',
+        '',
+    ].join('\n');
+    if (argv[0] === '--help' || argv[0] === '-h' || argv.length === 0) {
+        process.stdout.write(usage);
+        return 0;
+    }
+    if (argv[0] === 'env') {
+        const { runMigrateEnvCommand } = await import('./migrate/envTranslate.js');
+        return runMigrateEnvCommand(argv.slice(1));
+    }
+    if (argv[0] === 'oauth') {
+        const { runMigrateOAuthCommand } = await import('./migrate/oauthImport.js');
+        return runMigrateOAuthCommand(argv.slice(1));
+    }
+    const alias = argv[0] === 'gep-sdk' || argv[0] === '--gep-sdk';
+    const migrationArgs = alias ? ['import-v1', ...argv.slice(1), '--dry-run'] : [...argv];
+    if (migrationArgs[0] !== 'import-v1' || !migrationArgs[1] || migrationArgs[1].startsWith('--')) {
         process.stderr.write(usage);
         return 1;
     }
     let outDir;
     let workspace;
-    for (let index = 2; index < argv.length; index += 1) {
-        const arg = argv[index] ?? '';
+    let dryRun = false;
+    let json = false;
+    for (let index = 2; index < migrationArgs.length; index += 1) {
+        const arg = migrationArgs[index] ?? '';
         if (arg === '--workspace') {
-            const value = argv[index + 1];
+            const value = migrationArgs[index + 1];
             if (!value || value.startsWith('--')) {
                 process.stderr.write(usage);
                 return 1;
@@ -257,6 +294,12 @@ export async function runMigrate(argv) {
                 return 1;
             }
         }
+        else if (arg === '--dry-run') {
+            dryRun = true;
+        }
+        else if (arg === '--json') {
+            json = true;
+        }
         else if (arg.startsWith('--') || outDir !== undefined) {
             process.stderr.write(usage);
             return 1;
@@ -267,13 +310,57 @@ export async function runMigrate(argv) {
     }
     const envFile = loadEnvFileFromEnv(process.env);
     if (envFile.error) {
-        process.stderr.write('migrate: failed to load EVOLVER_ENV_FILE\n');
+        writeMigrationFailure('migration_env_file_load_failed', json);
         return 1;
     }
     const targetDir = outDir ?? events.evomapHome();
-    const store = new assetstore.LocalJsonlProvider(`${targetDir}/assets`);
-    const rep = await importV1(argv[1], store, targetDir, workspace ? { workspace } : {});
-    process.stdout.write(`迁移完成: Gene=${rep.imported.Gene} Capsule=${rep.imported.Capsule} Event=${rep.imported.EvolutionEvent} (冻结${rep.frozen}/新算${rep.recomputed}/去重${rep.deduped}); sidecar=${rep.sidecarExtensions}; memory_graph 归档=${rep.memoryGraphArchived} 可查询=${rep.memoryGraphImported} 延后=${rep.memoryGraphDeferred}\n`);
+    const options = { ...deps, ...(workspace ? { workspace } : {}) };
+    let plan;
+    try {
+        plan = await planImportV1(migrationArgs[1], targetDir, options);
+    }
+    catch (error) {
+        writeMigrationFailure(migrationErrorCode(error), json);
+        return 1;
+    }
+    let successOutput;
+    try {
+        if (dryRun) {
+            if (json) {
+                successOutput = `${JSON.stringify({ mode: 'dry-run', plan: plan.report })}\n`;
+            }
+            else {
+                const assets = plan.report.assets;
+                successOutput = (`Migration plan ${plan.report.planDigest}: Gene=${assets.Gene.candidates} `
+                    + `Capsule=${assets.Capsule.candidates} Event=${assets.EvolutionEvent.candidates}; `
+                    + `verified=${assets.Gene.verified + assets.Capsule.verified + assets.EvolutionEvent.verified} `
+                    + `unverified=${assets.Gene.unverified + assets.Capsule.unverified + assets.EvolutionEvent.unverified}; `
+                    + `mailbox=${plan.report.mailbox.candidates}; memory_graph=${plan.report.memoryGraph.disposition}\n`);
+            }
+        }
+        else {
+            const report = await applyImportV1Plan(plan, undefined, targetDir, options);
+            successOutput = json
+                ? `${JSON.stringify({ mode: 'apply', plan: plan.report, result: report })}\n`
+                : `迁移完成: Gene=${report.imported.Gene} Capsule=${report.imported.Capsule} Event=${report.imported.EvolutionEvent} (冻结${report.frozen}[其中未验证${report.unverifiedFrozen}]/新算${report.recomputed}/去重${report.deduped}); sidecar=${report.sidecarExtensions}; mailbox 发现=${report.mailboxFound} 导入=${report.mailboxImported}; memory_graph 归档=${report.memoryGraphArchived} 可查询=${report.memoryGraphImported} 延后=${report.memoryGraphDeferred}\n`;
+        }
+    }
+    catch (error) {
+        try {
+            plan.dispose();
+        }
+        catch { /* preserve the mapped primary failure */ }
+        writeMigrationFailure(migrationErrorCode(error), json);
+        return 1;
+    }
+    try {
+        plan.dispose();
+    }
+    catch {
+        writeMigrationFailure('migration_cleanup_failed', json);
+        return 1;
+    }
+    process.stdout.write(successOutput);
     return 0;
 }
 /** One-line summary of an asset for `asset-log` (pure, testable). */
@@ -287,8 +374,107 @@ export function formatAssetLine(a) {
                     : '';
     return `${a.type.padEnd(15)} ${id}  ${desc}`.trimEnd();
 }
-/** asset-log [Gene|Capsule|EvolutionEvent|AntiGene] [limit]: list recent local assets (observability; ported v1 CLI verb). */
-export async function runAssetLog(argv, store) {
+const ASSET_CALL_ACTIONS = [
+    'hub_search_hit', 'hub_search_miss',
+    'asset_reuse', 'asset_reference',
+    'asset_publish', 'asset_publish_skip',
+    'asset_inject', 'asset_inject_shadow',
+    'hub_review_submitted', 'hub_review_rejected', 'hub_review_failed',
+];
+function isAssetCallAction(value) {
+    return ASSET_CALL_ACTIONS.includes(value);
+}
+/**
+ * Preserve V2's asset-store listing as the default. V1's call audit is available
+ * through the explicit `calls` mode so the two contracts do not overload an empty argv.
+ */
+export async function runAssetLog(argv, store, deps = {}) {
+    const KINDS = ['Gene', 'Capsule', 'EvolutionEvent', 'AntiGene'];
+    const CALL_FLAGS = ['--run', '--action', '--last', '--since', '--json'];
+    const explicitCallMode = argv[0] === 'calls' || argv[0] === '--calls';
+    const callMode = explicitCallMode || argv.some((arg) => CALL_FLAGS
+        .some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
+    const assetMode = !callMode && (argv.length === 0
+        || argv[0] === 'assets'
+        || argv[0] === '--assets'
+        || KINDS.includes(argv[0] ?? '')
+        || /^\d+$/.test(argv[0] ?? ''));
+    if (assetMode)
+        return runAssetList(argv.filter((arg) => arg !== 'assets' && arg !== '--assets'), store);
+    if (!callMode)
+        return assetLogUsage(`unknown asset-log mode: ${argv[0] ?? '(missing)'}`);
+    const opts = {};
+    let json = false;
+    for (let i = explicitCallMode ? 1 : 0; i < argv.length; i += 1) {
+        const arg = argv[i];
+        if (!explicitCallMode && KINDS.includes(arg ?? ''))
+            continue;
+        if (arg === '--json') {
+            json = true;
+            continue;
+        }
+        const parsed = assetLogFlagValue(argv, i, '--run');
+        if (parsed) {
+            opts.run_id = parsed.value;
+            i += parsed.consumed;
+            continue;
+        }
+        const action = assetLogFlagValue(argv, i, '--action');
+        if (action) {
+            if (!isAssetCallAction(action.value))
+                return assetLogUsage(`invalid --action: ${action.value}`);
+            opts.action = action.value;
+            i += action.consumed;
+            continue;
+        }
+        const last = assetLogFlagValue(argv, i, '--last');
+        if (last) {
+            if (!/^\d+$/.test(last.value) || Number(last.value) < 1)
+                return assetLogUsage(`invalid --last: ${last.value}`);
+            opts.last = Number(last.value);
+            i += last.consumed;
+            continue;
+        }
+        const since = assetLogFlagValue(argv, i, '--since');
+        if (since) {
+            if (!Number.isFinite(Date.parse(since.value)))
+                return assetLogUsage(`invalid --since: ${since.value}`);
+            opts.since = since.value;
+            i += since.consumed;
+            continue;
+        }
+        return assetLogUsage(`unknown asset-log argument: ${arg ?? '(missing)'}`);
+    }
+    const logPath = deps.logPath ?? events.assetCallLogPath();
+    const callLog = deps.callLog ?? new hubNs.AssetCallLog(logPath);
+    if (json) {
+        process.stdout.write(`${JSON.stringify(callLog.read(opts), null, 2)}\n`);
+        return 0;
+    }
+    const summary = callLog.summarize(opts);
+    process.stdout.write('\n[Asset Call Log]\n');
+    process.stdout.write(`  Total entries: ${summary.total_entries}\n`);
+    process.stdout.write(`  Unique assets: ${summary.unique_assets}\n`);
+    process.stdout.write(`  Unique runs:   ${summary.unique_runs}\n`);
+    process.stdout.write('  By action:\n');
+    for (const [action, count] of Object.entries(summary.by_action)) {
+        process.stdout.write(`    ${action}: ${count}\n`);
+    }
+    if (summary.entries.length === 0) {
+        process.stdout.write('\n  No entries found.\n\n');
+        return 0;
+    }
+    process.stdout.write('\n  Recent entries:\n');
+    for (const entry of summary.entries.slice(-10)) {
+        const timestamp = entry.timestamp ? entry.timestamp.slice(0, 19) : '?';
+        const asset = entry.asset_id ? `${entry.asset_id.slice(0, 20)}...` : '(none)';
+        const signals = Array.isArray(entry.signals) ? entry.signals.slice(0, 3).join(', ') : '';
+        process.stdout.write(`    [${timestamp}] ${entry.action || '?'}  asset=${asset}  score=${entry.score ?? '-'}  mode=${entry.mode ?? '-'}  signals=[${signals}]  run=${entry.run_id ?? '-'}\n`);
+    }
+    process.stdout.write('\n');
+    return 0;
+}
+async function runAssetList(argv, store) {
     const KINDS = ['Gene', 'Capsule', 'EvolutionEvent', 'AntiGene'];
     let kind;
     let limit = 20;
@@ -297,6 +483,8 @@ export async function runAssetLog(argv, store) {
             kind = a;
         else if (/^\d+$/.test(a))
             limit = Number(a);
+        else
+            return assetLogUsage(`unknown asset list argument: ${a}`);
     }
     const s = store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
     const assets = await s.list(kind, limit);
@@ -308,6 +496,120 @@ export async function runAssetLog(argv, store) {
         process.stdout.write(formatAssetLine(a) + '\n');
     return 0;
 }
+function assetLogFlagValue(argv, index, flag) {
+    const arg = argv[index];
+    if (arg?.startsWith(`${flag}=`)) {
+        const value = arg.slice(flag.length + 1);
+        return value ? { value, consumed: 0 } : null;
+    }
+    if (arg !== flag)
+        return null;
+    const value = argv[index + 1];
+    return value && !value.startsWith('--') ? { value, consumed: 1 } : null;
+}
+function assetLogUsage(error) {
+    process.stderr.write(`${error}\nusage: evolver asset-log [assets] [Gene|Capsule|EvolutionEvent|AntiGene] [limit] | evolver asset-log calls [--run <id>] [--action <action>] [--last <n>] [--since <iso>] [--json]\n`);
+    return 1;
+}
+const DEFAULT_DISTILL_RESPONSE_FILE_MAX_BYTES = 1024 * 1024;
+function responseFileArg(argv) {
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        if (arg?.startsWith('--response-file='))
+            return arg.slice('--response-file='.length);
+        if (arg === '--response-file')
+            return argv[index + 1] ?? '';
+    }
+    return undefined;
+}
+function pathIsWithin(root, target) {
+    const rel = relative(root, target);
+    return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+function sameResponseFileIdentity(left, right) {
+    const hasStableFileId = left.dev !== 0n || left.ino !== 0n || right.dev !== 0n || right.ino !== 0n;
+    if (hasStableFileId)
+        return left.dev === right.dev && left.ino === right.ino;
+    // Some filesystems do not expose dev/ino. Birth time + mode is the strongest portable fallback Node provides.
+    return left.birthtimeNs === right.birthtimeNs && left.mode === right.mode;
+}
+function sameResponseFileSnapshot(left, right) {
+    return sameResponseFileIdentity(left, right)
+        && left.size === right.size
+        && left.mtimeNs === right.mtimeNs
+        && left.ctimeNs === right.ctimeNs;
+}
+function readResponseFileDescriptor(fd, expectedSize) {
+    const content = Buffer.alloc(expectedSize);
+    let offset = 0;
+    while (offset < expectedSize) {
+        const bytesRead = readSync(fd, content, offset, expectedSize - offset, offset);
+        if (bytesRead === 0)
+            throw new Error('response-file changed while being read (truncated)');
+        offset += bytesRead;
+    }
+    const extra = Buffer.allocUnsafe(1);
+    if (readSync(fd, extra, 0, 1, expectedSize) !== 0) {
+        throw new Error('response-file changed while being read (grew beyond the validated size)');
+    }
+    return content.toString('utf8');
+}
+function candidateFromResponseFile(path, deps) {
+    if (!path)
+        throw new Error('response-file path is empty');
+    const requestedRoot = resolve(deps.responseFileRoot ?? process.cwd());
+    const root = realpathSync(requestedRoot);
+    const requested = resolve(requestedRoot, path);
+    if (!pathIsWithin(requestedRoot, requested))
+        throw new Error('response-file is outside the allowed root');
+    const beforeOpen = lstatSync(requested, { bigint: true });
+    if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink())
+        throw new Error('response-file must be a regular non-symlink file');
+    const canonical = realpathSync(requested);
+    if (!pathIsWithin(root, canonical))
+        throw new Error('response-file resolves outside the allowed root');
+    const configuredMax = deps.maxResponseFileBytes ?? DEFAULT_DISTILL_RESPONSE_FILE_MAX_BYTES;
+    const maxBytes = Number.isSafeInteger(Math.floor(configuredMax)) && configuredMax > 0
+        ? Math.floor(configuredMax)
+        : DEFAULT_DISTILL_RESPONSE_FILE_MAX_BYTES;
+    if (beforeOpen.size > BigInt(maxBytes))
+        throw new Error(`response-file is too large (max ${maxBytes} bytes)`);
+    deps.responseFileReadTestHook?.('before-open', canonical);
+    const noFollow = process.platform !== 'win32' && typeof fsConstants.O_NOFOLLOW === 'number'
+        ? fsConstants.O_NOFOLLOW
+        : 0;
+    const fd = openSync(canonical, fsConstants.O_RDONLY | noFollow);
+    let raw;
+    try {
+        const opened = fstatSync(fd, { bigint: true });
+        if (!opened.isFile())
+            throw new Error('response-file must be a regular file');
+        if (!sameResponseFileSnapshot(beforeOpen, opened))
+            throw new Error('response-file changed before it could be opened');
+        if (opened.size > BigInt(maxBytes))
+            throw new Error(`response-file is too large (max ${maxBytes} bytes)`);
+        deps.responseFileReadTestHook?.('after-open', canonical);
+        raw = readResponseFileDescriptor(fd, Number(opened.size));
+        const afterRead = fstatSync(fd, { bigint: true });
+        if (!sameResponseFileSnapshot(opened, afterRead))
+            throw new Error('response-file changed while being read');
+        const afterPath = lstatSync(requested, { bigint: true });
+        if (!afterPath.isFile() || afterPath.isSymbolicLink() || !sameResponseFileSnapshot(afterRead, afterPath)) {
+            throw new Error('response-file path changed while being read');
+        }
+        const canonicalAfterRead = realpathSync(requested);
+        if (!pathIsWithin(root, canonicalAfterRead) || canonicalAfterRead !== canonical) {
+            throw new Error('response-file path changed outside the allowed root');
+        }
+    }
+    finally {
+        closeSync(fd);
+    }
+    const candidate = asGeneCandidate(parseDistillOutput(raw));
+    if (!candidate)
+        throw new Error('response-file does not contain a valid Gene JSON object');
+    return candidate;
+}
 /**
  * distill: gate a learned approach into the gene pool (ported v1 CLI verb). Runs the structural intake
  * (schema + dedup + asset_id) and, only if it passes, writes the gene to the store. The agent/runtime is
@@ -316,17 +618,30 @@ export async function runAssetLog(argv, store) {
  */
 export async function runDistill(argv, store, deps = {}) {
     const f = parseFlags(argv);
-    const candidate = {
-        ...(f['id'] ? { id: f['id'] } : {}),
-        category: f['category'] ?? 'innovate',
-        signals_match: splitList(f['signals'], /,/),
-        strategy: splitList(f['strategy'], /[;\n]/),
-        ...(f['summary'] ? { summary: f['summary'] } : {}),
-        // `evolver distill` is a human teaching the system a gene (actor.kind = human, see the audit below) →
-        // `manual` per V1 #302 classifyProvenance.
-        generation_meta: { source: 'manual' },
-    };
-    if (candidate.signals_match.length === 0 || candidate.strategy.length === 0) {
+    const responseFile = responseFileArg(argv);
+    let candidate;
+    if (responseFile !== undefined) {
+        try {
+            candidate = candidateFromResponseFile(responseFile, deps);
+        }
+        catch (error) {
+            process.stderr.write(`[Distill] response-file error: ${error instanceof Error ? error.message : String(error)}\n`);
+            return 2;
+        }
+    }
+    else {
+        candidate = {
+            ...(f['id'] ? { id: f['id'] } : {}),
+            category: f['category'] ?? 'innovate',
+            signals_match: splitList(f['signals'], /,/),
+            strategy: splitList(f['strategy'], /[;\n]/),
+            ...(f['summary'] ? { summary: f['summary'] } : {}),
+            // `evolver distill` is a human teaching the system a gene (actor.kind = human, see the audit below) →
+            // `manual` per V1 #302 classifyProvenance.
+            generation_meta: { source: 'manual' },
+        };
+    }
+    if ((candidate.signals_match ?? []).length === 0 || (candidate.strategy ?? []).length === 0) {
         process.stderr.write('用法: evolver distill --category <c> --signals <s1,s2> --strategy "<step1; step2>" [--summary <t>]\n');
         return 1;
     }
@@ -341,15 +656,34 @@ export async function runDistill(argv, store, deps = {}) {
         process.stderr.write(`distill 拒绝: ${r.errors.join('; ')}\n`);
         return 1;
     }
-    await s.put(r.gene);
-    // AE (#91 item 1): a manual distill IS a human teaching the system a gene — record it on the audit spine.
     const ingestor = deps.ingestor ?? new events.Ingestor({ path: events.rootEventsPath() });
-    await ingestor.ingest({
-        type: 'actor.human.teach',
-        payload: { geneId: r.gene.id, assetId: r.gene.asset_id, category: r.gene.category },
-        human: { title: `teach gene ${r.gene.id}`, severity: 'info' },
-        actor: { kind: 'human', id: operatorActorId() },
-    });
+    if (responseFile !== undefined) {
+        // The gene is the commit point. Audit first (idempotently), quarantine second, then persist last so any
+        // partial failure remains retryable and can never expose an unaudited machine-produced gene in the pool.
+        const assetId = String(r.gene.asset_id);
+        const alreadyAudited = ingestor.readAll().some((event) => event.type === 'gene.distilled'
+            && String(event.payload?.['assetId'] ?? '') === assetId);
+        if (!alreadyAudited) {
+            await ingestor.ingest({
+                type: 'gene.distilled',
+                payload: { geneId: r.gene.id, assetId: r.gene.asset_id, source: 'cli-response-file' },
+                human: { title: `LLM response-file distilled gene ${r.gene.id}`, severity: 'info' },
+                actor: { kind: 'machine', id: 'cli-response-file' },
+            });
+        }
+        reviewLedgerForStore(s).quarantineIfAbsent(assetId, 'LLM response-file distillation - review before use');
+        await s.put(r.gene);
+    }
+    else {
+        await s.put(r.gene);
+        // AE (#91 item 1): a manual distill IS a human teaching the system a gene — record it on the audit spine.
+        await ingestor.ingest({
+            type: 'actor.human.teach',
+            payload: { geneId: r.gene.id, assetId: r.gene.asset_id, category: r.gene.category },
+            human: { title: `teach gene ${r.gene.id}`, severity: 'info' },
+            actor: { kind: 'human', id: operatorActorId() },
+        });
+    }
     process.stdout.write(`distilled gene ${r.gene.id} (${String(r.gene.asset_id).slice(0, 19)}…) → pool\n`);
     return 0;
 }
@@ -371,12 +705,6 @@ function printTraceSignals(file, turnCount, sigs) {
         process.stdout.write(`  [${s.strength}/${s.kind}] ${s.text.replace(/\s+/g, ' ').trim().slice(0, 160)}\n`);
     }
 }
-/** The runtime agents Material.sourceAgent can represent (closed enum on the schema). */
-const MATERIAL_SOURCE_AGENTS = new Set(['claude-code', 'codex', 'cursor', 'gemini', 'antigravity', 'kimi', 'kiro', 'opencode', 'generic-chat']);
-/** Narrow an adapter's free-string agent to the Material source enum (undefined → not recordable). */
-function toMaterialSourceAgent(agent) {
-    return MATERIAL_SOURCE_AGENTS.has(agent) ? agent : undefined;
-}
 /**
  * Is a Material for this EXACT file state already on the substrate? A Material's identity is its ULID, so `put`
  * cannot dedup across runs (each build mints a fresh id). Without this, a crash-retry — where a prior run put the
@@ -395,50 +723,6 @@ function materialExistsFor(store, sourcePath, wm) {
             return true;
     }
     return false;
-}
-/**
- * Record a session log as Material on the M1 substrate (idempotent by file watermark), then emit a
- * `material.batch_ready` root_event so the AE is not bypassed. Re-ingesting the same UNCHANGED file records
- * no new material and emits no event (scanFile reports `changed: false` against the persisted cursor).
- * Returns whether new material landed + its materialId so the caller can report it.
- */
-async function recordSessionMaterial(sourceAgent, absPath, signalCount, d, recordCount = 1, payload, diagnostics) {
-    const prev = d.watermarkStore.get(absPath);
-    const scan = materialNs.scanFile(absPath, prev);
-    // Unchanged source already recorded once → idempotent skip (no duplicate material, no duplicate event).
-    if (prev && !scan.changed)
-        return { recorded: false, emitted: false };
-    const m = materialNs.buildMaterial({
-        sourceAgent,
-        sourceKind: 'runtime_session',
-        sourcePath: absPath,
-        kind: 'session_log',
-        watermark: scan.watermark,
-        consumerGroup: INGEST_CONSUMER_GROUP,
-        ...(payload ? { payload } : {}),
-    });
-    // Crash-retry idempotency (#100): if a prior run already put this file's material but threw before the
-    // watermark advanced, don't append a duplicate row — reuse it and only (re-)emit the lost event below.
-    const isNew = !materialExistsFor(d.materialStore, absPath, scan.watermark);
-    if (isNew)
-        await d.materialStore.put(m);
-    const parseDiagnostics = diagnostics && diagnostics.invalidJson > 0
-        ? { rowsScanned: diagnostics.rowsScanned, rowsRead: diagnostics.rowsRead, invalidJson: diagnostics.invalidJson }
-        : undefined;
-    await d.ingestor.ingest({
-        type: 'material.batch_ready',
-        payload: { source: absPath, recordCount, signalCount, ...(parseDiagnostics ? { parseDiagnostics } : {}) },
-        human: {
-            title: `material 已落地: ${sourceAgent} session`,
-            ...(parseDiagnostics ? { detail: `skipped ${parseDiagnostics.invalidJson} invalid JSONL row(s)` } : {}),
-            severity: 'info',
-        },
-        actor: { kind: 'machine' },
-    });
-    // Watermark LAST — only after BOTH the put and its batch_ready event succeed. If ingest throws, the watermark
-    // stays unset so a re-run re-emits the event; the content check above keeps that retry from duplicating the row.
-    d.watermarkStore.set(absPath, scan.watermark);
-    return { recorded: isNew, emitted: true, materialId: m.materialId };
 }
 /**
  * Record a proxy LLM-trace file as Material on the M1 substrate (#95). A trace is agent-agnostic gateway
@@ -473,90 +757,6 @@ async function recordTraceMaterial(absPath, signalCount, d) {
     // Watermark LAST — see recordSessionMaterial: a throw during ingest must leave the file re-ingestable (#100).
     d.watermarkStore.set(absPath, scan.watermark);
     return { recorded: isNew, materialId: m.materialId };
-}
-/**
- * Recursively enumerate recognized runtime-session sources under the given dirs — the daemon's auto-distill
- * producer source (#106). This includes text session files handled by runtime adapters (`*.jsonl` and Gemini
- * `*.json`) plus Cursor's sqlite `state.vscdb`. A missing/permission-denied dir is silently skipped (a daemon
- * must not crash on an absent home dir).
- */
-export function scanSessionDirs(dirs) {
-    const out = [];
-    for (const dir of dirs) {
-        let entries;
-        try {
-            entries = readdirSync(resolve(dir), { recursive: true });
-        }
-        catch {
-            continue;
-        } // dir absent / unreadable → skip
-        for (const e of entries) {
-            const file = join(resolve(dir), e);
-            if (isRuntimeSessionSourcePath(file))
-                out.push(file);
-        }
-    }
-    return out;
-}
-function sortedStrings(values) {
-    return [...new Set([...values].map(String).filter(Boolean))].sort();
-}
-/**
- * One producer tick for the auto-distill loop (#106 slice 1): scan `dirs` for session logs and record any
- * NEW/CHANGED file as `runtime_session` Material via the injected (bus) Ingestor — which emits
- * `material.batch_ready`, the event the distillObserver claims off. Idempotent per file (watermark cursor), so
- * re-scanning an unchanged tree records nothing. Pure producer: it does NOT distill (the observer does). Returns
- * how many files landed new material. Inject `deps.ingestor = new Ingestor({ sink: bus })` so the event reaches
- * the daemon's ObserverBus; defaults to live paths otherwise.
- */
-export async function runSessionIngestTick(dirs, deps = {}) {
-    const d = resolveIngestDeps(deps);
-    let recorded = 0;
-    const sourceAgents = new Set();
-    const signalKinds = new Set();
-    const signalStrengths = new Set();
-    let invalidJsonRows = 0;
-    // #274 auto-recall (default OFF): observe which injected genes were actually used, from the transcript, so the
-    // experience loop is fed by observation instead of a self-reported tool call agents skip. Best-effort + idempotent
-    // (one value.recall set per session); off → zero extra work. auto-OBSERVE only — it never quarantines.
-    const autoRecallOn = process.env['EVOLVER_AUTO_RECALL'] === '1';
-    for (const file of scanSessionDirs(dirs)) {
-        try {
-            const parsed = parseRuntimeSessionSourcesWithDiagnostics(file);
-            const parsedSources = parsed.sources;
-            const agent = parsedSources[0] ? toMaterialSourceAgent(parsedSources[0].agent) : undefined;
-            if (parsedSources.length === 0 || !agent)
-                continue; // not a recognized, schema-recordable runtime-session source
-            const sigsBySource = parsedSources.map((source) => signals.extractSignals(source.turns));
-            const snapshot = buildRuntimeSessionMaterialSnapshot(parsedSources);
-            const r = await recordSessionMaterial(agent, file, sigsBySource.reduce((sum, sigs) => sum + sigs.length, 0), d, parsedSources.length, snapshot, parsed.diagnostics);
-            if (r.emitted)
-                invalidJsonRows += parsed.diagnostics.invalidJson;
-            if (r.recorded) {
-                recorded += 1;
-                sourceAgents.add(agent);
-                for (const sigs of sigsBySource) {
-                    for (const sig of sigs) {
-                        signalKinds.add(sig.kind);
-                        signalStrengths.add(sig.strength);
-                    }
-                }
-            }
-            if (autoRecallOn && parsedSources.length === 1 && !parsedSources[0].sessionId) {
-                // Drop meta turns (heartbeats/empty) before judging, same as `evolver recall` — counting them would skew overlap.
-                const turns = parsedSources[0].turns.filter((t) => !t.isMeta).map((t) => ({ role: t.role, text: t.text }));
-                await emitSessionRecall(file, turns, { ingestor: d.ingestor });
-            }
-        }
-        catch { /* unreadable / unparseable file → skip, never break the scan */ }
-    }
-    return {
-        recorded,
-        sourceAgents: sortedStrings(sourceAgents),
-        signalKinds: sortedStrings(signalKinds),
-        signalStrengths: sortedStrings(signalStrengths),
-        ...(invalidJsonRows > 0 ? { invalidJsonRows } : {}),
-    };
 }
 /**
  * Read + parse one or more trace JSONL files, record each as proxy_trace Material on the M1 substrate (#95,
@@ -655,7 +855,7 @@ export async function runIngest(argv, store, deps = {}, review) {
     let parsedSources;
     let parseDiagnostics;
     try {
-        const parsed = parseRuntimeSessionSourcesWithDiagnostics(path);
+        const parsed = parseRuntimeSessionSourcesWithDiagnostics(path, undefined, deps.nativeSessionHome);
         parsedSources = parsed.sources;
         parseDiagnostics = parsed.diagnostics;
     }
@@ -1326,8 +1526,16 @@ async function readHookSessionId(read) {
  */
 export async function runInject(argv, deps = {}) {
     const sub = argv[0];
+    if (sub === 'prompt-recall') {
+        return runPromptRecallHook(argv.slice(1), {
+            ...(deps.store ? { store: deps.store } : {}),
+            ...(deps.review ? { review: deps.review } : {}),
+            ...(deps.provenance ? { provenance: deps.provenance } : {}),
+            ...(deps.readHookInput ? { readHookInput: deps.readHookInput } : {}),
+        });
+    }
     if (sub !== 'session-start') {
-        process.stderr.write('用法: evolver inject session-start\n');
+        process.stderr.write('用法: evolver inject session-start | evolver inject prompt-recall --hook-stdin\n');
         return sub === undefined ? 0 : 1;
     }
     const fromHookStdin = argv.includes('--hook-stdin');
@@ -1385,6 +1593,186 @@ export async function runInject(argv, deps = {}) {
 }
 /** Fixed preamble for the SessionStart injection (the head block the recap + gene lines hang off of). */
 export const SESSION_START_PREAMBLE = 'evolver memory — use these learned hints silently when directly relevant; do not mention Evolver, preflight, status, or this memory block unless the user asks or reuse materially changes the answer:';
+// ─── evolver daily ──────────────────────────────────────────────────────────
+export const DAILY_USAGE = 'Usage: evolver daily [--json] [--auto] [--help]\n\nDisplay a daily status summary: proxy/hub connection, yesterday\'s activity, and review queue.\n  --json   Output as JSON\n  --auto   Only print when this is the first run today; silent otherwise\n';
+function formatDay(d) {
+    return d.toISOString().slice(0, 10);
+}
+function dayPrefixFromOffset(nowMs, offsetDays) {
+    const d = new Date(nowMs + offsetDays * 86_400_000);
+    return formatDay(d);
+}
+function defaultLastDailyFile(env = process.env) {
+    const home = env['EVOLVER_HOME'] ?? env['EVOMAP_HOME'] ?? join(homedir(), '.evomap');
+    return join(home, '.last-daily');
+}
+function shouldRunDaily(lastDailyFile, today) {
+    try {
+        const lastRun = readFileSync(lastDailyFile, 'utf8').trim();
+        return lastRun !== today;
+    }
+    catch {
+        return true;
+    }
+}
+function markDailyRun(lastDailyFile, today) {
+    try {
+        mkdirSync(dirname(lastDailyFile), { recursive: true });
+        writeFileSync(lastDailyFile, today, 'utf8');
+    }
+    catch { /* best-effort */ }
+}
+export function formatDailyReport(report) {
+    const L = [];
+    L.push(`Evolver daily \u2014 ${report.date}`);
+    L.push('');
+    // Connection
+    L.push('Connection');
+    const c = report.connection;
+    if (!c.proxyRunning) {
+        L.push('  proxy    not running');
+    }
+    else if (!c.proxyHealthy) {
+        L.push(`  proxy    unhealthy (${c.reason ?? 'unknown'})`);
+    }
+    else {
+        L.push(`  proxy    running${c.proxyPid ? ` (pid ${c.proxyPid})` : ''}${c.hubAuthStatus ? `  hub_auth=${c.hubAuthStatus}` : ''}`);
+    }
+    if (c.lastSyncAt)
+        L.push(`  last_sync  ${c.lastSyncAt}`);
+    L.push('');
+    // Yesterday
+    const y = report.yesterday;
+    L.push(`Yesterday (${y.date})`);
+    L.push(`  cycles    ${y.cycles} total  ${y.solidified} solidified  ${y.failed} failed`);
+    L.push(`  capsules  ${y.capsules} produced`);
+    L.push(`  triggers  ${y.triggered} triggered  ${y.suppressed} suppressed`);
+    L.push('');
+    // Queue
+    const q = report.queue;
+    L.push('Queue');
+    L.push(`  genes      ${q.genesApproved} approved  ${q.genesQuarantined} quarantined  ${q.genesRejected} rejected`);
+    L.push(`  anti-gene  ${q.antiGeneApproved} approved  ${q.antiGeneQuarantined} quarantined  ${q.antiGeneUnreviewed} unreviewed`);
+    return `${L.join('\n')}\n`;
+}
+export async function collectDailyReport(deps = {}) {
+    const env = deps.env ?? process.env;
+    const now = deps.now ? deps.now() : Date.now();
+    const today = formatDay(new Date(now));
+    const yesterdayPrefix = dayPrefixFromOffset(now, -1);
+    // Events + daily summary
+    const evts = readEvents(deps.eventsPath ?? events.rootEventsPath());
+    const summary = events.dailySummary(evts, yesterdayPrefix);
+    const capsules = dailyCapsuleCount(evts, yesterdayPrefix);
+    // Connection status
+    let connection = { proxyRunning: false, proxyHealthy: false };
+    if (!deps.skipConnection) {
+        const paths = deps.lifecyclePaths ?? lifecyclePaths(env);
+        const conn = await dailyConnectionStatus(paths, env, { timeoutMs: 1500 });
+        connection = {
+            proxyRunning: conn.running,
+            proxyHealthy: conn.healthy === true,
+            proxyPid: conn.pid,
+            hubAuthStatus: conn.hubAuthStatus,
+            lastSyncAt: conn.lastSyncAt,
+            reason: conn.reason,
+        };
+    }
+    // Queue: gene review stats
+    const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
+    const review = deps.review ?? reviewLedgerForStore(store);
+    const reviewRecords = review.records();
+    const geneReviewCounts = { approved: 0, quarantined: 0, rejected: 0 };
+    const antiGeneReviewCounts = { approved: 0, quarantined: 0, unreviewed: 0 };
+    // Build asset ID to type mapping
+    const allGenes = await store.list('Gene', 10_000);
+    const allAntiGenes = await store.list('AntiGene', 10_000);
+    const antiGeneIds = new Set(allAntiGenes.map((a) => a.asset_id));
+    // Count review records by asset type
+    for (const r of reviewRecords) {
+        if (antiGeneIds.has(r.assetId)) {
+            // AntiGene review record
+            if (r.state === 'quarantined')
+                antiGeneReviewCounts.quarantined++;
+            else if (r.state === 'approved')
+                antiGeneReviewCounts.approved++;
+            // rejected anti-gene: not shown separately per existing design
+        }
+        else {
+            // Gene review record (or unknown asset type)
+            if (r.state === 'quarantined')
+                geneReviewCounts.quarantined++;
+            else if (r.state === 'rejected')
+                geneReviewCounts.rejected++;
+            else if (r.state === 'approved')
+                geneReviewCounts.approved++;
+        }
+    }
+    // Genes without review records are default-approved
+    const reviewedIds = new Set(reviewRecords.map((r) => r.assetId));
+    const unreviewedGeneCount = allGenes.filter((g) => !reviewedIds.has(g.asset_id)).length;
+    geneReviewCounts.approved += unreviewedGeneCount;
+    // AntiGenes without explicit approval are unreviewed (fail-closed)
+    for (const ag of allAntiGenes) {
+        const r = review.get(ag.asset_id);
+        if (!r || (r.state !== 'approved' && r.state !== 'quarantined')) {
+            antiGeneReviewCounts.unreviewed++;
+        }
+    }
+    return {
+        date: today,
+        connection,
+        yesterday: {
+            date: yesterdayPrefix,
+            cycles: summary.cycles,
+            solidified: summary.solidified,
+            failed: summary.failed,
+            capsules,
+            triggered: summary.triggered,
+            suppressed: summary.suppressed,
+        },
+        queue: {
+            genesApproved: geneReviewCounts.approved,
+            genesQuarantined: geneReviewCounts.quarantined,
+            genesRejected: geneReviewCounts.rejected,
+            antiGeneApproved: antiGeneReviewCounts.approved,
+            antiGeneQuarantined: antiGeneReviewCounts.quarantined,
+            antiGeneUnreviewed: antiGeneReviewCounts.unreviewed,
+        },
+    };
+}
+export async function runDaily(argv, deps = {}) {
+    const stdout = deps.stdout ?? ((text) => { process.stdout.write(text); });
+    const flags = parseFlags(argv);
+    if ('help' in flags || 'h' in flags) {
+        stdout(DAILY_USAGE);
+        return 0;
+    }
+    const json = 'json' in flags;
+    const auto = 'auto' in flags;
+    const env = deps.env ?? process.env;
+    const now = deps.now ? deps.now() : Date.now();
+    const today = formatDay(new Date(now));
+    // --auto: check if we already ran today
+    if (auto) {
+        const lastDailyFile = deps.lastDailyFile ?? defaultLastDailyFile(env);
+        if (!shouldRunDaily(lastDailyFile, today))
+            return 0;
+    }
+    const report = await collectDailyReport(deps);
+    if (json) {
+        stdout(`${JSON.stringify({ ok: true, group: 'daily', ...report })}\n`);
+    }
+    else {
+        stdout(formatDailyReport(report));
+    }
+    // Mark today as run (for --auto mode; harmless otherwise)
+    if (auto) {
+        const lastDailyFile = deps.lastDailyFile ?? defaultLastDailyFile(env);
+        markDailyRun(lastDailyFile, today);
+    }
+    return 0;
+}
 export function runCli(argv) {
     const cmd = argv[0];
     if (cmd === undefined || cmd === '--help' || cmd === '-h') {

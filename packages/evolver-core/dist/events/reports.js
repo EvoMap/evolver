@@ -85,6 +85,10 @@ export function dailySummary(evts, dayPrefix) {
         suppressedFailures,
     };
 }
+/** 统计指定日期前缀的 capsule.produced 事件数. */
+export function dailyCapsuleCount(evts, dayPrefix) {
+    return evts.filter((e) => e.type === 'capsule.produced' && e.ts.startsWith(dayPrefix)).length;
+}
 export const NARRATIVE_DEFAULT_LIMIT = 30;
 export const NARRATIVE_MAX_LIMIT = 200;
 const NARRATIVE_EVENTS = new Set([

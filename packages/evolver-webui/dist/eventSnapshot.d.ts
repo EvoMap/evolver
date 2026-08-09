@@ -14,5 +14,6 @@ export declare class EventSnapshotCache {
     constructor(source: EventSnapshotSource);
     read(): Promise<readonly ev.ReportEvent[]>;
     private readOnce;
+    private readVersioned;
 }
 export {};

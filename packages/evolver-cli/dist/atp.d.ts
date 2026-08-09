@@ -28,9 +28,13 @@ export interface VerifyOptions {
     orderId: string;
     action: AtpVerifyAction;
 }
-export interface AtpOptions {
+export type AtpOptions = {
     sub: 'enable' | 'disable' | 'status';
-}
+} | {
+    sub: 'resolve';
+    reservationId: string;
+    outcome: 'success' | 'failure';
+};
 export interface AtpCliDeps {
     client?: AtpCliClient;
     env?: NodeJS.ProcessEnv;
@@ -38,6 +42,7 @@ export interface AtpCliDeps {
     err?: LogFn;
     sleep?: (ms: number) => Promise<void>;
     consentPath?: string;
+    autoBuyerLedgerPath?: string;
     now?: () => Date;
 }
 export interface AtpCliClient {
@@ -93,7 +98,7 @@ export declare class AtpSpendConsentError extends Error {
 /**
  * THE single enforced consent gate every ATP spend path MUST pass through (#177). One door, two callers:
  *  - explicit (a human ran `evolver buy`) → the invocation IS the consent, allowed through.
- *  - autonomous (future auto-buy / autoexec auto-order / swarm purchase) → must have getAtpConsent().enabled,
+ *  - autonomous (auto-buy / autoexec auto-order / swarm purchase) → must have getAtpConsent().enabled,
  *    else refused. This keeps consent enforcement UPSTREAM of money movement instead of a read-only status bit
  *    each caller might forget to check (the latent money-safety hole autogame-17 flagged). Any new autonomous
  *    spending path is required to call this (NOT client.placeOrder directly) — see placeAtpOrderWithConsent.

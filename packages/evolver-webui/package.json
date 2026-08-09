@@ -1,8 +1,11 @@
 {
   "name": "@evomap/evolver-webui",
-  "version": "2.0.0-beta.18",
+  "version": "2.0.2",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
   "description": "保活/可视化 WebUI",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +16,8 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.18"
+    "@evomap/evolver-core": "2.0.2",
+    "jsonc-parser": "3.3.1"
   },
   "repository": {
     "type": "git",
@@ -21,7 +25,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

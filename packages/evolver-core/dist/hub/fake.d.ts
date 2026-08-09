@@ -1,4 +1,4 @@
-import type { HubCapability, PublishReceipt, AgentEvent, TaskEvent, AuthProvider, HubQuery, AssetRecord, TaskCompleteContext } from './capability.js';
+import type { HubCapability, PublishReceipt, AgentEvent, TaskEvent, AuthProvider, HubQuery, AssetRecord, TaskCompleteContext, PublishOptions } from './capability.js';
 export interface FakeHubOptions {
     /** 脚本化 publish gate: 返回 reject/quarantine 以测 PublishReceipt 终态路径. */
     publishGate?: (asset: AssetRecord) => Pick<PublishReceipt, 'status' | 'reason' | 'terminal'>;
@@ -28,7 +28,7 @@ export declare class FakeHubCapability implements HubCapability {
     constructor(opts?: FakeHubOptions);
     /** 测试注入: 排一条 inbound 事件供 poll 拉. */
     seedInbound(e: AgentEvent): void;
-    publish(bundle: AssetRecord[]): Promise<PublishReceipt>;
+    publish(bundle: AssetRecord[], _options?: PublishOptions): Promise<PublishReceipt>;
     fetch(query: HubQuery): Promise<AssetRecord[]>;
     search(query: HubQuery): Promise<AssetRecord[]>;
     task: {

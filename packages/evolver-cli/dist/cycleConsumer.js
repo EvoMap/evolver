@@ -1,18 +1,24 @@
 import { accessSync, constants, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { assetstore, algo, events, exec, material as materialNs, personality, schema, signals, util, verify } from '@evomap/evolver-core';
-import { materialHasRuntimeSessionSnapshot, materialSourceAvailable, runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
+import { MATERIAL_RUNTIME_SESSION_SNAPSHOT_SCHEMA, materialHasRuntimeSessionSnapshot, materialSourceAvailable, runtimeSessionEvidenceSummariesFromMaterialPayload, runtimeSessionSourcesForMaterial, runtimeSessionSourcesForMaterialDetails, } from './materialSnapshot.js';
+import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 import { signalTokens } from './distillPrimitives.js';
 import { readEvents, showCycle } from './commands.js';
 import { RUNTIME_CAPABILITY_MATRIX, runtimeCapabilities } from './runtimeCapabilities.js';
+import { parseRuntimeSessionSources } from './runtimeSessionSource.js';
 import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
+import { makeCurriculumCapabilityGapsProvider } from './curriculumCapabilityGaps.js';
+import { semanticIdfEnabled } from './semanticIdfConfig.js';
+import { selectionFloorFromEnv, selectionGuardFromEnv, selectionPolicyFromEnv, } from './selectionPolicyConfig.js';
 const CYCLE_GROUP = 'cycle';
 const DEFAULT_LIMIT = 5;
 const DEFAULT_WATCH_IDLE_MS = 1000;
 const DEFAULT_WATCH_MAX_IDLE_MS = 30_000;
 const DEFAULT_WATCH_BACKOFF = 2;
-const CYCLE_USAGE = 'usage: evolver cycle capabilities [--json] | evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor|gemini] [--validation-cmd <cmd>] [--timeout-ms N]\n';
-const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|cursor|gemini] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
+const CYCLE_USAGE = 'usage: evolver cycle capabilities [--json] | evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--resume] [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--resume] [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini] [--validation-cmd <cmd>] [--timeout-ms N]\n';
+const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--resume] [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
 class CycleWatchStateWriteError extends Error {
     constructor() {
         super('cycle watch state file write failed');
@@ -35,6 +41,22 @@ function parseFlags(argv) {
         }
     }
     return out;
+}
+function parseSwitchFlag(argv, name) {
+    const flag = `--${name}`;
+    let present = false;
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg?.startsWith(`${flag}=`))
+            return null;
+        if (arg !== flag)
+            continue;
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith('--'))
+            return null;
+        present = true;
+    }
+    return present;
 }
 function parseRepeatedFlag(argv, name) {
     const values = [];
@@ -62,18 +84,13 @@ function parseRepeatedFlag(argv, name) {
 function makeCycleValidationHook(validationCmds, fallback, runSandboxedValidation = verify.runSandboxedValidation) {
     if (validationCmds.length === 0)
         return fallback;
-    let warnedNoIsolation = false;
     return (task) => {
         const fallbackHook = fallback?.(task);
         return async (mutation, decision, cwd) => {
             const fallbackResult = fallbackHook ? await fallbackHook(mutation, decision, cwd) : null;
             if (fallbackResult && !fallbackResult.passed)
                 return fallbackResult;
-            const result = await runSandboxedValidation(task.validationCmds ?? validationCmds, cwd);
-            if (!result.isolated && !warnedNoIsolation) {
-                warnedNoIsolation = true;
-                process.stdout.write('  warning: validation runs WITHOUT network/FS isolation on this platform; non-namespace hardening still applies.\n');
-            }
+            const result = await runRequiredSandboxedValidation(task.validationCmds ?? validationCmds, cwd, {}, runSandboxedValidation);
             return { passed: result.passed, score: result.score };
         };
     };
@@ -97,14 +114,14 @@ function parseRunner(value) {
     if (value === undefined || value === 'claude')
         return { ok: true, runner: 'claude' };
     if (value.trim() === '')
-        return { ok: false, error: 'runner value is required (supported: claude, codex, cursor, gemini)' };
-    if (value === 'codex' || value === 'cursor' || value === 'gemini')
+        return { ok: false, error: 'runner value is required (supported: claude, codex, gemini)' };
+    if (value === 'codex' || value === 'gemini')
         return { ok: true, runner: value };
-    if (value === 'antigravity' || value === 'kimi' || value === 'kiro' || value === 'opencode') {
+    if (value === 'cursor' || value === 'antigravity' || value === 'kimi' || value === 'kiro' || value === 'opencode') {
         const capability = RUNTIME_CAPABILITY_MATRIX[value].execute;
         return { ok: false, error: `runner '${value}' execute capability is ${capability.status}: ${capability.evidence}` };
     }
-    return { ok: false, error: `unknown runner '${value}' (supported: claude, codex, cursor, gemini)` };
+    return { ok: false, error: `unknown runner '${value}' (supported: claude, codex, gemini)` };
 }
 function resolveMaterialRunner(material, requestedRunner) {
     const sourceAgent = material.sourceAgent;
@@ -114,10 +131,10 @@ function resolveMaterialRunner(material, requestedRunner) {
             runner = 'claude';
             break;
         case 'codex':
-        case 'cursor':
         case 'gemini':
             runner = sourceAgent;
             break;
+        case 'cursor':
         case 'antigravity':
         case 'kimi': {
             const capability = RUNTIME_CAPABILITY_MATRIX[sourceAgent].execute;
@@ -172,8 +189,25 @@ function resolveMaterialCycleDeps(deps = {}) {
         store,
         now: () => Date.now(),
         personality: personalityStore,
+        capabilityGaps: makeCurriculumCapabilityGapsProvider(),
     });
-    return { materialStore, consumer, store, provenance, review, ingestor, engine, personality: personalityStore, memoryGraph };
+    const selectionFloor = deps.selectionFloor ?? selectionFloorFromEnv();
+    return {
+        materialStore,
+        consumer,
+        store,
+        provenance,
+        review,
+        ingestor,
+        engine,
+        personality: personalityStore,
+        memoryGraph,
+        nativeSessionHome: deps.nativeSessionHome ?? homedir(),
+        disableSemanticIdf: deps.disableSemanticIdf ?? !semanticIdfEnabled(),
+        selectionPolicy: deps.selectionPolicy ?? selectionPolicyFromEnv(),
+        selectionGuard: deps.selectionGuard ?? selectionGuardFromEnv(),
+        ...(selectionFloor !== undefined ? { selectionFloor } : {}),
+    };
 }
 export function cycleIdForMaterial(materialId) {
     return `autoexec-material-${materialId}`;
@@ -273,14 +307,89 @@ function fallbackSignalTokens(sigs) {
     }
     return [...out];
 }
-function materialSignals(material) {
-    const sources = runtimeSessionSourcesForMaterial(material);
+function materialSignals(sources) {
     const sigs = sources.flatMap((source) => signals.extractSignals(source.turns));
     const tokens = signalTokens(sigs);
     return {
         signals: tokens.length > 0 ? tokens : fallbackSignalTokens(sigs),
         sourceCount: sources.length,
     };
+}
+function resolveMaterialResume(material, runner, sources, liveSources) {
+    if (material.sourceAgent !== 'claude-code' && material.sourceAgent !== 'cursor') {
+        const capability = material.sourceAgent
+            ? RUNTIME_CAPABILITY_MATRIX[material.sourceAgent].resume
+            : undefined;
+        return {
+            ok: false,
+            error: capability
+                ? `sourceAgent '${material.sourceAgent}' resume capability is ${capability.status}: ${capability.evidence}`
+                : 'runtime_session material has no resumable sourceAgent',
+        };
+    }
+    const expectedRunner = material.sourceAgent === 'cursor' ? 'cursor' : 'claude';
+    if (runner !== expectedRunner) {
+        return { ok: false, error: `resume identity harness does not match runner '${runner}'` };
+    }
+    if (material.sourceAgent === 'cursor' && basename(material.sourcePath).toLowerCase() === 'state.vscdb') {
+        return { ok: false, error: 'Cursor state.vscdb composer identity is ingest-only and cannot be resumed' };
+    }
+    const hasSnapshotSchema = typeof material.payload === 'object'
+        && material.payload !== null
+        && material.payload['schema'] === MATERIAL_RUNTIME_SESSION_SNAPSHOT_SCHEMA;
+    const snapshot = runtimeSessionEvidenceSummariesFromMaterialPayload(material.payload);
+    if (hasSnapshotSchema && !snapshot) {
+        return { ok: false, error: 'resume identity snapshot metadata is invalid' };
+    }
+    if (snapshot && (snapshot.sourceCount !== 1 || snapshot.omittedSourceCount !== 0)) {
+        return {
+            ok: false,
+            error: `resume identity is ambiguous for sourceAgent '${material.sourceAgent}': snapshot reports ${snapshot.sourceCount} sessions (${snapshot.omittedSourceCount} omitted)`,
+        };
+    }
+    const snapshotSource = snapshot?.summaries[0];
+    if (snapshot && snapshotSource?.agent !== material.sourceAgent) {
+        return { ok: false, error: `resume identity harness does not match sourceAgent '${material.sourceAgent}' in snapshot` };
+    }
+    const snapshotSessionId = snapshotSource?.sessionId?.trim();
+    if (snapshot && !snapshotSessionId) {
+        return { ok: false, error: `resume identity missing from snapshot for sourceAgent '${material.sourceAgent}'` };
+    }
+    if (!liveSources && snapshotSource?.resumeIdentityProvenance !== 'canonical_native_transcript') {
+        return {
+            ok: false,
+            error: `resume identity snapshot lacks verified native transcript provenance for sourceAgent '${material.sourceAgent}'`,
+        };
+    }
+    // Signals may safely fall back to the durable snapshot, but resume identity must retain live provenance.
+    // Otherwise an existing transcript with a new path-bound identity and no parseable turns can be filtered out,
+    // making the stale snapshot identity appear to match itself and resuming the wrong native session.
+    const identitySources = liveSources ?? sources;
+    if (identitySources.length === 0) {
+        return { ok: false, error: `resume identity missing for sourceAgent '${material.sourceAgent}'` };
+    }
+    if (identitySources.some((source) => source.agent !== material.sourceAgent)) {
+        return { ok: false, error: `resume identity harness does not match sourceAgent '${material.sourceAgent}'` };
+    }
+    if (identitySources.length !== 1) {
+        return { ok: false, error: `resume identity is ambiguous for sourceAgent '${material.sourceAgent}': expected one session, found ${identitySources.length}` };
+    }
+    const sessionId = identitySources[0].sessionId?.trim();
+    if (!sessionId) {
+        return { ok: false, error: `resume identity missing for sourceAgent '${material.sourceAgent}'` };
+    }
+    if (snapshotSessionId && sessionId !== snapshotSessionId) {
+        return { ok: false, error: `resume identity does not match snapshot for sourceAgent '${material.sourceAgent}'` };
+    }
+    const resume = { runner, sessionId };
+    try {
+        exec.validateAgentSessionResume(resume, runner);
+    }
+    catch (error) {
+        const code = error instanceof exec.AgentSessionResumeError ? error.code : 'invalid_session_id';
+        return { ok: false, error: `resume identity is invalid for sourceAgent '${material.sourceAgent}' (${code})` };
+    }
+    return { ok: true, resume };
 }
 async function emitConsumed(ingestor, material, item, extra = {}) {
     await ingestor.ingest({
@@ -361,9 +470,18 @@ async function processMaterial(material, opts, deps) {
             ackOne(deps.consumer, material);
             return item;
         }
-        let extracted;
+        let sources;
+        let liveResumeSources;
         try {
-            extracted = materialSignals(material);
+            const resolvedSources = runtimeSessionSourcesForMaterialDetails(material, undefined, deps.nativeSessionHome);
+            const sourceAvailable = materialSourceAvailable(material);
+            if (opts.resume && sourceAvailable && resolvedSources.sourceError) {
+                throw resolvedSources.sourceError;
+            }
+            sources = resolvedSources.sources;
+            // A successful read is authoritative even if the source disappears before the availability check.
+            // Discarding captured provenance here could resume a stale snapshot identity.
+            liveResumeSources = opts.resume ? resolvedSources.liveSources : undefined;
         }
         catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
@@ -372,10 +490,39 @@ async function processMaterial(material, opts, deps) {
             ackOne(deps.consumer, material);
             return item;
         }
+        const resume = opts.resume
+            ? resolveMaterialResume(material, runner.runner, sources, liveResumeSources)
+            : undefined;
+        if (resume && !resume.ok) {
+            const item = {
+                materialId: material.materialId,
+                action: 'fail',
+                status: 'refused',
+                cycleId,
+                reason: resume.error,
+            };
+            await emitConsumed(deps.ingestor, material, item);
+            ackOne(deps.consumer, material);
+            return item;
+        }
+        const extracted = materialSignals(sources);
         if (extracted.sourceCount === 0 || extracted.signals.length === 0) {
             const reason = extracted.sourceCount === 0 ? 'no parseable runtime session source' : 'no cycle-worthy session signals';
             const item = { materialId: material.materialId, action: 'fail', status: 'no_signals', cycleId, reason };
             await emitConsumed(deps.ingestor, material, item, { sourceCount: extracted.sourceCount, signalCount: extracted.signals.length });
+            ackOne(deps.consumer, material);
+            return item;
+        }
+        if ((runner.runner === 'claude' || runner.runner === 'codex') && !opts.agent) {
+            const runnerName = runner.runner === 'claude' ? 'Claude' : 'Codex';
+            const item = {
+                materialId: material.materialId,
+                action: 'fail',
+                status: 'refused',
+                cycleId,
+                reason: `execute capability is unsupported: built-in ${runnerName} requires a verified host filesystem sandbox`,
+            };
+            await emitConsumed(deps.ingestor, material, item);
             ackOne(deps.consumer, material);
             return item;
         }
@@ -393,6 +540,7 @@ async function processMaterial(material, opts, deps) {
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
             ...opts.safety,
             runner: runner.runner,
+            ...(resume?.ok ? { resume: resume.resume } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
         };
         const verdict = await exec.runAutoExecTask({
@@ -402,6 +550,10 @@ async function processMaterial(material, opts, deps) {
             review: deps.review,
             personality: deps.personality,
             memoryGraph: deps.memoryGraph,
+            ...(deps.disableSemanticIdf ? { disableSemanticIdf: true } : {}),
+            ...(deps.selectionPolicy !== 'engine-health' ? { selectionPolicy: deps.selectionPolicy } : {}),
+            selectionGuard: deps.selectionGuard,
+            ...(deps.selectionFloor !== undefined ? { selectionFloor: deps.selectionFloor } : {}),
             ...(opts.validate ? { validate: opts.validate } : {}),
             ...(opts.agent ? { agent: opts.agent } : {}),
             ...(opts.git ? { git: opts.git } : {}),
@@ -418,6 +570,7 @@ async function processMaterial(material, opts, deps) {
             signalCount: extracted.signals.length,
             signals: extracted.signals,
             runner: runner.runner,
+            ...(resume?.ok && verdict.status === 'solidified' ? { resumedSession: true } : {}),
         });
         ackOne(deps.consumer, material);
         return item;
@@ -864,7 +1017,13 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         return 0;
     }
     if (argv[0] === 'watch') {
-        const flags = parseFlags(argv.slice(1));
+        const watchArgv = argv.slice(1);
+        const flags = parseFlags(watchArgv);
+        const resume = parseSwitchFlag(watchArgv, 'resume');
+        if (resume === null) {
+            process.stderr.write(WATCH_USAGE);
+            return 1;
+        }
         const runner = parseRunner(flags['runner']);
         if (!runner.ok) {
             process.stderr.write(`${runner.error}\n`);
@@ -906,6 +1065,7 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         try {
             result = await runMaterialCycleWatch({
                 repo,
+                ...(resume ? { resume: true } : {}),
                 limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
                 target: flags['target'] || '.',
                 expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',
@@ -1006,6 +1166,11 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         return result.stopped === 'cancelled' ? cancellation.exitCode() : 0;
     }
     const flags = parseFlags(argv);
+    const resume = parseSwitchFlag(argv, 'resume');
+    if (resume === null) {
+        process.stderr.write(CYCLE_USAGE);
+        return 1;
+    }
     const runner = parseRunner(flags['runner']);
     if (!runner.ok) {
         process.stderr.write(`${runner.error}\n`);
@@ -1033,6 +1198,7 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
     try {
         result = await runMaterialCycleConsumer({
             repo,
+            ...(resume ? { resume: true } : {}),
             limit: parsePositiveInt(flags['limit'], DEFAULT_LIMIT),
             target: flags['target'] || '.',
             expectedEffect: flags['expected-effect'] || 'evolve from consumed session material',

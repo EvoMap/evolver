@@ -1,4 +1,4 @@
-import type { HubCapability, HubBindings } from './capability.js';
+import type { HubCapability, HubBindings, PublishReceipt } from './capability.js';
 import { type LeakCheckMode } from './sanitize.js';
 /** publish 回执非 accepted → 抛此错; SyncEngine 据 terminal 决定是否重试. */
 export declare class PublishRejectedError extends Error {
@@ -18,6 +18,13 @@ export interface HubBindingsOptions {
         /** Override the leak-check mode (strict = refuse / warn = log only / off = skip scan). Defaults to reading env, which defaults to strict. */
         mode?: LeakCheckMode;
     };
+}
+/**
+ * Internal publish-handler result. `submittedAssetIds` identifies the exact sanitized
+ * content sent to the Hub, even when the Hub's accepted receipt omits asset ids.
+ */
+export interface PublishDispatchResult extends PublishReceipt {
+    submittedAssetIds?: string[];
 }
 /**
  * 把 HubCapability 接到 core 两 seam(M6-1):

@@ -224,19 +224,35 @@ export function canonicalManifestBytes(manifest) {
     };
     return new TextEncoder().encode(JSON.stringify(canonical));
 }
-/** Parse a configured public key (PEM, raw 32-byte base64, or a KeyObject) into a node KeyObject. */
-function toPublicKey(publicKey) {
+/**
+ * Parse a configured public key (PEM, raw 32-byte base64, SPKI DER base64, or a KeyObject) into a node KeyObject.
+ *
+ * The base64 forms mirror scripts/release-update-manifest.mjs parsePublicKey exactly: the release pipeline and the
+ * built-in channel key ship the full SPKI DER blob (44 bytes for Ed25519), while operator overrides may supply the
+ * bare 32-byte raw key. Anything that does not decode to a valid Ed25519 SPKI key throws (fail-closed).
+ */
+export function toPublicKey(publicKey) {
     if (typeof publicKey !== 'string')
         return publicKey;
     const trimmed = publicKey.trim();
     if (trimmed.includes('BEGIN PUBLIC KEY'))
         return createPublicKey(trimmed);
-    // Raw 32-byte Ed25519 key, base64 → wrap in DER SPKI so createPublicKey accepts it.
-    const raw = Buffer.from(trimmed, 'base64');
-    if (raw.length !== 32)
-        throw new Error('ed25519 raw key must be 32 bytes');
-    const der = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]);
-    return createPublicKey({ key: der, format: 'der', type: 'spki' });
+    const decoded = Buffer.from(trimmed, 'base64');
+    // Raw 32-byte Ed25519 key, base64 → wrap in DER SPKI so createPublicKey accepts it;
+    // any other length is assumed to already be a full SPKI DER blob.
+    const der = decoded.length === 32
+        ? Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), decoded])
+        : decoded;
+    let key;
+    try {
+        key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    }
+    catch {
+        throw new Error('ed25519 public key must be a raw 32-byte or SPKI DER base64 key');
+    }
+    if (key.asymmetricKeyType !== 'ed25519')
+        throw new Error('ed25519 public key must be an Ed25519 key');
+    return key;
 }
 /** Verify the signature over the complete canonical manifest when a public key is configured. */
 function verifyConfiguredManifestSignature(manifest, publicKey) {

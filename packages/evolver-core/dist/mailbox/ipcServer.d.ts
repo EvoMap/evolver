@@ -1,11 +1,13 @@
 import { type IncomingMessage, type ServerResponse } from 'node:http';
 import { type Envelope } from './envelope.js';
-import type { MailboxStore } from './store.js';
+import { type MailboxStore } from './store.js';
 export interface IpcServerOptions {
     store: MailboxStore;
     token: string;
     host?: string;
     now?: () => number;
+    /** When set, every mailbox route is pinned to this daemon namespace. */
+    runtimeNamespace?: string;
     extraRoutes?: IpcRouteHandler[];
     onSend?: (envelope: Envelope, result: {
         receiptId: string;
@@ -34,6 +36,7 @@ export declare class MailboxIpcServer {
     private readonly token;
     private readonly host;
     private readonly now;
+    private readonly runtimeNamespace;
     private readonly extraRoutes;
     private readonly onSend;
     private readonly onAuthFailure;
@@ -42,5 +45,10 @@ export declare class MailboxIpcServer {
     close(): Promise<void>;
     private handle;
     private readJson;
+    private resolveSendNamespace;
+    private resolveRuntimeNamespace;
+    private messageInRuntime;
+    private canMutateMessage;
     private json;
 }
+export declare function legacyMailboxMessage(message: Envelope): Record<string, unknown>;

@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assetstore, benchmark, events } from '@evomap/evolver-core';
+import { semanticIdfEnabled } from './semanticIdfConfig.js';
 const usage = '用法: evolver anti-gene-benchmark --suite <file> [--assets <dir>] [--review-dir <dir>] [--events <file>] [--json] [--min-samples N] [--min-failure-delta D]\n'
     + '   或: evolver anti-gene-benchmark --report <events-file> [--json]\n';
 function parseFlags(argv) {
@@ -172,6 +173,7 @@ export async function runAntiGeneBenchmarkCommand(argv, deps = {}) {
     const report = await benchmark.runAntiGeneBenchmark(suite, { store, review }, {
         eventsPath,
         now: deps.now,
+        ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),
         ...(flags.minSamples !== undefined ? { minSamples: flags.minSamples } : {}),
         ...(flags.minFailureDelta !== undefined ? { minFailureDelta: flags.minFailureDelta } : {}),
     });

@@ -75,6 +75,8 @@ export interface AntiGeneRolloutOptions {
     minFailureDelta?: number;
     now?: () => number;
     eventsPath?: string;
+    /** Apply the pre-IDF semantic scorer consistently to both A/B arms. */
+    disableSemanticIdf?: boolean;
 }
 export declare function runAntiGeneRollout(suite: AntiGeneRolloutSuite, deps: AntiGeneRolloutDeps, options?: AntiGeneRolloutOptions): Promise<AntiGeneRolloutReport>;
 export declare function writeAntiGeneRolloutResult(report: AntiGeneRolloutReport, eventsPath: string, now?: () => number): Promise<void>;

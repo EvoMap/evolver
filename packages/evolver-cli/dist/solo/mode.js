@@ -34,6 +34,7 @@ export function applySoloLockdown(env = process.env) {
         EVOLVER_ATP: 'off',
         EVOLVER_ATP_AUTOBUY: 'off',
         EVOLVER_ATP_AUTODELIVER: 'off',
+        EVOLVER_LEARNING_TRACE_UPLOAD: '0',
         // Empty hub creds so any lower-level connector short-circuits.
         A2A_HUB_URL: '',
         EVOMAP_HUB_URL: '',

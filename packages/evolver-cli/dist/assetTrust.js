@@ -194,7 +194,20 @@ export async function runAssetTrustCommand(argv, deps = {}) {
         return parseFailure('unsafe_reason', parsed.json, stdout, stderr);
     const actorId = safeActorId(env);
     const desiredTrust = parsed.action === 'promote';
-    const change = provenance.changeTrust(asset.asset_id, desiredTrust, actorId, reason);
+    let change;
+    try {
+        change = provenance.changeTrust(asset.asset_id, desiredTrust, actorId, reason);
+    }
+    catch (error) {
+        if (error instanceof assetstore.ProvenanceWritePendingError) {
+            if (parsed.json)
+                writeJson(stdout, { ok: false, group: GROUP, reason: 'asset_write_pending' });
+            else
+                stderr('[asset-trust] asset_write_pending\n');
+            return 1;
+        }
+        throw error;
+    }
     const view = viewFor(asset, change.record, env);
     const ingestor = deps.ingestor ?? new events.Ingestor({ path: events.rootEventsPath() });
     const auditEventRecorded = change.changed

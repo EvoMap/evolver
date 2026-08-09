@@ -1,9 +1,10 @@
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
-import { validateWire, verifyAssetId } from '../wire/index.js';
+import { computeAssetId, validateWire, verifyAssetId } from '../wire/index.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { assertOptionalRegularFile, isReliableAssetStoreLockRelease, readUtf8Regular, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
+import { isActiveUnverifiedProvenance } from './provenance.js';
 import { parseAssetSyncSidecarRecord, parseProvenanceRecord, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 export const DEFAULT_ASSET_HEALTH_MAX_FILE_BYTES = 64 * 1024 * 1024;
 const LOCAL_ASSET_SIDECARS = [
@@ -107,7 +108,7 @@ function summarize(files, sidecars) {
         sidecars: [...sidecars],
     };
 }
-function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds) {
+function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedContentIds) {
     try {
         const path = join(baseDir, file);
         const stat = assertOptionalRegularFile(path);
@@ -116,7 +117,7 @@ function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds) {
         if (stat.size > maxFileBytes) {
             return { ...emptyFile(kind, file, 'unavailable', 'scan_limit_exceeded'), bytes: stat.size };
         }
-        const raw = readUtf8Regular(path);
+        const raw = readUtf8Regular(path, maxFileBytes);
         if (raw === null)
             return emptyFile(kind, file, 'unavailable', 'read_unavailable');
         const rows = raw.split('\n').filter((line) => line.trim().length > 0);
@@ -144,21 +145,22 @@ function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds) {
                     duplicateRows += 1;
                 else
                     seen.add(assetId);
-                if (!verifyAssetId(record)) {
+                const hashMatches = verifyAssetId(record);
+                if (!hashMatches) {
                     // A hash mismatch is corruption UNLESS provenance says this id is an unverified hub reuse: the hub
                     // rewrote the delivered bytes and reuse froze them untrusted on purpose (#570). That is expected, not
                     // store rot, so it lands in the benign unverifiedRows bucket and never degrades the store.
-                    if (unverifiedIds.has(assetId))
+                    if (unverifiedContentIds.get(assetId) === computeAssetId(record))
                         unverifiedRows += 1;
                     else
                         hashMismatchRows += 1;
-                    continue;
                 }
-                if (kind !== 'AntiGene' && !validateWire(record).ok) {
+                const schemaValid = kind === 'AntiGene' || validateWire(record).ok;
+                if (!schemaValid) {
                     schemaInvalidRows += 1;
-                    continue;
                 }
-                validRows += 1;
+                if (hashMatches && schemaValid)
+                    validRows += 1;
             }
             catch {
                 corruptRows += 1;
@@ -195,20 +197,29 @@ function inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds) {
     }
 }
 /**
- * Asset ids marked in the provenance sidecar as an unverified hub reuse (reason `unverified_*`, evolver-v2#570).
+ * Asset ids whose latest provenance decision marks a supported unverified frozen ingest.
  * Read directly from `<baseDir>/provenance.jsonl` — NOT via ProvenanceStore — because inspectLocalAssetStore
  * already holds the shared `.assetstore.lock`, and ProvenanceStore would try to re-acquire it. A missing or
- * unreadable sidecar yields an empty set: without provenance every mismatch stays classified as corruption.
+ * unreadable sidecar yields an empty map: without provenance every mismatch stays classified as corruption.
  */
-function readUnverifiedReuseIds(baseDir) {
-    const raw = readUtf8Regular(join(baseDir, 'provenance.jsonl'));
+function readUnverifiedReuseContentIds(baseDir, maxFileBytes) {
+    let raw;
+    try {
+        raw = readUtf8Regular(join(baseDir, 'provenance.jsonl'), maxFileBytes);
+    }
+    catch {
+        return new Map();
+    }
     if (raw === null)
-        return new Set();
-    const ids = new Set();
+        return new Map();
+    const ids = new Map();
     for (const record of parseSidecarJsonl(raw, parseProvenanceRecord).records) {
-        if (record.trusted === false && typeof record.reason === 'string' && record.reason.startsWith('unverified_')) {
-            ids.add(record.assetId);
+        const frozenContentId = record.frozenContentId;
+        if (frozenContentId && isActiveUnverifiedProvenance(record, frozenContentId)) {
+            ids.set(record.assetId, frozenContentId);
         }
+        else
+            ids.delete(record.assetId);
     }
     return ids;
 }
@@ -222,7 +233,7 @@ function inspectSidecar(baseDir, definition, maxFileBytes) {
         if (stat.size > maxFileBytes) {
             return { ...emptySidecar(kind, file, 'unavailable', 'scan_limit_exceeded'), bytes: stat.size };
         }
-        const raw = readUtf8Regular(path);
+        const raw = readUtf8Regular(path, maxFileBytes);
         if (raw === null)
             return emptySidecar(kind, file, 'unavailable', 'read_unavailable');
         const parsed = parseSidecarJsonl(raw, parseRecord);
@@ -283,14 +294,14 @@ export function inspectLocalAssetStore(baseDir, opts = {}, deps = {}) {
     catch {
         return summarize(allFiles('unavailable', 'lock_unavailable'), allSidecars('unavailable', 'lock_unavailable'));
     }
-    const maxFileBytes = healthScanLimit(opts.maxFileBytes);
-    // Read the unverified-reuse set once, under the lock we already hold, so every asset file classifies its
-    // hash mismatches consistently against the same provenance snapshot.
-    const unverifiedIds = readUnverifiedReuseIds(baseDir);
     let report;
     try {
+        const maxFileBytes = healthScanLimit(opts.maxFileBytes);
+        // Read the unverified-reuse set once, under the lock we already hold, so every asset file classifies its
+        // hash mismatches consistently against the same bounded provenance snapshot.
+        const unverifiedContentIds = readUnverifiedReuseContentIds(baseDir, maxFileBytes);
         report = summarize(Object.entries(LOCAL_ASSET_FILES)
-            .map(([kind, file]) => inspectFile(baseDir, kind, file, maxFileBytes, unverifiedIds)), LOCAL_ASSET_SIDECARS.map((definition) => inspectSidecar(baseDir, definition, maxFileBytes)));
+            .map(([kind, file]) => inspectFile(baseDir, kind, file, maxFileBytes, unverifiedContentIds)), LOCAL_ASSET_SIDECARS.map((definition) => inspectSidecar(baseDir, definition, maxFileBytes)));
     }
     catch {
         report = summarize(allFiles('unavailable', 'read_unavailable'), allSidecars('unavailable', 'read_unavailable'));

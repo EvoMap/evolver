@@ -113,6 +113,7 @@ export class HubLearningPacketSink {
             const res = await this.opts.fetchFn(url, {
                 method: 'POST',
                 headers,
+                redirect: 'manual',
                 body: JSON.stringify(learningPacketWireBody(draft, this.opts.nodeId?.())),
             });
             if (res.status === 201) {

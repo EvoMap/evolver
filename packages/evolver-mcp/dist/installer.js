@@ -7,12 +7,13 @@
 // the agent discovers evolver's tools, AND merge a SessionStart hook into .claude/settings.json so memory is
 // pushed at session start (MCP alone can't push — the agent must pull). Hardened like v1: atomic writes
 // (tmp+rename), refusal to follow a symlink at any adapter-owned path (a hostile workspace could redirect
-// writes/unlinks outside the project), marker-managed so reinstall/uninstall only touch evolver's own entries,
+// writes/unlinks outside the project), conditionally committed so concurrent runtime updates are preserved,
+// marker-managed so reinstall/uninstall only touch evolver's own entries,
 // and a hooks-UNION merge that preserves the user's existing hooks.
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { util } from '@evomap/evolver-core';
 import { planInjection } from './injection.js';
 // codex installer lives in its own module (TOML, different config path) but plugs into the same install/uninstall
@@ -25,48 +26,22 @@ import { installCursorRules, uninstallCursorRules } from './cursorRulesInstaller
 import { installAntigravity, uninstallAntigravity } from './antigravityInstaller.js';
 import { installOpenCode, uninstallOpenCode } from './opencodeInstaller.js';
 import { installKiro, uninstallKiro } from './kiroInstaller.js';
+import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
+import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
+export { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
 /** Marks a config file as containing evolver-managed entries, so uninstall only removes what we added. */
 export const MANAGED_MARKER = '_evolver_managed';
-/** A hook entry is evolver-owned if any of its commands mention this — used to replace-not-duplicate on reinstall. */
-const EVOLVER_HOOK_TAG = 'evolver';
+/** Official command-handler metadata, also gives custom commands an ownership marker for reinstall/uninstall. */
+export const EVOLVER_HOOK_STATUS = 'Loading Evolver memory';
 /** Default command the SessionStart hook runs to render + print the memory injection. The `--hook-stdin` flag opts
  *  the entrypoint into reading the runtime's SessionStart JSON from stdin (to capture session_id, #205); only the
  *  installed hook sets it, so a manual `evolver inject session-start` never reads stdin. */
 export const DEFAULT_HOOK_COMMAND = 'evolver inject session-start --hook-stdin';
+/** Local-only prompt recall. The handler is default-off and reads stdin only when EVOLVER_RECALL_MODE opts in. */
+export const DEFAULT_PROMPT_RECALL_HOOK_COMMAND = 'evolver inject prompt-recall --hook-stdin';
 const SHARED_USER_CONFIG_MODE = 0o600;
 const SHARED_USER_DIR_MODE = 0o700;
 const SHARED_USER_CONFIG_WRITE_RETRIES = 5;
-export class SymlinkRefusedError extends Error {
-    constructor(label, path) {
-        super(`[setup-hooks] refusing to operate: ${label} ${path} is a symbolic link — evolver will not follow symlinks for adapter-owned paths (a hostile workspace could redirect writes/unlinks outside the project). Replace it with a real directory/file and rerun.`);
-        this.name = 'SymlinkRefusedError';
-    }
-}
-/**
- * Thrown when a SHARED user config (~/.claude.json or ~/.claude/settings.json) exists but does not parse as JSON.
- * These files are Claude Code's own state (projects/oauthAccount/userID/history/settings),
- * and user-scope install merges into them via a full-file atomic replace. The lenient readJson() returns {} on
- * a parse failure, which would make the merge emit ONLY evolver's entry and silently WIPE the whole file — a
- * realistic data-loss path because Claude Code writes these files non-atomically (a concurrent session can leave
- * one truncated). For the shared-config read we therefore refuse instead of clobbering. Project-scoped
- * .mcp.json/.claude/settings.json are evolver-owned, so their lenient fresh-start behavior stays unchanged.
- */
-export class UnparseableConfigError extends Error {
-    constructor(label, path, owner = 'Claude Code') {
-        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists and is non-empty but is not valid JSON. This is ${owner}'s own shared config; merging into it would replace the whole file and could wipe its contents. Fix or remove the corrupt file, then rerun.`);
-        this.name = 'UnparseableConfigError';
-    }
-}
-/**
- * Thrown when a SHARED user config exists but is empty or whitespace-only. Claude Code writes these files with a
- * truncating write, so present-empty can be a concurrent-write window rather than a fresh config.
- */
-export class EmptySharedConfigError extends Error {
-    constructor(label, path, owner = 'Claude Code') {
-        super(`[setup-hooks] refusing to overwrite ${label} (${path}): the file exists but is empty or contains only whitespace. ${owner} may be in the middle of a truncating write, and treating it as fresh config could wipe shared config data. Fix the empty file or retry after ${owner} finishes writing it.`);
-        this.name = 'EmptySharedConfigError';
-    }
-}
 // ── fs hardening ────────────────────────────────────────────────────────────
 /** Refuse to read/write through a symlink at an adapter-owned path. Missing path is fine (install creates it). */
 function assertNotSymlink(path, label) {
@@ -82,23 +57,33 @@ function assertNotSymlink(path, label) {
     if (st.isSymbolicLink())
         throw new SymlinkRefusedError(label, path);
 }
-function readJson(path) {
+/** Validate a shared config path without following either its parent or the target. */
+function validatedSharedConfigMode(path, label) {
+    const parentPath = dirname(path);
+    const parent = lstatSync(parentPath);
+    if (parent.isSymbolicLink())
+        throw new SymlinkRefusedError(`${label} parent directory`, parentPath);
+    if (!parent.isDirectory()) {
+        throw new Error(`[setup-hooks] refusing to operate: parent of ${label} (${parentPath}) is not a directory.`);
+    }
+    let target;
     try {
-        if (!existsSync(path))
-            return {};
-        const raw = readFileSync(path, 'utf8').trim();
-        return raw ? JSON.parse(raw) : {};
+        target = lstatSync(path);
     }
-    catch {
-        return {}; // unparseable → start fresh (merge will re-add evolver entries)
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return undefined;
+        throw error;
     }
+    if (target.isSymbolicLink())
+        throw new SymlinkRefusedError(label, path);
+    if (!target.isFile()) {
+        throw new Error(`[setup-hooks] refusing to operate: ${label} ${path} is not a regular file.`);
+    }
+    return target.mode & 0o777;
 }
 /**
- * Strict variant for SHARED user configs (Claude Code's own ~/.claude.json / ~/.claude/settings.json). Only
- * ENOENT is treated as {} so a fresh user-scope install works. A present empty/whitespace file is refused because
- * it can be Claude Code's truncating-write window; a present non-empty parse failure is refused because returning
- * {} would make the subsequent full-file atomic write clobber Claude Code's state. Use this only for the
- * shared-config read; project-scoped evolver-owned files keep the lenient readJson() above.
+ * Only ENOENT is treated as a fresh config. Empty or malformed existing files are never replaced.
  */
 function readJsonStrictShared(path, label) {
     return readJsonStrictSharedSnapshot(path, label).data;
@@ -133,18 +118,8 @@ function readRawIfExists(path) {
         throw e;
     }
 }
-function existingFileMode(path) {
-    try {
-        return statSync(path).mode & 0o777;
-    }
-    catch (e) {
-        if (e.code === 'ENOENT')
-            return undefined;
-        throw e;
-    }
-}
-function sharedUserConfigWriteMode(path) {
-    const existingMode = existingFileMode(path);
+function sharedUserConfigWriteMode(path, label) {
+    const existingMode = validatedSharedConfigMode(path, label);
     return existingMode === undefined ? SHARED_USER_CONFIG_MODE : existingMode & 0o700;
 }
 function ensureSharedUserClaudeDir(path) {
@@ -188,38 +163,6 @@ function hardenSharedUserConfigFile(path, label) {
     if (hardenedMode !== currentMode)
         chmodSync(path, hardenedMode);
 }
-function writeJsonAtomic(path, data, options = {}) {
-    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    const content = `${JSON.stringify(data, null, 2)}\n`;
-    const mode = options.mode ?? existingFileMode(path);
-    const restoreMode = process.platform === 'win32' ? mode : undefined;
-    try {
-        writeFileSync(tmp, content, mode === undefined
-            ? { encoding: 'utf8', flag: 'wx' }
-            : { encoding: 'utf8', flag: 'wx', mode });
-        if (mode !== undefined)
-            chmodSync(tmp, mode);
-        if (process.platform === 'win32' && mode !== undefined && existsSync(path)) {
-            chmodSync(path, mode | 0o200);
-        }
-        renameSync(tmp, path);
-        if (mode !== undefined)
-            chmodSync(path, mode);
-    }
-    catch (e) {
-        rmSync(tmp, { force: true });
-        if (restoreMode !== undefined) {
-            try {
-                if (existsSync(path))
-                    chmodSync(path, restoreMode);
-            }
-            catch (rollbackError) {
-                e.rollbackError = rollbackError;
-            }
-        }
-        throw e;
-    }
-}
 let sharedConfigRaceHookForTest;
 export function _setSharedConfigRaceHookForTest(hook) {
     sharedConfigRaceHookForTest = hook;
@@ -227,23 +170,64 @@ export function _setSharedConfigRaceHookForTest(hook) {
 function writeSharedJsonWithRetry(path, label, update) {
     const lockPath = `${path}.evolver.lock`;
     util.acquireLock(lockPath);
+    let operationResult = false;
+    let operationFailed = false;
+    let operationError;
     try {
-        for (let attempt = 1; attempt <= SHARED_USER_CONFIG_WRITE_RETRIES; attempt++) {
-            const snapshot = readJsonStrictSharedSnapshot(path, label);
-            const next = update(snapshot.data);
-            if (!next.changed)
-                return false;
-            sharedConfigRaceHookForTest?.(path, attempt);
-            if (readRawIfExists(path) !== snapshot.raw)
-                continue;
-            writeJsonAtomic(path, next.data, { mode: sharedUserConfigWriteMode(path) });
-            return true;
+        operationResult = (() => {
+            for (let attempt = 1; attempt <= SHARED_USER_CONFIG_WRITE_RETRIES; attempt++) {
+                validatedSharedConfigMode(path, label);
+                const snapshot = readJsonStrictSharedSnapshot(path, label);
+                validatedSharedConfigMode(path, label);
+                const next = update(snapshot.data);
+                if (!next.changed)
+                    return false;
+                sharedConfigRaceHookForTest?.(path, attempt);
+                validatedSharedConfigMode(path, label);
+                const currentRaw = readRawIfExists(path);
+                validatedSharedConfigMode(path, label);
+                if (currentRaw !== snapshot.raw)
+                    continue;
+                try {
+                    commitSharedFile({
+                        path,
+                        expectedRaw: snapshot.raw ?? undefined,
+                        nextRaw: `${JSON.stringify(next.data, null, 2)}\n`,
+                        mode: sharedUserConfigWriteMode(path, label),
+                    });
+                    return true;
+                }
+                catch (error) {
+                    if (error instanceof SharedFileConflictError)
+                        continue;
+                    throw error;
+                }
+            }
+            throw new Error(`[setup-hooks] refusing to overwrite ${label} (${path}): the file changed repeatedly while evolver was merging it. Rerun setup-hooks after Claude Code finishes writing this config.`);
+        })();
+    }
+    catch (error) {
+        operationFailed = true;
+        operationError = error;
+    }
+    let releaseError;
+    try {
+        const released = util.releaseLock(lockPath);
+        if (!released.released)
+            releaseError = new util.LockReleaseError(released.reason);
+    }
+    catch (error) {
+        releaseError = error;
+    }
+    if (operationFailed) {
+        if (operationError instanceof Error && releaseError !== undefined) {
+            operationError.lockReleaseError = releaseError;
         }
+        throw operationError;
     }
-    finally {
-        util.releaseLock(lockPath);
-    }
-    throw new Error(`[setup-hooks] refusing to overwrite ${label} (${path}): the file changed repeatedly while evolver was merging it. Rerun setup-hooks after Claude Code finishes writing this config.`);
+    if (releaseError !== undefined)
+        throw releaseError;
+    return operationResult;
 }
 // ── pure merge (exported for tests) ──────────────────────────────────────────
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -275,7 +259,60 @@ function collectCommands(entry) {
                 out.push(h['command']);
     return out;
 }
-const isEvolverOwned = (entry) => collectCommands(entry).some((c) => c.includes(EVOLVER_HOOK_TAG));
+const LEGACY_NODE_COMMAND = /^"?node(?:\.exe)?"?\s+/i;
+const LEGACY_EVOLVER_SCRIPT_BASENAME = /(?:^|[\\/'"\s])(?:evolver-session-start|evolver-session-end|evolver-signal-detect|evolver-task-recall|evolver-daemon-start)\.js(?=$|[\\/'"\s])/i;
+const LEGACY_V2_CLI_HOOK_COMMAND = /^"?evolver(?:\.cmd|\.exe)?"?\s+inject\s+(?:session-start|prompt-recall)(?:\s|$)/i;
+function isKnownEvolverHookCommand(command) {
+    // V1 invoked only these copied script basenames through node; pre-marker V2 used the two anchored CLI verbs.
+    // Do not use a generic `evolver` substring: user script paths and messages commonly contain that project name.
+    const trimmed = command.trim();
+    return LEGACY_V2_CLI_HOOK_COMMAND.test(trimmed)
+        || (LEGACY_NODE_COMMAND.test(trimmed) && LEGACY_EVOLVER_SCRIPT_BASENAME.test(trimmed));
+}
+/** Bind custom-command ownership to that exact command without adding undocumented hook-schema fields. */
+export function evolverManagedHookStatus(command) {
+    if (isKnownEvolverHookCommand(command))
+        return EVOLVER_HOOK_STATUS;
+    const commandTag = createHash('sha256').update(command, 'utf8').digest('hex').slice(0, 16);
+    return `${EVOLVER_HOOK_STATUS} [evolver:${commandTag}]`;
+}
+const NO_MANAGED_HOOK_COMMANDS = new Set();
+const isEvolverHandler = (handler, trustManagedStatus, managedCommands) => {
+    if (!isObj(handler) || typeof handler['command'] !== 'string')
+        return false;
+    const command = handler['command'];
+    return isKnownEvolverHookCommand(command)
+        || (trustManagedStatus && (managedCommands.has(command)
+            || handler['statusMessage'] === evolverManagedHookStatus(command)));
+};
+/** Remove only Evolver-owned handlers, retaining user handlers that share the same matcher group. */
+export function stripEvolverHookEntries(entries, trustManagedStatus = false, managedCommands = NO_MANAGED_HOOK_COMMANDS) {
+    let changed = false;
+    const keptEntries = [];
+    for (const entry of entries) {
+        if (!isObj(entry)) {
+            keptEntries.push(entry);
+            continue;
+        }
+        const handlers = entry['hooks'];
+        if (!Array.isArray(handlers)) {
+            if (isEvolverHandler(entry, trustManagedStatus, managedCommands))
+                changed = true;
+            else
+                keptEntries.push(entry);
+            continue;
+        }
+        const keptHandlers = handlers.filter((handler) => !isEvolverHandler(handler, trustManagedStatus, managedCommands));
+        if (keptHandlers.length === handlers.length) {
+            keptEntries.push(entry);
+            continue;
+        }
+        changed = true;
+        if (keptHandlers.length > 0)
+            keptEntries.push({ ...entry, hooks: keptHandlers });
+    }
+    return { changed, entries: keptEntries };
+}
 /**
  * deepMerge, but for `hooks.<event>` arrays keep the user's existing entries and only replace evolver-owned
  * ones — so reinstalling refreshes evolver's hook without clobbering a user's own SessionStart/Stop hooks.
@@ -284,16 +321,41 @@ export function mergeHooksUnion(target, source) {
     const result = deepMerge(target, source);
     const tHooks = target['hooks'];
     const sHooks = source['hooks'];
+    const trustManagedStatus = target[MANAGED_MARKER] === true;
     if (isObj(tHooks) && isObj(sHooks)) {
-        const merged = { ...(isObj(result['hooks']) ? result['hooks'] : {}) };
+        const merged = {};
+        const managedCommands = new Set();
+        for (const value of Object.values(sHooks)) {
+            if (!Array.isArray(value))
+                continue;
+            for (const entry of value)
+                for (const command of collectCommands(entry))
+                    managedCommands.add(command);
+        }
+        // First remove every stale Evolver-owned entry, including V1 events (Stop/PostToolUse) that V2 deliberately
+        // no longer installs. User entries and non-array hook metadata remain untouched.
+        for (const event of Object.keys(tHooks)) {
+            if (POLLUTION_KEYS.has(event))
+                continue;
+            const value = tHooks[event];
+            if (!Array.isArray(value)) {
+                merged[event] = value;
+                continue;
+            }
+            const kept = stripEvolverHookEntries(value, trustManagedStatus, managedCommands).entries;
+            if (kept.length > 0)
+                merged[event] = kept;
+        }
         for (const event of Object.keys(sHooks)) {
             if (POLLUTION_KEYS.has(event))
                 continue; // same guard for the hooks-union branch
-            const tArr = tHooks[event];
             const sArr = sHooks[event];
-            if (Array.isArray(tArr) && Array.isArray(sArr)) {
-                merged[event] = [...tArr.filter((e) => !isEvolverOwned(e)), ...sArr];
+            if (Array.isArray(sArr)) {
+                const prior = Array.isArray(merged[event]) ? merged[event] : [];
+                merged[event] = [...prior, ...sArr];
             }
+            else
+                merged[event] = sArr;
         }
         result['hooks'] = merged;
     }
@@ -303,14 +365,16 @@ export function mergeHooksUnion(target, source) {
 export function stripManaged(data) {
     let changed = false;
     const out = { ...data };
+    const trustManagedStatus = data[MANAGED_MARKER] === true;
     const hooks = out['hooks'];
     if (isObj(hooks)) {
         const nextHooks = {};
         for (const event of Object.keys(hooks)) {
             const arr = hooks[event];
             if (Array.isArray(arr)) {
-                const kept = arr.filter((e) => !isEvolverOwned(e));
-                if (kept.length !== arr.length)
+                const stripped = stripEvolverHookEntries(arr, trustManagedStatus);
+                const kept = stripped.entries;
+                if (stripped.changed)
                     changed = true;
                 if (kept.length > 0)
                     nextHooks[event] = kept;
@@ -343,8 +407,26 @@ export function stripManaged(data) {
     }
     return { changed, data: out };
 }
-function sessionStartHookPatch(hookCommand) {
-    return { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: hookCommand }] }] } };
+function runtimeHookPatch(sessionStartCommand, promptRecallCommand) {
+    return {
+        hooks: {
+            SessionStart: [{ hooks: [{
+                            type: 'command', command: sessionStartCommand, statusMessage: evolverManagedHookStatus(sessionStartCommand),
+                        }] }],
+            // Claude Code documents command-hook timeouts in seconds. A timeout discards output and lets the prompt
+            // proceed, so this remains fail-open even if the local CLI process stalls before its own deadline.
+            UserPromptSubmit: [{ hooks: [{
+                            type: 'command', command: promptRecallCommand, timeout: 5,
+                            statusMessage: evolverManagedHookStatus(promptRecallCommand),
+                        }] }],
+        },
+    };
+}
+function hasExactHookCommand(config, event, command) {
+    const hooks = config['hooks'];
+    if (!isObj(hooks) || !Array.isArray(hooks[event]))
+        return false;
+    return hooks[event].some((entry) => collectCommands(entry).includes(command));
 }
 /** True when a parsed config already carries evolver's MCP registration (mcpServers.evolver) — the same entry
  *  stripManaged removes on uninstall. The "already installed" short-circuit checks this in addition to the hook
@@ -416,6 +498,7 @@ export function installInjection(plan, opts) {
         return { ok: false, runtime: plan.runtime, mode: plan.mode, files: [], error: `installer not yet implemented for ${plan.runtime} (supported: claude-code, codex, cursor, antigravity, opencode, kiro)` };
     }
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
+    const promptRecallHookCommand = opts.promptRecallHookCommand ?? DEFAULT_PROMPT_RECALL_HOOK_COMMAND;
     const scope = opts.scope ?? 'project';
     const { mcpConfigPath, mcpIsSharedUserConfig, claudeDir, settingsPath } = claudeCodeTargets(scope, opts.configRoot);
     const mcpLabel = mcpIsSharedUserConfig ? '~/.claude.json' : '.mcp.json';
@@ -426,12 +509,8 @@ export function installInjection(plan, opts) {
     assertNotSymlink(mcpConfigPath, mcpLabel);
     assertNotSymlink(claudeDir, mcpIsSharedUserConfig ? '~/.claude' : '.claude');
     assertNotSymlink(settingsPath, settingsLabel);
-    // For the SHARED user config (~/.claude.json + ~/.claude/settings.json) read strictly: a present, non-empty,
-    // unparseable file aborts the install (UnparseableConfigError) instead of being treated as {} and clobbered by
-    // the full-file atomic write below. Project-scoped evolver-owned files keep the lenient readJson fresh-start.
-    const readConfig = mcpIsSharedUserConfig
-        ? (p, label) => readJsonStrictShared(p, label)
-        : (p, _label) => readJson(p);
+    // Validate both targets before either write so malformed input cannot cause a partial install.
+    const readConfig = (p, label) => readJsonStrictShared(p, label);
     if (mcpIsSharedUserConfig) {
         ensureSharedUserClaudeDir(claudeDir);
         hardenSharedUserConfigFile(mcpConfigPath, mcpLabel);
@@ -443,7 +522,11 @@ export function installInjection(plan, opts) {
     // settings marker alone missed user-scope upgrades: a legacy global install stamped ~/.claude/settings.json but
     // registered the MCP in ~/.mcp.json (never ~/.claude.json), so a non-force reinstall returned alreadyInstalled
     // and left #290 unfixed. The hook and the MCP live in different files for user scope, so check both.
-    if (!opts.force && existingSettings[MANAGED_MARKER] === true && hasEvolverMcpRegistration(existingMcp)) {
+    if (!opts.force
+        && existingSettings[MANAGED_MARKER] === true
+        && hasEvolverMcpRegistration(existingMcp)
+        && hasExactHookCommand(existingSettings, 'SessionStart', hookCommand)
+        && hasExactHookCommand(existingSettings, 'UserPromptSubmit', promptRecallHookCommand)) {
         return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [], alreadyInstalled: true };
     }
     // MCP server registration. project → <root>/.mcp.json (stamped _evolver_managed). user → ~/.claude.json's
@@ -456,9 +539,11 @@ export function installInjection(plan, opts) {
         }));
     }
     else {
-        const mcpMerged = deepMerge(existingMcp, plan.config);
-        mcpMerged[MANAGED_MARKER] = true;
-        writeJsonAtomic(mcpConfigPath, mcpMerged);
+        writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
+            const mcpMerged = deepMerge(current, plan.config);
+            mcpMerged[MANAGED_MARKER] = true;
+            return { changed: true, data: mcpMerged };
+        });
     }
     // .claude/settings.json ← SessionStart hook (hooks-union preserves the user's own hooks). For user scope this
     // is ~/.claude/settings.json, which is already Claude Code's user-level hook config.
@@ -468,15 +553,17 @@ export function installInjection(plan, opts) {
         mkdirSync(claudeDir, { recursive: true });
     if (mcpIsSharedUserConfig) {
         writeSharedJsonWithRetry(settingsPath, settingsLabel, (current) => {
-            const settingsMerged = mergeHooksUnion(current, sessionStartHookPatch(hookCommand));
+            const settingsMerged = mergeHooksUnion(current, runtimeHookPatch(hookCommand, promptRecallHookCommand));
             settingsMerged[MANAGED_MARKER] = true;
             return { changed: true, data: settingsMerged };
         });
     }
     else {
-        const settingsMerged = mergeHooksUnion(existingSettings, sessionStartHookPatch(hookCommand));
-        settingsMerged[MANAGED_MARKER] = true;
-        writeJsonAtomic(settingsPath, settingsMerged);
+        writeSharedJsonWithRetry(settingsPath, settingsLabel, (current) => {
+            const settingsMerged = mergeHooksUnion(current, runtimeHookPatch(hookCommand, promptRecallHookCommand));
+            settingsMerged[MANAGED_MARKER] = true;
+            return { changed: true, data: settingsMerged };
+        });
     }
     return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [mcpConfigPath, settingsPath] };
 }
@@ -512,20 +599,15 @@ export function uninstallInjection(runtime, opts) {
     ];
     for (const [path, label] of targets) {
         assertNotSymlink(path, label);
+        if (existsSync(path))
+            readJsonStrictShared(path, label);
+    }
+    for (const [path, label] of targets) {
         if (!existsSync(path))
             continue;
-        if (mcpIsSharedUserConfig) {
-            const changed = writeSharedJsonWithRetry(path, label, (current) => stripManaged(current));
-            if (changed)
-                cleaned.push(path);
-        }
-        else {
-            const { changed, data } = stripManaged(readJson(path));
-            if (changed) {
-                writeJsonAtomic(path, data);
-                cleaned.push(path);
-            }
-        }
+        const changed = writeSharedJsonWithRetry(path, label, (current) => stripManaged(current));
+        if (changed)
+            cleaned.push(path);
     }
     return { ok: true, runtime, mode: 'uninstall', files: cleaned };
 }

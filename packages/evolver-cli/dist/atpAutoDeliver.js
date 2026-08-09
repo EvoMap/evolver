@@ -172,8 +172,8 @@ export function buildAtpAutoDeliverProofPayload(task, nowDate = () => new Date()
     return {
         result: 'completed',
         asset_id: assetId,
-        completed_at: taskString(task, 'claimed_at') ?? nowDate().toISOString(),
-        pass_rate: 1.0,
+        completed_at: taskString(task, 'completed_at') ?? taskString(task, 'completedAt') ?? nowDate().toISOString(),
+        // pass_rate is deliberately absent: auto-delivery has an asset reference, not measured validation evidence.
         signals: Array.isArray(task['signals']) ? task['signals'].filter((s) => typeof s === 'string').slice(0, 10) : [],
         submitter: 'evolver_auto_deliver',
     };

@@ -107,6 +107,7 @@ interface ProxyLoopDaemon {
     nextDelay: (last: InboundResult) => number;
     sleep?: (delayMs: number) => Promise<void>;
     setWakeHandler?: (wake: (() => void) | undefined) => void;
+    setExpectedNextTick?: (delayMs: number | undefined) => void;
 }
 interface ProxyLoopLogger {
     write: (chunk: string) => unknown;
@@ -121,6 +122,16 @@ export interface ProxyLoopOptions {
     maxConsecutiveTickFailures?: number;
 }
 export declare function runProxyLoop(daemon: ProxyLoopDaemon, options?: ProxyLoopOptions): Promise<void>;
+export declare function runManagedProxyLoop(options: {
+    daemon: ProxyLoopDaemon & StartupStoppableDaemon;
+    store: StartupClosableStore;
+    notifier: {
+        readyOrThrow(): Promise<void>;
+        stop(): void;
+    };
+    runLoop?: (daemon: ProxyLoopDaemon, options?: ProxyLoopOptions) => Promise<void>;
+    logger?: ProxyLoopLogger;
+}): Promise<void>;
 interface CreateProxyDaemonDepsOptions {
     runtime: HubRuntime;
     store: mailbox.MailboxStore;

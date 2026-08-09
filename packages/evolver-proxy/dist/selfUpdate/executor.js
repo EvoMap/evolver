@@ -35,7 +35,7 @@ function report(deps, result) {
  * Execute a force_update directive end to end: decide → (mutex) → download → VERIFY → atomic replace → restart.
  *
  * Order is load-bearing:
- *  1. policy off → do nothing (the default-off risk gate; a half-built channel must not auto-apply).
+ *  1. policy off → do nothing (explicit opt-out; auto is hard-gated upstream by supervisor + public key).
  *  2. decideUpdate (pure): reject bad manifests, NOOP when already satisfied (no download, no restart).
  *  3. mutex: exactly one execution; concurrent callers get `already_in_progress` and touch no disk.
  *  4. download the staged release.

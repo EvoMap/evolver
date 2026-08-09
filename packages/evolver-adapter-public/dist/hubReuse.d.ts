@@ -5,6 +5,9 @@ type GeneCandidateInput = algo.GeneCandidateInput;
 export declare const SEARCH_CACHE_TTL_MS: number;
 export declare const SEARCH_CACHE_MAX = 200;
 export declare const PAYLOAD_CACHE_MAX = 100;
+export declare const SEMANTIC_SEARCH_LIMIT = 10;
+export declare const SEMANTIC_QUERY_MAX_TERMS = 12;
+export declare const SEMANTIC_QUERY_MAX_CHARS = 512;
 /** Default reuse mode (ported from v1): 'reference' injects the asset as a strong hint; 'direct' applies it. */
 export type ReuseMode = 'direct' | 'reference';
 export declare const DEFAULT_REUSE_MODE: ReuseMode;
@@ -12,8 +15,23 @@ export declare const DEFAULT_REUSE_MODE: ReuseMode;
 export declare function getMinReuseScore(env?: NodeJS.ProcessEnv): number;
 /** Reads EVOLVER_REUSE_MODE here (adapter concern). */
 export declare function getReuseMode(env?: NodeJS.ProcessEnv): ReuseMode;
+/** V1-compatible kill-switch. Semantic recall is on unless explicitly disabled. */
+export declare function isSemanticSearchEnabled(env?: NodeJS.ProcessEnv): boolean;
+/**
+ * Derive a bounded public semantic query from structured signal tags. Error signatures, paths, prose, and other
+ * unstructured values are excluded so the vector-search leg cannot become a side channel for local diagnostics.
+ */
+export declare function buildSemanticQuery(signals: readonly string[]): string;
 /** Stable signal fingerprint (ported from v1 _cacheKey: sort + join). */
 export declare function signalFingerprint(signals: readonly string[]): string;
+export declare const TASK_DOMAIN_SIGNAL_PREFIX: "task_domain:";
+/**
+ * Resolve the hub-side domain fence from this turn's signals. Exactly one domain is used and only
+ * when the turn is unambiguous: with two or more distinct task_domain:* signals the turn spans
+ * domains, and scoping recall to either one would hide the other's assets — so we return null and
+ * fall back to unscoped recall (today's behaviour).
+ */
+export declare function hubDomainFromSignals(signals: readonly string[]): string | null;
 /**
  * The two-layer reuse cache. Bounded + TTL'd, per-process. A search-cache hit means phase 1 makes ZERO hub
  * calls; a payload-cache hit means phase 3 makes ZERO hub calls. The clock is injected for deterministic tests.
@@ -55,6 +73,8 @@ export interface ReuseBeforeSolveOptions {
     searchLimit?: number;
     /** Reuse mode label carried into the result (direct/reference). */
     mode?: ReuseMode;
+    /** Environment snapshot for adapter-owned reuse settings and the semantic-search kill-switch. */
+    env?: NodeJS.ProcessEnv;
     /** Observability sink (asset-call log). Receives structured records; never throws. */
     log?: {
         append(entry: Record<string, unknown>): void;
@@ -97,6 +117,26 @@ export interface ReuseBeforeSolveResult {
     /** Why we didn't reuse, when action === 'solve-fresh' (no_signals / no_results / below_threshold). */
     reason?: string;
 }
+export interface HubMetadataSearchOptions {
+    /** Environment snapshot for the semantic-search kill-switch. */
+    env?: NodeJS.ProcessEnv;
+    /** Cap on the signal-search leg. The semantic leg keeps its own bounded limit. */
+    searchLimit?: number;
+}
+export interface HubMetadataSearchResult {
+    signals: string[];
+    fingerprint: string;
+    metadata: hub.HubMetadata[];
+    searchCached: boolean;
+    /** False when either free search leg failed. Incomplete results must never prove a miss. */
+    complete: boolean;
+    error?: unknown;
+}
+/**
+ * Run the complete free-search phase shared by reuse and economic miss probes. This function never performs the
+ * paid fetch. Only complete dual-leg results enter the cache, so a partial outage cannot become a verified miss.
+ */
+export declare function searchHubMetadata(cap: hub.HubCapability, cache: ReuseCache, signals: readonly string[], opts?: HubMetadataSearchOptions): Promise<HubMetadataSearchResult>;
 /**
  * The reuse-before-solve flow. Returns the single winner (already fetched) as a selection candidate, or a
  * solve-fresh verdict. Never throws on a hub error — reuse is an optimization, not a hard dependency:

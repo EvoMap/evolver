@@ -9,6 +9,7 @@ import { buildEvolverPrimer } from './primer.js';
 import { EvolverMcpServer, UnknownToolError } from './server.js';
 import { reachableProxyClientFromEnv } from './proxyClient.js';
 import { loadEnvFileFromEnvOrThrow } from './envFile.js';
+import { bootstrap } from '@evomap/evolver-core';
 try {
     loadEnvFileFromEnvOrThrow(process.env);
 }
@@ -16,6 +17,8 @@ catch {
     process.stderr.write('[evolver-mcp] fatal: failed to load EVOLVER_ENV_FILE\n');
     process.exit(1);
 }
+// Emit deprecation warnings for any V1 env vars still present in the environment.
+bootstrap.checkV1EnvCompat(process.env);
 const store = new assetstore.LocalJsonlProvider(events.assetsDir());
 const mailboxPath = process.env['EVOLVER_MCP_MAILBOX'] ?? join(events.evomapHome(), 'mailbox', 'mcp.db');
 mkdirSync(dirname(mailboxPath), { recursive: true });

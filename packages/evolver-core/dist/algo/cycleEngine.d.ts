@@ -4,13 +4,14 @@ import type { GepCategory, Mutation, Capsule, EvolutionEvent } from '../wire/ind
 import type { AssetStoreProvider } from '../assetstore/provider.js';
 import type { StrategyPoint } from '../strategy/strategyPoint.js';
 import { type CycleStage } from '../cycle/stateMachine.js';
-import { type GeneDecision, type SelectionInput, type GeneCandidateInput, type AntiWarning } from './geneSelection.js';
+import { type GeneDecision, type SelectionInput, type GeneCandidateInput, type AntiWarning, type SelectionGuardMode } from './geneSelection.js';
 import { type EnvFingerprint } from '../bootstrap/envFingerprint.js';
 import type { PersonalityStore } from '../personality/store.js';
 import { type ResolutionStatus } from './solidify.js';
 import type { ProofOfWork } from '../schema/proofOfWork.js';
 import { type ClassifyRecentEvent } from './cycleFailureClassifier.js';
 import type { MemoryGraphGeneEvidence } from './memoryGraph.js';
+import { type SelectionPolicy } from './ucb1.js';
 export interface TriggerEval {
     trigger: boolean;
     reasons: string[];
@@ -66,6 +67,8 @@ export interface CycleEngineDeps {
     rng?: () => number;
     /** Injected environment fingerprint (deterministic tests). Defaults to capturing the real runtime env. */
     envFingerprint?: () => EnvFingerprint;
+    /** Latest external capability gaps. Composition owns persistence/wire details; core reads one bounded snapshot. */
+    capabilityGaps?: () => readonly string[];
     /** 触发评估(常注入 TriggerEngine.evaluate 的包装; 缺省=直接触发). */
     trigger?: (p: ProblemPattern, now: number) => Promise<TriggerEval> | TriggerEval;
     /** 可进化人格(可选). 注入后, 每轮:
@@ -82,10 +85,20 @@ export interface CycleInput {
     cycleId: string;
     problem: ProblemPattern;
     signals: readonly string[];
+    /** Curriculum targets already prepared before candidate assembly. Omit for direct runCycle callers. */
+    curriculumSignals?: readonly string[];
     category: GepCategory;
     /** Optional explicit strategy preset name; when set, it wins over history-derived meta-signal auto-detection. */
     strategyName?: string;
     candidates: readonly GeneCandidateInput[];
+    /** Trust-filtered library corpus captured before relevance admission for stable semantic IDF. */
+    semanticCorpus?: readonly GeneCandidateInput[];
+    /** Emergency rollback: use the pre-IDF semantic scorer for this cycle. */
+    disableSemanticIdf?: boolean;
+    /** Experimental plateau selection policy. Default preserves engine-health + legacy random drift. */
+    selectionPolicy?: SelectionPolicy;
+    /** Versioned relevance-guard rollout. Omit for legacy direct-call behavior. */
+    selectionGuard?: SelectionGuardMode;
     selectionFloor?: number;
     /**
      * Explicit GEP/runtime-selected gene. Forwarded after candidate assembly and local hard filters, so it cannot
@@ -102,7 +115,7 @@ export interface CycleInput {
     /**
      * Distilled-gene fallback pool (ported from v1 #97): broadly-applicable distilled genes that do NOT match the
      * live signals, assembled (trust/review/ban-filtered) upstream. Forwarded to selection, which uses one only as a
-     * last resort when no candidate clears the floor — reusing a known distilled strategy instead of a blind innovate.
+     * last resort when normal selection has no reusable positive choice — reusing a known distilled strategy instead of a blind innovate.
      */
     distilledFallback?: readonly GeneCandidateInput[];
     /** Advisory-only AntiGene warnings matched upstream for this cycle's base signals. */
@@ -150,5 +163,13 @@ export interface CycleResult {
 export declare class CycleEngine {
     private readonly deps;
     constructor(deps: CycleEngineDeps);
+    /**
+     * Add V1-compatible curriculum targets from V2's replayable event history. Public so the orchestrator can run
+     * it before candidate assembly; runCycle calls it again for direct callers. Set merging makes that idempotent.
+     */
+    prepareCurriculumSignals(signals: readonly string[]): {
+        signals: string[];
+        curriculumSignals: string[];
+    };
     runCycle(input: CycleInput): Promise<CycleResult>;
 }

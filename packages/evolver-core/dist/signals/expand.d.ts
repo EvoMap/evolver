@@ -32,3 +32,17 @@ export declare function geneTags(gene: GeneTagInput): string[];
  * the right gene at ~2/3 strength. Lifting this to parity is a scoring-design change beyond this signal port.
  */
 export declare function tagOverlapScore(signals: readonly string[], gene: GeneTagInput): number;
+export interface SemanticIdfDocument {
+    readonly tags: readonly string[];
+    readonly text: string;
+}
+export interface SemanticIdfProfile {
+    readonly documentCount: number;
+    readonly tagIdf: ReadonlyMap<string, number>;
+    readonly tokenIdf: ReadonlyMap<string, number>;
+    /** Deterministic, data-free identity for replaying the exact document-frequency profile. */
+    readonly version: string;
+}
+export declare function buildSemanticIdfProfile(documents: readonly SemanticIdfDocument[]): SemanticIdfProfile;
+export declare function idfTagOverlapScore(signals: readonly string[], gene: GeneTagInput, profile: SemanticIdfProfile): number;
+export declare function idfBagCosine(a: string, b: string, profile: SemanticIdfProfile): number;

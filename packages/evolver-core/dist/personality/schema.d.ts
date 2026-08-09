@@ -169,6 +169,13 @@ export declare const personalityModel: z.ZodObject<{
     extensions: Record<string, unknown>;
     updatedAt: string | null;
     version: 1;
+    stats: Record<string, {
+        success: number;
+        updatedAt: string | null;
+        fail: number;
+        n: number;
+        avgScore: number;
+    }>;
     current: {
         type: "PersonalityState";
         rigor: number;
@@ -177,13 +184,6 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance: number;
         obedience: number;
     };
-    stats: Record<string, {
-        success: number;
-        updatedAt: string | null;
-        fail: number;
-        n: number;
-        avgScore: number;
-    }>;
     history: {
         at: string;
         score: number | null;
@@ -195,6 +195,13 @@ export declare const personalityModel: z.ZodObject<{
     extensions?: Record<string, unknown> | undefined;
     updatedAt?: string | null | undefined;
     version?: 1 | undefined;
+    stats?: Record<string, {
+        success?: number | undefined;
+        updatedAt?: string | null | undefined;
+        fail?: number | undefined;
+        n?: number | undefined;
+        avgScore?: number | undefined;
+    }> | undefined;
     current?: {
         type?: "PersonalityState" | undefined;
         rigor?: number | undefined;
@@ -203,13 +210,6 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance?: number | undefined;
         obedience?: number | undefined;
     } | undefined;
-    stats?: Record<string, {
-        success?: number | undefined;
-        updatedAt?: string | null | undefined;
-        fail?: number | undefined;
-        n?: number | undefined;
-        avgScore?: number | undefined;
-    }> | undefined;
     history?: {
         at: string;
         outcome: string;
@@ -227,12 +227,12 @@ export declare const personalityMutation: z.ZodObject<{
     reason: z.ZodDefault<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     type: "PersonalityMutation";
+    delta: number;
     reason: string;
     param: "rigor" | "creativity" | "verbosity" | "risk_tolerance" | "obedience";
-    delta: number;
 }, {
-    param: "rigor" | "creativity" | "verbosity" | "risk_tolerance" | "obedience";
     delta: number;
+    param: "rigor" | "creativity" | "verbosity" | "risk_tolerance" | "obedience";
     type?: "PersonalityMutation" | undefined;
     reason?: string | undefined;
 }>;

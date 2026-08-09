@@ -1,4 +1,4 @@
-import type { InstallOptions } from './installer.js';
+import type { InstallOptions } from './installerShared.js';
 import { type JsonMcpRuntimeResolution, type JsonMcpRuntimeSpec } from './jsonMcpInstaller.js';
 type OpenCodePathOptions = Pick<InstallOptions, 'configRoot' | 'scope' | 'homeDir' | 'xdgConfigHome' | 'opencodeConfig' | 'opencodeConfigDir'>;
 type OpenCodeManagedPathOptions = Pick<InstallOptions, 'opencodePlatform' | 'opencodeProgramData' | 'opencodeUsername'>;
@@ -13,6 +13,6 @@ export declare function resolveOpenCodeManagedPreferencePaths(opts?: OpenCodeMan
  */
 export declare function resolveOpenCodeConfig(opts: OpenCodePathOptions): JsonMcpRuntimeResolution;
 export declare const OPENCODE_SPEC: JsonMcpRuntimeSpec;
-export declare const installOpenCode: (plan: import("./injection.js").InjectionPlan, opts: InstallOptions) => import("./installer.js").InstallResult;
-export declare const uninstallOpenCode: (runtime: import("./injection.js").RuntimeId, opts: import("./installer.js").UninstallOptions) => import("./installer.js").InstallResult;
+export declare const installOpenCode: (plan: import("./injection.js").InjectionPlan, opts: InstallOptions) => import("./installerShared.js").InstallResult;
+export declare const uninstallOpenCode: (runtime: import("./injection.js").RuntimeId, opts: import("./installerShared.js").UninstallOptions) => import("./installerShared.js").InstallResult;
 export {};

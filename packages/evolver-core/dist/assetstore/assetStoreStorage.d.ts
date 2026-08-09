@@ -33,7 +33,7 @@ export declare function withAssetStoreLock<T>(lockPath: string, operation: () =>
 export declare function assertOptionalRegularFile(path: string, role?: AssetStorePathRole): Stats | null;
 export declare function regularFileFingerprint(path: string): string;
 export declare function readRegularBuffer(path: string, maxBytes?: number): Buffer | null;
-export declare function readUtf8Regular(path: string): string | null;
+export declare function readUtf8Regular(path: string, maxBytes?: number): string | null;
 export declare function createBufferDurableExclusive(path: string, value: Buffer, opts?: DurableWriteOptions): void;
 export declare function fsyncDirectoryBestEffort(path: string): void;
 export declare function appendUtf8Durable(path: string, value: string, opts?: DurableWriteOptions): void;

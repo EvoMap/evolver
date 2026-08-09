@@ -6,6 +6,9 @@ import { hostname as osHostname, release as osRelease } from 'node:os';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 const sha12 = (s) => createHash('sha256').update(s).digest('hex').slice(0, 12);
+export function normalizeEvolverVersion(value) {
+    return value?.trim().slice(0, 64) || undefined;
+}
 /** Heuristic container detection (Docker / Kubernetes). */
 function detectContainer(env) {
     if (env['KUBERNETES_SERVICE_HOST'])
@@ -50,6 +53,7 @@ export function detectModelName(env = (typeof process !== 'undefined' ? process.
 export function captureEnvFingerprint(deps = {}) {
     const env = deps.env ?? (typeof process !== 'undefined' ? process.env : {});
     const region = (env['EVOLVER_REGION'] ?? '').trim().toLowerCase().slice(0, 5) || undefined;
+    const evolverVersion = normalizeEvolverVersion(deps.evolverVersion);
     return {
         device: sha12(deps.hostname ?? osHostname()),
         node_version: deps.nodeVersion ?? process.version,
@@ -59,6 +63,7 @@ export function captureEnvFingerprint(deps = {}) {
         ...(region ? { region } : {}),
         container: deps.isContainer ? deps.isContainer() : detectContainer(env),
         model: detectModelName(env),
+        ...(evolverVersion ? { evolver_version: evolverVersion } : {}),
     };
 }
 /**

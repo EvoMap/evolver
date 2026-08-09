@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeSync, } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync, } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { acquireLock, LockReleaseError, releaseLock, } from '../util/fileLock.js';
 export class UnsafeAssetStorePathError extends Error {
@@ -152,17 +152,26 @@ export function readRegularBuffer(path, maxBytes = Number.MAX_SAFE_INTEGER) {
         assertOpenedPathMatches(fd, path, 'asset_file');
         if (fstatSync(fd).size > maxBytes)
             throw new AssetStoreReadLimitError();
-        const value = readFileSync(fd);
-        if (value.byteLength > maxBytes)
-            throw new AssetStoreReadLimitError();
-        return value;
+        const chunks = [];
+        let total = 0;
+        while (total <= maxBytes) {
+            const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes - total + 1));
+            const bytesRead = readSync(fd, chunk, 0, chunk.byteLength, null);
+            if (bytesRead === 0)
+                break;
+            total += bytesRead;
+            if (total > maxBytes)
+                throw new AssetStoreReadLimitError();
+            chunks.push(bytesRead === chunk.byteLength ? chunk : chunk.subarray(0, bytesRead));
+        }
+        return Buffer.concat(chunks, total);
     }
     finally {
         closeSync(fd);
     }
 }
-export function readUtf8Regular(path) {
-    return readRegularBuffer(path)?.toString('utf8') ?? null;
+export function readUtf8Regular(path, maxBytes = Number.MAX_SAFE_INTEGER) {
+    return readRegularBuffer(path, maxBytes)?.toString('utf8') ?? null;
 }
 function writeAll(fd, value) {
     const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;

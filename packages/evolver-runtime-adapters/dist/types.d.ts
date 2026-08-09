@@ -67,11 +67,17 @@ export interface NormalizedSession {
     sourceRecord?: unknown;
     rawRows?: unknown[];
 }
+export interface NativeResumeIdentity {
+    harness: 'claude-code' | 'cursor';
+    sessionId: string;
+}
 export interface SessionLogAdapter {
     readonly agent: string;
     detect(path: string): boolean;
     /** Derive a stable runtime session id when the transcript itself does not carry one. */
     sessionIdFromPath?(path: string): string | undefined;
+    /** Resolve a harness-bound native session identity from a verified transcript source. */
+    resumeIdentityFromSource?(path: string, rawChunk: string): NativeResumeIdentity | undefined;
     parse(rawChunk: string): NormalizedTurn[];
     parseSession?(rawChunk: string): NormalizedSession;
     parseSessions?(rawChunk: string): NormalizedSession[];

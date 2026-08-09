@@ -15,9 +15,10 @@
 // with an unchanged gene set is a byte-for-byte no-op) and we never clobber rules a user hand-wrote in the same
 // file. Hardened exactly like the other installers: atomic writes (tmp+rename) and refusal to follow a symlink
 // at any adapter-owned path (a hostile workspace could redirect writes/unlinks outside the project).
+import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { SymlinkRefusedError } from './installer.js';
+import { basename, dirname, join } from 'node:path';
+import { SymlinkRefusedError } from './installerShared.js';
 /** Project-relative location cursor loads project rules from. */
 export const CURSOR_RULES_DIR = join('.cursor', 'rules');
 /** The single evolver-owned rules file. Other `.cursor/rules/*.mdc` (user-authored) are never touched. */
@@ -47,10 +48,60 @@ function assertNotSymlink(path, label) {
     if (st.isSymbolicLink())
         throw new SymlinkRefusedError(label, path);
 }
-function writeTextAtomic(path, text) {
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, text, 'utf8');
-    renameSync(tmp, path);
+function cursorRulePaths(configRoot) {
+    return {
+        cursorDir: join(configRoot, '.cursor'),
+        rulesDir: join(configRoot, CURSOR_RULES_DIR),
+        filePath: cursorRulesPath(configRoot),
+    };
+}
+function assertCursorRulePathsNotSymlink(configRoot, paths) {
+    assertNotSymlink(configRoot, 'config root');
+    assertNotSymlink(paths.cursorDir, '.cursor');
+    assertNotSymlink(paths.rulesDir, '.cursor/rules');
+    assertNotSymlink(paths.filePath, '.cursor/rules/evolver.mdc');
+}
+function cleanupAtomicTemp(filePath) {
+    try {
+        const stat = lstatSync(filePath);
+        if (!stat.isFile() && !stat.isSymbolicLink()) {
+            return new Error(`Refusing to clean non-file atomic temp path: ${filePath}`);
+        }
+        unlinkSync(filePath);
+        return undefined;
+    }
+    catch (error) {
+        return error.code === 'ENOENT' ? undefined : error;
+    }
+}
+function writeTextAtomic(filePath, text, beforeCommit) {
+    const tmp = join(dirname(filePath), `${basename(filePath)}.${randomUUID()}.tmp`);
+    let writeCompleted = false;
+    let renameCompleted = false;
+    let operationFailed = false;
+    let operationError;
+    let cleanupError;
+    try {
+        writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx' });
+        writeCompleted = true;
+        beforeCommit?.();
+        assertNotSymlink(filePath, '.cursor/rules/evolver.mdc');
+        renameSync(tmp, filePath);
+        renameCompleted = true;
+    }
+    catch (error) {
+        operationFailed = true;
+        operationError = error;
+    }
+    finally {
+        const collidedBeforeWrite = !writeCompleted && operationError?.code === 'EEXIST';
+        if (!renameCompleted && !collidedBeforeWrite)
+            cleanupError = cleanupAtomicTemp(tmp);
+    }
+    if (operationFailed)
+        throw operationError;
+    if (cleanupError !== undefined)
+        throw cleanupError;
 }
 // ── pure rendering (exported for tests) ───────────────────────────────────────
 /** One compact line for a gene in the rules body. Deterministic; defensively caps the hint length. */
@@ -135,14 +186,10 @@ export function cursorRulesPath(configRoot) {
  * Symlink-hardened on every adapter-owned path; other `.cursor/rules/*.mdc` files are never read or written.
  */
 export function installCursorRules(opts) {
-    const rulesDir = join(opts.configRoot, CURSOR_RULES_DIR);
-    const cursorDir = join(opts.configRoot, '.cursor');
-    const filePath = cursorRulesPath(opts.configRoot);
+    const paths = cursorRulePaths(opts.configRoot);
+    const { rulesDir, filePath } = paths;
     const maxGenes = opts.maxGenes ?? DEFAULT_CURSOR_MAX_GENES;
-    assertNotSymlink(opts.configRoot, 'config root');
-    assertNotSymlink(cursorDir, '.cursor');
-    assertNotSymlink(rulesDir, '.cursor/rules');
-    assertNotSymlink(filePath, '.cursor/rules/evolver.mdc');
+    assertCursorRulePathsNotSymlink(opts.configRoot, paths);
     const block = renderManagedBlock(opts.genes, maxGenes);
     const existing = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
     const next = existing ? spliceManagedBlock(existing, block) : renderCursorRulesFile(opts.genes, maxGenes);
@@ -151,7 +198,7 @@ export function installCursorRules(opts) {
         return { ok: true, runtime: 'cursor', mode: 'cursor-rules', files: [], rewritten: false };
     }
     mkdirSync(rulesDir, { recursive: true });
-    writeTextAtomic(filePath, next);
+    writeTextAtomic(filePath, next, () => assertCursorRulePathsNotSymlink(opts.configRoot, paths));
     return { ok: true, runtime: 'cursor', mode: 'cursor-rules', files: [filePath], rewritten: true };
 }
 /**
@@ -159,19 +206,21 @@ export function installCursorRules(opts) {
  * file; otherwise strip just the managed block and keep the user's content. Other rules files are untouched.
  */
 export function uninstallCursorRules(opts) {
-    const filePath = cursorRulesPath(opts.configRoot);
-    assertNotSymlink(filePath, '.cursor/rules/evolver.mdc');
+    const paths = cursorRulePaths(opts.configRoot);
+    const { filePath } = paths;
+    assertCursorRulePathsNotSymlink(opts.configRoot, paths);
     if (!existsSync(filePath))
         return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [] };
     const text = readFileSync(filePath, 'utf8');
     if (isEvolverOnly(text)) {
+        assertCursorRulePathsNotSymlink(opts.configRoot, paths);
         unlinkSync(filePath);
         return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [filePath] };
     }
     const { changed, text: stripped } = stripManagedBlock(text);
     if (!changed)
         return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [] };
-    writeTextAtomic(filePath, stripped.endsWith('\n') ? stripped : `${stripped}\n`);
+    writeTextAtomic(filePath, stripped.endsWith('\n') ? stripped : `${stripped}\n`, () => assertCursorRulePathsNotSymlink(opts.configRoot, paths));
     return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [filePath] };
 }
 /** Convenience for the daemon rewrite trigger: rewrite the rules file to reflect the current top genes. Returns

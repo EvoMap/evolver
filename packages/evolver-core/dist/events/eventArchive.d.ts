@@ -61,5 +61,7 @@ export declare function rootEventArchiveSegmentName(firstSeq: number, lastSeq: n
 export declare function planRootEventArchive(opts: RootEventArchiveOptions): RootEventArchivePlan;
 export declare function archiveRootEvents(opts: RootEventArchiveOptions): RootEventArchiveResult;
 export declare function readRootEventHistory(path: string, archiveDir?: string): RootEvent[];
+/** Strict replay for control-plane decisions that must fail closed on partial or conflicting history. */
+export declare function readRootEventHistoryStrict(path: string): RootEvent[];
 export declare function validateRootEventHistory(path: string): void;
 export declare function inspectRootEventArchive(path: string): RootEventArchiveStats;

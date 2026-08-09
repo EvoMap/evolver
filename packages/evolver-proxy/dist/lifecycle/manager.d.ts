@@ -18,6 +18,8 @@ export interface HelloResult {
     ok: boolean;
     authError?: boolean;
     nodeId?: string;
+    claimCode?: string;
+    claimUrl?: string;
     rateLimitUntilMs?: number;
     error?: string;
     details?: unknown;
@@ -40,6 +42,7 @@ export interface HeartbeatResult {
     httpStatus?: number;
     lastUpdateAck?: LastUpdateAck;
     forceUpdate?: ForceUpdateDirective;
+    capabilityGaps?: readonly string[];
 }
 export interface HeartbeatTickResult {
     ok: boolean;
@@ -98,6 +101,7 @@ export declare class LifecycleManager {
     private recordHubUnreachable;
     private clearLegacyNodeSecretVersion;
     private verifyReauthHeartbeat;
+    private persistCapabilityGaps;
     private heartbeatOptions;
     private callHello;
     private handleLastUpdateAck;

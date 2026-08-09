@@ -2,7 +2,12 @@ import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, assertOptionalRegularFile, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
-import { normalizeForPut, } from './provider.js';
+import { FrozenAssetIdCollisionError, frozenAssetRecordsEqual, normalizeForPut, } from './provider.js';
+function resultLogicalId(logicalId) {
+    return logicalId !== undefined && logicalId.length > 0 && logicalId === logicalId.trim()
+        ? logicalId
+        : undefined;
+}
 function signalsOf(a) {
     const out = [];
     for (const key of ['signals_match', 'signals', 'trigger', 'trigger_signals']) {
@@ -109,13 +114,16 @@ export class LocalJsonlProvider {
         try {
             // Refresh under the shared lock so another process cannot append between reload and dedupe.
             this.refreshUnderLock();
-            if (this.index.has(record.asset_id)) {
+            const existing = this.index.get(record.asset_id);
+            if (existing) {
+                if (!frozenAssetRecordsEqual(existing, record))
+                    throw new FrozenAssetIdCollisionError(record.asset_id);
                 return {
                     asset_id: record.asset_id,
                     stored: false,
                     verified,
                     status: 'already_exists',
-                    logicalId,
+                    ...(resultLogicalId(logicalId) ? { logicalId } : {}),
                 };
             }
             collision = logicalId === undefined
@@ -129,7 +137,7 @@ export class LocalJsonlProvider {
                     stored: false,
                     verified,
                     status: 'logical_collision',
-                    logicalId,
+                    ...(resultLogicalId(logicalId) ? { logicalId } : {}),
                     collisionWithAssetId: collision.asset_id,
                 };
             }
@@ -146,7 +154,7 @@ export class LocalJsonlProvider {
             verified,
             status: 'stored',
             ...(collision ? {
-                logicalId,
+                ...(resultLogicalId(logicalId) ? { logicalId } : {}),
                 collisionWithAssetId: collision.asset_id,
             } : {}),
         };
@@ -156,15 +164,42 @@ export class LocalJsonlProvider {
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.
      */
     async putFrozen(record) {
+        return this.putFrozenConditional(record, { allowLogicalCollision: true });
+    }
+    async putFrozenConditional(record, options = {}) {
         if (!record.asset_id)
             throw new Error('putFrozen 需 record 自带冻结 asset_id');
         const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
+        let logicalId;
+        let collision;
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
             this.refreshUnderLock();
-            if (this.index.has(record.asset_id))
-                return { asset_id: record.asset_id, stored: false, verified: false };
+            const existing = this.index.get(record.asset_id);
+            if (existing) {
+                if (!frozenAssetRecordsEqual(existing, record))
+                    throw new FrozenAssetIdCollisionError(record.asset_id);
+                return { asset_id: record.asset_id, stored: false, verified: false, status: 'already_exists' };
+            }
+            logicalId = typeof record['id'] === 'string' && record['id'].length > 0
+                ? record['id']
+                : undefined;
+            collision = logicalId === undefined
+                ? undefined
+                : [...this.index.values()].find((candidate) => (candidate.type === record.type
+                    && candidate['id'] === logicalId
+                    && candidate.asset_id !== record.asset_id));
+            if (collision && !options.allowLogicalCollision) {
+                return {
+                    asset_id: record.asset_id,
+                    stored: false,
+                    verified: false,
+                    status: 'logical_collision',
+                    ...(resultLogicalId(logicalId) ? { logicalId } : {}),
+                    collisionWithAssetId: collision.asset_id,
+                };
+            }
             appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
             this.index.set(record.asset_id, record);
             this.updateFileStateAfterWrite();
@@ -172,18 +207,27 @@ export class LocalJsonlProvider {
         finally {
             releaseLock(this.lockPath);
         }
-        return { asset_id: record.asset_id, stored: true, verified: false };
+        return {
+            asset_id: record.asset_id,
+            stored: true,
+            verified: false,
+            status: 'stored',
+            ...(collision ? {
+                ...(resultLogicalId(logicalId) ? { logicalId } : {}),
+                collisionWithAssetId: collision.asset_id,
+            } : {}),
+        };
     }
     async get(assetId) {
         this.ensureFresh();
         return this.index.get(assetId) ?? null;
     }
-    async findByLogicalId(id, limit = 2) {
+    async findByLogicalId(id, limit = 2, kind) {
         this.ensureFresh();
         const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(1_000, Math.floor(limit))) : 2;
         const out = [];
         for (const record of this.index.values()) {
-            if (record['id'] !== id)
+            if (record['id'] !== id || (kind !== undefined && record.type !== kind))
                 continue;
             out.push(record);
             if (out.length >= boundedLimit)

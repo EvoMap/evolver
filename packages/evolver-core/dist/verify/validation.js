@@ -83,3 +83,34 @@ export async function runValidation(plan, run) {
     const passed = results.length > 0 && results.every((r) => r.allowed && r.passed);
     return { results, passed };
 }
+/**
+ * 检查验证命令是否安全可作为 Gene.validation 条目使用（忠实移植 v1 policyCheck.isValidationCommandAllowed）。
+ * Gene 验证命令只允许 `node …` 形式，不允许非 node 命令（如 pnpm/npm/echo 等）。
+ * 安全条件：
+ * 1. 必须以 `node ` 开头
+ * 2. 不包含命令替换（` 或 $(）
+ * 3. 不包含 shell 元字符（引号外）
+ * 4. 不包含被阻止的 node 标志（-e/--eval/--print 等）
+ */
+export function isValidationCommandAllowed(cmd) {
+    const c = String(cmd || '').trim();
+    if (!c)
+        return false;
+    // 只允许 node 命令作为验证命令
+    if (!c.startsWith('node '))
+        return false;
+    // 不允许命令替换
+    if (/`|\$\(/.test(c))
+        return false;
+    // 移除引号内的内容后检查 shell 元字符
+    const stripped = c.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, '');
+    if (SHELL_METACHARS.test(stripped))
+        return false;
+    // 检查被阻止的 node 标志
+    const tokens = c.split(/\s+/);
+    const executable = tokens[0] ?? '';
+    const args = tokens.slice(1);
+    if (nodeFlagViolation(executable, args))
+        return false;
+    return true;
+}

@@ -1,8 +1,11 @@
 {
   "name": "@evomap/evolver-cli",
-  "version": "2.0.0-beta.18",
+  "version": "2.0.2",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
   "description": "evolver CLI (status/watch/cycles/rebuild-views/...)",
   "bin": {
     "evolver": "./dist/cli.js"
@@ -20,12 +23,12 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.18",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.18",
-    "@evomap/evolver-mcp": "2.0.0-beta.18",
-    "@evomap/evolver-proxy": "2.0.0-beta.18",
-    "@evomap/evolver-runtime-adapters": "2.0.0-beta.18",
-    "@evomap/evolver-webui": "2.0.0-beta.18"
+    "@evomap/evolver-core": "2.0.2",
+    "@evomap/evolver-adapter-public": "2.0.2",
+    "@evomap/evolver-mcp": "2.0.2",
+    "@evomap/evolver-proxy": "2.0.2",
+    "@evomap/evolver-runtime-adapters": "2.0.2",
+    "@evomap/evolver-webui": "2.0.2"
   },
   "repository": {
     "type": "git",
@@ -33,7 +36,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

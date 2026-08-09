@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { lstatSync, mkdirSync, readFileSync, statSync, } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { util } from '@evomap/evolver-core';
-import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installer.js';
+import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
+import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
 const ENV_FILE_KEY = 'EVOLVER_ENV_FILE';
 const CONFIG_FILE = 'mcp_config.json';
 const CONFIG_WRITE_RETRIES = 5;
@@ -125,30 +125,6 @@ function existingFileMode(path) {
         throw error;
     }
 }
-function writeJsonAtomic(path, data) {
-    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    const mode = existingFileMode(path) ?? NEW_CONFIG_MODE;
-    const restoreMode = process.platform === 'win32' && existsSync(path) ? existingFileMode(path) : undefined;
-    try {
-        writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode });
-        chmodSync(tmp, mode);
-        if (process.platform === 'win32' && existsSync(path))
-            chmodSync(path, mode | 0o200);
-        renameSync(tmp, path);
-        chmodSync(path, mode);
-    }
-    catch (error) {
-        rmSync(tmp, { force: true });
-        if (restoreMode !== undefined) {
-            try {
-                if (existsSync(path))
-                    chmodSync(path, restoreMode);
-            }
-            catch { /* preserve the original error */ }
-        }
-        throw error;
-    }
-}
 function updateConfigWithRetry(path, update) {
     const lockPath = `${path}.evolver.lock`;
     util.acquireLock(lockPath);
@@ -160,8 +136,20 @@ function updateConfigWithRetry(path, update) {
                 return false;
             if (readRawIfExists(path) !== snapshot.raw)
                 continue;
-            writeJsonAtomic(path, next.data);
-            return true;
+            try {
+                commitSharedFile({
+                    path,
+                    expectedRaw: snapshot.raw ?? undefined,
+                    nextRaw: `${JSON.stringify(next.data, null, 2)}\n`,
+                    mode: existingFileMode(path) ?? NEW_CONFIG_MODE,
+                });
+                return true;
+            }
+            catch (error) {
+                if (error instanceof SharedFileConflictError)
+                    continue;
+                throw error;
+            }
         }
     }
     finally {

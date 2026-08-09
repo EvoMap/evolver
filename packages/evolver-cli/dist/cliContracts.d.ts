@@ -1,8 +1,8 @@
-import { assetstore } from '@evomap/evolver-core';
+import { assetstore, hub } from '@evomap/evolver-core';
 type WritableLike = {
     write(chunk: string): unknown;
 };
-type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'gene_unproven' | 'insufficient_credits';
+type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'gene_unproven' | 'insufficient_credits' | 'unsafe_validation_command';
 export interface ReuseParseResult {
     ok: boolean;
     assetId?: string;
@@ -24,6 +24,7 @@ interface GateSummary {
     schema?: 'pass' | 'fail';
     bundle?: 'pass' | 'fail';
     quality?: 'pass' | 'fail';
+    validation_command?: 'pass' | 'fail';
 }
 interface PublishAssetSummary {
     asset_id?: string;
@@ -34,6 +35,7 @@ export type PublishBundleResult = {
     original: assetstore.AssetRecord[];
     sanitized: assetstore.AssetRecord[];
     blockReasons: ContractReason[];
+    blockMessages?: Partial<Record<ContractReason, string>>;
     gates: GateSummary;
     assets: PublishAssetSummary[];
 } | {
@@ -77,6 +79,7 @@ export interface CliContractDeps {
     fetchAssetById?: (assetId: string) => Promise<assetstore.AssetRecord | null>;
     validate?: (bundle: readonly assetstore.AssetRecord[]) => Promise<HubCallResult>;
     publish?: (bundle: readonly assetstore.AssetRecord[]) => Promise<HubCallResult>;
+    callLog?: Pick<hub.AssetCallLog, 'append'>;
     /** Test seam for private-mode proxy discovery. Production resolves the loopback proxy from env/settings. */
     resolveProxyClient?: (env: NodeJS.ProcessEnv) => PrivateContractProxy | undefined;
 }

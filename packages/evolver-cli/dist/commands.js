@@ -6,5 +6,6 @@ export const listCycles = events.listCycles;
 export const showCycle = events.showCycle;
 export const listTriggers = events.listTriggers;
 export const dailySummary = events.dailySummary;
+export const dailyCapsuleCount = events.dailyCapsuleCount;
 export const buildNarrativeSnapshot = events.buildNarrativeSnapshot;
 export const buildRetentionReport = events.buildRetentionReport;

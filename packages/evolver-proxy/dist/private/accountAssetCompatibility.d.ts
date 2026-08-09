@@ -25,4 +25,5 @@ interface PrivateAccountAssetCompatibilityOptions {
  * future adapter's native implementation.
  */
 export declare function withPrivateAccountAssetCompatibility<T extends object>(hubCapability: T, opts: PrivateAccountAssetCompatibilityOptions): T & PrivateAccountAssetHub;
+export declare function normalizePrivateHubBaseUrl(raw: string, env: Record<string, string | undefined>): string;
 export {};

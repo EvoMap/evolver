@@ -7,9 +7,11 @@ export interface MappedAsset {
 /**
  * v1 资产 → v2 wire(M8-2). 规则:
  * - 只留 gep-sdk schema 允许字段, 其余(avoid 等)落 dropped→sidecar(不参与 canonicalize, 不动 asset_id).
- * - Gene 缺 schema_version → 注入 wire.SCHEMA_VERSION(权威 1.6.0, 非 package version).
+ * - 缺 schema_version → 注入 wire.SCHEMA_VERSION 作为新记录 authoring default；已有版本原样保留。
+ *   SDK package version 不是最低可接受 wire version。
  * - source_type 非标枚举 → generated; mutation_id null → ''.
- * - asset_id: 有则**冻结**(原样); 仅 event 缺 asset_id 时新算(recomputed=true).
+ * - asset_id: 有则**冻结**(原样); 缺失时新算(recomputed=true). 若映射改变正文，importer 会用
+ *   content-bound provenance 隔离 frozen mismatch，而不是把它默认为可信资产(Refs #677).
  * - v2 新增 optional(resolution_status/proof_of_work/...) v1 无 → 自然省略(不合成).
  * - Gene 的 routing_hint/tool_policy 是 v2-delta(v1 PR #93): gep-sdk gene.schema.json 尚无 → schemaProperties
  *   不含它们, 默认会落 sidecar; 这里按已知 delta 归一化后保留在 record(保真). 存在但归一化为 null 的脏值

@@ -1,4 +1,34 @@
-import { computeAssetId, verifyAssetId } from '../wire/index.js';
+import { canonicalize, computeAssetId, verifyAssetId } from '../wire/index.js';
+export class FrozenAssetIdCollisionError extends Error {
+    assetId;
+    code = 'FROZEN_ASSET_ID_COLLISION';
+    constructor(assetId) {
+        super('frozen asset_id already exists with different content');
+        this.assetId = assetId;
+        this.name = 'FrozenAssetIdCollisionError';
+    }
+}
+export class InvalidFrozenPutResultError extends Error {
+    code = 'INVALID_FROZEN_PUT_RESULT';
+    constructor() {
+        super('invalid frozen put result');
+        this.name = 'InvalidFrozenPutResultError';
+    }
+}
+export function frozenAssetRecordsEqual(left, right) {
+    return canonicalize(left) === canonicalize(right);
+}
+export function validateFrozenPutResult(value, expectedAssetId) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new InvalidFrozenPutResultError();
+    const result = value;
+    if (result['asset_id'] !== expectedAssetId
+        || typeof result['stored'] !== 'boolean'
+        || result['verified'] !== false) {
+        throw new InvalidFrozenPutResultError();
+    }
+    return value;
+}
 export class InvalidConditionalPutResultError extends Error {
     reason;
     code = 'INVALID_CONDITIONAL_PUT_RESULT';
@@ -48,6 +78,9 @@ export function validateConditionalPutResult(value, expectedAssetId, options) {
 }
 export function supportsAtomicConditionalPut(provider) {
     return typeof provider.putConditional === 'function';
+}
+export function supportsAtomicFrozenConditionalPut(provider) {
+    return typeof provider.putFrozenConditional === 'function';
 }
 export class AssetIdMismatchError extends Error {
     claimed;

@@ -1,5 +1,6 @@
 export * from './provider.js';
 export * from './localJsonl.js';
+export * from './localAssetStoreSnapshot.js';
 export * from './assetStoreHealth.js';
 export * from './assetSidecarRecovery.js';
 export * from './remoteStub.js';

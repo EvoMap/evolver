@@ -1,6 +1,7 @@
 import { type AssetStoreProvider, type AssetRecord, type ConditionalPutOptions, type ConditionalPutResult, type PutResult } from './provider.js';
 export type ProvenanceSource = 'local' | 'migrated' | 'hub';
 export type ProvenanceDecision = 'promoted' | 'revoked';
+export declare const UNVERIFIED_V1_IMPORT_REASON = "unverified_v1_import";
 export interface ProvenanceRecord {
     assetId: string;
     source: ProvenanceSource;
@@ -11,15 +12,56 @@ export interface ProvenanceRecord {
     /** Legacy promotion actor field kept for existing sidecar readers. */
     promotedBy?: string;
     reason?: string;
+    /** Canonical content id of the exact hash-mismatched body accepted by a supported unverified ingest. */
+    frozenContentId?: string;
 }
 export interface ProvenanceTrustChange {
     changed: boolean;
     record: ProvenanceRecord;
 }
+export type UnverifiedIngestDisposition = {
+    readonly status: 'create';
+    readonly assetId: string;
+    readonly frozenContentId: string;
+    readonly provenanceAction: 'stage_and_finalize';
+} | {
+    readonly status: 'already_bound';
+    readonly assetId: string;
+    readonly frozenContentId: string;
+    readonly provenanceAction: 'finalize' | 'none';
+} | {
+    readonly status: 'preserve_trust';
+    readonly assetId: string;
+    readonly frozenContentId: string;
+    readonly provenanceAction: 'none';
+} | {
+    readonly status: 'collision';
+    readonly assetId: string;
+    readonly frozenContentId: string;
+    readonly collision: 'asset' | 'provenance';
+    readonly provenanceAction: 'none';
+};
+/**
+ * Resolve the exact no-I/O disposition used by {@link ingestUnverified}. Callers may inspect a read-only
+ * target snapshot during migration planning, then apply through ingestUnverified without duplicating its
+ * trust and collision rules.
+ */
+export declare function planUnverifiedIngest(record: AssetRecord, existing: AssetRecord | null, currentProvenance: ProvenanceRecord | null, reason: string, source?: ProvenanceSource): UnverifiedIngestDisposition;
+/**
+ * A frozen hash mismatch is benign only while its latest provenance record is an undecided, content-bound
+ * waiver created by a supported ingest path. Keep the storage/health classification centralized; downstream
+ * reuse and sync apply their own stricter allowlists before an unverified asset may leave quarantine.
+ */
+export declare function isActiveUnverifiedProvenance(record: ProvenanceRecord | null | undefined, frozenContentId: string | null | undefined): boolean;
+export declare class ProvenanceWritePendingError extends Error {
+    readonly assetId: string;
+    readonly code = "PROVENANCE_WRITE_PENDING";
+    constructor(assetId: string);
+}
 /**
  * Append-only JSONL sidecar (last-write-wins) at <baseDir>/provenance.jsonl. Default for an asset with NO
- * record = trusted: the only local writers (cycleEngine self-produce, v1 migration) are trusted and never
- * write here; the sole untrusted source — hub ingestion — ALWAYS marks via {@link ingestUntrusted}/mark.
+ * record = trusted: verified local writers (cycleEngine self-produce and self-consistent v1 migration rows)
+ * do not write here. Every untrusted or hash-mismatched ingest path MUST mark before persistence.
  */
 export declare class ProvenanceStore {
     private readonly now;
@@ -36,6 +78,21 @@ export declare class ProvenanceStore {
     mark(rec: Omit<ProvenanceRecord, 'at'> & {
         at?: string;
     }): ProvenanceRecord;
+    /** Stage a verified Hub write without replacing an in-flight conservative marker. */
+    stageUntrustedWriteTracked(assetId: string, source: ProvenanceSource): {
+        record: ProvenanceRecord;
+        appended: boolean;
+    };
+    /** Finalize a verified write unless an operator made an explicit decision during I/O. */
+    finalizeUntrustedWrite(assetId: string, source: ProvenanceSource): ProvenanceRecord;
+    /** Stage an unverified write without overwriting an explicit trust decision or another conservative marker. */
+    stageUnverifiedWrite(assetId: string, source: ProvenanceSource, frozenContentId: string): ProvenanceRecord;
+    stageUnverifiedWriteTracked(assetId: string, source: ProvenanceSource, frozenContentId: string): {
+        record: ProvenanceRecord;
+        appended: boolean;
+    };
+    /** Atomically replace only a pending/no decision with the health-waiver reason after verified persistence. */
+    finalizeUnverifiedWrite(assetId: string, source: ProvenanceSource, reason: string, frozenContentId: string): ProvenanceRecord;
     rollbackLast(rec: ProvenanceRecord): void;
     get(assetId: string): ProvenanceRecord | null;
     /** No record → trusted (local default); a record → its trusted flag. */
@@ -67,6 +124,8 @@ export declare function ingestUntrusted(store: AssetStoreProvider, prov: Provena
  * audited promotion. `reason` records WHY verification was waived (e.g. hub rewrite vs synthesized payload).
  */
 export declare function ingestUnverified(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, reason: string, source?: ProvenanceSource): Promise<PutResult>;
+/** Atomic frozen variant used by reuse so the logical-id check and append share one provider lock. */
+export declare function ingestUnverifiedConditional(store: AssetStoreProvider, prov: ProvenanceStore, record: AssetRecord, reason: string, options?: ConditionalPutOptions, source?: ProvenanceSource): Promise<ConditionalPutResult>;
 /**
  * Conditional variant used by Hub sync to reject a logical-id collision without ever allowing a Hub record
  * to become implicitly trusted. Providers that cannot make the condition atomically are rejected here.

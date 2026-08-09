@@ -1,4 +1,5 @@
 import { assetstore, algo, events, exec, material as materialNs, personality, verify } from '@evomap/evolver-core';
+import { type ConfiguredSelectionGuard, type ConfiguredSelectionPolicy } from './selectionPolicyConfig.js';
 type RunnerName = NonNullable<exec.AutonomousSafety['runner']>;
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 type SandboxedValidationRunner = typeof verify.runSandboxedValidation;
@@ -60,6 +61,8 @@ export interface MaterialCycleOptions {
     validationCmds?: readonly string[];
     validate?: exec.AutoExecDeps['validate'];
     runner?: RunnerName;
+    /** Resume the single native Claude Code or Cursor session represented by each material. Default false. */
+    resume?: boolean;
     timeoutMs?: number;
     signal?: AbortSignal;
     safety?: Partial<exec.AutonomousSafety>;
@@ -91,6 +94,16 @@ export interface MaterialCycleDeps {
     safety?: Partial<exec.AutonomousSafety>;
     sleep?: SleepFn;
     watchStateWriter?: (path: string, state: MaterialCycleWatchState) => void;
+    /** User home whose native runtime directories may contribute resumable session identities. */
+    nativeSessionHome?: string;
+    /** Override semantic IDF composition; otherwise resolved from EVOLVER_SEMANTIC_IDF. */
+    disableSemanticIdf?: boolean;
+    /** Override plateau selection policy; otherwise resolved from EVOLVER_SELECTION_POLICY. */
+    selectionPolicy?: ConfiguredSelectionPolicy;
+    /** Override the relevance guard; otherwise resolved from EVOLVER_SELECTION_GUARD. */
+    selectionGuard?: ConfiguredSelectionGuard;
+    /** Override the optional score floor; otherwise resolved from EVOLVER_SELECTION_FLOOR. */
+    selectionFloor?: number;
 }
 export declare function cycleIdForMaterial(materialId: string): string;
 export declare function cycleLockPathForMaterial(materialStorePath: string, materialId: string): string;

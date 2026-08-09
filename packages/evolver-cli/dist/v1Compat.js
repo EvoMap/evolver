@@ -10,6 +10,7 @@ const RUN_USAGE = 'usage: evolver run [-v | --verbose] [--loop | --mad-dog] [--j
 const SOLIDIFY_USAGE = 'usage: evolver solidify [--dry-run] [--json]\n';
 const FETCH_USAGE = 'usage: evolver fetch (--skill <id> | -s <id> | <id>) [--out <dir>] [--force] [--json]\n';
 const WEBUI_USAGE = 'usage: evolver webui [--port N] [--no-open]\n';
+const EXEC_USAGE = 'usage: evolver exec <command>\n';
 const V1_WEBUI_DEFAULT_PORT = 19_821;
 const V1_WEBUI_PORT_ATTEMPTS = 50;
 function io(deps) {
@@ -246,4 +247,12 @@ export async function runV1WebuiCompat(argv, deps = {}) {
     if (deps.dashboard)
         return deps.dashboard(mapped, dashboardOptions);
     return runDashboardCommand(mapped, {}, dashboardOptions);
+}
+export async function runV1ExecCompat(argv, deps = {}) {
+    if (argv.includes('--help') || argv.includes('-h')) {
+        io(deps).stdout(EXEC_USAGE);
+        return 0;
+    }
+    const json = argv.includes('--json');
+    return migrationRequired('exec', 'evolver autoexec', 'V1 exec cannot be mapped safely to V2; use `evolver autoexec` for resident execution', json, deps, { mode: 'no_action' });
 }

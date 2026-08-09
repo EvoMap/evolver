@@ -18,16 +18,18 @@
 // adapter-owned path, marker-managed so reinstall/uninstall only touch evolver's own entries, and a
 // hooks-UNION merge that preserves the user's existing hooks. TOML round-trips through smol-toml (spec
 // parser/serializer) so a user's hand-written config is preserved rather than clobbered.
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
-import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND } from './installer.js';
+import { util } from '@evomap/evolver-core';
+import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
+import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, evolverManagedHookStatus, stripEvolverHookEntries, } from './installerShared.js';
 /** The MCP server id evolver registers under [mcp_servers.evolver] / removes on uninstall. */
 export const CODEX_MCP_SERVER_ID = 'evolver';
-/** A hook entry is evolver-owned if any command mentions this — used to replace-not-duplicate on reinstall. */
-const EVOLVER_HOOK_TAG = 'evolver';
 /** SessionStart matcher: codex fires `startup` on a fresh thread and `resume` on a resumed one — cover both. */
 const SESSION_START_MATCHER = 'startup|resume';
+const CONFIG_WRITE_RETRIES = 5;
+const CODEX_CONFIG_MODE = 0o600;
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 // ── fs hardening (mirrors installer.ts) ──────────────────────────────────────
 function assertNotSymlink(path, label) {
@@ -43,21 +45,108 @@ function assertNotSymlink(path, label) {
     if (st.isSymbolicLink())
         throw new SymlinkRefusedError(label, path);
 }
-function readToml(path) {
+function readTomlSnapshot(path) {
+    let raw;
     try {
-        if (!existsSync(path))
-            return {};
-        const raw = readFileSync(path, 'utf8').trim();
-        return raw ? parseToml(raw) : {};
+        raw = readFileSync(path, 'utf8');
     }
-    catch {
-        return {}; // unparseable → start fresh (merge re-adds evolver entries; a broken file isn't silently kept)
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return { data: {}, raw: null, mode: CODEX_CONFIG_MODE };
+        throw error;
+    }
+    if (!raw.trim()) {
+        throw new Error(`[setup-hooks] refusing to overwrite .codex/config.toml (${path}): the existing file is empty.`);
+    }
+    try {
+        return { data: parseToml(raw), raw, mode: (statSync(path).mode & 0o777) & 0o700 };
+    }
+    catch (error) {
+        throw new Error(`[setup-hooks] refusing to overwrite .codex/config.toml (${path}): the existing file is not valid TOML.`, { cause: error });
     }
 }
-function writeTomlAtomic(path, data) {
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, `${stringifyToml(data)}\n`, 'utf8');
-    renameSync(tmp, path);
+function readRawIfExists(path) {
+    try {
+        return readFileSync(path, 'utf8');
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return null;
+        throw error;
+    }
+}
+let codexConfigRaceHookForTest;
+export function _setCodexConfigRaceHookForTest(hook) {
+    codexConfigRaceHookForTest = hook;
+}
+function writeTomlWithRetry(path, update, assertSafe) {
+    const lockPath = `${path}.evolver.lock`;
+    assertSafe();
+    util.acquireLock(lockPath);
+    let operationResult = false;
+    let operationFailed = false;
+    let operationError;
+    try {
+        operationResult = (() => {
+            for (let attempt = 1; attempt <= CONFIG_WRITE_RETRIES; attempt += 1) {
+                assertSafe();
+                const snapshot = readTomlSnapshot(path);
+                const next = update(snapshot.data);
+                if (!next.changed)
+                    return false;
+                codexConfigRaceHookForTest?.(path, attempt);
+                assertSafe();
+                if (readRawIfExists(path) !== snapshot.raw)
+                    continue;
+                assertSafe();
+                try {
+                    commitSharedFile({
+                        path,
+                        expectedRaw: snapshot.raw ?? undefined,
+                        nextRaw: next.remove ? undefined : `${stringifyToml(next.data)}\n`,
+                        mode: snapshot.mode,
+                    });
+                    return true;
+                }
+                catch (error) {
+                    if (error instanceof SharedFileConflictError)
+                        continue;
+                    throw error;
+                }
+            }
+            throw new Error(`[setup-hooks] refusing to overwrite .codex/config.toml (${path}): the file changed repeatedly while evolver was merging it.`);
+        })();
+    }
+    catch (error) {
+        operationFailed = true;
+        operationError = error;
+    }
+    let releaseError;
+    try {
+        const released = util.releaseLock(lockPath);
+        if (!released.released)
+            releaseError = new util.LockReleaseError(released.reason);
+    }
+    catch (error) {
+        releaseError = error;
+    }
+    if (operationFailed) {
+        if (operationError instanceof Error && releaseError !== undefined) {
+            operationError.lockReleaseError = releaseError;
+        }
+        throw operationError;
+    }
+    if (releaseError !== undefined)
+        throw releaseError;
+    return operationResult;
+}
+function codexPathGuard(configRoot, codexDir, configPath) {
+    return () => {
+        assertNotSymlink(configRoot, 'config root');
+        assertNotSymlink(codexDir, '.codex');
+        assertNotSymlink(configPath, '.codex/config.toml');
+        assertNotSymlink(`${configPath}.evolver.lock`, '.codex/config.toml lock');
+    };
 }
 // ── pure merge (exported for tests) ──────────────────────────────────────────
 /** The [mcp_servers.evolver] table from a plan's launch command. env omitted when empty (no `[..env]` table). */
@@ -70,30 +159,66 @@ export function codexMcpServerEntry(server) {
 }
 /** A single [[hooks.SessionStart]] entry that runs `command` at session start. Shape matches codex's hooks schema. */
 export function codexSessionStartHook(command) {
-    return { matcher: SESSION_START_MATCHER, hooks: [{ type: 'command', command }] };
+    return { matcher: SESSION_START_MATCHER, hooks: [{
+                type: 'command', command, statusMessage: evolverManagedHookStatus(command),
+            }] };
 }
-const hookIsEvolverOwned = (entry) => {
-    if (!isObj(entry))
+/** UserPromptSubmit has no matcher in current Codex; five seconds keeps the prompt path fail-open and bounded. */
+export function codexUserPromptSubmitHook(command) {
+    return { hooks: [{
+                type: 'command', command, timeout: 5, statusMessage: evolverManagedHookStatus(command),
+            }] };
+}
+function hookHasExactCommand(entry, command) {
+    if (!isObj(entry) || !Array.isArray(entry['hooks']))
         return false;
-    const inner = entry['hooks'];
-    if (!Array.isArray(inner))
-        return false;
-    return inner.some((h) => isObj(h) && typeof h['command'] === 'string' && h['command'].includes(EVOLVER_HOOK_TAG));
-};
+    return entry['hooks'].some((handler) => isObj(handler) && handler['command'] === command);
+}
+function hookCommands(entries) {
+    const commands = new Set();
+    for (const entry of entries) {
+        if (!isObj(entry) || !Array.isArray(entry['hooks']))
+            continue;
+        for (const handler of entry['hooks']) {
+            if (isObj(handler) && typeof handler['command'] === 'string')
+                commands.add(handler['command']);
+        }
+    }
+    return commands;
+}
 /**
  * Merge evolver's codex config into the user's existing parsed TOML. Idempotent + non-destructive:
  *  - [mcp_servers] : set our `evolver` server, keep every other server the user registered.
  *  - [[hooks.SessionStart]] : drop any prior evolver-owned entry, keep all user entries, append ours fresh.
  * The user's unrelated tables (model, approval_policy, other hook events, …) pass through untouched.
  */
-export function mergeCodexConfig(existing, mcpServer, sessionStartHook) {
+export function mergeCodexConfig(existing, mcpServer, sessionStartHook, userPromptSubmitHook) {
     const out = { ...existing };
     const mcpServers = isObj(out['mcp_servers']) ? { ...out['mcp_servers'] } : {};
+    const trustManagedStatus = CODEX_MCP_SERVER_ID in mcpServers;
+    const managedCommands = hookCommands(userPromptSubmitHook ? [sessionStartHook, userPromptSubmitHook] : [sessionStartHook]);
     mcpServers[CODEX_MCP_SERVER_ID] = mcpServer;
     out['mcp_servers'] = mcpServers;
     const hooks = isObj(out['hooks']) ? { ...out['hooks'] } : {};
+    for (const event of Object.keys(hooks)) {
+        const value = hooks[event];
+        if (!Array.isArray(value))
+            continue;
+        const kept = stripEvolverHookEntries(value, trustManagedStatus, managedCommands).entries;
+        if (kept.length > 0)
+            hooks[event] = kept;
+        else
+            delete hooks[event];
+    }
     const prior = Array.isArray(hooks['SessionStart']) ? hooks['SessionStart'] : [];
-    hooks['SessionStart'] = [...prior.filter((e) => !hookIsEvolverOwned(e)), sessionStartHook];
+    hooks['SessionStart'] = [...prior, sessionStartHook];
+    if (userPromptSubmitHook) {
+        const priorPrompt = Array.isArray(hooks['UserPromptSubmit']) ? hooks['UserPromptSubmit'] : [];
+        hooks['UserPromptSubmit'] = [
+            ...priorPrompt,
+            userPromptSubmitHook,
+        ];
+    }
     out['hooks'] = hooks;
     return out;
 }
@@ -101,6 +226,8 @@ export function mergeCodexConfig(existing, mcpServer, sessionStartHook) {
 export function stripCodexManaged(data) {
     let changed = false;
     const out = { ...data };
+    const trustManagedStatus = isObj(out['mcp_servers'])
+        && CODEX_MCP_SERVER_ID in out['mcp_servers'];
     if (isObj(out['mcp_servers']) && CODEX_MCP_SERVER_ID in out['mcp_servers']) {
         const next = { ...out['mcp_servers'] };
         delete next[CODEX_MCP_SERVER_ID];
@@ -112,15 +239,18 @@ export function stripCodexManaged(data) {
     }
     if (isObj(out['hooks'])) {
         const hooks = { ...out['hooks'] };
-        if (Array.isArray(hooks['SessionStart'])) {
-            const arr = hooks['SessionStart'];
-            const kept = arr.filter((e) => !hookIsEvolverOwned(e));
-            if (kept.length !== arr.length)
+        for (const event of Object.keys(hooks)) {
+            const value = hooks[event];
+            if (!Array.isArray(value))
+                continue;
+            const stripped = stripEvolverHookEntries(value, trustManagedStatus);
+            const kept = stripped.entries;
+            if (stripped.changed)
                 changed = true;
             if (kept.length > 0)
-                hooks['SessionStart'] = kept;
+                hooks[event] = kept;
             else
-                delete hooks['SessionStart'];
+                delete hooks[event];
         }
         if (Object.keys(hooks).length > 0)
             out['hooks'] = hooks;
@@ -130,8 +260,16 @@ export function stripCodexManaged(data) {
     return { changed, data: out };
 }
 /** True if evolver's MCP server is already registered in this parsed config (structural install marker). */
-function codexAlreadyInstalled(cfg) {
-    return isObj(cfg['mcp_servers']) && CODEX_MCP_SERVER_ID in cfg['mcp_servers'];
+function codexAlreadyInstalled(cfg, sessionStartCommand, promptRecallCommand) {
+    if (!isObj(cfg['mcp_servers']) || !(CODEX_MCP_SERVER_ID in cfg['mcp_servers']))
+        return false;
+    const hooks = cfg['hooks'];
+    if (!isObj(hooks))
+        return false;
+    const sessionStart = Array.isArray(hooks['SessionStart']) ? hooks['SessionStart'] : [];
+    const promptSubmit = Array.isArray(hooks['UserPromptSubmit']) ? hooks['UserPromptSubmit'] : [];
+    return sessionStart.some((entry) => hookHasExactCommand(entry, sessionStartCommand))
+        && promptSubmit.some((entry) => hookHasExactCommand(entry, promptRecallCommand));
 }
 // ── install / uninstall ───────────────────────────────────────────────────────
 /**
@@ -141,31 +279,46 @@ function codexAlreadyInstalled(cfg) {
  */
 export function installCodex(plan, opts) {
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
+    const promptRecallHookCommand = opts.promptRecallHookCommand ?? DEFAULT_PROMPT_RECALL_HOOK_COMMAND;
     const codexDir = join(opts.configRoot, '.codex');
     const configPath = join(codexDir, 'config.toml');
-    assertNotSymlink(opts.configRoot, 'config root');
-    assertNotSymlink(codexDir, '.codex');
-    assertNotSymlink(configPath, '.codex/config.toml');
-    const existing = readToml(configPath);
-    if (!opts.force && codexAlreadyInstalled(existing)) {
-        return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [], alreadyInstalled: true };
-    }
+    const assertSafe = codexPathGuard(opts.configRoot, codexDir, configPath);
+    assertSafe();
     const mcpServer = codexMcpServerEntry(opts.server);
     const sessionStartHook = codexSessionStartHook(hookCommand);
-    const merged = mergeCodexConfig(existing, mcpServer, sessionStartHook);
+    const userPromptSubmitHook = codexUserPromptSubmitHook(promptRecallHookCommand);
     mkdirSync(codexDir, { recursive: true });
-    writeTomlAtomic(configPath, merged);
-    return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [configPath] };
+    const changed = writeTomlWithRetry(configPath, (current) => {
+        if (!opts.force && codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand)) {
+            return { changed: false, data: current };
+        }
+        return {
+            changed: true,
+            data: mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook),
+        };
+    }, assertSafe);
+    return {
+        ok: true,
+        runtime: plan.runtime,
+        mode: plan.mode,
+        files: changed ? [configPath] : [],
+        ...(!changed ? { alreadyInstalled: true } : {}),
+    };
 }
 /** Remove evolver's MCP registration + SessionStart hook from a codex project config (leaves user content intact). */
 export function uninstallCodex(runtime, opts) {
-    const configPath = join(opts.configRoot, '.codex', 'config.toml');
-    assertNotSymlink(configPath, '.codex/config.toml');
+    const codexDir = join(opts.configRoot, '.codex');
+    const configPath = join(codexDir, 'config.toml');
+    const assertSafe = codexPathGuard(opts.configRoot, codexDir, configPath);
+    assertSafe();
     if (!existsSync(configPath))
         return { ok: true, runtime, mode: 'uninstall', files: [] };
-    const { changed, data } = stripCodexManaged(readToml(configPath));
-    if (!changed)
-        return { ok: true, runtime, mode: 'uninstall', files: [] };
-    writeTomlAtomic(configPath, data);
-    return { ok: true, runtime, mode: 'uninstall', files: [configPath] };
+    const changed = writeTomlWithRetry(configPath, (current) => {
+        const stripped = stripCodexManaged(current);
+        return {
+            ...stripped,
+            remove: stripped.changed && Object.keys(stripped.data).length === 0,
+        };
+    }, assertSafe);
+    return { ok: true, runtime, mode: 'uninstall', files: changed ? [configPath] : [] };
 }

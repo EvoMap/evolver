@@ -1,22 +1,16 @@
-// Autonomous-exec task runner — the productized per-task kernel a resident daemon polls (the deployment form
-// of the scratch autoexec daemon). One task → one fully-hardened evolution cycle, with a deny-by-default
-// allowlist pre-check that yields a clean "refused" verdict WITHOUT running anything when the repo is not
-// allowlisted. Secure by construction: the execute is built by makeSafeExecute (all six controls); callers
-// cannot bypass the safety composition.
-import { resolve as resolvePath, sep } from 'node:path';
 import { normalizeForPut } from '../assetstore/provider.js';
 import { ingestUntrusted } from '../assetstore/provenance.js';
 import { mergePendingSignalsForStore } from '../assetstore/pendingSignals.js';
 import { intakeGene } from '../algo/geneIntake.js';
 import { runEvolutionCycle } from '../algo/orchestrator.js';
 import { makeSafeExecute, makeTrustedGeneResolver } from './autonomousCycle.js';
+import { isWithinRoot } from './claudeBridge.js';
 import { findSignalHints } from './openPrRegistry.js';
 import { AgentRunTraceRecorder, buildLearningPacketDraft } from '../trace/learningTrace.js';
 import { collectRunLlmTurns } from '../trace/proxyTurns.js';
 /** Same path-containment as the bridge guard — used here to refuse before running anything (clean verdict). */
 function withinAllowlist(repo, roots) {
-    const c = resolvePath(repo);
-    return roots.some((root) => { const r = resolvePath(root); return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep); });
+    return roots.some((root) => isWithinRoot(repo, root));
 }
 function cleanForcedGeneId(value) {
     if (typeof value !== 'string')
@@ -151,7 +145,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     // Wall-clock window of this run, used to correlate the proxy's llm_turn records (slice 5). Captured
     // unconditionally-cheaply only when the fold is configured.
     const proxyTraceClock = deps.learningTrace?.proxyTraces?.now ?? Date.now;
-    const runStartMs = deps.learningTrace?.proxyTraces ? proxyTraceClock() : 0;
+    let runStartMs = 0;
     try {
         traceRecorder?.runStarted({ taskSummary: task.expectedEffect, signals: cycleSignals, metadata: { repo: task.repo, target: task.target } });
     }
@@ -164,6 +158,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
             hubCandidates = [];
         }
     }
+    runStartMs = deps.learningTrace?.proxyTraces ? proxyTraceClock() : 0;
     // evaluation fill-in (slice 6): the validate hook is the run's external verifier (sandboxed validation
     // commands), so its result — when it actually RAN — becomes the packet's evaluation.verification
     // (verifier 'automated_test'). Observation is a pass-through wrapper: the hook's result reaches the
@@ -214,6 +209,10 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(deps.recallEvents ? { recallEvents: deps.recallEvents } : {}),
         ...(memoryGraphAdvice ? { memoryGraphAdvice } : {}),
         ...(strategyName !== undefined ? { strategyName } : {}),
+        ...(deps.disableSemanticIdf ? { disableSemanticIdf: true } : {}),
+        ...(deps.selectionPolicy ? { selectionPolicy: deps.selectionPolicy } : {}),
+        ...(deps.selectionGuard ? { selectionGuard: deps.selectionGuard } : {}),
+        ...(deps.selectionFloor !== undefined ? { selectionFloor: deps.selectionFloor } : {}),
         ...(cycleForcedGeneId !== undefined ? { forcedGeneId: cycleForcedGeneId } : {}),
         cycleId,
         problem: {
@@ -253,7 +252,10 @@ export async function runAutoExecTask(deps, rawTask, safety) {
                 sourceRepo: deps.learningTrace.sourceRepo ?? 'evolver-v2',
                 taskSummary: task.expectedEffect,
                 signals: cycleSignals,
-                environment: { repo: task.repo, runner: safety.runner ?? 'claude' },
+                environment: {
+                    repo: task.repo,
+                    runner: safety.runner ?? (deps.agent ? 'claude' : 'codex'),
+                },
                 ...(observedVerification !== undefined ? { verification: observedVerification } : {}),
             }));
         }

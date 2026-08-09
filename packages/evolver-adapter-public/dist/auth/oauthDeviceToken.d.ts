@@ -15,11 +15,11 @@ export interface TokenResp {
 }
 /** 注入的 OAuth device flow 传输(M6-6 真 HTTP; 测试用桩). refresh 走 refresh_token grant. */
 export interface OAuthTransport {
-    requestDeviceCode: (fingerprint: string) => Promise<DeviceCodeResp>;
-    pollToken: (deviceCode: string) => Promise<TokenResp | {
+    requestDeviceCode: (fingerprint: string, signal?: AbortSignal) => Promise<DeviceCodeResp>;
+    pollToken: (deviceCode: string, signal?: AbortSignal) => Promise<TokenResp | {
         pending: true;
     }>;
-    refresh?: (refreshToken: string) => Promise<TokenResp>;
+    refresh?: (refreshToken: string, signal?: AbortSignal) => Promise<TokenResp>;
 }
 export interface PublicOAuthOptions {
     credPath: string;
@@ -32,6 +32,8 @@ export interface PublicOAuthOptions {
     sleep?: (ms: number) => Promise<void>;
     /** 整个 device flow 的最长等待(默认 15min); 超时抛 device_flow_timeout. */
     maxWaitMs?: number;
+    /** Provider-level refresh bound, including injected transports. */
+    refreshTimeoutMs?: number;
 }
 /**
  * device token 认证(M6-5, 默认路径 evolver login). device code flow(学 gh auth login):
@@ -45,6 +47,7 @@ export declare class PublicOAuthProvider implements hub.AuthProvider {
     private readonly now;
     private readonly sleep;
     private readonly maxWaitMs;
+    private readonly refreshTimeoutMs;
     constructor(opts: PublicOAuthOptions);
     private fingerprint;
     /**
@@ -54,9 +57,9 @@ export declare class PublicOAuthProvider implements hub.AuthProvider {
      * itself (respecting the server interval); a terminal error from the transport
      * (access_denied / expired_token) propagates.
      */
-    login(): Promise<hub.Credential>;
-    authenticate(): Promise<hub.SignedRequest>;
-    rotate(): Promise<hub.Credential>;
+    login(parentSignal?: AbortSignal): Promise<hub.Credential>;
+    authenticate(req?: hub.HttpRequestLike): Promise<hub.SignedRequest>;
+    rotate(parentSignal?: AbortSignal): Promise<hub.Credential>;
     revoke(): Promise<void>;
     private persist;
 }

@@ -8,22 +8,41 @@ import { resolveDistillObserver } from './distillObserver.js';
 import { type AutoDistillLlmResult, type LlmDistillRunner } from './autoDistillLlm.js';
 import { type AutoDistillAntiGeneMode, type AutoDistillAntiGeneResult } from './autoDistillAntiGene.js';
 import { type AutoDistillTranscriptMode, type TranscriptDistillTickResult } from './autoDistillTranscript.js';
-import { type SessionIngestTickResult } from './index.js';
+import { type SessionIngestTickResult } from './sessionIngest.js';
+import { AtpAutoBuyer, type AtpAutoBuyerClient, type AtpAutoBuyerRequest } from './atpAutoBuyer.js';
+import { type ConfiguredSelectionGuard } from './selectionPolicyConfig.js';
 export { readAutoExecConfig, type AutoExecConfig } from './autoexecConfig.js';
+export { semanticIdfEnabled } from './semanticIdfConfig.js';
+export { selectionFloorFromEnv, selectionGuardFromEnv, selectionPolicyFromEnv, type ConfiguredSelectionGuard, } from './selectionPolicyConfig.js';
+export declare function withAutoExecSelectionPolicy<T extends object>(deps: T, env?: NodeJS.ProcessEnv): T & {
+    selectionPolicy?: exec.AutoExecDeps['selectionPolicy'];
+};
+export declare function withAutoExecSelectionConfig<T extends object>(deps: T, env?: NodeJS.ProcessEnv): T & {
+    selectionPolicy?: exec.AutoExecDeps['selectionPolicy'];
+    selectionGuard: ConfiguredSelectionGuard;
+    selectionFloor?: number;
+};
 export interface AutoExecDirs {
     base: string;
     tasks: string;
+    inflight: string;
     done: string;
     refused: string;
 }
-/** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
+/** Create the queue layout under <home>/autoexec/{tasks,inflight,done,refused}. */
 export declare function ensureAutoExecDirs(base: string): AutoExecDirs;
 export declare function summarizeSandboxedValidation(result: verify.SandboxedValidationResult): string | null;
 /**
- * One queue pass: drain every tasks/*.json through `runOne`, route the verdict to done/ (success or failure)
- * or refused/ (deny-by-default), and move the task file out of the queue. Sequential; returns the verdicts.
+ * One queue pass: atomically claim regular tasks/*.json into inflight/, then route each verdict to done/
+ * (success or failure) or refused/ (deny-by-default). A claim is atomically marked started before runOne;
+ * after a crash, started and legacy claims are ambiguous and fail closed instead of repeating side effects.
+ * Unreadable or incomplete claimed tasks stay pending because the drop-directory has no atomic publish marker.
  */
-export declare function autoExecPass(dirs: AutoExecDirs, runOne: (task: exec.AutoExecTask) => Promise<exec.AutoExecVerdict>): Promise<exec.AutoExecVerdict[]>;
+export declare function autoExecPass(dirs: AutoExecDirs, runOne: (task: exec.AutoExecTask) => Promise<exec.AutoExecVerdict>, options?: {
+    executePendingTasks?: boolean;
+}): Promise<exec.AutoExecVerdict[]>;
+/** Keep unsupported built-in runners away from the execution queue without stopping the resident daemon. */
+export declare function runnerBoundAutoExecPass(runner: exec.RunnerName, dirs: AutoExecDirs, runOne: (task: exec.AutoExecTask) => Promise<exec.AutoExecVerdict>): () => Promise<exec.AutoExecVerdict[]>;
 /**
  * Build the reuse-before-solve seam (#110) — THE real injection point. This is the public-repo composition
  * layer that owns BOTH core's autoexec kernel and the adapter's hub capability, so it is where the adapter's
@@ -33,7 +52,48 @@ export declare function autoExecPass(dirs: AutoExecDirs, runOne: (task: exec.Aut
  * (a repeat signal set → zero hub calls). Off by default: only wired when EVOLVER_REUSE_BEFORE_SOLVE === '1'
  * AND a hub credential exists (no token → no seam → zero hub calls, exactly today's behavior).
  */
-export declare function makeHubReuseSeam(cap: hubNs.HubCapability, cache: ReuseCache, ingestor?: events.Ingestor, onAssetReused?: (assetId: string) => void): exec.HubReuseSeam;
+export type VerifiedHubSearchMissReason = 'no_results' | 'below_threshold';
+export interface VerifiedHubSearchMiss {
+    reason: VerifiedHubSearchMissReason;
+    signals: readonly string[];
+    cycleId?: string;
+}
+export type VerifiedHubSearchMissHandler = (miss: VerifiedHubSearchMiss) => void;
+/** Minimal audit seam so autoexec tests never have to touch the operator's real asset-call log. */
+export interface AssetCallLogger {
+    append(entry: hubNs.AssetCallEntry): void;
+    assetCostIndex?(): Record<string, number>;
+}
+interface HubSearchHitAudit {
+    runId: string | null;
+    assetId?: string;
+    assetType?: string;
+    sourceNodeId?: string;
+    chainId?: string;
+    score?: number;
+    mode: 'direct' | 'reference';
+    signals: readonly string[];
+    tokensSaved: number;
+    tokensSavedBasis: hubNs.TokensSavedBasis;
+}
+interface HubReuseAuditOptions {
+    assetLog?: AssetCallLogger;
+    onSearchHit?: (hit: HubSearchHitAudit) => void;
+    env?: NodeJS.ProcessEnv;
+}
+/** Build the deliberately small, public-safe ATP request allowed to leave autoexec after a verified Hub miss. */
+export declare function atpCapabilityGapRequest(signals: readonly string[]): AtpAutoBuyerRequest;
+/** Schedule economic work outside the reuse/task critical path and contain all asynchronous failures. */
+export declare function scheduleAtpAutoBuyForVerifiedMiss(miss: VerifiedHubSearchMiss, buyer: Pick<AtpAutoBuyer, 'consider'>): void;
+/** Resolve an autonomous buyer only after an explicit env/ack consent check; the buyer checks consent again. */
+export declare function resolveAtpAutoBuyer(env?: NodeJS.ProcessEnv, createClient?: (resolvedEnv: NodeJS.ProcessEnv) => AtpAutoBuyerClient): AtpAutoBuyer | undefined;
+export declare function makeHubReuseSeam(cap: hubNs.HubCapability, cache: ReuseCache, ingestor?: events.Ingestor, onAssetReused?: (assetId: string) => void, onVerifiedSearchMiss?: VerifiedHubSearchMissHandler, audit?: HubReuseAuditOptions): exec.HubReuseSeam;
+/**
+ * Free search-only seam used by ATP auto-buy when reuse injection is disabled. It proves a capability miss with
+ * the same dual-leg search and score threshold as reuse, but never performs the paid fetch or contributes a Hub
+ * candidate.
+ */
+export declare function makeHubSearchMissProbe(cap: hubNs.HubCapability, cache: ReuseCache, onVerifiedSearchMiss: VerifiedHubSearchMissHandler, enabled: () => boolean, env?: NodeJS.ProcessEnv, assetLog?: AssetCallLogger): exec.HubReuseSeam;
 /**
  * Append a `value.inject` root_event for a SessionStart gene injection (#123). Attribution-only — the payload
  * carries the injected gene ids (+ cycle/outcome when known) and NO savings number, exactly per the ledger's
@@ -113,6 +173,36 @@ export interface AutoexecLockReleaseDeps {
     stderr?: (text: string) => void;
 }
 export declare function releaseAutoexecLock(lockPath: string, deps?: AutoexecLockReleaseDeps): boolean;
+type AutoexecStreamErrorListener = (error: NodeJS.ErrnoException) => void;
+export interface AutoexecErrorStream {
+    on(event: 'error', listener: AutoexecStreamErrorListener): unknown;
+    off?(event: 'error', listener: AutoexecStreamErrorListener): unknown;
+    removeListener?(event: 'error', listener: AutoexecStreamErrorListener): unknown;
+}
+export interface AutoexecBrokenPipeGuardDeps {
+    stdout?: AutoexecErrorStream;
+    stderr?: AutoexecErrorStream;
+}
+/** Keep a detached daemon alive when its output consumer closes, without hiding other stream failures. */
+export declare function installAutoexecBrokenPipeGuards(deps?: AutoexecBrokenPipeGuardDeps): () => void;
+export type AutoexecProcessSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
+type AutoexecSignalListener = () => void;
+export interface AutoexecSignalSource {
+    on(event: AutoexecProcessSignal, listener: AutoexecSignalListener): unknown;
+    off?(event: AutoexecProcessSignal, listener: AutoexecSignalListener): unknown;
+    removeListener?(event: AutoexecProcessSignal, listener: AutoexecSignalListener): unknown;
+}
+export interface AutoexecShutdownDeps {
+    stop: () => Promise<void>;
+    cleanup: () => void;
+    signals?: AutoexecSignalSource;
+    write?: (message: string) => void;
+}
+/**
+ * Own autoexec's process-signal lifetime. V2 intentionally has no hot-reload seam: SIGHUP is informational and
+ * keeps the current generation alive; SIGINT/SIGTERM drain the resident loop before cleanup and exit.
+ */
+export declare function waitForAutoexecShutdown(deps: AutoexecShutdownDeps): Promise<number>;
 export declare function urgentQuestionRuntimeWiringStatus(): typeof hubNs.URGENT_QUESTION_RUNTIME_WIRING_STATUS;
 export declare function submitDistillTickExplorationQuestion(questions: HubQuestionLink | undefined, source: DistillTickQuestionSource | undefined): Promise<HubQuestionSubmitResult>;
 export declare function scheduleAutoExecHubSideEffects(task: exec.AutoExecTask, verdict: exec.AutoExecVerdict, links: {
@@ -125,15 +215,13 @@ export declare function scheduleAutoExecHubSideEffects(task: exec.AutoExecTask, 
  * candidate can be withheld by trust/review gates or lose selection, so fetch-time attribution would overclaim.
  * Reporting never throws and never blocks the verdict.
  */
-export declare function makeHubLink(cap: OutcomeReportingHub, ingestor?: events.Ingestor, reportEnabled?: boolean): HubLink;
+export declare function makeHubLink(cap: OutcomeReportingHub, ingestor?: events.Ingestor, reportEnabled?: boolean, onVerifiedSearchMiss?: VerifiedHubSearchMissHandler, assetLog?: AssetCallLogger, env?: NodeJS.ProcessEnv): HubLink;
 /**
- * Resolve the hub link (reuse seam + outcome reporter) from the environment, or undefined when reuse is
- * not enabled/credentialed. Default OFF: requires EVOLVER_REUSE_BEFORE_SOLVE === '1' and an OAuth token at
- * <evomapDir>/token.json. Any setup failure degrades to undefined (no link) so the daemon never blocks on
- * hub config — reuse is an optimization. Outcome reporting rides the same gate (it is the read-back half
- * of the same paid hub relationship); EVOLVER_OUTCOME_REPORT=0 turns just the reporting off.
+ * Resolve public/private reuse wiring. Reuse remains default-off. When a public ATP miss handler is supplied,
+ * a consent-gated free search-only seam may still be composed so auto-buy can prove a miss independently of
+ * reuse injection; that seam never fetches or injects Hub assets.
  */
-export declare function resolveHubLink(env?: NodeJS.ProcessEnv, ingestor?: events.Ingestor, connectHub?: PublicHubConnector): HubLink | undefined;
+export declare function resolveHubLink(env?: NodeJS.ProcessEnv, ingestor?: events.Ingestor, connectHub?: PublicHubConnector, onVerifiedSearchMiss?: VerifiedHubSearchMissHandler, assetLog?: AssetCallLogger): HubLink | undefined;
 export declare function resolveHubQuestionLink(env?: NodeJS.ProcessEnv, connectHub?: PublicHubConnector): HubQuestionLink | undefined;
 export declare function resolveMemoryEventMirror(env?: NodeJS.ProcessEnv, connectHub?: PublicHubConnector): MemoryEventMirrorWiring;
 export declare function offlinePermitDir(env?: NodeJS.ProcessEnv): string;

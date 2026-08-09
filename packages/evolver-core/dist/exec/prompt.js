@@ -5,6 +5,7 @@ import { renderPersonalityBlock } from '../personality/prompt.js';
 // trust gate (only embed trusted gene strategies); this just blunts the obvious "ignore your instructions" /
 // fake-role-tag attacks in whatever content does flow through. Kept tight to avoid redacting real strategy text.
 const INJECTION_PATTERNS = [
+    /(?<![a-z0-9])(?:ignore|disregard|forget)[_-]+(?:all[_-]+)?(?:previous|above|prior|preceding|earlier)[_-]+(?:instructions?|prompts?|context|rules?|messages?)(?:[_-]+[a-z0-9]+){0,12}/gi,
     /\b(ignore|disregard|forget)\b[^.\n]{0,40}\b(previous|above|prior|preceding|earlier|all)\b[^.\n]{0,30}\b(instruction|prompt|context|rule|message)/gi,
     /\b(new|updated|real|actual)\b[^.\n]{0,20}\b(instruction|system prompt|task|directive)s?\s*:/gi,
     /<\/?\s*(system|user|assistant|instructions?|im_start|im_end)\s*>/gi,
@@ -42,6 +43,9 @@ function renderAntiWarning(warning, index, sanitize) {
 export function renderExecPrompt(input) {
     const { mutation: m, decision: d, gene, validationCmds, personality } = input;
     const s = sanitizeInjection; // every embedded (potentially untrusted) field is sanitized (finding #39.3)
+    // Hub capability gaps may steer curriculum selection, but they are control-plane data rather than executable
+    // task instructions. Keep their raw values out of the real-agent prompt while retaining ordinary/local signals.
+    const promptSignals = m.trigger_signals.filter((signal) => !signal.toLowerCase().startsWith('curriculum_target:gap:'));
     const lines = [
         'You are an autonomous coding agent applying ONE focused, minimal change.',
         '',
@@ -51,7 +55,7 @@ export function renderExecPrompt(input) {
         '## Target',
         `Area/file: ${s(m.target)}`,
         `Category: ${m.category}   Risk: ${m.risk_level}`,
-        `Triggering signals: ${s(m.trigger_signals.join(', ')) || '(none)'}`,
+        `Triggering signals: ${s(promptSignals.join(', ')) || '(none)'}`,
     ];
     if (d.selectedGeneId && gene) {
         lines.push('', `## Strategy (learned gene ${d.selectedGeneId})`);

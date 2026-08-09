@@ -22,6 +22,8 @@ export declare class EventStore {
     private appendLocked;
     /** 读全部事件 (跳过尾部半行/损坏行). */
     readAll(): RootEvent[];
+    /** Fail-closed replay for decision policies that cannot safely consume a partial history. */
+    readAllStrict(): RootEvent[];
     iterate(fromSeq?: number): Generator<RootEvent>;
     tail(n?: number): RootEvent[];
     /** 截断尾部半行 (崩溃恢复). */

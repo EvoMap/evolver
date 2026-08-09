@@ -59,7 +59,9 @@ export interface AccountAssetListResult {
     nextCursor?: string;
 }
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
-export declare function gepEnvelope(messageType: string, payload: unknown): Record<string, unknown>;
+export declare function gepEnvelope(messageType: string, payload: unknown, options?: {
+    messageId?: string;
+}): Record<string, unknown>;
 export interface PublicHubOptions {
     baseUrl: string;
     auth: hub.AuthProvider;
@@ -74,6 +76,8 @@ export interface PublicHelloResult {
     ok: boolean;
     authError?: boolean;
     nodeId?: string;
+    claimCode?: string;
+    claimUrl?: string;
     nodeSecretVersion?: number;
     rateLimitUntilMs?: number;
     error?: string;
@@ -124,6 +128,7 @@ export interface PublicHeartbeatResult {
         reason?: string;
     };
     forceUpdate?: PublicForceUpdateDirective;
+    capabilityGaps?: readonly string[];
 }
 export declare function isHubDryRunEnabled(env?: Record<string, string | undefined>): boolean;
 export declare function outboundMaxBodyBytes(env?: Record<string, string | undefined>): number;
@@ -137,15 +142,18 @@ export declare class PublicHubCapability implements hub.HubCapability {
     readonly auth: hub.AuthProvider;
     readonly recipes: hub.RecipeCapability;
     constructor(opts: PublicHubOptions);
+    private evolverVersionForWire;
+    private envFingerprintForWire;
     hello(opts: PublicHelloOptions): Promise<PublicHelloResult>;
     heartbeat(opts?: PublicHeartbeatOptions): Promise<PublicHeartbeatResult>;
     private heartbeatMeta;
-    publish(bundle: hub.AssetRecord[]): Promise<hub.PublishReceipt>;
+    publish(bundle: hub.AssetRecord[], options?: hub.PublishOptions): Promise<hub.PublishReceipt>;
     fetch(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
     fetchAssetById(assetId: string): Promise<hub.AssetRecord | null>;
     /**
      * #69: search != fetch. Free-text is the hub's vector endpoint (GET /a2a/assets/semantic-search?q=);
-     * signals/id queries fall through to fetch. /a2a/fetch does NOT do semantic, so text must not go there.
+     * signal/id queries use the Hub's free search-only phase on /a2a/fetch. /a2a/fetch does NOT do semantic,
+     * so text must not go there and paid/full fetch must remain an explicit follow-up.
      */
     search(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
     agentDirectory: hub.AgentDirectoryCapability;

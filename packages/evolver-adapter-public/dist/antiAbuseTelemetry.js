@@ -99,6 +99,7 @@ export function collectIntegrityHashes(packageRoot = resolveAdapterPackageRoot()
 export function buildHeartbeatAntiAbuseTelemetry(opts = {}) {
     const env = opts.env ?? process.env;
     const fp = opts.envFingerprint ?? bootstrap.captureEnvFingerprint({ env });
+    const evolverVersion = bootstrap.normalizeEvolverVersion(Object.hasOwn(opts, 'evolverVersion') ? opts.evolverVersion : fp.evolver_version);
     const salt = opts.salt ?? env['EVOLVER_ANTI_ABUSE_SALT'];
     const saltId = opts.saltId ?? env['EVOLVER_ANTI_ABUSE_SALT_ID'] ?? (salt ? 'env' : null);
     const pseudonymStatus = salt ? 'salt_configured' : 'salt_missing';
@@ -159,7 +160,7 @@ export function buildHeartbeatAntiAbuseTelemetry(opts = {}) {
             // AUTHORITATIVE per-asset model lives on the capsule (threaded from input.model), so 'unknown' on a heartbeat
             // is "this node didn't say", never a contradiction of a capsule's real model.
             model: fp.model,
-            evolver_version: opts.evolverVersion ?? null,
+            evolver_version: evolverVersion ?? null,
             client: '@evomap/evolver-adapter-public',
             client_version: null,
             region: fp.region ?? null,

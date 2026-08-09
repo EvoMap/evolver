@@ -1,4 +1,4 @@
-import { type InstallResult } from './installer.js';
+import { type InstallResult } from './installerShared.js';
 /** Project-relative location cursor loads project rules from. */
 export declare const CURSOR_RULES_DIR: string;
 /** The single evolver-owned rules file. Other `.cursor/rules/*.mdc` (user-authored) are never touched. */

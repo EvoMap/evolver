@@ -35,17 +35,18 @@ function utcDayStamp(ms) {
     return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
 }
 /**
- * Keep day-stamped files that could contain the window's turns. One extra preceding day is included so the
- * session-first-turn heuristic can see the pre-window history of a session that started before midnight.
+ * Keep day-stamped files that could contain the window's turns. Heuristic correlation must inspect all earlier
+ * day files to prove that an in-window session did not start before the run; exact session-id correlation only
+ * needs files that overlap the run window.
  * Non-day-stamped `llm-trace-*.jsonl` names (custom sinks/tests) are kept conservatively — the ts window
  * filter below is the authority; the filename filter only trims read volume.
  */
-function fileCoversWindow(name, window) {
+function fileCoversWindow(name, window, includeSessionHistory) {
     const match = DAY_STAMPED_FILE_RE.exec(name);
     if (!match)
         return true;
     const stamp = match[1];
-    return stamp >= utcDayStamp(window.startMs - 24 * 60 * 60 * 1000) && stamp <= utcDayStamp(window.endMs);
+    return (includeSessionHistory || stamp >= utcDayStamp(window.startMs)) && stamp <= utcDayStamp(window.endMs);
 }
 function turnTsMs(turn) {
     if (turn.ts === null)
@@ -102,10 +103,14 @@ export function collectRunLlmTurns(dir, window, opts = {}) {
         if (!(window.endMs >= window.startMs))
             return [];
         const names = readdirSync(dir)
-            .filter((name) => TRACE_FILE_RE.test(name) && fileCoversWindow(name, window))
+            .filter((name) => TRACE_FILE_RE.test(name) && fileCoversWindow(name, window, opts.sessionId === undefined))
             .sort();
         const turns = [];
         for (const name of names) {
+            const dayMatch = DAY_STAMPED_FILE_RE.exec(name);
+            const isHistoricalDay = opts.sessionId === undefined
+                && dayMatch !== null
+                && dayMatch[1] < utcDayStamp(window.startMs);
             let text;
             try {
                 text = readFileSync(join(dir, name), 'utf8');
@@ -117,8 +122,11 @@ export function collectRunLlmTurns(dir, window, opts = {}) {
             const { rows } = readTraceRowsFromJsonl(text, { ...(opts.readOptions ?? {}), allowPartial: true });
             for (const row of rows) {
                 const turn = traceRecordToTurnDraft(row);
-                if (turn !== null)
-                    turns.push(turn);
+                if (turn !== null) {
+                    // Older day files establish that a session predates this run; they can never contribute candidate
+                    // turns even if a malformed row carries an in-window timestamp.
+                    turns.push(isHistoricalDay ? { ...turn, ts: new Date(window.startMs - 1).toISOString() } : turn);
+                }
             }
         }
         return selectRunLlmTurns(turns, window, opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {});

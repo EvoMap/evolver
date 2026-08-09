@@ -3,11 +3,13 @@
 // by single-flight so a slow pass never stacks. DENY-BY-DEFAULT: allowedRoots starts empty (refuses every
 // repo) until the operator explicitly allowlists one — autonomous edits to a real repo never happen by accident.
 import { homedir } from 'node:os';
-import { readdirSync, readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { events, assetstore, algo, exec, ops, observers, hooks, material as materialNs, util, verify, hub as hubNs, daemon as daemonNs, personality } from '@evomap/evolver-core';
+import { events, assetstore, algo, exec, ops, observers, hooks, material as materialNs, util, verify, hub as hubNs, daemon as daemonNs, personality, signals as signalNs } from '@evomap/evolver-core';
+import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 import { startResidentLoop } from './daemonLoop.js';
-import { connectPublicHub, createSolidifyPermitCheck, ReuseCache, reuseBeforeSolve, resolveConfiguredHubUrl, resolveHubUrl } from '@evomap/evolver-adapter-public';
+import { connectPublicHub, createSolidifyPermitCheck, getMinReuseScore, ReuseCache, reuseBeforeSolve, resolveConfiguredHubUrl, resolveHubUrl, searchHubMetadata, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { resolveValueDigestObserver } from './valueDigest.js';
 import { resolveReflectionObserver } from './reflectionObserver.js';
@@ -17,10 +19,11 @@ import { resolveDistillObserver } from './distillObserver.js';
 import { resolveAutoDistillLlm } from './autoDistillLlm.js';
 import { resolveAutoDistillAntiGene as resolveAntiGeneDistill } from './autoDistillAntiGene.js';
 import { runTranscriptDistillTick, transcriptDistillMode } from './autoDistillTranscript.js';
-import { runSessionIngestTick, scanSessionDirs } from './index.js';
+import { runSessionIngestTick, scanSessionDirs } from './sessionIngest.js';
 import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
 import { resolveAtpAutoDeliver } from './atpAutoDeliver.js';
-import { resolveAtpHome, resolveAtpSenderId } from './atp.js';
+import { createAtpClientFromEnv, getAtpConsent, resolveAtpHome, resolveAtpSenderId } from './atp.js';
+import { AtpAutoBuyer } from './atpAutoBuyer.js';
 import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
 import { runAutobuyPrompt } from './atpAutobuyPrompt.js';
 import * as solomode from './solo/mode.js';
@@ -28,13 +31,38 @@ import * as gitGuard from './solo/gitGuard.js';
 import * as breaker from './solo/breaker.js';
 import { initializeWorkflowStartupRecovery } from './workflowRuntime.js';
 import { readAutoExecConfig } from './autoexecConfig.js';
+import { makeCurriculumCapabilityGapsProvider } from './curriculumCapabilityGaps.js';
 import { resolveLearningTrace } from './learningTrace.js';
+import { semanticIdfEnabled } from './semanticIdfConfig.js';
+import { selectionFloorFromEnv, selectionGuardFromEnv, selectionPolicyFromEnv, } from './selectionPolicyConfig.js';
 export { readAutoExecConfig } from './autoexecConfig.js';
+export { semanticIdfEnabled } from './semanticIdfConfig.js';
+export { selectionFloorFromEnv, selectionGuardFromEnv, selectionPolicyFromEnv, } from './selectionPolicyConfig.js';
+export function withAutoExecSelectionPolicy(deps, env = process.env) {
+    const policy = selectionPolicyFromEnv(env);
+    return policy === 'engine-health' ? deps : { ...deps, selectionPolicy: policy };
+}
+export function withAutoExecSelectionConfig(deps, env = process.env) {
+    const withPolicy = withAutoExecSelectionPolicy(deps, env);
+    const selectionGuard = selectionGuardFromEnv(env);
+    const selectionFloor = selectionFloorFromEnv(env);
+    return {
+        ...withPolicy,
+        selectionGuard,
+        ...(selectionFloor !== undefined ? { selectionFloor } : {}),
+    };
+}
 const ENV_FILE_UNAVAILABLE_DIAGNOSTIC = '[evolver-autoexec] env_file_unavailable\n';
-/** Create the queue layout under <home>/autoexec/{tasks,done,refused}. */
+/** Create the queue layout under <home>/autoexec/{tasks,inflight,done,refused}. */
 export function ensureAutoExecDirs(base) {
-    const dirs = { base, tasks: join(base, 'tasks'), done: join(base, 'done'), refused: join(base, 'refused') };
-    for (const dir of [dirs.tasks, dirs.done, dirs.refused])
+    const dirs = {
+        base,
+        tasks: join(base, 'tasks'),
+        inflight: join(base, 'inflight'),
+        done: join(base, 'done'),
+        refused: join(base, 'refused'),
+    };
+    for (const dir of [dirs.tasks, dirs.inflight, receiptDir(dirs), dirs.done, dirs.refused])
         mkdirSync(dir, { recursive: true });
     return dirs;
 }
@@ -67,40 +95,312 @@ export function summarizeSandboxedValidation(result) {
 function createAutoExecPersonalityStore() {
     return new personality.PersonalityStore();
 }
-/**
- * One queue pass: drain every tasks/*.json through `runOne`, route the verdict to done/ (success or failure)
- * or refused/ (deny-by-default), and move the task file out of the queue. Sequential; returns the verdicts.
- */
-export async function autoExecPass(dirs, runOne) {
-    const files = readdirSync(dirs.tasks).filter((f) => f.endsWith('.json'));
-    const out = [];
-    for (const f of files) {
-        const task = exec.normalizeAutoExecTask(JSON.parse(readFileSync(join(dirs.tasks, f), 'utf8')));
-        const v = await runOne(task).catch((e) => ({ taskId: task.id, status: 'failed', reason: e instanceof Error ? e.message : String(e) }));
-        const dest = v.status === 'refused' ? dirs.refused : dirs.done;
-        writeFileSync(join(dest, f), JSON.stringify(v, null, 2));
-        renameSync(join(dirs.tasks, f), join(dest, `task-${f}`));
-        out.push(v);
+const CLAIMED_TASK_SUFFIX = '.claimed.json';
+const STARTED_TASK_SUFFIX = '.started.json';
+const AMBIGUOUS_RECOVERY_REASON = 'autoexec_crash_recovery_ambiguous: execution may have started before shutdown; refusing automatic retry, explicitly requeue after inspecting prior side effects';
+function receiptDir(dirs) {
+    return join(dirs.base, 'receipts');
+}
+const RECEIPT_TEMP_SUFFIX = /^(.*\.started\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i;
+function receiptArtifactClaimName(name) {
+    const tempMatch = RECEIPT_TEMP_SUFFIX.exec(name);
+    const claimName = tempMatch?.[1] ?? name;
+    const claim = parseAutoExecClaim(claimName);
+    if (!claim || claim.name !== claimName)
+        return null;
+    if (tempMatch)
+        return claim.phase === 'started' ? claimName : null;
+    return claim.phase === 'started' || claim.phase === 'legacy' ? claimName : null;
+}
+function cleanupReceiptArtifacts(dirs, shouldRemove) {
+    const dir = receiptDir(dirs);
+    let entries;
+    try {
+        entries = readdirSync(dir, { withFileTypes: true });
     }
-    return out;
+    catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (!entry.isFile())
+            continue;
+        const claimName = receiptArtifactClaimName(entry.name);
+        if (!claimName || !shouldRemove(claimName))
+            continue;
+        try {
+            unlinkSync(join(dir, entry.name));
+        }
+        catch {
+            // Cleanup is retried by the next pass after the claim has been archived.
+        }
+    }
+}
+function cleanupCommittedClaimReceipt(dirs, claimName) {
+    const path = join(receiptDir(dirs), claimName);
+    try {
+        if (lstatSync(path).isFile())
+            unlinkSync(path);
+    }
+    catch {
+        // Orphan cleanup retries this after the claim has been archived.
+    }
+}
+function cleanupOrphanReceiptArtifacts(dirs) {
+    let activeClaims;
+    try {
+        activeClaims = new Set(readdirSync(dirs.inflight, { withFileTypes: true })
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name));
+    }
+    catch {
+        return;
+    }
+    cleanupReceiptArtifacts(dirs, (claimName) => !activeClaims.has(claimName));
+}
+function parseAutoExecClaim(name) {
+    const separator = name.indexOf('--');
+    if (separator < 0 || separator + 2 >= name.length)
+        return null;
+    const encodedName = name.slice(separator + 2);
+    if (encodedName.endsWith(CLAIMED_TASK_SUFFIX)) {
+        return {
+            name,
+            originalName: `${encodedName.slice(0, -CLAIMED_TASK_SUFFIX.length)}.json`,
+            phase: 'claimed',
+        };
+    }
+    if (encodedName.endsWith(STARTED_TASK_SUFFIX)) {
+        return {
+            name,
+            originalName: `${encodedName.slice(0, -STARTED_TASK_SUFFIX.length)}.json`,
+            phase: 'started',
+        };
+    }
+    return encodedName.endsWith('.json') ? { name, originalName: encodedName, phase: 'legacy' } : null;
+}
+function taskClaimName(originalName) {
+    return `${randomUUID()}--${originalName.slice(0, -'.json'.length)}${CLAIMED_TASK_SUFFIX}`;
+}
+function archiveTaskPath(dest, originalName, claimName) {
+    const defaultArchive = join(dest, `task-${originalName}`);
+    return existsSync(defaultArchive) ? join(dest, `task-${claimName}`) : defaultArchive;
+}
+function isAutoExecVerdict(value, taskId) {
+    if (!value || typeof value !== 'object')
+        return false;
+    const candidate = value;
+    return candidate.taskId === taskId
+        && (candidate.status === 'refused'
+            || candidate.status === 'skipped'
+            || candidate.status === 'solidified'
+            || candidate.status === 'failed'
+            || candidate.status === 'innovated');
+}
+function persistedClaimReceipt(dirs, claim, taskId) {
+    try {
+        const path = join(receiptDir(dirs), claim.name);
+        if (!lstatSync(path).isFile())
+            return null;
+        const value = JSON.parse(readFileSync(path, 'utf8'));
+        if (!value || typeof value !== 'object')
+            return null;
+        const receipt = value;
+        if (receipt.claimName !== claim.name
+            || (receipt.destination !== 'done' && receipt.destination !== 'refused')
+            || !isAutoExecVerdict(receipt.verdict, taskId))
+            return null;
+        const expectedDestination = receipt.verdict.status === 'refused' ? 'refused' : 'done';
+        if (receipt.destination !== expectedDestination)
+            return null;
+        return receipt;
+    }
+    catch (error) {
+        if (error.code !== 'ENOENT'
+            && !(error instanceof SyntaxError))
+            throw error;
+        return null;
+    }
+}
+function persistClaimReceipt(dirs, receipt) {
+    const receipts = receiptDir(dirs);
+    const receiptPath = join(receipts, receipt.claimName);
+    const tempPath = join(receipts, `${receipt.claimName}.${randomUUID()}.tmp`);
+    try {
+        writeFileSync(tempPath, JSON.stringify(receipt, null, 2), { encoding: 'utf8', flag: 'wx' });
+        renameSync(tempPath, receiptPath);
+    }
+    finally {
+        try {
+            if (lstatSync(tempPath).isFile())
+                unlinkSync(tempPath);
+        }
+        catch {
+            // The atomic rename normally removes the temp path.
+        }
+    }
+}
+function recoverAmbiguousClaim(dirs, claim) {
+    const taskPath = join(dirs.inflight, claim.name);
+    let taskId = `recovery-${claim.name.slice(0, 64)}`;
+    try {
+        taskId = exec.normalizeAutoExecTask(JSON.parse(readFileSync(taskPath, 'utf8'))).id;
+    }
+    catch {
+        // The task may have been only partially published before the prior process stopped.
+    }
+    const receipt = persistedClaimReceipt(dirs, claim, taskId);
+    if (receipt) {
+        const dest = receipt.destination === 'refused' ? dirs.refused : dirs.done;
+        const canonicalVerdict = join(dest, claim.originalName);
+        writeFileSync(canonicalVerdict, JSON.stringify(receipt.verdict, null, 2));
+        renameSync(taskPath, archiveTaskPath(dest, claim.originalName, claim.name));
+        cleanupCommittedClaimReceipt(dirs, claim.name);
+        return receipt.verdict;
+    }
+    const verdict = {
+        taskId,
+        status: 'refused',
+        reason: AMBIGUOUS_RECOVERY_REASON,
+    };
+    writeFileSync(join(dirs.refused, `recovery-${claim.name}`), JSON.stringify(verdict, null, 2));
+    renameSync(taskPath, archiveTaskPath(dirs.refused, claim.originalName, claim.name));
+    cleanupCommittedClaimReceipt(dirs, claim.name);
+    return verdict;
 }
 /**
- * Build the reuse-before-solve seam (#110) — THE real injection point. This is the public-repo composition
- * layer that owns BOTH core's autoexec kernel and the adapter's hub capability, so it is where the adapter's
- * `reuseBeforeSolve` is adapted into core's hub-agnostic `HubReuseSeam` (core never imports the adapter).
- * Flow: free hub search → core's pure score/decide → paid fetch for AT MOST ONE winner → the winner enters the
- * SAME selection pool as local genes (trust-first). The two-layer cache is owned HERE so it warms across passes
- * (a repeat signal set → zero hub calls). Off by default: only wired when EVOLVER_REUSE_BEFORE_SOLVE === '1'
- * AND a hub credential exists (no token → no seam → zero hub calls, exactly today's behavior).
+ * One queue pass: atomically claim regular tasks/*.json into inflight/, then route each verdict to done/
+ * (success or failure) or refused/ (deny-by-default). A claim is atomically marked started before runOne;
+ * after a crash, started and legacy claims are ambiguous and fail closed instead of repeating side effects.
+ * Unreadable or incomplete claimed tasks stay pending because the drop-directory has no atomic publish marker.
  */
-export function makeHubReuseSeam(cap, cache, ingestor, onAssetReused) {
+export async function autoExecPass(dirs, runOne, options = {}) {
+    const executePendingTasks = options.executePendingTasks ?? true;
+    const existingClaims = readdirSync(dirs.inflight, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => parseAutoExecClaim(entry.name))
+        .filter((claim) => claim !== null);
+    cleanupOrphanReceiptArtifacts(dirs);
+    const pendingClaims = existingClaims.filter((claim) => claim.phase === 'claimed');
+    const out = [];
+    for (const claim of existingClaims.filter((item) => item.phase !== 'claimed')) {
+        try {
+            out.push(recoverAmbiguousClaim(dirs, claim));
+        }
+        catch (error) {
+            const errorCode = error.code;
+            out.push({
+                taskId: `recovery-${claim.name.slice(0, claim.name.indexOf('--'))}`,
+                status: 'failed',
+                reason: `autoexec_crash_recovery_failed:${errorCode && /^[A-Z0-9_]+$/.test(errorCode) ? errorCode : 'unknown'}`,
+            });
+        }
+    }
+    cleanupOrphanReceiptArtifacts(dirs);
+    if (!executePendingTasks)
+        return out;
+    const files = readdirSync(dirs.tasks, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => entry.name);
+    for (const f of files) {
+        const claimName = taskClaimName(f);
+        try {
+            renameSync(join(dirs.tasks, f), join(dirs.inflight, claimName));
+            const claim = parseAutoExecClaim(claimName);
+            if (claim)
+                pendingClaims.push(claim);
+        }
+        catch (error) {
+            if (error.code !== 'ENOENT')
+                throw error;
+        }
+    }
+    for (const claim of pendingClaims) {
+        const taskPath = join(dirs.inflight, claim.name);
+        let task;
+        try {
+            task = exec.normalizeAutoExecTask(JSON.parse(readFileSync(taskPath, 'utf8')));
+        }
+        catch {
+            // A producer may still hold this path open and finish writing it after this pass.
+            // Leaving it in place prevents a transient partial read from acknowledging and losing the task.
+            continue;
+        }
+        const startedName = claim.name.slice(0, -CLAIMED_TASK_SUFFIX.length) + STARTED_TASK_SUFFIX;
+        const startedPath = join(dirs.inflight, startedName);
+        renameSync(taskPath, startedPath);
+        const v = await runOne(task).catch((e) => ({ taskId: task.id, status: 'failed', reason: e instanceof Error ? e.message : String(e) }));
+        const destination = v.status === 'refused' ? 'refused' : 'done';
+        const dest = destination === 'refused' ? dirs.refused : dirs.done;
+        persistClaimReceipt(dirs, { claimName: startedName, destination, verdict: v });
+        writeFileSync(join(dest, claim.originalName), JSON.stringify(v, null, 2));
+        renameSync(startedPath, archiveTaskPath(dest, claim.originalName, startedName));
+        cleanupCommittedClaimReceipt(dirs, startedName);
+        out.push(v);
+    }
+    cleanupOrphanReceiptArtifacts(dirs);
+    return out;
+}
+/** Keep unsupported built-in runners away from the execution queue without stopping the resident daemon. */
+export function runnerBoundAutoExecPass(runner, dirs, runOne) {
+    return () => autoExecPass(dirs, runOne, { executePendingTasks: runner === 'gemini' });
+}
+const ATP_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,47}$/;
+function atpCapabilityGaps(signals) {
+    return signalNs.capabilityGapsFromSignals(signals)
+        .filter((capability) => ATP_CAPABILITY_PATTERN.test(capability))
+        .slice(0, 8);
+}
+function hasAtpCapabilityGap(signals) {
+    return signals.includes('capability_gap') || atpCapabilityGaps(signals).length > 0;
+}
+function normalizedCapabilityGapSignals(signals) {
+    if (!hasAtpCapabilityGap(signals))
+        return signals;
+    const ordinary = signals.filter((signal) => signal !== 'capability_gap'
+        && !signal.startsWith('capability_gap:')
+        && !signal.startsWith('cap:'));
+    return [...new Set([...ordinary, ...atpCapabilityGapRequest(signals).signals])];
+}
+/** Build the deliberately small, public-safe ATP request allowed to leave autoexec after a verified Hub miss. */
+export function atpCapabilityGapRequest(signals) {
+    const capabilities = atpCapabilityGaps(signals);
+    if (capabilities.length === 0)
+        capabilities.push('code_evolution');
+    const subject = capabilities[0].replace(/[_-]+/g, ' ');
+    return {
+        kind: 'capability_gap',
+        capabilities,
+        question: `I need help with ${subject}. Please provide one concrete, actionable solution and state any assumptions.`,
+        routingMode: 'fastest',
+        verifyMode: 'auto',
+        signals: ['capability_gap', ...capabilities.map((capability) => `cap:${capability}`)],
+    };
+}
+/** Schedule economic work outside the reuse/task critical path and contain all asynchronous failures. */
+export function scheduleAtpAutoBuyForVerifiedMiss(miss, buyer) {
+    void buyer.consider(atpCapabilityGapRequest(miss.signals)).catch(() => undefined);
+}
+/** Resolve an autonomous buyer only after an explicit env/ack consent check; the buyer checks consent again. */
+export function resolveAtpAutoBuyer(env = process.env, createClient = createAtpClientFromEnv) {
+    if (!getAtpConsent(env).enabled)
+        return undefined;
+    try {
+        return new AtpAutoBuyer({ client: createClient(env), env });
+    }
+    catch {
+        return undefined;
+    }
+}
+export function makeHubReuseSeam(cap, cache, ingestor, onAssetReused, onVerifiedSearchMiss, audit = {}) {
     return async (signals, ctx) => {
+        const searchSignals = normalizedCapabilityGapSignals(signals);
         // Pending value.reuse_hit ingests (#112). The onReuseHit callback is synchronous, so it cannot await the
         // ingest itself; it stashes the (error-swallowing) promise here and the seam awaits them before returning,
         // making the emission deterministically durable without letting an ingest error ever break reuse.
         const pending = [];
-        const r = await reuseBeforeSolve(cap, cache, signals, {
+        const r = await reuseBeforeSolve(cap, cache, searchSignals, {
             ...(ctx?.cycleId ? { cycleId: ctx.cycleId } : {}),
+            ...(audit.env ? { env: audit.env } : {}),
             // Two consumers hang off a reuse HIT:
             //  - value-ledger emission (#112): a `value.reuse_hit` root_event so the ledger derives a real
             //    source=reuse entry (refs → assetId + cycleId) — live wiring, not a fixture;
@@ -118,8 +418,148 @@ export function makeHubReuseSeam(cap, cache, ingestor, onAssetReused) {
         });
         if (pending.length > 0)
             await Promise.all(pending); // emitReuseHit never rejects (it swallows ingest errors)
+        const runId = ctx?.cycleId ?? null;
+        const taskId = runId?.startsWith('autoexec-') ? runId.slice('autoexec-'.length) : undefined;
+        if (r.action === 'fetch') {
+            const rawAsset = r.asset;
+            const assetId = r.candidate?.assetId ?? stringField(rawAsset, 'asset_id');
+            const assetType = stringField(rawAsset, 'type');
+            const sourceNodeId = stringField(rawAsset, 'source_node_id');
+            const chainId = stringField(rawAsset, 'chain_id');
+            const indexedTokenCost = assetId ? assetTokenCostBestEffort(audit.assetLog, assetId) : undefined;
+            const savings = hubNs.reuseSavingsForAsset(rawAsset, r.mode, indexedTokenCost);
+            const hit = {
+                runId,
+                ...(assetId ? { assetId } : {}),
+                ...(assetType ? { assetType } : {}),
+                ...(sourceNodeId ? { sourceNodeId } : {}),
+                ...(chainId ? { chainId } : {}),
+                ...(r.score !== undefined ? { score: r.score } : {}),
+                mode: r.mode,
+                signals: [...searchSignals],
+                tokensSaved: savings.tokens_saved,
+                tokensSavedBasis: savings.tokens_saved_basis,
+            };
+            scheduleAssetCallBestEffort(audit.assetLog, {
+                run_id: runId,
+                action: 'hub_search_hit',
+                ...(hit.assetId ? { asset_id: hit.assetId } : {}),
+                ...(hit.assetType ? { asset_type: hit.assetType } : {}),
+                ...(hit.sourceNodeId ? { source_node_id: hit.sourceNodeId } : {}),
+                ...(hit.chainId ? { chain_id: hit.chainId } : {}),
+                ...(hit.score !== undefined ? { score: hit.score } : {}),
+                mode: hit.mode,
+                signals: hit.signals,
+                ...(taskId ? { extra: { task_id: taskId } } : {}),
+            });
+            try {
+                audit.onSearchHit?.(hit);
+            }
+            catch { /* audit state must never change reuse */ }
+        }
+        else if (r.reason !== 'no_signals') {
+            scheduleAssetCallBestEffort(audit.assetLog, {
+                run_id: runId,
+                action: 'hub_search_miss',
+                mode: r.mode,
+                signals: [...searchSignals],
+                ...(r.reason ? { reason: r.reason } : {}),
+                ...(taskId ? { extra: { task_id: taskId } } : {}),
+            });
+        }
+        if (r.action === 'solve-fresh'
+            && (r.reason === 'no_results' || r.reason === 'below_threshold')
+            && hasAtpCapabilityGap(searchSignals)) {
+            try {
+                onVerifiedSearchMiss?.({
+                    reason: r.reason,
+                    signals: [...searchSignals],
+                    ...(ctx?.cycleId ? { cycleId: ctx.cycleId } : {}),
+                });
+            }
+            catch { /* an optional economic side effect must never change reuse behavior */ }
+        }
         return r.action === 'fetch' && r.candidate ? [r.candidate] : [];
     };
+}
+/**
+ * Free search-only seam used by ATP auto-buy when reuse injection is disabled. It proves a capability miss with
+ * the same dual-leg search and score threshold as reuse, but never performs the paid fetch or contributes a Hub
+ * candidate.
+ */
+export function makeHubSearchMissProbe(cap, cache, onVerifiedSearchMiss, enabled, env = process.env, assetLog) {
+    return async (signals, ctx) => {
+        if (!enabled() || !hasAtpCapabilityGap(signals))
+            return [];
+        // ATP consent authorizes a bounded capability query, not disclosure of local error signatures/transcripts.
+        const signalList = atpCapabilityGapRequest(signals).signals;
+        if (signalList.length === 0)
+            return [];
+        const search = await searchHubMetadata(cap, cache, signalList, { env });
+        if (!search.complete) {
+            scheduleAssetCallBestEffort(assetLog, {
+                run_id: ctx?.cycleId ?? null,
+                action: 'hub_search_miss',
+                mode: 'direct',
+                signals: search.signals,
+                reason: 'search_error',
+            });
+            return [];
+        }
+        const { metadata, searchCached } = search;
+        let reason;
+        if (metadata.length === 0) {
+            reason = 'no_results';
+        }
+        else {
+            const ranked = hubNs.scoreSearchResults(signalList, metadata);
+            if (hubNs.decideReuse(ranked, { threshold: getMinReuseScore(env) }).action === 'solve-fresh') {
+                reason = 'below_threshold';
+            }
+        }
+        if (!reason)
+            return [];
+        scheduleAssetCallBestEffort(assetLog, {
+            run_id: ctx?.cycleId ?? null,
+            action: 'hub_search_miss',
+            mode: 'direct',
+            signals: signalList,
+            reason,
+            extra: { search_cached: searchCached },
+        });
+        try {
+            onVerifiedSearchMiss({
+                reason,
+                signals: signalList,
+                ...(ctx?.cycleId ? { cycleId: ctx.cycleId } : {}),
+            });
+        }
+        catch { /* ATP scheduling must never change the solve path */ }
+        return [];
+    };
+}
+function stringField(record, key) {
+    const value = record?.[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+function assetTokenCostBestEffort(log, assetId) {
+    try {
+        return log?.assetCostIndex?.()[assetId];
+    }
+    catch {
+        return undefined;
+    }
+}
+function appendAssetCallBestEffort(log, entry) {
+    try {
+        log?.append(entry);
+    }
+    catch { /* local audit failure must never break reuse or task completion */ }
+}
+function scheduleAssetCallBestEffort(log, entry) {
+    if (!log)
+        return;
+    setImmediate(() => { appendAssetCallBestEffort(log, entry); });
 }
 /** Append a `value.reuse_hit` root_event for a reuse hit (#112). Never throws (reuse stays an optimization). */
 async function emitReuseHit(ingestor, hit) {
@@ -220,6 +660,52 @@ function writeQuestionState(path, state) {
         recentQuestions: [...(state.recentQuestions ?? [])].slice(-30),
     }, null, 2)}\n`);
 }
+function laterQuestionTimestamp(left, right) {
+    if (!left)
+        return right ?? null;
+    if (!right)
+        return left;
+    const leftMs = Date.parse(left);
+    const rightMs = Date.parse(right);
+    if (Number.isFinite(leftMs) && Number.isFinite(rightMs))
+        return rightMs >= leftMs ? right : left;
+    if (Number.isFinite(leftMs))
+        return left;
+    if (Number.isFinite(rightMs))
+        return right;
+    return right >= left ? right : left;
+}
+function mergeQuestionStates(current, incoming) {
+    const recency = (state) => Math.max(...[state.lastAskedAt, state.lastUrgentAt, state.lastExploreAt]
+        .map((value) => value ? Date.parse(value) : Number.NEGATIVE_INFINITY)
+        .filter(Number.isFinite), Number.NEGATIVE_INFINITY);
+    const [older, newer] = recency(current) <= recency(incoming)
+        ? [current, incoming]
+        : [incoming, current];
+    const recentQuestions = [];
+    for (const question of [...(older.recentQuestions ?? []), ...(newer.recentQuestions ?? [])]) {
+        const existing = recentQuestions.indexOf(question);
+        if (existing >= 0)
+            recentQuestions.splice(existing, 1);
+        recentQuestions.push(question);
+    }
+    return {
+        lastAskedAt: laterQuestionTimestamp(current.lastAskedAt, incoming.lastAskedAt),
+        lastUrgentAt: laterQuestionTimestamp(current.lastUrgentAt, incoming.lastUrgentAt),
+        lastExploreAt: laterQuestionTimestamp(current.lastExploreAt, incoming.lastExploreAt),
+        recentQuestions: recentQuestions.slice(-30),
+    };
+}
+const MAX_PENDING_QUESTION_STATES = 30;
+function rememberPendingQuestionState(pendingStates, state) {
+    pendingStates.add(state);
+    while (pendingStates.size > MAX_PENDING_QUESTION_STATES) {
+        const oldest = pendingStates.values().next().value;
+        if (!oldest)
+            break;
+        pendingStates.delete(oldest);
+    }
+}
 function questionSubmitTimeoutMs(options) {
     const raw = options.timeoutMs ?? Number(options.env?.[QUESTION_SUBMIT_TIMEOUT_ENV]);
     if (Number.isFinite(raw) && raw > 0)
@@ -239,11 +725,12 @@ function hasAcceptedQuestionReceipt(receipts) {
 function writeQuestionStateIfAccepted(path, state, receipts) {
     if (!hasAcceptedQuestionReceipt(receipts))
         return false;
-    writeQuestionState(path, state);
+    writeQuestionState(path, mergeQuestionStates(readQuestionState(path), state));
     return true;
 }
-function writeLateQuestionStateIfAccepted(submitResult, statePath, state) {
-    void submitResult.then((submitted) => {
+function writeLateQuestionStateIfAccepted(submitResult, statePath, state, onSettled) {
+    void submitResult
+        .then((submitted) => {
         if (submitted.status !== 'submitted')
             return;
         try {
@@ -252,7 +739,8 @@ function writeLateQuestionStateIfAccepted(submitResult, statePath, state) {
         catch {
             // The caller already received a timeout; late cooldown persistence is best-effort.
         }
-    });
+    })
+        .finally(onSettled);
 }
 async function submitQuestionsWithTimeout(submitResult, timeoutMs) {
     let timer;
@@ -269,7 +757,7 @@ async function submitQuestionsWithTimeout(submitResult, timeoutMs) {
             clearTimeout(timer);
     }
 }
-async function submitProactiveQuestions(cap, task, options) {
+async function submitProactiveQuestions(cap, task, options, pendingStates) {
     if (options.enabled === false || !cap.questions)
         return { status: 'disabled', questionCount: 0 };
     try {
@@ -279,10 +767,11 @@ async function submitProactiveQuestions(cap, task, options) {
             return { status: 'skipped', questionCount: 0 };
         if (QUESTION_CONTEXT_SENSITIVE_RE.test(context))
             return { status: 'skipped', questionCount: 0 };
+        const effectiveState = [...pendingStates].reduce((state, pending) => mergeQuestionStates(state, pending), readQuestionState(statePath));
         const result = hubNs.generateQuestions({
             signals: task.signals,
             sessionTranscript: context,
-            state: readQuestionState(statePath),
+            state: effectiveState,
             now: options.now?.() ?? Date.now(),
             env: options.env ?? process.env,
         });
@@ -290,8 +779,10 @@ async function submitProactiveQuestions(cap, task, options) {
             return { status: 'skipped', questionCount: 0 };
         const submitResult = observeQuestionSubmit(cap.questions.submit(result.questions));
         const submitted = await submitQuestionsWithTimeout(submitResult, questionSubmitTimeoutMs(options));
-        if (submitted.status === 'timeout')
-            writeLateQuestionStateIfAccepted(submitResult, statePath, result.state);
+        if (submitted.status === 'timeout') {
+            rememberPendingQuestionState(pendingStates, result.state);
+            writeLateQuestionStateIfAccepted(submitResult, statePath, result.state, () => pendingStates.delete(result.state));
+        }
         if (submitted.status !== 'submitted')
             return { status: submitted.status, questionCount: result.questions.length };
         if (!writeQuestionStateIfAccepted(statePath, result.state, submitted.receipts))
@@ -305,9 +796,10 @@ async function submitProactiveQuestions(cap, task, options) {
 }
 export function makeHubQuestionLink(cap, options = {}) {
     let queue = Promise.resolve();
+    const pendingStates = new Set();
     return {
         submitForTask: (task) => {
-            const run = queue.then(() => submitProactiveQuestions(cap, task, options));
+            const run = queue.then(() => submitProactiveQuestions(cap, task, options, pendingStates));
             queue = run.then(() => undefined, () => undefined);
             return run;
         },
@@ -349,6 +841,94 @@ export function releaseAutoexecLock(lockPath, deps = {}) {
         (deps.stderr ?? ((text) => { process.stderr.write(text); }))(autoexecLockReleaseFailureMessage(error));
         return false;
     }
+}
+/** Keep a detached daemon alive when its output consumer closes, without hiding other stream failures. */
+export function installAutoexecBrokenPipeGuards(deps = {}) {
+    const stdout = deps.stdout ?? process.stdout;
+    const stderr = deps.stderr ?? process.stderr;
+    const onError = (error) => {
+        if (error?.code === 'EPIPE')
+            return;
+        throw error;
+    };
+    stdout.on('error', onError);
+    stderr.on('error', onError);
+    let installed = true;
+    return () => {
+        if (!installed)
+            return;
+        installed = false;
+        removeAutoexecStreamErrorListener(stdout, onError);
+        removeAutoexecStreamErrorListener(stderr, onError);
+    };
+}
+function removeAutoexecStreamErrorListener(stream, listener) {
+    if (stream.off) {
+        stream.off('error', listener);
+        return;
+    }
+    stream.removeListener?.('error', listener);
+}
+/**
+ * Own autoexec's process-signal lifetime. V2 intentionally has no hot-reload seam: SIGHUP is informational and
+ * keeps the current generation alive; SIGINT/SIGTERM drain the resident loop before cleanup and exit.
+ */
+export function waitForAutoexecShutdown(deps) {
+    const signals = deps.signals ?? process;
+    const write = deps.write ?? ((message) => { process.stdout.write(message); });
+    return new Promise((resolve, reject) => {
+        let stopping = false;
+        let listenersInstalled = true;
+        const removeListeners = () => {
+            if (!listenersInstalled)
+                return;
+            listenersInstalled = false;
+            for (const [signal, listener] of listeners)
+                removeAutoexecSignalListener(signals, signal, listener);
+        };
+        const finish = (failure) => {
+            removeListeners();
+            try {
+                deps.cleanup();
+            }
+            catch (cleanupError) {
+                reject(cleanupError);
+                return;
+            }
+            if (failure)
+                reject(failure.error);
+            else
+                resolve(0);
+        };
+        const shutdown = (signal) => {
+            if (stopping)
+                return;
+            stopping = true;
+            write(`\nevolver autoexec: ${signal} -> graceful stop (finishing in-flight, releasing lock)\n`);
+            void Promise.resolve()
+                .then(() => deps.stop())
+                .then(() => { finish(); }, (error) => { finish({ error }); });
+        };
+        const onSighup = () => {
+            if (stopping)
+                return;
+            write('\nevolver autoexec: SIGHUP received; hot reload is not supported, continuing with current configuration (restart the daemon to apply changes)\n');
+        };
+        const listeners = [
+            ['SIGINT', () => { shutdown('SIGINT'); }],
+            ['SIGTERM', () => { shutdown('SIGTERM'); }],
+            ['SIGHUP', onSighup],
+        ];
+        for (const [signal, listener] of listeners)
+            signals.on(signal, listener);
+    });
+}
+function removeAutoexecSignalListener(source, signal, listener) {
+    if (source.off) {
+        source.off(signal, listener);
+        return;
+    }
+    source.removeListener?.(signal, listener);
 }
 export function urgentQuestionRuntimeWiringStatus() {
     return hubNs.URGENT_QUESTION_RUNTIME_WIRING_STATUS;
@@ -415,19 +995,60 @@ export function scheduleAutoExecHubSideEffects(task, verdict, links) {
  * candidate can be withheld by trust/review gates or lose selection, so fetch-time attribution would overclaim.
  * Reporting never throws and never blocks the verdict.
  */
-export function makeHubLink(cap, ingestor, reportEnabled = true) {
-    const seam = makeHubReuseSeam(cap, new ReuseCache(), ingestor);
+export function makeHubLink(cap, ingestor, reportEnabled = true, onVerifiedSearchMiss, assetLog, env) {
+    const maxPendingAuditRuns = 256;
+    const searchHitsByRun = new Map();
+    const seam = makeHubReuseSeam(cap, new ReuseCache(), ingestor, undefined, onVerifiedSearchMiss, {
+        assetLog,
+        ...(env ? { env } : {}),
+        onSearchHit: (hit) => {
+            if (!hit.runId || !hit.assetId)
+                return;
+            if (!searchHitsByRun.has(hit.runId) && searchHitsByRun.size >= maxPendingAuditRuns) {
+                const oldestRun = searchHitsByRun.keys().next().value;
+                if (oldestRun !== undefined)
+                    searchHitsByRun.delete(oldestRun);
+            }
+            // One reuse-before-solve invocation can fetch at most one winner. Replace any stale state left by an
+            // unexpectedly aborted earlier run that reused the same task id.
+            searchHitsByRun.set(hit.runId, new Map([[hit.assetId, hit]]));
+        },
+    });
     return {
         seam,
         reportOutcome: async (task, verdict) => {
-            if (!reportEnabled)
-                return;
             const status = verdictToOutcomeStatus(verdict.status);
-            if (status === null)
-                return;
+            const runId = `autoexec-${task.id}`;
+            const searchHits = searchHitsByRun.get(runId);
+            searchHitsByRun.delete(runId);
             const usedAssetIds = Array.isArray(verdict.usedAssetIds)
                 ? [...new Set(verdict.usedAssetIds.filter((id) => typeof id === 'string' && id.length > 0))]
                 : [];
+            // Drain attribution synchronously (before a duplicate task id can start), then yield before the production
+            // sink's synchronous append and all Hub I/O. The detached side effect cannot delay routing to done/.
+            await new Promise((resolve) => { setImmediate(resolve); });
+            if (status !== null) {
+                for (const assetId of usedAssetIds) {
+                    const hit = searchHits?.get(assetId);
+                    const mode = hit?.mode;
+                    appendAssetCallBestEffort(assetLog, {
+                        run_id: runId,
+                        action: mode === 'reference' ? 'asset_reference' : 'asset_reuse',
+                        asset_id: assetId,
+                        ...(hit?.assetType ? { asset_type: hit.assetType } : {}),
+                        ...(hit?.sourceNodeId ? { source_node_id: hit.sourceNodeId } : {}),
+                        ...(hit?.chainId ? { chain_id: hit.chainId } : {}),
+                        ...(hit?.score !== undefined ? { score: hit.score } : {}),
+                        ...(mode ? { mode } : {}),
+                        ...(hit ? { tokens_saved: hit.tokensSaved, tokens_saved_basis: hit.tokensSavedBasis } : {}),
+                        signals: hit?.signals ?? task.signals,
+                        ...(verdict.reason ? { reason: verdict.reason } : {}),
+                        extra: { task_id: task.id, verdict_status: verdict.status, outcome_status: status },
+                    });
+                }
+            }
+            if (!reportEnabled || status === null)
+                return;
             try {
                 await cap.recordOutcome({
                     signals: task.signals,
@@ -440,18 +1061,38 @@ export function makeHubLink(cap, ingestor, reportEnabled = true) {
             if (usedAssetIds.length > 0 && cap.recordReuseResult) {
                 await Promise.all(usedAssetIds.map(async (assetId) => {
                     try {
-                        await cap.recordReuseResult?.({
+                        const receipt = await cap.recordReuseResult?.({
                             assetId,
                             outcome: status === 'success' ? 'success' : 'failed',
                             taskId: task.id,
                             ...(verdict.reason ? { reason: verdict.reason } : {}),
                         });
+                        appendAssetCallBestEffort(assetLog, {
+                            run_id: runId,
+                            action: receipt?.recorded ? 'hub_review_submitted' : 'hub_review_rejected',
+                            asset_id: assetId,
+                            signals: task.signals,
+                            ...(safeAssetCallReason(receipt?.reason) ? { reason: safeAssetCallReason(receipt?.reason) } : {}),
+                            extra: { task_id: task.id, outcome_status: status, ...(receipt?.id ? { receipt_id: receipt.id } : {}) },
+                        });
                     }
-                    catch { /* reuse-result is best-effort observability; never fail the task */ }
+                    catch {
+                        appendAssetCallBestEffort(assetLog, {
+                            run_id: runId,
+                            action: 'hub_review_failed',
+                            asset_id: assetId,
+                            signals: task.signals,
+                            reason: 'record_reuse_result_failed',
+                            extra: { task_id: task.id, outcome_status: status },
+                        });
+                    }
                 }));
             }
         },
     };
+}
+function safeAssetCallReason(value) {
+    return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value) ? value : undefined;
 }
 function resolvePublicHub(env = process.env, connectHub = connectPublicHub) {
     if (hubMode(env) !== 'public')
@@ -476,30 +1117,45 @@ function hubMode(env) {
     return mode === 'public' || mode === 'private' ? mode : undefined;
 }
 /**
- * Resolve the hub link (reuse seam + outcome reporter) from the environment, or undefined when reuse is
- * not enabled/credentialed. Default OFF: requires EVOLVER_REUSE_BEFORE_SOLVE === '1' and an OAuth token at
- * <evomapDir>/token.json. Any setup failure degrades to undefined (no link) so the daemon never blocks on
- * hub config — reuse is an optimization. Outcome reporting rides the same gate (it is the read-back half
- * of the same paid hub relationship); EVOLVER_OUTCOME_REPORT=0 turns just the reporting off.
+ * Resolve public/private reuse wiring. Reuse remains default-off. When a public ATP miss handler is supplied,
+ * a consent-gated free search-only seam may still be composed so auto-buy can prove a miss independently of
+ * reuse injection; that seam never fetches or injects Hub assets.
  */
-export function resolveHubLink(env = process.env, ingestor, connectHub = connectPublicHub) {
+export function resolveHubLink(env = process.env, ingestor, connectHub = connectPublicHub, onVerifiedSearchMiss, assetLog) {
     const envFile = loadEnvFileFromEnv(env);
     if (envFile.error) {
         process.stderr.write(ENV_FILE_UNAVAILABLE_DIAGNOSTIC);
         return undefined;
     }
-    if (env['EVOLVER_REUSE_BEFORE_SOLVE'] !== '1')
+    const reuseEnabled = env['EVOLVER_REUSE_BEFORE_SOLVE'] === '1';
+    if (!reuseEnabled && !onVerifiedSearchMiss)
         return undefined;
+    const resolvedAssetLog = assetLog ?? new hubNs.AssetCallLog(events.assetCallLogPath(env));
     if (hubMode(env) === 'private') {
+        if (!reuseEnabled)
+            return undefined;
         const proxy = proxyClientFromEnv(env);
-        return proxy ? makeHubLink(makeProxyHubCapability(proxy), ingestor, env['EVOLVER_OUTCOME_REPORT'] !== '0') : undefined;
+        return proxy ? makeHubLink(makeProxyHubCapability(proxy), ingestor, env['EVOLVER_OUTCOME_REPORT'] !== '0', undefined, resolvedAssetLog, env) : undefined;
     }
     const hub = resolvePublicHub(env, connectHub);
     if (!hub)
         return undefined;
+    if (!reuseEnabled && onVerifiedSearchMiss) {
+        return {
+            seam: makeHubSearchMissProbe(hub, new ReuseCache(), onVerifiedSearchMiss, () => {
+                try {
+                    return getAtpConsent(env).enabled;
+                }
+                catch {
+                    return false;
+                }
+            }, env, resolvedAssetLog),
+            reportOutcome: async () => undefined,
+        };
+    }
     // Pass the ingestor so a reuse hit emits a value.reuse_hit root_event (#112) — the live source the value
     // ledger derives source=reuse entries from.
-    return makeHubLink(hub, ingestor, env['EVOLVER_OUTCOME_REPORT'] !== '0');
+    return makeHubLink(hub, ingestor, env['EVOLVER_OUTCOME_REPORT'] !== '0', onVerifiedSearchMiss, resolvedAssetLog, env);
 }
 export function resolveHubQuestionLink(env = process.env, connectHub = connectPublicHub) {
     if (env['EVOLVER_OUTCOME_REPORT'] === '0')
@@ -841,6 +1497,9 @@ export async function runAutoExec(argv) {
     const home = argv.find((a) => !a.startsWith('-')) ?? join(events.evomapHome(), 'autoexec');
     const dirs = ensureAutoExecDirs(home);
     const cfg = readAutoExecConfig(home);
+    if (cfg.runner !== 'gemini') {
+        process.stderr.write('evolver autoexec: execute queue is disabled for the configured built-in runner; non-execution daemon duties remain active. Set "runner":"gemini" only after reviewing its experimental capability boundary\n');
+    }
     // Solo mode (--solo): the "constrained wild" profile. Hard-cut network + ATP
     // at the SOURCE — in-process, before any resolve* below reads its env gate — so
     // both the startup wiring and any in-cycle path see them disabled. This is the
@@ -889,30 +1548,44 @@ export async function runAutoExec(argv) {
     if (memoryEventMirror.observer)
         bus.register(memoryEventMirror.observer);
     const personalityStore = createAutoExecPersonalityStore();
-    const engine = new algo.CycleEngine({ ingestor, selection: algo.makeGeneSelectionPoint(), store, now: () => Date.now(), personality: personalityStore });
+    const engine = new algo.CycleEngine({
+        ingestor,
+        selection: algo.makeGeneSelectionPoint(),
+        store,
+        now: () => Date.now(),
+        personality: personalityStore,
+        capabilityGaps: makeCurriculumCapabilityGapsProvider(process.env),
+    });
     // Reuse-before-solve (#110) + outcome report-back: wire the adapter's reuseBeforeSolve as the hub-reuse
     // seam when enabled + credentialed (default OFF → undefined → zero hub calls, exactly today's behavior).
     // The seam injects hub candidates into the same selection pool as local genes, trust-first; the link's
     // reporter closes the loop by sending the cycle outcome + used-asset claim back to the hub.
-    const hubLink = resolveHubLink(process.env, ingestor);
+    let atpAutoBuyer;
+    const onVerifiedHubSearchMiss = (miss) => {
+        // Resolve lazily: the first-run consent prompt happens after the daemon lock is acquired below, while Hub
+        // composition happens here. A later verified miss therefore observes the newly recorded consent correctly.
+        atpAutoBuyer ??= resolveAtpAutoBuyer(process.env);
+        if (atpAutoBuyer)
+            scheduleAtpAutoBuyForVerifiedMiss(miss, atpAutoBuyer);
+    };
+    const hubLink = resolveHubLink(process.env, ingestor, connectPublicHub, onVerifiedHubSearchMiss);
     const hubQuestionLink = resolveHubQuestionLink(process.env);
     const solidifyPermit = resolveSolidifyPermitGate(process.env);
     const strategyName = process.env['EVOLVE_STRATEGY'];
-    // Surface the cross-platform isolation gap ONCE: where unprivileged namespaces are unavailable (Windows/macOS),
-    // the sandbox verifier still hardens (metachar/node-eval reject, env scrub, timeout) but CANNOT cut network or
-    // hide home secrets — so a validation command there could phone home / read ~/.ssh. Don't let that be silent.
-    let warnedNoIsolation = false;
     const probationOn = geneProbationEnabled();
-    // Learning trace (Learning Ops slice 2): per-task trace events + LearningPacket drafts to local files under
-    // evolution/learning-trace/ (traceId = cycleId). Default ON; kill switch EVOLVER_LEARNING_TRACE=0. Hub upload
-    // is a later slice — this wiring is file-only and best-effort, so it can never fail or slow a task.
+    const semanticIdfOn = semanticIdfEnabled();
+    const selectionPolicy = selectionPolicyFromEnv();
+    const selectionGuard = selectionGuardFromEnv();
+    const selectionFloor = selectionFloorFromEnv();
+    // File-only and best-effort: tracing must never fail or slow a task.
     const learningTrace = resolveLearningTrace(process.env);
-    const deps = {
+    const deps = withAutoExecSelectionConfig({
         engine, store, provenance, review, personality: personalityStore, memoryGraph,
         ...(learningTrace.config ? { learningTrace: learningTrace.config } : {}),
         // Probation (#306, gated, default OFF via EVOLVER_GENE_PROBATION): try unproven auto-distilled genes (with their
         // strategy embedded) so the cross-AI loop self-closes — contained by the proven exec gates + worktree isolation.
         ...(probationOn ? { includeProbation: true } : {}),
+        ...(!semanticIdfOn ? { disableSemanticIdf: true } : {}),
         ...(hubLink ? { hubReuse: hubLink.seam } : {}),
         ...(solidifyPermit ? { solidifyPermit } : {}),
         ...(strategyName !== undefined ? { strategyName } : {}),
@@ -921,17 +1594,13 @@ export async function runAutoExec(argv) {
         // different unit) so a long suite is not silently SIGKILL'd against the wrong budget.
         validate: (task) => async (_m, _d, cwd) => {
             const cmds = task.validationCmds ?? [];
-            const r = await verify.runSandboxedValidation(cmds, cwd);
-            if (cmds.length > 0 && !r.isolated && !warnedNoIsolation) {
-                warnedNoIsolation = true;
-                process.stdout.write('  warning: validation runs WITHOUT network/FS isolation on this platform (unprivileged namespaces unavailable). Full isolation is Linux-only today; the non-namespace hardening (metachar/node-eval reject, env scrub, timeout) still applies.\n');
-            }
+            const r = await runRequiredSandboxedValidation(cmds, cwd);
             const validationSummary = summarizeSandboxedValidation(r);
             if (validationSummary)
                 process.stdout.write(`  validation: ${validationSummary}\n`);
             return { passed: r.passed, score: r.score };
         },
-    };
+    }, process.env);
     const safety = { allowedRoots: cfg.allowedRoots, timeoutMs: cfg.timeoutMs, runner: cfg.runner };
     // #268/#274 soft re-order — DEFAULT ON (kill switch: EVOLVER_REUSE_SIGNAL=0). Fold the latest cross-runtime reuse
     // outcomes + observed recall into selection as a SMALL, bounded, clamped nudge (±REUSE_WEIGHT); reuseSignalAb.test
@@ -953,7 +1622,7 @@ export async function runAutoExec(argv) {
         scheduleAutoExecHubSideEffects(task, v, { questions: hubQuestionLink, outcome: hubLink });
         return v;
     };
-    const guarded = exec.singleFlight(() => autoExecPass(dirs, runOne));
+    const guarded = exec.singleFlight(runnerBoundAutoExecPass(cfg.runner, dirs, runOne));
     // Auto-distill producer+consumer (#106): register the distillObserver on THIS bus, then a producer tick scans
     // the session dirs and records material on THIS Ingestor → material.batch_ready → observer drafts a quarantined
     // gene (A1) → human `review --approve` lifts it into inject/cursor (A2a/A2b). Off via EVOLVER_AUTO_DISTILL=0.
@@ -964,7 +1633,9 @@ export async function runAutoExec(argv) {
     const antiGeneDistill = resolveAutoDistillAntiGene(process.env, { store, review, ingestor });
     const transcriptDistill = resolveAutoDistillTranscript(process.env, { store, review, ingestor });
     const atpAutoDeliver = resolveAtpAutoDeliver(process.env);
-    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${hubLink ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} learning-trace=${learningTrace.enabled ? `on(upload=${learningTrace.upload})` : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
+    const uninstallBrokenPipeGuards = installAutoexecBrokenPipeGuards();
+    const reuseEnabled = process.env['EVOLVER_REUSE_BEFORE_SOLVE'] === '1' && hubLink !== undefined;
+    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${reuseEnabled ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} semantic-idf=${semanticIdfOn ? 'on' : 'off'} selection-policy=${selectionPolicy} selection-guard=${selectionGuard} selection-floor=${selectionFloor === undefined ? 'unset' : selectionFloor} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} learning-trace=${learningTrace.enabled ? `on(upload=${learningTrace.upload})` : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
     if (cfg.allowedRoots.length === 0)
         process.stdout.write('  (allowlist empty → deny-by-default: nothing runs until you add a repo to config.json)\n');
     // Single-instance lock (#106): a second daemon on the same home would double-process the queue. That is harmless
@@ -980,6 +1651,7 @@ export async function runAutoExec(argv) {
     }
     catch (error) {
         process.stderr.write(autoexecLockFailureMessage(error));
+        uninstallBrokenPipeGuards();
         return 1;
     }
     // First-run auto-buyer opt-in (PORT v1 #10): introduce the autonomous spend path to interactive operators once,
@@ -996,6 +1668,15 @@ export async function runAutoExec(argv) {
     const uninstallUnhandledRejectionGuard = daemonNs.installUnhandledRejectionWindow({
         beforeExit: () => { releaseAutoexecLock(lockPath); },
     });
+    let runtimeCleaned = false;
+    const cleanupAutoexecRuntime = () => {
+        if (runtimeCleaned)
+            return;
+        runtimeCleaned = true;
+        uninstallUnhandledRejectionGuard();
+        releaseAutoexecLock(lockPath);
+        uninstallBrokenPipeGuards();
+    };
     // Durable workflow recovery uses the same policy/review-gated runtime factory as `evolver workflow start/resume`.
     // Pass the already-loaded config so a custom autoexec home uses the same allowlist, runner, and validation profiles.
     initializeWorkflowStartupRecovery({ autoExecHome: home, autoExecConfig: cfg });
@@ -1081,7 +1762,7 @@ export async function runAutoExec(argv) {
             process.stderr.write(`[Solo] 连续失败 ${soloState.consecutiveFailures} 次达阈值，熔断停机（非盲重生）。\n`);
             // Stop scheduling, release the lock, and exit non-zero. Detached so we
             // don't await our own loop.stop() from inside a tick.
-            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); releaseAutoexecLock(lockPath); process.exit(1); });
+            void loop.stop().then(() => { cleanupAutoexecRuntime(); process.exit(1); });
         }
     };
     // Heartbeat (#106): record liveness + pacing on the AE spine for the WebUI console, THROTTLED so a fast poll does
@@ -1107,18 +1788,7 @@ export async function runAutoExec(argv) {
             }).catch(() => { });
         },
     });
-    // Graceful stop (#106): on SIGINT/SIGTERM stop scheduling, await the in-flight beat (no orphaned work), release
-    // the single-instance lock, and exit 0. Idempotent — a second signal during shutdown is ignored.
-    return await new Promise((resolve) => {
-        let stopping = false;
-        const shutdown = (sig) => {
-            if (stopping)
-                return;
-            stopping = true;
-            process.stdout.write(`\nevolver autoexec: ${sig} → graceful stop (finishing in-flight, releasing lock)\n`);
-            void loop.stop().then(() => { uninstallUnhandledRejectionGuard(); releaseAutoexecLock(lockPath); resolve(0); });
-        };
-        process.once('SIGINT', () => shutdown('SIGINT'));
-        process.once('SIGTERM', () => shutdown('SIGTERM'));
-    });
+    // SIGINT/SIGTERM drain the in-flight beat before cleanup. SIGHUP cannot hot-reload this composition safely,
+    // so it is explicit and non-destructive: keep running until the operator performs a normal restart.
+    return await waitForAutoexecShutdown({ stop: loop.stop, cleanup: cleanupAutoexecRuntime });
 }

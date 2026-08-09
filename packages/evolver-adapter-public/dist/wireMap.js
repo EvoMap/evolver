@@ -24,9 +24,15 @@ export function searchQueryToFetchWire(q) {
         out['category'] = q.category;
     if (q.gene)
         out['gene'] = q.gene;
+    if (q.domain)
+        out['domain'] = q.domain;
     if (q.limit !== undefined)
         out['limit'] = q.limit;
     return out;
+}
+/** Free discovery phase on /a2a/fetch. Keep this separate from the paid/full fetch mapper. */
+export function searchQueryToSearchOnlyWire(q) {
+    return { ...searchQueryToFetchWire(q), search_only: true };
 }
 /** core AgentEvent(出站) → 公版 outbound 消息(id+type 必填). */
 export function agentEventToOutbound(e) {
@@ -59,7 +65,7 @@ export function atpRetryClass(status) {
     return 'recoverable';
 }
 /** /a2a/publish 响应 → PublishReceipt. 200=accepted; 402/4xx=rejected 终态. */
-export function publishRespToReceipt(status, body) {
+export function publishRespToReceipt(status, body, retryAfterMs) {
     const payload = body['payload'] ?? body;
     const assetIds = payload['asset_ids'];
     const targetAssetId = payload['target_asset_id']
@@ -86,6 +92,15 @@ export function publishRespToReceipt(status, body) {
     // M8-1: 按语义而非纯状态码区分(都终态不重试 = money-safety: 不反复打经济端点).
     // 402=creditShortage(余额不足) / 403=node 失效需 rebind / 409=duplicate / 422=payload 须修 / 429=cooldown.
     const reasonByStatus = { 402: 'credit_shortage', 403: 'node_unauthorized', 409: 'duplicate', 422: 'invalid_payload', 429: 'cooldown' };
+    const rejectionCodeByStatus = {
+        400: 'invalid_request',
+        402: 'credit_shortage',
+        403: 'node_unauthorized',
+        404: 'not_found',
+        409: 'duplicate',
+        422: 'invalid_payload',
+        429: 'cooldown',
+    };
     const receipt = {
         receiptId: String(payload['receipt_id'] ?? 'rejected'),
         status: 'rejected',
@@ -93,6 +108,10 @@ export function publishRespToReceipt(status, body) {
         ...(assetId ? { assetId } : {}),
         ...(assetIds ? { assetIds } : {}),
         terminal: true,
+        rejection: {
+            code: rejectionCodeByStatus[status] ?? 'hub_rejected',
+            ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        },
     };
     if (status === 402) {
         receipt.economic = {

@@ -1,10 +1,12 @@
-import { bootstrap, hub as hubNs } from '@evomap/evolver-core';
+import { createHash } from 'node:crypto';
+import { bootstrap, hub as hubNs, signals } from '@evomap/evolver-core';
 import { AuthError, HubFetch, HubClientError, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
-import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire } from './wireMap.js';
+import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire, searchQueryToSearchOnlyWire, } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
 import { getWorkspaceKeychainMode } from './auth/workspaceKeychain.js';
 import { agentDirectoryFailure, parsePublicAgentPage, parsePublicAgentProfile, paginatePublicAgentPage, mergePublicAgentPages, publicAgentSearchQuery, publicTaskDiscoveryQuery, PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES, unsupportedPublicAvailability, unsupportedPublicSort, withDirectoryTimeout, } from './agentDirectory.js';
+import { assetMatchesId } from './hubReuse.js';
 export const INBOUND_LIMIT = 100;
 export const OUTBOUND_MAX_BATCH = 50;
 export const OUTBOUND_MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -21,12 +23,19 @@ export const USED_ASSET_ID_MAX_LEN = 200;
 export const LEARNING_ASSET_IDS_MAX = 50;
 export const LEARNING_ASSET_ID_MAX_LEN = 128;
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
-export function gepEnvelope(messageType, payload) {
+export function gepEnvelope(messageType, payload, options = {}) {
     return {
         protocol: 'gep-a2a', protocol_version: '1.0.0', message_type: messageType,
-        message_id: `msg_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        message_id: options.messageId ?? `msg_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
         timestamp: new Date().toISOString(), payload,
     };
+}
+function stablePublishMessageId(idempotencyKey) {
+    const digest = createHash('sha256')
+        .update(idempotencyKey.trim())
+        .digest('hex')
+        .slice(0, 40);
+    return `msg_idem_${digest}`;
 }
 // v1 a2aProtocol.js L1999-2003: the three app-level rejection reasons that mean
 // our cached node_secret has DIVERGED from the hub's record (hub-side reset,
@@ -94,9 +103,27 @@ export class PublicHubCapability {
         this.auth = opts.auth;
         this.http = new HubFetch({ baseUrl: opts.baseUrl, auth: opts.auth, fetchFn: opts.fetchFn, senderId: opts.senderId });
     }
+    evolverVersionForWire(explicitVersion) {
+        const antiAbuse = this.opts.antiAbuse;
+        return bootstrap.normalizeEvolverVersion(explicitVersion !== undefined
+            ? explicitVersion
+            : antiAbuse?.evolverVersion ?? antiAbuse?.envFingerprint?.evolver_version);
+    }
+    envFingerprintForWire(evolverVersion) {
+        const fingerprint = {
+            ...(this.opts.antiAbuse?.envFingerprint
+                ?? bootstrap.captureEnvFingerprint({ env: this.opts.antiAbuse?.env ?? process.env })),
+        };
+        if (evolverVersion)
+            fingerprint.evolver_version = evolverVersion;
+        else
+            delete fingerprint.evolver_version;
+        return fingerprint;
+    }
     async hello(opts) {
         try {
             const sender = this.opts.senderId();
+            const evolverVersion = this.evolverVersionForWire(opts.evolverVersion);
             const body = await this.http.call('POST', '/a2a/hello', gepEnvelope('hello', {
                 rotate_secret: opts.rotate,
                 capabilities: { supported_types: ['publish', 'fetch', 'mailbox', 'questions'] },
@@ -104,12 +131,12 @@ export class PublicHubCapability {
                 status: 'active',
                 timestamp: new Date().toISOString(),
                 ...(sender ? { node_id: sender } : {}),
-                ...(opts.evolverVersion ? { evolver_version: opts.evolverVersion } : {}),
+                ...(evolverVersion ? { evolver_version: evolverVersion } : {}),
                 // v1 parity (a2aProtocol.js buildHello): every hello carries the env fingerprint — it is how the
                 // hub builds node/IP trust for its anti-abuse layer. v2 had moved it to heartbeat-only meta, which
                 // one-shot CLI paths never send; the hub then answers heartbeats with resend_hello
                 // `missing_env_fingerprint` and 403-antibodies /a2a/fetch (#555).
-                env_fingerprint: bootstrap.captureEnvFingerprint({ env: this.opts.antiAbuse?.env ?? process.env }),
+                env_fingerprint: this.envFingerprintForWire(evolverVersion),
             }));
             const payload = asRecord(body['payload']) ?? body;
             const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');
@@ -143,6 +170,8 @@ export class PublicHubCapability {
                 ?? this.opts.senderId();
             const nodeSecret = stringField(payload, 'node_secret') ?? stringField(payload, 'nodeSecret');
             const nodeSecretVersion = parseNodeSecretVersion(payload['node_secret_version'] ?? payload['nodeSecretVersion']);
+            const claimCode = stringField(payload, 'claim_code') ?? stringField(payload, 'claimCode');
+            const claimUrl = stringField(payload, 'claim_url') ?? stringField(payload, 'claimUrl');
             if (!opts.preserveCredentials) {
                 if (nodeSecret && isNodeSecret(nodeSecret)) {
                     this.auth.adoptNodeSecret?.(nodeSecret, nodeSecretVersion);
@@ -154,6 +183,8 @@ export class PublicHubCapability {
             return {
                 ok: payload['ok'] !== false && Boolean(nodeId),
                 ...(nodeId ? { nodeId } : {}),
+                ...(claimCode ? { claimCode } : {}),
+                ...(claimUrl ? { claimUrl } : {}),
                 ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
                 ...(rateLimitUntilMs !== undefined ? { rateLimitUntilMs } : {}),
                 ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
@@ -172,12 +203,13 @@ export class PublicHubCapability {
     async heartbeat(opts = {}) {
         try {
             const nodeSecretVersion = this.auth.getNodeSecretVersion?.();
-            const meta = this.heartbeatMeta(opts, nodeSecretVersion);
+            const evolverVersion = this.evolverVersionForWire(opts.evolverVersion);
+            const meta = this.heartbeatMeta(evolverVersion, nodeSecretVersion);
             const body = await this.http.call('POST', '/a2a/heartbeat', {
                 ...(this.opts.senderId() ? { node_id: this.opts.senderId() } : {}),
                 timestamp: new Date().toISOString(),
                 status: 'active',
-                ...(opts.evolverVersion ? { evolver_version: opts.evolverVersion } : {}),
+                ...(evolverVersion ? { evolver_version: evolverVersion } : {}),
                 ...(opts.lastUpdate ? { last_update: opts.lastUpdate } : {}),
                 ...(nodeSecretVersion !== undefined ? { node_secret_version: nodeSecretVersion } : {}),
                 ...(meta ? { meta } : {}),
@@ -194,7 +226,7 @@ export class PublicHubCapability {
             throw err;
         }
     }
-    heartbeatMeta(opts, nodeSecretVersion) {
+    heartbeatMeta(evolverVersion, nodeSecretVersion) {
         const meta = {};
         if (nodeSecretVersion !== undefined)
             meta['node_secret_version'] = nodeSecretVersion;
@@ -204,7 +236,7 @@ export class PublicHubCapability {
                 meta['anti_abuse'] = buildHeartbeatAntiAbuseTelemetry({
                     ...antiAbuse,
                     nodeId: this.opts.senderId(),
-                    evolverVersion: opts.evolverVersion,
+                    evolverVersion,
                 });
             }
             catch (err) {
@@ -215,15 +247,29 @@ export class PublicHubCapability {
         }
         return Object.keys(meta).length > 0 ? meta : undefined;
     }
-    async publish(bundle) {
+    async publish(bundle, options = {}) {
+        const normalizedIdempotencyKey = options.idempotencyKey?.trim();
+        if (options.idempotencyKey !== undefined && !normalizedIdempotencyKey) {
+            return {
+                receiptId: 'local_invalid_idempotency_key',
+                status: 'rejected',
+                terminal: true,
+                reason: 'publish idempotency key must not be blank',
+            };
+        }
         try {
             // 公版 /a2a/publish 收 payload.assets=[Gene,Capsule,(Event)] 捆绑(实测 dev).
-            const body = await this.http.call('POST', '/a2a/publish', gepEnvelope('publish', { assets: bundle }));
+            const idempotencyKey = normalizedIdempotencyKey;
+            const messageId = idempotencyKey !== undefined
+                ? stablePublishMessageId(idempotencyKey)
+                : undefined;
+            const body = await this.http.call('POST', '/a2a/publish', gepEnvelope('publish', { assets: bundle }, messageId ? { messageId } : {}));
             return publishRespToReceipt(200, body);
         }
         catch (e) {
-            if (e instanceof HubClientError)
-                return publishRespToReceipt(e.status, e.body ?? {});
+            if (e instanceof HubClientError) {
+                return publishRespToReceipt(e.status, e.body ?? {}, e.retryAfterMs);
+            }
             throw e; // 5xx/网络 → 重试
         }
     }
@@ -232,29 +278,35 @@ export class PublicHubCapability {
         // /a2a/fetch responses are FULL GEP envelopes (buildResponse('fetch', …)); the rows live at payload.results,
         // NOT at the top level. Reading body.results here always yielded [] — every fetch silently returned nothing.
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToFetchWire(query)));
-        return (body.payload?.results ?? []);
+        return assetsFromBody(body);
     }
     async fetchAssetById(assetId) {
         const id = assetId.trim();
         if (!id)
             return null;
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', { asset_ids: [id] }));
-        return assetsFromBody(body).find((asset) => assetMatchesId(asset, id)) ?? null;
+        return assetsFromBody(body).find((asset) => fetchResultMatchesId(asset, id)) ?? null;
     }
     /**
      * #69: search != fetch. Free-text is the hub's vector endpoint (GET /a2a/assets/semantic-search?q=);
-     * signals/id queries fall through to fetch. /a2a/fetch does NOT do semantic, so text must not go there.
+     * signal/id queries use the Hub's free search-only phase on /a2a/fetch. /a2a/fetch does NOT do semantic,
+     * so text must not go there and paid/full fetch must remain an explicit follow-up.
      */
     async search(query) {
         if (query.text && query.text.trim()) {
             // GET /a2a/assets/semantic-search returns a FLAT object keyed `assets` (no GEP envelope), plus a
-            // `search_status` (found / degraded(retryable) / low_confidence_only / no_match). Reading body.results
-            // here always yielded [] — the semantic path could never return a hit. (Status not surfaced yet: the
-            // HubCapability.search contract is AssetRecord[]; honoring search_status needs an interface change — later.)
-            const body = await this.http.call('GET', '/a2a/assets/semantic-search', undefined, { q: query.text, ...(query.limit !== undefined ? { limit: query.limit } : {}) });
-            return (body.assets ?? []);
+            // `search_status` (found / degraded(retryable) / low_confidence_only / no_match). Only an explicit
+            // no_match is a verified empty result; degraded or malformed 200 responses must not trigger ATP spend.
+            const body = await this.http.call('GET', '/a2a/assets/semantic-search', undefined, {
+                q: query.text,
+                ...(query.kind !== undefined ? { type: query.kind } : {}),
+                ...(query.domain !== undefined ? { domain: query.domain } : {}),
+                ...(query.limit !== undefined ? { limit: query.limit } : {}),
+            });
+            return semanticSearchAssets(body);
         }
-        return this.fetch(query);
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToSearchOnlyWire(query)));
+        return signalSearchAssets(body);
     }
     agentDirectory = {
         search: async (request) => {
@@ -603,7 +655,10 @@ export class PublicHubCapability {
         const body = await this.http.call('POST', '/a2a/events/poll', gepEnvelope('events_poll', { timeout_ms: 1000 }));
         for (const e of body.events ?? []) {
             if (String(e['type']).startsWith('task_')) {
-                yield { taskId: String(e['payload']?.taskId ?? e['id']), type: String(e['type']), payload: e['payload'], priority: e['priority'] ?? 'medium', createdAt: Date.parse(String(e['created_at'] ?? '')) || 0 };
+                const payload = asRecord(e['payload']);
+                const wireTaskId = payload?.['task_id'] ?? payload?.['taskId'];
+                const taskId = typeof wireTaskId === 'string' && wireTaskId.length > 0 ? wireTaskId : String(e['id']);
+                yield { taskId, type: String(e['type']), payload: e['payload'], priority: e['priority'] ?? 'medium', createdAt: Date.parse(String(e['created_at'] ?? '')) || 0 };
             }
         }
     }
@@ -702,6 +757,44 @@ export class PublicHubCapability {
 }
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+}
+function searchAssets(value, source) {
+    if (!Array.isArray(value))
+        throw new Error(`${source}_results_invalid`);
+    return value.map((candidate) => {
+        const record = asRecord(candidate);
+        if (!record)
+            throw new Error(`${source}_asset_invalid`);
+        const asset = unwrapFetchDeliveryRow(record);
+        const assetId = stringField(asset, 'asset_id') ?? stringField(asset, 'assetId');
+        if (!assetId)
+            throw new Error(`${source}_asset_invalid`);
+        return asset;
+    });
+}
+function semanticSearchAssets(body) {
+    const status = stringField(body, 'search_status');
+    if (status === 'degraded' || body['retryable'] === true)
+        throw new Error('semantic_search_degraded');
+    const assets = searchAssets(body['assets'], 'semantic_search');
+    if (status === 'no_match') {
+        if (assets.length !== 0)
+            throw new Error('semantic_search_status_invalid');
+        return assets;
+    }
+    if (status === 'found' || status === 'low_confidence_only') {
+        if (assets.length === 0)
+            throw new Error('semantic_search_status_invalid');
+        return assets;
+    }
+    // Older successful Hub responses are usable only when they carry a concrete candidate.
+    if (status === undefined && assets.length > 0)
+        return assets;
+    throw new Error('semantic_search_status_invalid');
+}
+function signalSearchAssets(body) {
+    const payload = asRecord(body['payload']);
+    return searchAssets(payload?.['results'], 'signal_search');
 }
 function recipeStepToWire(step) {
     return {
@@ -809,7 +902,9 @@ function accountAssetsFromPayload(payload) {
     for (const candidate of candidates) {
         if (!Array.isArray(candidate))
             continue;
-        return candidate.filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)));
+        return candidate
+            .filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)))
+            .map(unwrapFetchDeliveryRow);
     }
     return [];
 }
@@ -912,8 +1007,10 @@ function failureReason(error) {
     }
     return error instanceof Error ? error.message : String(error);
 }
-function assetMatchesId(asset, assetId) {
-    return Boolean(asset && (asset.asset_id === assetId || stringField(asset, 'id') === assetId));
+function fetchResultMatchesId(asset, requestedId) {
+    if (assetMatchesId(asset, requestedId))
+        return true;
+    return !requestedId.startsWith('sha256:') && Boolean(asset && stringField(asset, 'id') === requestedId);
 }
 function stringField(value, key) {
     return typeof value[key] === 'string' && value[key].length > 0 ? value[key] : undefined;
@@ -987,14 +1084,39 @@ function mailboxPushResultFromBody(body, events) {
     if (results.length === 0) {
         return { outcomes: events.map((event) => ({ id: event.id, status: 'accepted' })) };
     }
+    const resultIds = results.map(mailboxPushResultId);
+    const hasCompletePositions = results.length === events.length;
     return {
-        outcomes: events.map((event, index) => mailboxPushOutcomeFromRow(event.id, results, index)),
+        outcomes: events.map((event, index) => {
+            const matches = results.filter((_, resultIndex) => resultIds[resultIndex] === event.id);
+            if (matches.length === 1)
+                return mailboxPushOutcomeFromRow(event.id, matches[0]);
+            const positionalMatch = matches.length === 0
+                && hasCompletePositions
+                && resultIds[index] === undefined
+                ? results[index]
+                : undefined;
+            return mailboxPushOutcomeFromRow(event.id, positionalMatch);
+        }),
     };
 }
-function mailboxPushOutcomeFromRow(eventId, results, index) {
-    const match = results.find((result) => String(result['id'] ?? result['message_id'] ?? '') === eventId) ?? results[index];
-    if (!match)
-        return { id: eventId, status: 'accepted' };
+function mailboxPushResultId(row) {
+    const value = row['id'] ?? row['message_id'];
+    if (typeof value !== 'string' && typeof value !== 'number')
+        return undefined;
+    const id = String(value);
+    return id.length > 0 ? id : undefined;
+}
+function mailboxPushOutcomeFromRow(eventId, match) {
+    if (!match) {
+        return {
+            id: eventId,
+            status: 'failed',
+            reason: 'mailbox_response_incomplete',
+            retryable: true,
+            terminal: false,
+        };
+    }
     const reason = mailboxPushFailureReason(match);
     if (!reason)
         return { id: eventId, status: 'accepted', raw: match };
@@ -1047,9 +1169,12 @@ function hubErrorStatus(err) {
     }
     return undefined;
 }
-// Retry-After hint from a HubClientError JSON body (429 cooldown). Headers aren't
-// carried on HubClientError, so we read the body's retry_after_ms / retry_after.
+// Prefer the standardized Retry-After header carried by HubClientError, then
+// preserve the existing JSON body hints as a compatibility fallback.
 function clientErrorRetryAfterMs(err) {
+    if (err instanceof HubClientError && typeof err.retryAfterMs === 'number' && Number.isFinite(err.retryAfterMs)) {
+        return err.retryAfterMs;
+    }
     const body = err instanceof HubClientError ? asRecord(err.body) : undefined;
     if (!body)
         return undefined;
@@ -1193,6 +1318,10 @@ function heartbeatResultFromBody(httpStatus, body) {
     const details = payload['details'] ?? body['details'];
     const ack = asRecord(payload['last_update_ack']);
     const forceUpdate = forceUpdateFromRecord(asRecord(payload['force_update']));
+    const rawCapabilityGaps = payload['capability_gaps'] ?? payload['capabilityGaps'];
+    const capabilityGaps = Array.isArray(rawCapabilityGaps)
+        ? signals.normalizeCapabilityGaps(rawCapabilityGaps)
+        : undefined;
     const ok = httpStatus >= 200
         && httpStatus < 300
         && payload['ok'] !== false
@@ -1210,6 +1339,7 @@ function heartbeatResultFromBody(httpStatus, body) {
                 ...(typeof ack['reason'] === 'string' ? { reason: ack['reason'] } : {}),
             } } : {}),
         ...(forceUpdate ? { forceUpdate } : {}),
+        ...(capabilityGaps !== undefined ? { capabilityGaps } : {}),
     };
 }
 function forceUpdateFromRecord(value) {

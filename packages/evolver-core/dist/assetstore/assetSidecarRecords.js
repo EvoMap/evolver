@@ -62,6 +62,9 @@ export function parseProvenanceRecord(value) {
     const decidedBy = stringField(record, 'decidedBy');
     const promotedBy = stringField(record, 'promotedBy');
     const reason = stringField(record, 'reason');
+    const frozenContentId = stringField(record, 'frozenContentId');
+    if (frozenContentId !== undefined && !/^sha256:[0-9a-f]{64}$/.test(frozenContentId))
+        return null;
     return {
         assetId,
         source,
@@ -71,6 +74,7 @@ export function parseProvenanceRecord(value) {
         ...(decidedBy ? { decidedBy } : {}),
         ...(promotedBy ? { promotedBy } : {}),
         ...(reason ? { reason } : {}),
+        ...(frozenContentId ? { frozenContentId } : {}),
     };
 }
 export function parseReviewRecord(value) {

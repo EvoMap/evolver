@@ -208,6 +208,7 @@ export function buildRuntimeSessionMaterialSnapshot(sources, maxChars = DEFAULT_
             agent: snapshotIdentity(source.agent, SNAPSHOT_AGENT_MAX_CHARS) || 'unknown',
             label: snapshotIdentity(source.label, SNAPSHOT_IDENTITY_MAX_CHARS) || 'unknown',
             ...(safeSessionId ? { sessionId: safeSessionId } : {}),
+            ...(source.resumeIdentityProvenance ? { resumeIdentityProvenance: source.resumeIdentityProvenance } : {}),
             evidenceSummary,
             turns,
         });
@@ -270,10 +271,14 @@ function sourceFromSnapshot(value) {
     if (turns.length === 0)
         return null;
     const sessionId = typeof value['sessionId'] === 'string' && value['sessionId'].trim() ? value['sessionId'] : undefined;
+    const resumeIdentityProvenance = value['resumeIdentityProvenance'] === 'canonical_native_transcript'
+        ? value['resumeIdentityProvenance']
+        : undefined;
     return {
         agent,
         label,
         ...(sessionId ? { sessionId } : {}),
+        ...(resumeIdentityProvenance ? { resumeIdentityProvenance } : {}),
         turns,
     };
 }
@@ -328,10 +333,14 @@ export function runtimeSessionEvidenceSummariesFromMaterialPayload(payload) {
         const sessionId = typeof source['sessionId'] === 'string' && source['sessionId'].trim()
             ? source['sessionId']
             : undefined;
+        const resumeIdentityProvenance = source['resumeIdentityProvenance'] === 'canonical_native_transcript'
+            ? 'canonical_native_transcript'
+            : undefined;
         return [{
                 agent: source['agent'],
                 label: source['label'],
                 ...(sessionId ? { sessionId } : {}),
+                ...(resumeIdentityProvenance ? { resumeIdentityProvenance } : {}),
                 evidenceSummary: summary,
             }];
     });
@@ -350,21 +359,29 @@ export function materialHasRuntimeSessionSnapshot(material) {
 export function materialSourceAvailable(material) {
     return existsSync(material.sourcePath);
 }
-export function runtimeSessionSourcesForMaterial(material, readSource) {
+export function runtimeSessionSourcesForMaterialDetails(material, readSource, nativeSessionHome) {
     let sourceError;
     try {
-        const sources = parseRuntimeSessionSources(material.sourcePath, readSource);
-        const sourcesWithTurns = sources.filter((source) => source.turns.length > 0);
+        const liveSources = parseRuntimeSessionSources(material.sourcePath, readSource, nativeSessionHome);
+        const sourcesWithTurns = liveSources.filter((source) => source.turns.length > 0);
         if (sourcesWithTurns.length > 0)
-            return sourcesWithTurns;
+            return { sources: sourcesWithTurns, liveSources };
+        const snapshotSources = runtimeSessionSourcesFromMaterialPayload(material.payload);
+        return {
+            sources: snapshotSources,
+            liveSources,
+        };
     }
     catch (error) {
         sourceError = error;
     }
     const snapshotSources = runtimeSessionSourcesFromMaterialPayload(material.payload);
     if (snapshotSources.length > 0)
-        return snapshotSources;
+        return { sources: snapshotSources, sourceError };
     if (sourceError)
         throw sourceError;
-    return [];
+    return { sources: [] };
+}
+export function runtimeSessionSourcesForMaterial(material, readSource, nativeSessionHome) {
+    return runtimeSessionSourcesForMaterialDetails(material, readSource, nativeSessionHome).sources;
 }

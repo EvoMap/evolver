@@ -92,6 +92,14 @@ export interface DownloadedArtifact {
     sha256?: string;
 }
 /**
+ * Parse a configured public key (PEM, raw 32-byte base64, SPKI DER base64, or a KeyObject) into a node KeyObject.
+ *
+ * The base64 forms mirror scripts/release-update-manifest.mjs parsePublicKey exactly: the release pipeline and the
+ * built-in channel key ship the full SPKI DER blob (44 bytes for Ed25519), while operator overrides may supply the
+ * bare 32-byte raw key. Anything that does not decode to a valid Ed25519 SPKI key throws (fail-closed).
+ */
+export declare function toPublicKey(publicKey: string | KeyObject): KeyObject;
+/**
  * Verify downloaded artifacts against the manifest. PURE + deterministic (takes already-read bytes/hashes; does
  * NO I/O). Two layers:
  *   1. sha256-per-artifact (ALWAYS): every manifest artifact must have a matching downloaded artifact whose

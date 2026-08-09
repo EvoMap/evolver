@@ -1,11 +1,13 @@
 import { ulid as makeUlid } from 'ulid';
 import { specForType, assertKnownType } from './catalog.js';
-export const ENVELOPE_SCHEMA_VERSION = '1.0.0';
+export const PRIORITIES = Object.freeze(['high', 'normal', 'low']);
+export const ENVELOPE_SCHEMA_VERSION = '1.1.0';
 /** 固定 envelope 字段集 (schema-snapshot 锁; 增删字段必须改此处). */
 export const ENVELOPE_FIELDS = [
     'id', 'type', 'direction', 'status', 'handler', 'payload', 'correlationId', 'replyTo',
     'receiptId', 'idempotencyKey', 'sourceAgent', 'targetAgent', 'runtimeNamespace',
-    'attempts', 'nextRetryAt', 'ttlAt', 'createdAt', 'updatedAt', 'schemaVersion', 'feedsMaterial',
+    'priority', 'attempts', 'nextRetryAt', 'ttlAt', 'createdAt', 'updatedAt', 'schemaVersion', 'feedsMaterial',
+    'lastError',
 ];
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** 防原型污染 (v1 GHSA). */
@@ -22,6 +24,9 @@ export function sanitizePayload(v) {
     return v;
 }
 const TTL_MS = { control: 60 * 60 * 1000, default: 7 * 24 * 60 * 60 * 1000 };
+export function normalizePriority(value) {
+    return value === 'high' || value === 'low' ? value : 'normal';
+}
 export function createEnvelope(input) {
     const spec = assertKnownType(input.type);
     const id = input.id ?? makeUlid();
@@ -40,6 +45,7 @@ export function createEnvelope(input) {
         sourceAgent: input.sourceAgent ?? '',
         targetAgent: input.targetAgent ?? '',
         runtimeNamespace: input.runtimeNamespace ?? 'default',
+        priority: normalizePriority(input.priority),
         attempts: 0,
         nextRetryAt: null,
         ttlAt: now + TTL_MS[spec.ttlClass],
@@ -47,6 +53,7 @@ export function createEnvelope(input) {
         updatedAt: now,
         schemaVersion: ENVELOPE_SCHEMA_VERSION,
         feedsMaterial: spec.feedsMaterial,
+        lastError: null,
     };
 }
 export { specForType };

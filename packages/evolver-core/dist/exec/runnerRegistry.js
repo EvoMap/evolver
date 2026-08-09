@@ -5,11 +5,35 @@
 // nothing here spawns a real agent in tests except through spawnCapture, which the bridge injects fakes around.
 import { spawn } from 'node:child_process';
 import { join as joinPath, delimiter as pathDelimiter } from 'node:path';
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, } from 'node:fs';
 export const DEFAULT_TIMEOUT_MS = 600_000;
+export const MAX_AGENT_SESSION_ID_CHARS = 128;
+const NATIVE_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** Per-stream stdout/stderr capture ceiling. A child can emit indefinitely without growing the parent heap. */
 export const DEFAULT_MAX_CAPTURE_BYTES = 1_048_576;
 const MIN_MAX_CAPTURE_BYTES = 256;
+export class AgentSessionResumeError extends Error {
+    code;
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = 'AgentSessionResumeError';
+    }
+}
+/** Validate before spawn so malformed or cross-harness session targets always fail closed. */
+export function validateAgentSessionResume(resume, expectedRunner) {
+    if (resume.runner !== expectedRunner) {
+        throw new AgentSessionResumeError('runner_mismatch', `session resume runner '${resume.runner}' does not match selected runner '${expectedRunner}'`);
+    }
+    if (expectedRunner !== 'claude' && expectedRunner !== 'cursor') {
+        throw new AgentSessionResumeError('unsupported_runner', `runner '${expectedRunner}' does not support native session resume`);
+    }
+    if (!NATIVE_SESSION_ID_PATTERN.test(resume.sessionId)) {
+        throw new AgentSessionResumeError('invalid_session_id', `session resume identifier must be ${MAX_AGENT_SESSION_ID_CHARS} characters or fewer and use only letters, numbers, '.', '_', or '-'`);
+    }
+    return resume;
+}
 /** Thrown when permission bypass is requested without bounding the agent's tools (would be an unbounded autonomous agent). */
 export class UnboundedSkipPermissionsError extends Error {
     constructor() {
@@ -17,11 +41,25 @@ export class UnboundedSkipPermissionsError extends Error {
         this.name = 'UnboundedSkipPermissionsError';
     }
 }
+/** Thrown when Codex permission options cannot be enforced by its CLI. */
+export class UnsupportedCodexPermissionOptionsError extends Error {
+    constructor() {
+        super('codex runner does not support skipPermissions or allowedTools: the bypass is danger-full-access and Codex has no per-tool allowlist');
+        this.name = 'UnsupportedCodexPermissionOptionsError';
+    }
+}
 /** Thrown when Cursor skipPermissions is requested before the runner can enforce per-run permissions. */
 export class UnsupportedCursorSkipPermissionsError extends Error {
     constructor() {
         super('cursor runner does not support skipPermissions yet: cursor-agent has no verified per-run allowlist or sandbox mapping, so --force --trust is refused');
         this.name = 'UnsupportedCursorSkipPermissionsError';
+    }
+}
+/** Thrown when Cursor workspace trust is requested without verified host containment. */
+export class UnsupportedCursorWorkspaceTrustError extends Error {
+    constructor() {
+        super('cursor runner does not support workspaceTrust: --trust grants host filesystem and network access that a Git worktree cannot contain');
+        this.name = 'UnsupportedCursorWorkspaceTrustError';
     }
 }
 /** Thrown when Gemini permission options cannot be mapped to a verified bounded CLI contract. */
@@ -163,6 +201,13 @@ export function killWindowsProcessTree(pid, spawnCommand = spawn, timeoutMs = WI
             finish(false);
         }
     });
+}
+/** Thrown when Cursor allowedTools are requested without a verified per-tool CLI allowlist. */
+export class UnsupportedCursorAllowedToolsError extends Error {
+    constructor() {
+        super('cursor runner does not support allowedTools: cursor-agent has no verified per-run tool allowlist');
+        this.name = 'UnsupportedCursorAllowedToolsError';
+    }
 }
 /** A redirected stdout artifact could not be finalized; the subprocess outcome remains available for classification. */
 export class SpawnCaptureFinalizeError extends Error {
@@ -353,7 +398,7 @@ export function spawnCapture(cmd, args, opts) {
         }
         let child;
         try {
-            child = spawn(r.cmd, r.args, {
+            child = (opts.spawnCommand ?? spawn)(r.cmd, r.args, {
                 cwd: opts.cwd,
                 shell: false,
                 detached,
@@ -474,6 +519,43 @@ export function spawnCapture(cmd, args, opts) {
         }
         child.stdout?.on('data', (d) => { stdoutCapture.append(d); });
         child.stderr?.on('data', (d) => { stderrCapture.append(d); });
+        const stdinCompletion = opts.input === undefined
+            ? Promise.resolve(undefined)
+            : new Promise((resolveInput) => {
+                const stdin = child.stdin;
+                if (!stdin) {
+                    resolveInput(new Error('runner stdin is unavailable'));
+                    void killTree();
+                    return;
+                }
+                let completed = false;
+                const complete = (error) => {
+                    if (completed)
+                        return false;
+                    completed = true;
+                    resolveInput(error);
+                    return true;
+                };
+                stdin.on('error', (error) => {
+                    if (complete(error instanceof Error ? error : new Error(String(error)))) {
+                        void killTree();
+                    }
+                });
+                stdin.on('finish', () => complete());
+                stdin.on('close', () => {
+                    if (complete(new Error('runner stdin closed before prompt delivery'))) {
+                        void killTree();
+                    }
+                });
+                try {
+                    stdin.end(opts.input);
+                }
+                catch (error) {
+                    if (complete(error instanceof Error ? error : new Error(String(error)))) {
+                        void killTree();
+                    }
+                }
+            });
         child.on('error', (e) => {
             void settle(() => {
                 cleanupOwnedStdoutFile();
@@ -481,40 +563,43 @@ export function spawnCapture(cmd, args, opts) {
             });
         });
         child.on('close', (code) => {
-            void settle((stdoutFileError) => {
-                const stdout = stdoutCapture.result();
-                const stderr = stderrCapture.result();
-                const result = {
-                    code,
-                    stdout: stdout.text,
-                    stderr: stderr.text,
-                    termination,
-                    stdoutBytes: redirectedStdoutBytes ?? stdout.bytes,
-                    stderrBytes: stderr.bytes,
-                    stdoutTruncated: stdout.truncated,
-                    stderrTruncated: stderr.truncated,
-                    ...(opts.stdoutFile ? { stdoutRedirected: true } : {}),
-                };
-                if (stdoutFileError !== undefined) {
-                    cleanupOwnedStdoutFile();
-                    reject(new SpawnCaptureFinalizeError(result, stdoutFileError));
-                    return;
-                }
-                resolve(result);
+            void stdinCompletion.then((inputError) => {
+                void settle((stdoutFileError) => {
+                    const stdout = stdoutCapture.result();
+                    const stderr = stderrCapture.result();
+                    const result = {
+                        code,
+                        stdout: stdout.text,
+                        stderr: stderr.text,
+                        termination,
+                        stdoutBytes: redirectedStdoutBytes ?? stdout.bytes,
+                        stderrBytes: stderr.bytes,
+                        stdoutTruncated: stdout.truncated,
+                        stderrTruncated: stderr.truncated,
+                        ...(opts.stdoutFile ? { stdoutRedirected: true } : {}),
+                    };
+                    if (stdoutFileError !== undefined) {
+                        cleanupOwnedStdoutFile();
+                        reject(new SpawnCaptureFinalizeError(result, stdoutFileError));
+                        return;
+                    }
+                    if (inputError && termination === 'exit' && code === 0) {
+                        cleanupOwnedStdoutFile();
+                        reject(inputError);
+                        return;
+                    }
+                    resolve(result);
+                });
             });
         });
-        if (opts.input !== undefined) {
-            child.stdin?.write(opts.input);
-            child.stdin?.end();
-        }
     });
 }
 /** Map the shared process result into the failure taxonomy used by plain-text runners. */
-export function classifyBasicRunnerResult(runner, result, timeoutMs) {
+export function classifyBasicRunnerResult(runner, result, timeoutMs, resume) {
     if (result.termination === 'timeout') {
         return {
             ok: false,
-            output: result.stdout,
+            output: resume ? '' : result.stdout,
             error: `${runner} timed out after ${timeoutMs}ms`,
             failureKind: 'timeout',
             exitCode: result.code,
@@ -523,17 +608,45 @@ export function classifyBasicRunnerResult(runner, result, timeoutMs) {
     if (result.termination === 'cancelled') {
         return {
             ok: false,
-            output: result.stdout,
+            output: resume ? '' : result.stdout,
             error: `${runner} execution cancelled`,
             failureKind: 'cancelled',
             exitCode: result.code,
         };
     }
+    // Runner stdout is agent content and may legitimately discuss these errors, including on a later failure.
+    const diagnostic = result.stderr;
+    if (result.code !== 0 && /permission denied|access denied|not authorized|unauthorized|authentication required|please (?:log|sign) in|login required/i.test(diagnostic)) {
+        return {
+            ok: false,
+            output: resume ? '' : result.stdout,
+            error: `${runner} permission denied while executing${resume ? ' resumed session' : ''}`,
+            failureKind: 'permission_denied',
+            exitCode: result.code,
+        };
+    }
+    const escapedResumeId = resume?.sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const contextualMissingSession = escapedResumeId
+        ? new RegExp(`(?:session|conversation|chat)\\s+(?:(?:with\\s+)?id[:=]?\\s+)?["']?${escapedResumeId}["']?\\s+(?:was\\s+)?(?:not found|does not exist)`, 'i').test(diagnostic)
+        : false;
+    if (resume && (contextualMissingSession || /(?:session|conversation|chat) (?:was )?not found|no (?:conversation|session|chat) found|invalid session(?: id)?|unable to resume|cannot resume|(?:session|conversation|chat) does not exist|expired session/i.test(diagnostic))) {
+        return {
+            ok: false,
+            output: '',
+            error: `${runner} resume session is missing, stale, or unavailable`,
+            failureKind: 'runtime_error',
+            exitCode: result.code,
+        };
+    }
     if (result.code !== 0) {
+        const error = result.stderr || `${runner} exited with code ${String(result.code)}`;
+        const safeError = resume
+            ? error.replaceAll(resume.sessionId, '[session-id]')
+            : error;
         return {
             ok: false,
             output: result.stdout,
-            error: result.stderr || `${runner} exited with code ${String(result.code)}`,
+            error: safeError,
             failureKind: 'non_zero_exit',
             exitCode: result.code,
         };
@@ -549,12 +662,22 @@ function spawnFailureResult(error) {
         exitCode: null,
     };
 }
+export const CLAUDE_SAFE_AUTONOMOUS_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep'];
+const CLAUDE_SAFE_AUTONOMOUS_TOOL_SET = new Set(CLAUDE_SAFE_AUTONOMOUS_TOOLS);
+export function hasBoundedClaudeFileAccess(opts) {
+    return opts?.permissionMode === 'acceptEdits'
+        && opts.skipPermissions !== true
+        && (opts.allowedTools?.length ?? 0) === 0
+        && Array.isArray(opts.tools)
+        && opts.tools.length > 0
+        && opts.tools.every((tool) => CLAUDE_SAFE_AUTONOMOUS_TOOL_SET.has(tool));
+}
 /**
- * Build the `claude -p` argv for the given options (pure — testable without spawning).
+ * Build the `claude -p` argv for the given options (pure and testable without spawning).
  * Safety invariant: skipPermissions (bypassing prompts) is only allowed together with a non-empty
- * allowedTools — otherwise it would be an unattended agent with full tools and no gate; refuse loudly.
+ * allowedTools; otherwise it would be an unattended agent with full tools and no gate; refuse loudly.
  */
-export function claudeRunnerArgs(opts = {}) {
+export function claudeRunnerArgs(opts = {}, resume) {
     const bounded = !!(opts.allowedTools && opts.allowedTools.length > 0);
     if (opts.skipPermissions && !bounded)
         throw new UnboundedSkipPermissionsError();
@@ -563,22 +686,33 @@ export function claudeRunnerArgs(opts = {}) {
         args.push('--dangerously-skip-permissions');
     if (opts.allowedTools && opts.allowedTools.length > 0)
         args.push('--allowedTools', ...opts.allowedTools);
+    if (opts.permissionMode)
+        args.push('--permission-mode', opts.permissionMode);
+    if (opts.tools && opts.tools.length > 0)
+        args.push('--tools', opts.tools.join(','));
+    if (opts.permissionMode === 'acceptEdits') {
+        args.push('--strict-mcp-config', '--disable-slash-commands', '--setting-sources', '');
+    }
     if (opts.model)
         args.push('--model', opts.model);
+    if (resume) {
+        validateAgentSessionResume(resume, 'claude');
+        args.push('--resume', resume.sessionId);
+    }
     return args;
 }
 /**
- * Build a headless `claude -p` agent runner. Prompt fed via stdin (no shell, no argv length limit). For
- * unattended evolution set { skipPermissions: true, allowedTools: ['Read','Edit','Write'] } — bypass the
- * permission prompts but bound the agent to file edits. Validated end to end against a real agent.
+ * Build a headless `claude -p` agent runner. Prompt is fed via stdin (no shell, no argv length limit).
+ * For unattended edits, prefer permissionMode: 'acceptEdits' with the bounded file/search tool list.
  */
 export function makeClaudeHeadlessRunner(opts = {}) {
     const args = claudeRunnerArgs(opts);
     return async (prompt, ctx) => {
         const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const runArgs = ctx.resume ? claudeRunnerArgs(opts, ctx.resume) : args;
         try {
-            const result = await spawnCapture('claude', args, { cwd: ctx.cwd, timeoutMs, input: prompt, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-            return classifyBasicRunnerResult('claude', result, timeoutMs);
+            const result = await spawnCapture('claude', runArgs, { cwd: ctx.cwd, timeoutMs, input: prompt, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+            return classifyBasicRunnerResult('claude', result, timeoutMs, ctx.resume);
         }
         catch (e) {
             return spawnFailureResult(e);
@@ -589,34 +723,30 @@ export function makeClaudeHeadlessRunner(opts = {}) {
 export const claudeHeadlessRunner = makeClaudeHeadlessRunner();
 // --- Codex runner (#66 multi-harness) ---
 /**
- * Build the `codex exec` argv (pure). Verified live against codex-cli 0.137.0:
- *  - sandboxed default → `exec --sandbox workspace-write`: edits the workspace non-interactively (read-only,
- *    the codex default, cannot write). The wrapper's worktree + allowedRoots are the outer containment.
- *  - skipPermissions (bounded) → `exec --dangerously-bypass-approvals-and-sandbox`: full bypass, intended for
- *    an already-externally-sandboxed run (our throwaway worktree). The `skip⇒bounded` invariant is the explicit
- *    acknowledgement guard, same shape as claude.
+ * Build the `codex exec` argv (pure). Verified live against codex-cli 0.144.6:
+ *  - sandboxed default → `--ask-for-approval never exec --sandbox workspace-write`: edits the workspace
+ *    without waiting for interactive approval. The wrapper's worktree + allowedRoots are the outer containment.
+ *  - permission overrides fail closed: Codex has no per-tool allowlist, and a Git worktree does not contain
+ *    danger-full-access host filesystem or network access.
  */
 export function codexRunnerArgs(opts = {}) {
-    const bounded = !!(opts.allowedTools && opts.allowedTools.length > 0);
-    if (opts.skipPermissions && !bounded)
-        throw new UnboundedSkipPermissionsError(); // same invariant as claude skip⇒allowedTools
-    const args = ['exec'];
-    // codex bounds via sandbox mode (not a per-tool allowlist): workspace-write is the safe autonomous default;
-    // the explicit bypass removes the inner sandbox for a run the wrapper already isolates.
-    args.push('--sandbox', opts.skipPermissions ? 'danger-full-access' : 'workspace-write');
-    if (opts.skipPermissions)
-        args.push('--dangerously-bypass-approvals-and-sandbox');
+    if (opts.skipPermissions || opts.allowedTools !== undefined) {
+        throw new UnsupportedCodexPermissionOptionsError();
+    }
+    const args = ['--ask-for-approval', 'never', 'exec'];
+    args.push('--sandbox', 'workspace-write');
+    args.push('--ephemeral');
     if (opts.model)
         args.push('--model', opts.model);
     return args;
 }
-/** Headless `codex exec` runner. Working root pinned with `--cd`; prompt is the trailing positional arg (shell:false). */
-export function makeCodexHeadlessRunner(opts = {}) {
+/** Headless `codex exec` runner. Working root pinned with `--cd`; prompt is sent over stdin. */
+export function makeCodexHeadlessRunner(opts = {}, spawnCaptureFn = spawnCapture) {
     const args = codexRunnerArgs(opts);
     return async (prompt, ctx) => {
         const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         try {
-            const result = await spawnCapture('codex', [...args, '--cd', ctx.cwd, prompt], { cwd: ctx.cwd, timeoutMs, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+            const result = await spawnCaptureFn('codex', [...args, '--cd', ctx.cwd, '-'], { cwd: ctx.cwd, timeoutMs, input: prompt, ...(ctx.env ? { env: ctx.env } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
             return classifyBasicRunnerResult('codex', result, timeoutMs);
         }
         catch (e) {
@@ -696,27 +826,110 @@ export function classifyGeminiRunnerResult(result, timeoutMs) {
 export function geminiRunnerArgs(opts = {}) {
     if (opts.skipPermissions || (opts.allowedTools?.length ?? 0) > 0)
         throw new UnsupportedGeminiPermissionOptionsError();
-    const args = ['--output-format', 'json', '--approval-mode', 'auto_edit', '--skip-trust'];
+    const args = [
+        '--output-format', 'json',
+        '--approval-mode', 'auto_edit',
+        '--skip-trust',
+        '--extensions', 'none',
+        '--allowed-mcp-server-names', '__evolver_no_mcp__',
+    ];
     if (opts.model)
         args.push('--model', opts.model);
     return args;
 }
+const GEMINI_AUTH_FILE_MAX_BYTES = 1_048_576;
+function copyGeminiAuthFile(sourceDir, targetDir, name) {
+    const source = joinPath(sourceDir, name);
+    try {
+        const stat = lstatSync(source);
+        if (!stat.isFile() || stat.size > GEMINI_AUTH_FILE_MAX_BYTES)
+            return;
+        const target = joinPath(targetDir, name);
+        copyFileSync(source, target);
+        chmodSync(target, 0o600);
+    }
+    catch {
+        // Missing or unreadable optional auth state must fail closed in Gemini itself.
+    }
+}
+function sanitizedGeminiAuthSettings(sourceDir) {
+    try {
+        const parsed = JSON.parse(readFileSync(joinPath(sourceDir, 'settings.json'), 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return {};
+        const security = parsed['security'];
+        if (!security || typeof security !== 'object' || Array.isArray(security))
+            return {};
+        const auth = security['auth'];
+        if (!auth || typeof auth !== 'object' || Array.isArray(auth))
+            return {};
+        const selectedType = auth['selectedType'];
+        return typeof selectedType === 'string' && selectedType.length <= 128
+            ? { security: { auth: { selectedType } } }
+            : {};
+    }
+    catch {
+        return {};
+    }
+}
+function isolatedGeminiEnv(env, removeTempDir) {
+    const root = mkdtempSync(joinPath(tmpdir(), 'evolver-gemini-'));
+    const globalDir = joinPath(root, '.gemini');
+    mkdirSync(globalDir, { mode: 0o700 });
+    const sourceHome = env['GEMINI_CLI_HOME'] || env['HOME'];
+    const sourceDir = sourceHome ? joinPath(sourceHome, '.gemini') : undefined;
+    if (sourceDir) {
+        copyGeminiAuthFile(sourceDir, globalDir, 'oauth_creds.json');
+        copyGeminiAuthFile(sourceDir, globalDir, 'google_accounts.json');
+    }
+    const authSettings = sourceDir ? sanitizedGeminiAuthSettings(sourceDir) : {};
+    writeFileSync(joinPath(globalDir, 'settings.json'), `${JSON.stringify(authSettings)}\n`, { mode: 0o600 });
+    const systemSettings = joinPath(root, 'system-settings.json');
+    const systemDefaults = joinPath(root, 'system-defaults.json');
+    writeFileSync(systemDefaults, '{}\n', { mode: 0o600 });
+    writeFileSync(systemSettings, '{"hooksConfig":{"enabled":false},"admin":{"mcp":{"enabled":false}}}\n', { mode: 0o600 });
+    const isolatedEnv = { ...env };
+    for (const name of Object.keys(isolatedEnv)) {
+        if (name.startsWith('GEMINI_CLI_') || name.startsWith('XDG_'))
+            delete isolatedEnv[name];
+    }
+    return {
+        env: {
+            ...isolatedEnv,
+            GEMINI_CLI_HOME: root,
+            GEMINI_CLI_SYSTEM_DEFAULTS_PATH: systemDefaults,
+            GEMINI_CLI_SYSTEM_SETTINGS_PATH: systemSettings,
+        },
+        cleanup: () => removeTempDir(root),
+    };
+}
 /** Headless Gemini runner with structured failure classification; stdout text alone never proves execution success. */
-export function makeGeminiHeadlessRunner(opts = {}) {
+export function makeGeminiHeadlessRunner(opts = {}, removeTempDir = (path) => rmSync(path, { recursive: true, force: true })) {
     const args = geminiRunnerArgs(opts);
     return async (prompt, ctx) => {
+        let cleanup = () => { };
         try {
             const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+            const isolated = isolatedGeminiEnv({ ...(ctx.env ?? process.env) }, removeTempDir);
+            cleanup = isolated.cleanup;
             const result = await spawnCapture('gemini', [...args, '--prompt', prompt], {
                 cwd: ctx.cwd,
                 timeoutMs,
-                ...(ctx.env ? { env: ctx.env } : {}),
+                env: isolated.env,
                 ...(ctx.signal ? { signal: ctx.signal } : {}),
             });
             return classifyGeminiRunnerResult(result, timeoutMs);
         }
         catch (error) {
             return { ok: false, output: '', error: error instanceof Error ? error.message : String(error), failureKind: 'spawn_failed', exitCode: null };
+        }
+        finally {
+            try {
+                cleanup();
+            }
+            catch {
+                // Cleanup is best-effort and must not replace the subprocess result.
+            }
         }
     };
 }
@@ -731,47 +944,69 @@ export function makeGeminiHeadlessRunner(opts = {}) {
 //   - `--model <model>` exists (e.g. gpt-5, sonnet-4, sonnet-4-thinking); `--list-models` enumerates.
 //   - auth: `CURSOR_API_KEY` or `--api-key` (the spec's envAllow prefix is CURSOR_).
 //   - cursor has its OWN `--sandbox enabled|disabled` and `-w/--worktree`; we still wrap with our git worktree.
-// STILL NOT run-verified end to end (needs an authed cursor-agent; claude/codex were each run-verified). The
-// Windows launcher is a PowerShell shim and its own version regex rejects the current timestamped version-dir
-// shape. resolveSpawnCommand therefore bypasses both scripts and runs the newest verified node.exe + index.js
-// bundle directly, shell-free. If that known bundle layout cannot be found, the runner still fail-fasts.
+// Bundle and auth preflight verified on Windows with Cursor Agent 2026.06.15. The Windows launcher is a
+// PowerShell shim and its own version regex rejects the current timestamped version-dir shape. resolveSpawnCommand
+// therefore bypasses both scripts and runs the newest verified node.exe + index.js bundle directly, shell-free.
+// If that known bundle layout cannot be found, the runner still fail-fasts.
 //
-// SAFETY: `-p --force --trust` auto-approves shell+write with no verified per-run allowlist/sandbox mapping.
-// Until Cursor can really map agentOptions into per-run permissions, skipPermissions is refused outright. The
-// wrapper worktree still contains default cursor runs, but it is not a permissions/sandbox substitute for skip.
-// Safe default keeps skip OFF (CURSOR_DEFAULT_AGENT_OPTIONS), so the wiring is exercised by tests with fakes.
+// SAFETY: `--trust`, `--force`, permission bypass, and per-tool allowlists remain fail-closed. The worktree is a
+// measurement/patch-containment boundary, not an OS/network sandbox.
 /**
  * Build the `cursor-agent` argv (pure). Ground-truth from `cursor-agent --help` (#66): base `-p --output-format
  * text` (headless, write+shell access). `--model` is a real flag. skipPermissions is rejected until Cursor has a
  * verified per-run allowlist/sandbox mapping; allowedTools is not emitted because cursor has no per-tool allowlist.
  */
-export function cursorRunnerArgs(opts = {}) {
+export function cursorRunnerArgs(opts = {}, resume, managedWorktreeName) {
     if (opts.skipPermissions)
         throw new UnsupportedCursorSkipPermissionsError();
+    if (opts.workspaceTrust !== undefined)
+        throw new UnsupportedCursorWorkspaceTrustError();
+    if (opts.allowedTools !== undefined) {
+        throw new UnsupportedCursorAllowedToolsError();
+    }
     const args = ['-p', '--output-format', 'text'];
     if (opts.model)
         args.push('--model', opts.model);
+    if (resume) {
+        validateAgentSessionResume(resume, 'cursor');
+        args.push('--resume', resume.sessionId);
+    }
+    if (managedWorktreeName) {
+        if (!NATIVE_SESSION_ID_PATTERN.test(managedWorktreeName)) {
+            throw new AgentSessionResumeError('invalid_session_id', 'managed worktree name is invalid');
+        }
+        args.push('--worktree', managedWorktreeName, '--skip-worktree-setup');
+    }
     return args;
+}
+function cursorManagedWorktreePath(stdout) {
+    const match = /^Using worktree: (.+)$/m.exec(stdout);
+    return match?.[1]?.trim();
 }
 /**
  * Headless `cursor-agent` runner. Prompt passed as the trailing positional arg (shell:false, no injection risk;
- * docs show `cursor-agent -p "<prompt>"`). cwd is set via spawn. SCAFFOLD — run-verify against a real
- * cursor-agent before autonomous use (see the block comment above for what is doc-confirmed vs unverified).
+ * docs show `cursor-agent -p "<prompt>"`). cwd is set via spawn. Workspace trust must be certified by the
+ * bridge refuses built-in autonomous Cursor until host containment is verified.
  */
 export function makeCursorHeadlessRunner(opts = {}, platform = process.platform) {
     const args = cursorRunnerArgs(opts);
     return async (prompt, ctx) => {
+        const runArgs = ctx.resume || ctx.managedWorktreeName
+            ? cursorRunnerArgs(opts, ctx.resume, ctx.managedWorktreeName)
+            : args;
         assertCursorRunnerPlatformSupported(platform, ctx.env ?? process.env);
         const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         try {
-            const result = await spawnCapture('cursor-agent', [...args, prompt], {
+            const result = await spawnCapture('cursor-agent', [...runArgs, prompt], {
                 cwd: ctx.cwd,
                 timeoutMs,
                 resolvePlatform: platform,
                 ...(ctx.env ? { env: ctx.env } : {}),
                 ...(ctx.signal ? { signal: ctx.signal } : {}),
             });
-            return classifyBasicRunnerResult('cursor', result, timeoutMs);
+            const classified = classifyBasicRunnerResult('cursor', result, timeoutMs, ctx.resume);
+            const managedWorktreePath = cursorManagedWorktreePath(`${result.stdout}\n${result.stderr}`);
+            return managedWorktreePath ? { ...classified, managedWorktreePath } : classified;
         }
         catch (e) {
             return spawnFailureResult(e);

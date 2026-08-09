@@ -13,12 +13,16 @@ import { traceCollectionEnabled } from '../llm/traceConfig.js';
 import { connectPrivateProxyHub, resolvePrivateEnterpriseToken, resolvePrivateInvitationToken, resolvePrivateNodeSecret, } from '../private/adapterLoader.js';
 import { PrivateNodeCredentialStore, PrivateNodeCredentialReadError, } from '../private/nodeCredentialStore.js';
 import { createAtpOrderConsentGate } from '../daemon/atpConsent.js';
+import { SystemdNotifier } from '../daemon/systemdNotifier.js';
 import { resolveProxyStorePath } from './proxyStorePath.js';
 import { publishProxySettings } from './proxySettings.js';
 import { expandHomePath, loadEnvFileFromEnv } from './envFile.js';
 import { readLegacyNodeId, resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
+import { createClaimNudge, wrapHelloWithClaimNudge } from '../lifecycle/claimNudge.js';
+import { bootstrapDegradedSelfUpdateStartup } from '../selfUpdate/bootstrap.js';
 import { getCurrentVersion } from '../selfUpdate/version.js';
-import { resolveSelfUpdatePolicy } from '../selfUpdate/policy.js';
+import { resolveEffectiveSelfUpdatePolicy, selfUpdateSupervisorAttested, } from '../selfUpdate/policy.js';
+import { resolveSelfUpdatePublicKey } from '../selfUpdate/builtinKey.js';
 import { atomicReplaceExecutable, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, resolveSelfUpdateTarget, } from '../selfUpdate/releaseBinary.js';
 import { beginDurableSelfUpdate, confirmDurableSelfUpdate, recoverDurableSelfUpdate, rollbackDurableSelfUpdate, } from '../selfUpdate/transaction.js';
 import { SELF_UPDATE_FAILURE_CODES } from '../selfUpdate/failureCodes.js';
@@ -81,7 +85,23 @@ export async function runProxyMain(options = {}) {
         // same owner. See lifecycle/legacyNodeId.ts for the duplicate-node rationale.
         const senderId = () => resolveProxyNodeId({ storedNodeId: store.getState('node_id'), configuredNodeId });
         evolverVersion = getCurrentVersion();
-        selfUpdatePolicy = resolveSelfUpdatePolicy(process.env);
+        // Default (unset) 'auto' without a durable supervisor attestation degrades to 'off' so
+        // unsupervised foreground runs keep starting; explicit 'auto' stays fail-closed at assembly below.
+        const effectiveSelfUpdate = resolveEffectiveSelfUpdatePolicy(process.env);
+        selfUpdatePolicy = effectiveSelfUpdate.policy;
+        if (effectiveSelfUpdate.degraded) {
+            // First-run bootstrap: try to register our own user-level durable launcher so a bare
+            // `npm install` run becomes permanently self-updating. Any failure/skip keeps the degraded
+            // 'off' startup; success hands restart ownership to the service manager.
+            const bootstrap = await bootstrapDegradedSelfUpdateStartup(process.env, process.platform);
+            if (bootstrap.handedOver) {
+                // Exit cleanly so the just-activated service instance can bind the IPC port; systemd
+                // RestartSec / launchd ThrottleInterval absorb the short hand-off window if we lose the race.
+                process.stdout.write(`${bootstrap.message}\n`);
+                process.exit(0);
+            }
+            process.stderr.write(`${bootstrap.message}\n`);
+        }
         const proxyStartedAt = new Date().toISOString();
         publishLocalProxySettings = () => {
             if (!proxySettingsState.url)
@@ -153,7 +173,16 @@ export async function runProxyMain(options = {}) {
     proxySettingsState.url = `http://127.0.0.1:${port}`;
     publishLocalProxySettings();
     process.stdout.write(`[evolver-proxy] mode=${mode} hub=${hubUrl} ipc=127.0.0.1:${port} v=${evolverVersion} self-update=${selfUpdatePolicy}\n`);
-    await runProxyLoop(proxyDaemon, { logger: process.stderr });
+    const systemdNotifier = new SystemdNotifier({
+        env: process.env,
+        health: () => proxyDaemon.health(),
+    });
+    await runManagedProxyLoop({
+        daemon: proxyDaemon,
+        store: store,
+        notifier: systemdNotifier,
+        logger: process.stderr,
+    });
 }
 export async function recoverBoundDurableSelfUpdate(options) {
     return recoverDurableSelfUpdate({
@@ -165,6 +194,7 @@ export async function recoverBoundDurableSelfUpdate(options) {
 }
 export function loadProxyEnvFile(env) {
     const supervisor = env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
+    const lifecycleStateDir = env['EVOLVER_LIFECYCLE_STATE_DIR'];
     const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR'];
     const targetPath = env['EVOLVER_SELF_UPDATE_TARGET_PATH'];
     const systemRootBindings = Object.entries(env)
@@ -183,6 +213,8 @@ export function loadProxyEnvFile(env) {
     }
     else {
         env['EVOLVER_SELF_UPDATE_SUPERVISOR'] = supervisor;
+        if (lifecycleStateDir !== undefined)
+            env['EVOLVER_LIFECYCLE_STATE_DIR'] = lifecycleStateDir;
         if (stateDir !== undefined)
             env['EVOLVER_SELF_UPDATE_STATE_DIR'] = stateDir;
         if (targetPath !== undefined)
@@ -455,6 +487,7 @@ export async function runProxyLoop(daemon, options = {}) {
     let consecutiveTickFailures = 0;
     try {
         for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+            daemon.setExpectedNextTick?.(undefined);
             let delayMs = errorDelayMs;
             let tickHealthy = false;
             let exitForResolvedFailure;
@@ -494,7 +527,9 @@ export async function runProxyLoop(daemon, options = {}) {
                 break;
             if (tickHealthy) {
                 // Healthy idle: wake-interruptible so new outbound/inbound work re-ticks promptly.
-                await sleepUntilDelayOrWake(Math.max(minDelayMs, delayMs), sleep, setWakeHandler);
+                const healthyDelayMs = Math.max(minDelayMs, delayMs);
+                daemon.setExpectedNextTick?.(healthyDelayMs);
+                await sleepUntilDelayOrWake(healthyDelayMs, sleep, setWakeHandler);
             }
             else {
                 // Error / fatal-candidate backoff: NON-interruptible. Otherwise wakeRunner()
@@ -506,13 +541,30 @@ export async function runProxyLoop(daemon, options = {}) {
         }
     }
     finally {
+        daemon.setExpectedNextTick?.(undefined);
         if (!useDaemonSleep)
             daemon.setWakeHandler?.(undefined);
     }
 }
+export async function runManagedProxyLoop(options) {
+    try {
+        await options.notifier.readyOrThrow();
+        await (options.runLoop ?? runProxyLoop)(options.daemon, options.logger ? { logger: options.logger } : {});
+    }
+    finally {
+        try {
+            options.notifier.stop();
+        }
+        finally {
+            await closeStartupResources({ store: options.store, daemon: options.daemon });
+        }
+    }
+}
 export function createProxyDaemonDeps(options) {
     const selfUpdate = createSelfUpdateDeps(options.selfUpdatePolicy, options.evolverVersion, options.env ?? process.env, options.selfUpdateOverrides);
-    const traceBackfill = resolveTraceBackfillConfig(options.env ?? process.env);
+    const env = options.env ?? process.env;
+    const traceBackfill = resolveTraceBackfillConfig(env);
+    const heartbeatIntervalMs = positiveIntegerEnv(env['HEARTBEAT_INTERVAL_MS']);
     return {
         hub: options.runtime.hub,
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
@@ -526,10 +578,18 @@ export function createProxyDaemonDeps(options) {
         evolverVersion: options.evolverVersion,
         hello: options.runtime.hello,
         heartbeat: options.runtime.heartbeat,
+        ...(heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs } : {}),
         ...(options.runtime.helloMode ? { helloMode: options.runtime.helloMode } : {}),
         ...(selfUpdate ? { selfUpdate } : {}),
         ...(traceBackfill ? { traceBackfill } : {}),
     };
+}
+function positiveIntegerEnv(value) {
+    const trimmed = value?.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed))
+        return undefined;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 function resolveTraceBackfillConfig(env) {
     if (!traceCollectionEnabled(env))
@@ -659,7 +719,7 @@ export function createSelfUpdateDeps(policy, currentVersion, env = process.env, 
     if (!supervisorAttested && !selfUpdateSupervisorAttested(env)) {
         throw new Error('self_update_supervisor_required');
     }
-    const publicKey = env['EVOLVER_SELF_UPDATE_PUBLIC_KEY']?.trim();
+    const publicKey = resolveSelfUpdatePublicKey(env);
     if (!publicKey)
         throw new Error('self_update_public_key_required');
     const releaseOpts = {
@@ -732,12 +792,6 @@ function canonicalExecutablePath(path) {
         .replace(/^\\\\\?\\UNC\\/i, '\\\\')
         .replace(/^\\\\\?\\/i, '');
     return win32.normalize(withoutNamespace).toLowerCase();
-}
-function selfUpdateSupervisorAttested(env) {
-    const supervisor = env['EVOLVER_SELF_UPDATE_SUPERVISOR']?.trim();
-    return supervisor === 'systemd'
-        || supervisor === 'launchd'
-        || supervisor === 'windows-scheduled-task';
 }
 export function resolvePublicNodeSecret(deps) {
     const explicit = resolveExplicitPublicNodeCredentials(process.env);
@@ -996,16 +1050,21 @@ export async function connectHubRuntime(deps) {
             clearDivergedPublicNodeSecret(deps.store, process.env);
         },
     });
+    const hello = wrapHelloWithClaimNudge(async (opts) => {
+        const result = await hub.hello(opts);
+        if (result.nodeId)
+            adoptVerifiedPublicNodeId(deps.store, selection, verifiedSender, result.nodeId);
+        return result;
+    }, createClaimNudge({
+        store: deps.store,
+        hubUrl: deps.hubUrl,
+        env: deps.env ?? process.env,
+        ...(deps.now ? { now: deps.now } : {}),
+    }));
     return {
         hub,
         atp: new AtpHubClient({ baseUrl: deps.hubUrl, auth, fetchFn: globalFetchLike, senderId }),
-        hello: async (opts) => {
-            const result = await hub.hello(opts);
-            if (result.nodeId) {
-                adoptVerifiedPublicNodeId(deps.store, selection, verifiedSender, result.nodeId);
-            }
-            return result;
-        },
+        hello,
         heartbeat: (opts) => hub.heartbeat(opts),
     };
 }

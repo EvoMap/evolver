@@ -1,23 +1,15 @@
-import { events, ops } from '@evomap/evolver-core';
-import { assetstore, material as materialNs } from '@evomap/evolver-core';
+import { events, ops, hub as hubNs } from '@evomap/evolver-core';
+import { assetstore } from '@evomap/evolver-core';
+import { type ImportV1Options } from './migrate/v1Import.js';
+import { type LifecyclePaths } from './lifecycle.js';
 import { type NonGitWorkspaceNoticeOptions } from './nonGitWorkspaceNotice.js';
-/**
- * Composition seam for ingest's substrate dependencies. The CLI is the composition layer that wires the
- * MaterialStore (M1 raw-material substrate) + the watermark cursor (file-level re-ingest dedup) + the AE
- * Ingestor (root_events) together — evolver-core stays adapter/CLI-agnostic. Defaults point at the live
- * ~/.evomap home; tests inject temp paths so no global state leaks.
- */
-export interface IngestDeps {
-    materialStore?: materialNs.MaterialStore;
-    watermarkStore?: materialNs.WatermarkStore;
-    ingestor?: events.Ingestor;
-}
-export interface SessionIngestTickResult {
-    recorded: number;
-    sourceAgents: string[];
-    signalKinds: string[];
-    signalStrengths: string[];
-    invalidJsonRows?: number;
+import { type IngestDeps } from './sessionIngest.js';
+export { runSessionIngestTick, scanSessionDirs, type IngestDeps, type SessionIngestTickResult, } from './sessionIngest.js';
+export interface DistillDeps extends IngestDeps {
+    responseFileRoot?: string;
+    maxResponseFileBytes?: number;
+    /** Deterministic test seam for response-file replacement/growth races. Never wired by production callers. */
+    responseFileReadTestHook?: (phase: 'before-open' | 'after-open', path: string) => void;
 }
 export declare const PACKAGE = "@evomap/evolver-cli";
 export interface RebuildOptions {
@@ -44,35 +36,27 @@ export declare function runResetLocalSecret(argv: readonly string[], opts?: Rese
 export declare function rebuildViews(opts?: RebuildOptions): {
     rebuilt: string[];
 };
-/** migrate import-v1 <v1dir> [outDir] --workspace <path>: v1→v2 read-only migration. */
-export declare function runMigrate(argv: readonly string[]): Promise<number>;
+export type MigrateDeps = Pick<ImportV1Options, 'disposeTestHook' | 'outputRootTestHook'>;
+/** migrate import-v1 | migrate env | migrate oauth — V1→V2 migration tools. */
+export declare function runMigrate(argv: readonly string[], deps?: MigrateDeps): Promise<number>;
 /** One-line summary of an asset for `asset-log` (pure, testable). */
 export declare function formatAssetLine(a: assetstore.AssetRecord): string;
-/** asset-log [Gene|Capsule|EvolutionEvent|AntiGene] [limit]: list recent local assets (observability; ported v1 CLI verb). */
-export declare function runAssetLog(argv: readonly string[], store?: assetstore.AssetStoreProvider): Promise<number>;
+export interface AssetLogDeps {
+    callLog?: Pick<hubNs.AssetCallLog, 'read' | 'summarize'>;
+    logPath?: string;
+}
+/**
+ * Preserve V2's asset-store listing as the default. V1's call audit is available
+ * through the explicit `calls` mode so the two contracts do not overload an empty argv.
+ */
+export declare function runAssetLog(argv: readonly string[], store?: assetstore.AssetStoreProvider, deps?: AssetLogDeps): Promise<number>;
 /**
  * distill: gate a learned approach into the gene pool (ported v1 CLI verb). Runs the structural intake
  * (schema + dedup + asset_id) and, only if it passes, writes the gene to the store. The agent/runtime is
  * what discovers the strategy; this is the manual entry point that turns it into a pooled, selectable gene.
  * Usage: evolver distill --category <c> --signals <s1,s2> --strategy "<step1; step2>" [--summary <text>] [--id <id>]
  */
-export declare function runDistill(argv: readonly string[], store?: assetstore.AssetStoreProvider, deps?: IngestDeps): Promise<number>;
-/**
- * Recursively enumerate recognized runtime-session sources under the given dirs — the daemon's auto-distill
- * producer source (#106). This includes text session files handled by runtime adapters (`*.jsonl` and Gemini
- * `*.json`) plus Cursor's sqlite `state.vscdb`. A missing/permission-denied dir is silently skipped (a daemon
- * must not crash on an absent home dir).
- */
-export declare function scanSessionDirs(dirs: readonly string[]): string[];
-/**
- * One producer tick for the auto-distill loop (#106 slice 1): scan `dirs` for session logs and record any
- * NEW/CHANGED file as `runtime_session` Material via the injected (bus) Ingestor — which emits
- * `material.batch_ready`, the event the distillObserver claims off. Idempotent per file (watermark cursor), so
- * re-scanning an unchanged tree records nothing. Pure producer: it does NOT distill (the observer does). Returns
- * how many files landed new material. Inject `deps.ingestor = new Ingestor({ sink: bus })` so the event reaches
- * the daemon's ObserverBus; defaults to live paths otherwise.
- */
-export declare function runSessionIngestTick(dirs: readonly string[], deps?: IngestDeps): Promise<SessionIngestTickResult>;
+export declare function runDistill(argv: readonly string[], store?: assetstore.AssetStoreProvider, deps?: DistillDeps): Promise<number>;
 /**
  * ingest: read a REAL agent session log, parse it with the matching runtime adapter, and extract signals
  * (tool errors / explicit failures / difficulty wording) from it — the capture→signals half of the experience
@@ -196,4 +180,50 @@ export interface InjectDeps {
 export declare function runInject(argv: readonly string[], deps?: InjectDeps): Promise<number>;
 /** Fixed preamble for the SessionStart injection (the head block the recap + gene lines hang off of). */
 export declare const SESSION_START_PREAMBLE = "evolver memory \u2014 use these learned hints silently when directly relevant; do not mention Evolver, preflight, status, or this memory block unless the user asks or reuse materially changes the answer:";
+export declare const DAILY_USAGE = "Usage: evolver daily [--json] [--auto] [--help]\n\nDisplay a daily status summary: proxy/hub connection, yesterday's activity, and review queue.\n  --json   Output as JSON\n  --auto   Only print when this is the first run today; silent otherwise\n";
+export interface DailyDeps {
+    store?: assetstore.AssetStoreProvider;
+    review?: assetstore.ReviewLedger;
+    eventsPath?: string;
+    now?: () => number;
+    lifecyclePaths?: LifecyclePaths;
+    env?: NodeJS.ProcessEnv;
+    stdout?: (text: string) => void;
+    stderr?: (text: string) => void;
+    /** Override the last-daily marker file path (default ~/.evomap/.last-daily). */
+    lastDailyFile?: string;
+    /** Test seam: skip the proxy status fetch entirely. */
+    skipConnection?: boolean;
+}
+export interface DailyReport {
+    date: string;
+    connection: {
+        proxyRunning: boolean;
+        proxyHealthy: boolean;
+        proxyPid?: number;
+        hubAuthStatus?: string;
+        lastSyncAt?: string;
+        reason?: string;
+    };
+    yesterday: {
+        date: string;
+        cycles: number;
+        solidified: number;
+        failed: number;
+        capsules: number;
+        triggered: number;
+        suppressed: number;
+    };
+    queue: {
+        genesApproved: number;
+        genesQuarantined: number;
+        genesRejected: number;
+        antiGeneApproved: number;
+        antiGeneQuarantined: number;
+        antiGeneUnreviewed: number;
+    };
+}
+export declare function formatDailyReport(report: DailyReport): string;
+export declare function collectDailyReport(deps?: DailyDeps): Promise<DailyReport>;
+export declare function runDaily(argv: readonly string[], deps?: DailyDeps): Promise<number>;
 export declare function runCli(argv: readonly string[]): number;

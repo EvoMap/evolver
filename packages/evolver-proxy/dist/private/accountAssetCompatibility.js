@@ -159,14 +159,14 @@ function malformedPublishedPage() {
         context: `GET ${PRIVATE_PUBLISHED_ASSETS_PATH}`,
     });
 }
-function normalizePrivateHubBaseUrl(raw, env) {
+export function normalizePrivateHubBaseUrl(raw, env) {
     const normalized = raw.trim().replace(/\/+$/, '');
     assertPrivateCompatibilityUrlSecure(normalized, env);
     const parsed = new URL(normalized);
-    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    if (parsed.username || parsed.password || normalized.includes('?') || normalized.includes('#')) {
         throw new Error('Private Hub URL must not contain credentials, query parameters, or a fragment');
     }
-    return normalized;
+    return parsed.href.replace(/[/]+$/, '');
 }
 function assertPrivateCompatibilityUrlSecure(url, env) {
     let parsed;

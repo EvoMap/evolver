@@ -1,11 +1,16 @@
 import { type RuntimeId, type McpServerCmd, type InjectionPlan } from './injection.js';
 import { type CursorGene } from './cursorRulesInstaller.js';
+export { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
 /** Marks a config file as containing evolver-managed entries, so uninstall only removes what we added. */
 export declare const MANAGED_MARKER = "_evolver_managed";
+/** Official command-handler metadata, also gives custom commands an ownership marker for reinstall/uninstall. */
+export declare const EVOLVER_HOOK_STATUS = "Loading Evolver memory";
 /** Default command the SessionStart hook runs to render + print the memory injection. The `--hook-stdin` flag opts
  *  the entrypoint into reading the runtime's SessionStart JSON from stdin (to capture session_id, #205); only the
  *  installed hook sets it, so a manual `evolver inject session-start` never reads stdin. */
 export declare const DEFAULT_HOOK_COMMAND = "evolver inject session-start --hook-stdin";
+/** Local-only prompt recall. The handler is default-off and reads stdin only when EVOLVER_RECALL_MODE opts in. */
+export declare const DEFAULT_PROMPT_RECALL_HOOK_COMMAND = "evolver inject prompt-recall --hook-stdin";
 /**
  * Where a claude-code install registers the evolver MCP server. This is the fix for "global install doesn't
  * actually globalize" (#290): Claude Code's MCP scopes are local / user / project, and a `.mcp.json` is the
@@ -30,6 +35,8 @@ export interface InstallOptions {
     server: McpServerCmd;
     /** Command the SessionStart hook runs to inject memory. Default 'evolver inject session-start'. */
     hookCommand?: string;
+    /** Command the UserPromptSubmit hook runs. Default is local-only, default-off prompt recall. */
+    promptRecallHookCommand?: string;
     /** Reinstall even if an evolver install is already present. */
     force?: boolean;
     /** Plan and validate without writing config or backup files. */
@@ -93,31 +100,16 @@ export interface InstallResult {
     backups?: string[];
     error?: string;
 }
-export declare class SymlinkRefusedError extends Error {
-    constructor(label: string, path: string);
-}
-/**
- * Thrown when a SHARED user config (~/.claude.json or ~/.claude/settings.json) exists but does not parse as JSON.
- * These files are Claude Code's own state (projects/oauthAccount/userID/history/settings),
- * and user-scope install merges into them via a full-file atomic replace. The lenient readJson() returns {} on
- * a parse failure, which would make the merge emit ONLY evolver's entry and silently WIPE the whole file — a
- * realistic data-loss path because Claude Code writes these files non-atomically (a concurrent session can leave
- * one truncated). For the shared-config read we therefore refuse instead of clobbering. Project-scoped
- * .mcp.json/.claude/settings.json are evolver-owned, so their lenient fresh-start behavior stays unchanged.
- */
-export declare class UnparseableConfigError extends Error {
-    constructor(label: string, path: string, owner?: string);
-}
-/**
- * Thrown when a SHARED user config exists but is empty or whitespace-only. Claude Code writes these files with a
- * truncating write, so present-empty can be a concurrent-write window rather than a fresh config.
- */
-export declare class EmptySharedConfigError extends Error {
-    constructor(label: string, path: string, owner?: string);
-}
 type SharedConfigRaceHook = (path: string, attempt: number) => void;
 export declare function _setSharedConfigRaceHookForTest(hook?: SharedConfigRaceHook): void;
 export declare function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown>;
+/** Bind custom-command ownership to that exact command without adding undocumented hook-schema fields. */
+export declare function evolverManagedHookStatus(command: string): string;
+/** Remove only Evolver-owned handlers, retaining user handlers that share the same matcher group. */
+export declare function stripEvolverHookEntries(entries: readonly unknown[], trustManagedStatus?: boolean, managedCommands?: ReadonlySet<string>): {
+    changed: boolean;
+    entries: unknown[];
+};
 /**
  * deepMerge, but for `hooks.<event>` arrays keep the user's existing entries and only replace evolver-owned
  * ones — so reinstalling refreshes evolver's hook without clobbering a user's own SessionStart/Stop hooks.
@@ -148,4 +140,3 @@ export declare function installInjection(plan: InjectionPlan, opts: InstallOptio
 export declare function uninstallInjection(runtime: RuntimeId, opts: UninstallOptions): InstallResult;
 /** Convenience: plan + install in one call for a runtime. */
 export declare function setupRuntime(runtime: RuntimeId, opts: InstallOptions): InstallResult;
-export {};

@@ -4,9 +4,9 @@ import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneStrategyInfo } from './prompt.js';
 import type { PersonalityStore } from '../personality/store.js';
 import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
-import { type AgentRunner, type AgentRunnerOptions, type RunnerName } from './runnerRegistry.js';
-export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, UnboundedSkipPermissionsError, UnsupportedCursorSkipPermissionsError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
-export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, } from './runnerRegistry.js';
+import { type AgentRunner, type AgentRunnerOptions, type AgentSessionResume, type RunnerName } from './runnerRegistry.js';
+export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, MAX_AGENT_SESSION_ID_CHARS, AgentSessionResumeError, validateAgentSessionResume, UnboundedSkipPermissionsError, UnsupportedCodexPermissionOptionsError, UnsupportedCursorAllowedToolsError, UnsupportedCursorSkipPermissionsError, UnsupportedCursorWorkspaceTrustError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, hasBoundedClaudeFileAccess, CLAUDE_SAFE_AUTONOMOUS_TOOLS, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
+export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, AgentSessionResume, } from './runnerRegistry.js';
 export interface GitRunnerOptions {
     processSignalMode?: 'cancel' | 'ignore';
 }
@@ -32,6 +32,8 @@ export interface ExecBridgeOptions {
     agent?: AgentRunner;
     /** Which built-in runner to use when `agent` is not injected (#66). Default 'claude' (byte-identical). cursor is a scaffold (unverified runner). */
     runner?: RunnerName;
+    /** Explicit native session continuation. Must name the same runner selected above. */
+    resume?: AgentSessionResume;
     /** When `agent` is not injected, options for the built-in headless runner (permission bypass / allowed tools / model). */
     agentOptions?: AgentRunnerOptions;
     /** Default: spawns `git`. Inject a fake in tests. */
@@ -105,19 +107,33 @@ export declare class ExecBridgeForbiddenError extends Error {
  * Thrown when a FULL-ACCESS (or unverified) agent run is requested without worktree isolation. The throwaway
  * worktree is the containment WE control — allowedRoots gates the cwd but cannot stop an auto-approved or
  * unsandboxed process writing/running outside it. Gated runners:
- *  - codex with skipPermissions → `--sandbox danger-full-access` (no inner OS sandbox). Without skip it stays
- *    workspace-write, so only the skip path is gated.
+ *  - codex permission overrides are refused by the runner because it has no enforceable per-tool allowlist.
  *  - cursor default → gated UNCONDITIONALLY. cursor-agent base `-p` already documents write+shell access, cursor
  *    skipPermissions is rejected by the runner layer, and the scaffold remains unverified (#66/#181) — so default
  *    cursor still needs the wrapper worktree rather than risk mutating the real tree.
- * claude is exempt: its skip is bounded by --allowedTools (finding #80).
+ * Claude is fail-closed below because a tool-name allowlist does not constrain absolute filesystem paths.
  */
 export declare class UnsandboxedFullAccessRequiresIsolationError extends Error {
+    constructor();
+}
+export declare class WorkspaceTrustRequiresIsolationError extends Error {
+    readonly code = "WORKSPACE_TRUST_REQUIRES_ISOLATION";
+    constructor();
+}
+export declare class UnsupportedCursorBuiltInRunnerError extends Error {
+    constructor();
+}
+export declare class UnsupportedClaudeBuiltInRunnerError extends Error {
+    constructor();
+}
+export declare class UnsupportedCodexBuiltInRunnerError extends Error {
     constructor();
 }
 export declare class UnsafeWorktreePathError extends Error {
     constructor(reason: string);
 }
+/** Whether `child` is the same as, or nested under, `root`, including filesystem symlink resolution. */
+export declare function isWithinRoot(child: string, root: string): boolean;
 /**
  * Whitelist-filter `env` for a spawned agent/tool: keep ONLY the minimal runtime env + the caller-declared
  * extras (the runner's own auth via allowPrefixes/allowKeys); drop everything else. Fail-safe by construction —
@@ -134,4 +150,6 @@ export declare const defaultGitPatchWriter: GitPatchWriter;
  * Build the `execute` function CycleEngine/runEvolutionCycle consume. Default-off: throws
  * ExecBridgeDisabledError on first call unless enabled.
  */
-export declare function makeClaudeExecBridge(opts: ExecBridgeOptions): (mutation: Mutation, decision: GeneDecision) => Promise<ExecutionResult>;
+export declare function makeClaudeExecBridge(opts: ExecBridgeOptions, internal?: {
+    cursorWorktreeRoot?: string;
+}): (mutation: Mutation, decision: GeneDecision) => Promise<ExecutionResult>;

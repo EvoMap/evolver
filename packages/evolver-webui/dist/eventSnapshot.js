@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { events as ev } from '@evomap/evolver-core';
 const ARCHIVE_SEGMENT_PATTERN = /^root-events-\d{16}-\d{16}\.jsonl$/;
+const MAX_VERSIONED_READ_ATTEMPTS = 2;
 const EVENT_SNAPSHOT_WORKER_SOURCE = `
 import { parentPort, workerData } from 'node:worker_threads';
 
@@ -132,6 +133,9 @@ export class EventSnapshotCache {
         catch {
             return await this.source.read();
         }
+        return await this.readVersioned(before, MAX_VERSIONED_READ_ATTEMPTS);
+    }
+    async readVersioned(before, attemptsRemaining) {
         if (this.cached?.version === before)
             return this.cached.events;
         const events = await this.source.read();
@@ -142,8 +146,12 @@ export class EventSnapshotCache {
         catch {
             return events;
         }
-        if (before === after)
+        if (before === after) {
             this.cached = { version: after, events };
-        return events;
+            return events;
+        }
+        if (attemptsRemaining === 1)
+            return events;
+        return await this.readVersioned(after, attemptsRemaining - 1);
     }
 }

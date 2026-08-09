@@ -1,4 +1,5 @@
 import { lstatSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 export class EvolverProxyClient {
@@ -51,7 +52,11 @@ export class EvolverProxyClient {
         });
     }
     submitAsset(asset) {
-        return this.submitAssetBundle({ assets: [asset] });
+        // MCP publishing remains durable and outage-tolerant; the bare route is reserved for V1 synchronous callers.
+        return this.call('POST', '/asset/submit?mode=async', this.modeBoundBody({
+            assets: [asset],
+            request_id: randomUUID(),
+        }));
     }
     submitAssetBundle(bundle) {
         return this.call('POST', '/asset/submit', this.modeBoundBody(bundle));
@@ -221,12 +226,7 @@ function expectedHubModeFromEnv(env) {
     return value === 'public' || value === 'private' ? value : undefined;
 }
 function readProxySettings(env, allowDefaultHome) {
-    const explicitPath = env['EVOLVER_PROXY_SETTINGS_FILE']?.trim();
-    const settingsDir = env['EVOLVER_SETTINGS_DIR']?.trim();
-    const homeDir = env['HOME']?.trim() || (allowDefaultHome ? homedir() : '');
-    const settingsPath = explicitPath
-        || (settingsDir ? join(settingsDir, 'settings.json') : undefined)
-        || (homeDir ? join(homeDir, '.evolver', 'settings.json') : undefined);
+    const settingsPath = resolveProxySettingsPath(env, allowDefaultHome);
     if (!settingsPath)
         return undefined;
     try {
@@ -243,6 +243,16 @@ function readProxySettings(env, allowDefaultHome) {
     catch {
         return undefined;
     }
+}
+function resolveProxySettingsPath(env, allowDefaultHome) {
+    const explicit = env['EVOLVER_PROXY_SETTINGS_FILE']?.trim();
+    if (explicit)
+        return explicit;
+    const settingsDir = env['EVOLVER_SETTINGS_DIR']?.trim();
+    if (settingsDir)
+        return join(settingsDir, 'settings.json');
+    const homeDir = env['HOME']?.trim() || (allowDefaultHome ? homedir() : '');
+    return homeDir ? join(homeDir, '.evolver', 'settings.json') : undefined;
 }
 function isLoopbackHttpUrl(raw) {
     try {

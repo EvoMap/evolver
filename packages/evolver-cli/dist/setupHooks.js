@@ -36,7 +36,7 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for opencode and kiro\n`;
 export function commandNamesForPath(command, platform, pathExt) {
     if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
         return [command];
@@ -402,7 +402,27 @@ function appendAdapterNotes(text, hints) {
         ? `${text}\n\nAdapter notes:\n${hints.map((hint) => `  - ${hint}`).join('\n')}`
         : text;
 }
+const SETUP_VALUE_FLAGS = new Set([
+    'runtime', 'platform', 'scope', 'root', 'env-file', 'profile-descriptor', 'service',
+    'hook-command', 'server-command', 'server-args', 'service-command', 'service-args',
+]);
+function setupHelpRequested(argv) {
+    if (argv.includes('--help'))
+        return true;
+    return argv.some((arg, index) => {
+        if (arg !== '-h')
+            return false;
+        const previous = argv[index - 1];
+        if (!previous?.startsWith('--') || previous.includes('='))
+            return true;
+        return !SETUP_VALUE_FLAGS.has(previous.slice(2));
+    });
+}
 export async function runSetupHooks(argv, store, review, deps = {}) {
+    if (setupHelpRequested(argv)) {
+        process.stdout.write(USAGE);
+        return 0;
+    }
     const f = parseFlags(argv);
     const runtimeRaw = typeof f['runtime'] === 'string'
         ? f['runtime']
@@ -434,6 +454,80 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     const configRoot = typeof f['root'] === 'string' ? f['root'] : process.cwd();
     // claude-code: user scope targets ~/.claude.json regardless of --root; project scope uses configRoot.
     const scope = scopeResult.scope;
+    // V1 exposed setup-hooks --verify as a read-only operation. Silently ignoring it is unsafe: the command then
+    // falls through to installInjection and can rewrite runtime configuration while the operator asked only to
+    // inspect it. V2's JSON MCP installers already have a transaction-free dry-run preflight, so use that as the
+    // verifier for OpenCode and Kiro. Legacy installers do not have a proven read-only preflight and must refuse.
+    if (f['verify'] !== undefined) {
+        const verificationArgsValid = f['verify'] === true
+            && f['uninstall'] === undefined
+            && f['dry-run'] === undefined
+            && f['force'] === undefined;
+        if (!verificationArgsValid) {
+            const error = '--verify is read-only and cannot take a value or be combined with --uninstall, --dry-run, or --force';
+            if (json)
+                emit({ runtime, action: 'verify', ok: false, verified: false, files: [], error });
+            else
+                process.stderr.write(`${error}\n${USAGE}`);
+            return 2;
+        }
+        if (runtime !== 'opencode' && runtime !== 'kiro') {
+            const error = `--verify is not available for ${runtime}; no config was written`;
+            if (json)
+                emit({ runtime, action: 'verify', ok: false, verified: false, files: [], error });
+            else
+                process.stderr.write(`${error}\n`);
+            return 2;
+        }
+        const verifyDescriptor = profileDescriptorFromFlag(f);
+        if (!verifyDescriptor.ok) {
+            if (json)
+                emit({ runtime, action: 'verify', ok: false, verified: false, files: [], error: verifyDescriptor.error });
+            else
+                process.stderr.write(`${verifyDescriptor.error}\n`);
+            return 1;
+        }
+        let verification;
+        try {
+            const server = buildServer(f, verifyDescriptor.descriptor);
+            verification = installInjection(planInjection(runtime, server), {
+                configRoot,
+                server,
+                scope,
+                dryRun: true,
+                homeDir: homedir(),
+                kiroHome: process.env['KIRO_HOME'],
+                xdgConfigHome: process.env['XDG_CONFIG_HOME'],
+                opencodeConfig: process.env['OPENCODE_CONFIG'],
+                opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
+            });
+        }
+        catch (error) {
+            const message = safeSetupOperationError(error);
+            if (json)
+                emit({ runtime, action: 'verify', ok: false, verified: false, files: [], error: message });
+            else
+                process.stderr.write(`${message}\n`);
+            return 1;
+        }
+        if (!verification.ok) {
+            const message = safeSetupResultError(verification.error);
+            if (json)
+                emit({ runtime, action: 'verify', ok: false, verified: false, files: [], error: message });
+            else
+                process.stderr.write(`${message}\n`);
+            return 1;
+        }
+        const files = displayResultPaths(verification.files, configRoot, scope) ?? [];
+        const verified = verification.alreadyInstalled === true && verification.verified === true;
+        if (json)
+            emit({ runtime, action: 'verify', ok: verified, verified, files });
+        else
+            process.stdout.write(verified
+                ? `verified evolver setup for ${runtime}: ${files.join(', ')}\n`
+                : `evolver setup for ${runtime} is missing or does not match the requested configuration\n`);
+        return verified ? 0 : 1;
+    }
     if (f['dry-run'] === true && runtime !== 'opencode' && runtime !== 'kiro') {
         const error = `--dry-run is currently supported for opencode and kiro setup only; no config was written.`;
         if (json)

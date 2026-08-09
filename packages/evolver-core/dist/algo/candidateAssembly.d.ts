@@ -5,6 +5,8 @@ import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { AntiWarning, GeneCandidateInput } from './geneSelection.js';
 export interface AssembleOptions {
     limit?: number;
+    /** Build the bounded trusted pre-admission corpus used by semantic IDF. Default true. */
+    includeSemanticCorpus?: boolean;
     provenance?: ProvenanceStore;
     includeUntrusted?: boolean;
     review?: ReviewLedger;
@@ -39,10 +41,13 @@ export interface SelectionPool {
     /**
      * Distilled genes that passed the trust/review/ban gates but do NOT match the live signals. Surfaced
      * separately (NOT in `candidates`, so they never compete in normal scoring) for the v1 #97 fallback: when no
-     * candidate clears the floor, selection reuses one of these broadly-applicable distilled strategies instead of
-     * falling through to a blind innovate. Kept lightweight (no learning-history aggregation) — picked first-match.
+     * normal selection has no reusable positive choice, selection reuses one of these broadly-applicable distilled
+     * strategies instead of falling through to a blind innovate. Kept lightweight (no learning-history aggregation)
+     * — picked first-match.
      */
     distilledFallback: GeneCandidateInput[];
+    /** Trust-filtered library documents captured before live-signal relevance admission. */
+    semanticCorpus: GeneCandidateInput[];
     /**
      * Matched AntiGene guardrails for the live signals. This list is advisory-only and is kept out of candidates and
      * distilledFallback so negative memory cannot be selected as a strategy.

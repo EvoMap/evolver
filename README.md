@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja-JP.md) | [한국어](README.ko-KR.md)
+
 # evolver-v2
 
 Evolver v2 — hub-无关进化 core + 按需 hub 适配。设计见 `~/evolver-v2-*.md`（总索引 + 硬化与执行计划）。

@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { events, assetstore, algo, exec, benchmark } from '@evomap/evolver-core';
+import { semanticIdfEnabled } from './semanticIdfConfig.js';
 const NOW_FALLBACK = () => Date.now();
 /** Build a minimal ProblemPattern from a task's signals (the cycle needs a problem to evolve against). */
 function buildProblem(id, signals, now) {
@@ -40,14 +41,14 @@ const parseFlags = (argv) => {
 };
 const pct = (r) => `${(r * 100).toFixed(0)}%`;
 /**
- * `evolver thesis --suite <file> [--repo <allowlisted>] [--min-samples N] [--min-delta D] [--interleave] [--json]`.
+ * `evolver thesis --suite <file> [--repo <allowlisted>] [--runner gemini] [--min-samples N] [--min-delta D] [--interleave] [--json]`.
  * Runs the controlled A/B and prints baseline-vs-evolver pass rates + the verdict. A LIVE run needs `--repo` (the
  * single allowlisted root the agent may touch); tests inject `deps.execute` instead.
  */
 export async function runThesisCommand(argv, deps = {}) {
     const flags = parseFlags(argv);
     if (!flags['suite']) {
-        process.stderr.write('用法: evolver thesis --suite <file> [--repo <allowlisted>] [--min-samples N] [--min-delta D] [--alpha A] [--target-power P] [--interleave] [--json]\n');
+        process.stderr.write('用法: evolver thesis --suite <file> [--repo <allowlisted>] [--runner gemini] [--min-samples N] [--min-delta D] [--alpha A] [--target-power P] [--interleave] [--json]\n');
         return 1;
     }
     let suite;
@@ -76,6 +77,10 @@ export async function runThesisCommand(argv, deps = {}) {
         process.stderr.write('thesis: a controlled A/B needs an external verifier — add a non-empty "validation" array to the suite. Refusing (passed must not come from agent self-report).\n');
         return 1;
     }
+    if (!deps.execute && flags['runner'] !== 'gemini') {
+        process.stderr.write('thesis: execute capability is unsupported for built-in Claude/Codex; select --runner gemini\n');
+        return 1;
+    }
     // HERMETIC experiment (Bugbot #168): the evolver arm READS genes from the pool but its cycle WRITES (capsules,
     // evolution events) must NOT land in production — that would pollute real selection + bans. So seed a THROWAWAY
     // evolver store with a copy of the pool's genes; both arms write only into temp stores that are discarded after.
@@ -98,7 +103,18 @@ export async function runThesisCommand(argv, deps = {}) {
             }
             return { passed: true, score: 0.95 };
         };
-        execute = exec.makeSafeExecute(repo, evolverStore, { allowedRoots: [repo] }, { validate });
+        try {
+            execute = exec.makeSafeExecute(repo, evolverStore, { allowedRoots: [repo], runner: 'gemini' }, { validate });
+        }
+        catch (error) {
+            rmSync(expDir, { recursive: true, force: true });
+            if (error instanceof exec.UnsupportedAutonomousClaudeRunnerError
+                || error instanceof exec.UnsupportedAutonomousCodexRunnerError) {
+                process.stderr.write('thesis: execute capability is unsupported: built-in autonomous runners require a verified host filesystem sandbox\n');
+                return 1;
+            }
+            throw error;
+        }
     }
     const agent = execute;
     const solver = benchmark.makeEvolutionThesisSolver({
@@ -111,6 +127,7 @@ export async function runThesisCommand(argv, deps = {}) {
             expectedEffect: t.input.expectedEffect ?? 'fix',
             summary: t.input.summary ?? `thesis ${t.id}`,
             confidence: t.input.confidence ?? 0.9,
+            ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),
         }),
     });
     const tasks = suite.tasks.map((s) => ({

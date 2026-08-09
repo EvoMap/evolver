@@ -16,6 +16,10 @@ export interface OAuthHttpTransportOptions {
     scopes?: string[];
     /** Injected for tests; defaults to the secure global fetch (https guard + forced TLS). */
     fetchFn?: FetchLike;
+    /** Per-request deadline. The device-flow provider separately enforces its total deadline. */
+    timeoutMs?: number;
+    /** Defensive response cap; configurable only to keep boundary tests small. */
+    maxResponseBytes?: number;
 }
 /**
  * Real HTTP transport (M6-6) for the RFC 8628 device authorization grant. The

@@ -15,6 +15,12 @@ export interface EnvFingerprint {
      * as its own field (e.g. so the Hub can index assets by model / feed the by-model leaderboard).
      */
     model: string;
+    /**
+     * Reported Evolver client version for Hub anti-abuse trust (#555). The owning runtime resolves this from its
+     * own package/build metadata and supplies it explicitly, so a host application's npm environment cannot be
+     * mistaken for the Evolver version. Optional so older callers keep working.
+     */
+    evolver_version?: string;
 }
 export interface EnvCaptureDeps {
     platform?: string;
@@ -24,7 +30,10 @@ export interface EnvCaptureDeps {
     hostname?: string;
     env?: Record<string, string | undefined>;
     isContainer?: () => boolean;
+    /** Explicit Evolver version for fingerprint (Refs #555). */
+    evolverVersion?: string;
 }
+export declare function normalizeEvolverVersion(value: string | undefined): string | undefined;
 /**
  * Resolve the underlying LLM model name powering this evolver node (ported from v1 PR #174). Until now the
  * only source was the explicit EVOLVER_MODEL_NAME, so nodes that never set it published assets with no model

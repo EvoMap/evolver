@@ -25,6 +25,7 @@ export declare class Ingestor {
     constructor(opts: IngestorOptions);
     ingest(raw: RawEvent): Promise<RootEvent>;
     readAll(): RootEvent[];
+    readAllStrict(): RootEvent[];
     iterate(fromSeq?: number): Generator<RootEvent>;
     tail(n?: number): RootEvent[];
     recover(): {

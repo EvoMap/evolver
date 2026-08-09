@@ -23,6 +23,13 @@ export interface SyncEngineDeps {
     onOutboundSucceeded?: (envelope: Envelope, result: unknown) => void | Promise<void>;
     /** Cache a durable facade terminal result after SyncEngine moved the envelope to DLQ. */
     onOutboundTerminal?: (envelope: Envelope, error: unknown) => void | Promise<void>;
+    /** Return the durable marker that proves a racing facade request already reached external acceptance. */
+    acceptedOutcomeKey?: (envelope: Envelope) => string | undefined;
+    /** Return a replayable terminal result that must be committed atomically with the mailbox DLQ transition. */
+    terminalOutcome?: (envelope: Envelope, error: unknown) => {
+        key: string;
+        result: unknown;
+    } | undefined;
     /** Canonicalize an inbound envelope before durable insertion. */
     normalizeInboundEnvelope?: (envelope: Envelope) => Envelope;
     onOutboundFlushed?: (result: OutboundResult) => void | Promise<void>;
@@ -44,6 +51,7 @@ export interface InboundResult {
 }
 export declare class SyncEngine {
     private readonly deps;
+    private readonly acceptedTaskOutboundMemory;
     private lastActivityAt;
     constructor(deps: SyncEngineDeps);
     /** 出站: claim proxy 消息 → 经 proxyHandler 推 hub → complete; 终态(publish reject)直进 DLQ 不重试(money-safety). */
@@ -59,6 +67,10 @@ export declare class SyncEngine {
     private notifyOutboundFlushed;
     private normalizeOutbound;
     private outboundDedupKey;
+    private acceptedTaskOutbound;
+    private durableAcceptedTaskOutbound;
+    private completeAcceptedOutcome;
+    private rememberAcceptedTaskOutbound;
     private safeAck;
     /** AgentEvent → core Envelope; 未知类型(不在目录)跳过. */
     private toEnvelope;

@@ -81,6 +81,11 @@ export declare const rootEvent: z.ZodObject<{
     }>>;
 }, "strip", z.ZodTypeAny, {
     type: string;
+    actor: {
+        kind: "machine" | "human";
+        id?: string | undefined;
+    };
+    schemaVersion: string;
     ts: string;
     human: {
         severity: "warn" | "info" | "notice" | "error";
@@ -92,12 +97,7 @@ export declare const rootEvent: z.ZodObject<{
     };
     seq: number;
     eventId: string;
-    schemaVersion: string;
     replayability: "deterministic" | "stochastic_recorded" | "stochastic_unreproducible";
-    actor: {
-        kind: "machine" | "human";
-        id?: string | undefined;
-    };
     payload?: unknown;
 }, {
     type: string;
@@ -113,12 +113,12 @@ export declare const rootEvent: z.ZodObject<{
     seq: number;
     eventId: string;
     payload?: unknown;
-    schemaVersion?: string | undefined;
-    replayability?: "deterministic" | "stochastic_recorded" | "stochastic_unreproducible" | undefined;
     actor?: {
         kind?: "machine" | "human" | undefined;
         id?: string | undefined;
     } | undefined;
+    schemaVersion?: string | undefined;
+    replayability?: "deterministic" | "stochastic_recorded" | "stochastic_unreproducible" | undefined;
 }>;
 export type RootEvent = z.infer<typeof rootEvent>;
 /** append 入参: seq/eventId/ts 由 store 生成. */

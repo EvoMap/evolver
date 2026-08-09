@@ -17,6 +17,7 @@ const MAX_RAW_PAGES = 20_000;
 const MAX_RAW_ROWS = 100_000;
 const MAX_GEPX_BYTES = 64 * 1024 * 1024;
 const MAX_GEPX_ASSETS = 10_000;
+const MAX_GEPX_SIDECAR_RECORDS = MAX_GEPX_ASSETS;
 const GROUP = 'sync';
 const USAGE = [
     'usage: evolver sync [--write] [--force] [--resume] [--scope all|purchased|published] [--type Gene|Capsule] [--status draft|promoted|all] [--limit N] [--page-size N] [--purchased-cursor CURSOR] [--published-cursor CURSOR] [--json]',
@@ -47,9 +48,11 @@ const HUB_METADATA_KEYS = new Set([
     '_retrieval_rank',
     'retrieval_rank',
     'original_asset_id',
+    'payload_backfill_reason',
     'asset_type',
     'local_id',
     'payload',
+    'payload_backfill_reason',
     'source',
     'status',
 ]);
@@ -367,12 +370,13 @@ async function executeSyncWrite(opts, deps) {
         });
     }
     const failures = [...preview.failures];
+    const provenanceSnapshot = provenance.snapshot();
     const resumed = previousRun
         ? await reconcileResumeCandidates({
             candidates: finalCandidates,
             previousRun,
             store,
-            provenance,
+            provenanceSnapshot,
             syncLedger,
             appendRunCheckpoint,
             runId,
@@ -381,7 +385,7 @@ async function executeSyncWrite(opts, deps) {
             failures,
         })
         : 0;
-    await verifyAlreadyLocalCandidates(finalCandidates, store, failures);
+    await verifyAlreadyLocalCandidates(finalCandidates, store, provenanceSnapshot, failures);
     const prepared = [];
     const pendingLogical = new Map(local.logical);
     for (const candidate of finalCandidates) {
@@ -661,10 +665,10 @@ async function executeGepxImportWrite(opts, deps) {
     for (const candidate of finalCandidates) {
         if (candidate.action !== 'would_import' && !(opts.force && candidate.action === 'id_collision'))
             continue;
-        const asset = assetsById.get(candidate.assetId);
-        if (!asset)
+        const entry = assetsById.get(candidate.assetId);
+        if (!entry)
             throw new SyncAbortError('integrity_error', '.gepx package asset is missing');
-        const preparedAsset = preparePackagedAsset(candidate, asset, local.byAssetId, pendingLogical, opts.force);
+        const preparedAsset = preparePackagedAsset(candidate, entry.asset, local.byAssetId, pendingLogical, opts.force, entry.frozenUnverified);
         if ('blocked' in preparedAsset) {
             updateFinalCandidate(finalCandidates, candidate, preparedAsset.blocked);
             continue;
@@ -689,6 +693,7 @@ async function executeGepxImportWrite(opts, deps) {
         prepared.push({
             candidate: finalCandidate,
             asset: preparedAsset.asset,
+            ...(entry.frozenUnverified ? { frozenUnverified: true } : {}),
             ...(preparedAsset.forced ? { forced: true, collisionWithAssetId: preparedAsset.collisionWithAssetId } : {}),
         });
         if (logicalId)
@@ -697,10 +702,13 @@ async function executeGepxImportWrite(opts, deps) {
     const baseDir = storeBaseDir(store, deps);
     const provenance = deps.provenance ?? new assetstore.ProvenanceStore(baseDir, deps.now);
     const syncLedger = deps.syncLedger ?? new assetstore.AssetSyncLedger(baseDir, deps.now);
+    await verifyAlreadyLocalGepxCandidates(finalCandidates, assetsById, store, provenance.snapshot(), failures);
     const written = [];
     for (const item of prepared) {
         try {
-            const stored = await assetstore.ingestUntrustedConditional(store, provenance, item.asset, { allowLogicalCollision: opts.force }, 'migrated');
+            const stored = item.frozenUnverified
+                ? await assetstore.ingestUnverifiedConditional(store, provenance, item.asset, 'unverified_gepx_import', { allowLogicalCollision: opts.force }, 'migrated')
+                : await assetstore.ingestUntrustedConditional(store, provenance, item.asset, { allowLogicalCollision: opts.force }, 'migrated');
             const assetId = stored.asset_id;
             if (stored.status === 'logical_collision') {
                 updateFinalCandidate(finalCandidates, item.candidate, {
@@ -711,7 +719,7 @@ async function executeGepxImportWrite(opts, deps) {
                 });
                 continue;
             }
-            await readBackStoredAsset(store, assetId, item.asset);
+            await readBackStoredAsset(store, assetId, item.asset, item.frozenUnverified === true);
             if (stored.status === 'already_exists') {
                 updateFinalCandidate(finalCandidates, item.candidate, { ...item.candidate, assetId, action: 'already_local' });
                 continue;
@@ -1114,8 +1122,9 @@ function classifyGepxAsset(entry, local) {
 function uniqueGepxAssets(pkg) {
     const unique = new Map();
     const missing = [];
+    const provenanceByAssetId = indexUniqueGepxProvenance(pkg);
     for (const asset of pkg.assets) {
-        const normalized = normalizeGepxAsset(asset);
+        const normalized = normalizeGepxAsset(asset, provenanceByAssetId.get(asset.asset_id) ?? undefined);
         if (normalized.assetId === MISSING_ASSET_ID) {
             missing.push(normalized);
             continue;
@@ -1129,21 +1138,49 @@ function gepxImportAssetsById(pkg) {
     const assets = new Map();
     for (const entry of uniqueGepxAssets(pkg)) {
         if (entry.type && !entry.integrityError && !assets.has(entry.assetId))
-            assets.set(entry.assetId, entry.asset);
+            assets.set(entry.assetId, entry);
     }
     return assets;
 }
-function normalizeGepxAsset(asset) {
+function indexUniqueGepxProvenance(pkg) {
+    const indexed = new Map();
+    for (const record of pkg.provenance ?? []) {
+        indexed.set(record.assetId, indexed.has(record.assetId) ? null : record);
+    }
+    return indexed;
+}
+function normalizeGepxAsset(asset, provenance) {
     const cleaned = stripHubMetadata(asset);
     const assetId = stringField(cleaned, 'asset_id') ?? stringField(asset, 'asset_id') ?? MISSING_ASSET_ID;
     const type = cleaned.type === 'Gene' || cleaned.type === 'Capsule' ? cleaned.type : undefined;
     const logicalId = stringField(cleaned, 'id');
     let integrityError = false;
+    let frozenUnverified = false;
     if (type) {
         const claimed = stringField(cleaned, 'asset_id');
         const fullAsset = looksLikeFullAsset(cleaned, type);
         const computed = fullAsset ? wire.computeAssetId(cleaned) : undefined;
-        integrityError = assetId === MISSING_ASSET_ID || !claimed || !fullAsset || !computed || claimed !== assetId || computed !== claimed;
+        const supportedFrozenProvenance = provenance
+            && ((provenance.source === 'hub'
+                && (provenance.reason === 'unverified_hub_rewrite' || provenance.reason === 'unverified_hub_synthesized'))
+                || (provenance.source === 'migrated' && provenance.reason === 'unverified_gepx_import'));
+        frozenUnverified = Boolean(claimed
+            && computed
+            && claimed === assetId
+            && computed !== claimed
+            && provenance?.assetId === assetId
+            && supportedFrozenProvenance
+            && provenance.trusted === false
+            && provenance.decision === undefined
+            && provenance.decidedBy === undefined
+            && provenance.promotedBy === undefined
+            && provenance.frozenContentId === computed);
+        integrityError = assetId === MISSING_ASSET_ID
+            || !claimed
+            || !fullAsset
+            || !computed
+            || claimed !== assetId
+            || (computed !== claimed && !frozenUnverified);
     }
     return {
         original: asset,
@@ -1152,6 +1189,7 @@ function normalizeGepxAsset(asset) {
         ...(type ? { type } : {}),
         ...(logicalId ? { logicalId } : {}),
         integrityError,
+        frozenUnverified,
     };
 }
 function countsFromCandidates(base, candidates) {
@@ -1317,7 +1355,7 @@ async function reconcileResumeCandidates(input) {
         if (candidate.action !== 'already_local')
             continue;
         const checkpoint = input.previousRun.processed.get(candidate.assetId);
-        const provenanceRecord = input.provenance.get(candidate.assetId);
+        const provenanceRecord = input.provenanceSnapshot.get(candidate.assetId);
         const syncRecord = input.syncLedger.getForRunKey(input.runKey, candidate.assetId);
         const checkpointedAlreadyLocal = checkpoint?.outcome === 'already_local';
         const hubImportProvenance = provenanceRecord?.assetId === candidate.assetId
@@ -1327,7 +1365,7 @@ async function reconcileResumeCandidates(input) {
         if (!checkpointedAlreadyLocal && !importedEvidence)
             continue;
         try {
-            const storedAsset = await readBackStoredAsset(input.store, candidate.assetId);
+            const storedAsset = await readBackStoredAsset(input.store, candidate.assetId, undefined, false, provenanceRecord, candidate.type);
             if (checkpointedAlreadyLocal) {
                 resumed += 1;
                 continue;
@@ -1366,13 +1404,13 @@ async function reconcileResumeCandidates(input) {
     }
     return resumed;
 }
-async function verifyAlreadyLocalCandidates(candidates, store, failures) {
+async function verifyAlreadyLocalCandidates(candidates, store, provenanceSnapshot, failures) {
     const failedAssetIds = new Set(failures.flatMap((failure) => failure.assetId ? [failure.assetId] : []));
     for (const candidate of candidates) {
         if (candidate.action !== 'already_local' || failedAssetIds.has(candidate.assetId))
             continue;
         try {
-            await readBackStoredAsset(store, candidate.assetId);
+            await readBackStoredAsset(store, candidate.assetId, undefined, false, provenanceSnapshot.get(candidate.assetId), candidate.type);
         }
         catch (error) {
             const mapped = mapSyncError(error);
@@ -1381,7 +1419,31 @@ async function verifyAlreadyLocalCandidates(candidates, store, failures) {
         }
     }
 }
-async function readBackStoredAsset(store, assetId, expected) {
+async function verifyAlreadyLocalGepxCandidates(candidates, assetsById, store, provenanceSnapshot, failures) {
+    for (const candidate of [...candidates]) {
+        if (candidate.action !== 'already_local')
+            continue;
+        const entry = assetsById.get(candidate.assetId);
+        if (!entry)
+            throw new SyncAbortError('integrity_error', '.gepx package asset is missing');
+        try {
+            const stored = await readBackStoredAsset(store, candidate.assetId, entry.asset, false, provenanceSnapshot.get(candidate.assetId), candidate.type);
+            if (!assetstore.frozenAssetRecordsEqual(stored, entry.asset)) {
+                throw new SyncAbortError('store_read_back_failed', 'Stored asset differs from packaged asset');
+            }
+        }
+        catch (error) {
+            const mapped = mapSyncError(error);
+            failures.push({ stage: 'write', assetId: candidate.assetId, reason: mapped.reason });
+            updateFinalCandidate(candidates, candidate, {
+                ...candidate,
+                action: 'write_failed',
+                failureReason: mapped.reason,
+            });
+        }
+    }
+}
+async function readBackStoredAsset(store, assetId, expected, allowFrozenUnverified = false, provenance, expectedType = expected?.type) {
     let stored;
     try {
         stored = await store.get(assetId);
@@ -1391,11 +1453,28 @@ async function readBackStoredAsset(store, assetId, expected) {
     }
     const computed = stored ? wire.computeAssetId(stored) : null;
     const expectedComputed = expected ? wire.computeAssetId(expected) : assetId;
+    const exactFrozenBody = Boolean(allowFrozenUnverified
+        && stored
+        && expected
+        && assetstore.frozenAssetRecordsEqual(stored, expected)
+        && computed === expectedComputed);
+    const supportedFrozenProvenance = provenance?.assetId === assetId
+        && provenance.trusted === false
+        && provenance.decision === undefined
+        && provenance.decidedBy === undefined
+        && provenance.promotedBy === undefined
+        && ((provenance.source === 'hub'
+            && (provenance.reason === 'unverified_hub_rewrite' || provenance.reason === 'unverified_hub_synthesized'))
+            || (provenance.source === 'migrated' && provenance.reason === 'unverified_gepx_import'));
+    const provenanceBoundFrozenBody = Boolean(stored
+        && computed
+        && supportedFrozenProvenance
+        && provenance.frozenContentId === computed);
     if (!stored ||
         stored.asset_id !== assetId ||
-        computed !== assetId ||
-        expectedComputed !== assetId ||
-        (expected && stored.type !== expected.type)) {
+        (!exactFrozenBody && !provenanceBoundFrozenBody && computed !== assetId) ||
+        (!exactFrozenBody && !provenanceBoundFrozenBody && expectedComputed !== assetId) ||
+        (expectedType !== undefined && stored.type !== expectedType)) {
         throw new SyncAbortError('store_read_back_failed', 'Stored asset failed read-back verification');
     }
     return stored;
@@ -1424,7 +1503,7 @@ function syncRecordMatches(record, candidate, asset) {
         record.scope === scope &&
         (!logicalId || record.logicalId === logicalId);
 }
-function preparePackagedAsset(candidate, asset, localAssetIds, logical, force) {
+function preparePackagedAsset(candidate, asset, localAssetIds, logical, force, frozenUnverified = false) {
     const cleaned = stripHubMetadata(asset);
     const type = cleaned.type === 'Gene' || cleaned.type === 'Capsule' ? cleaned.type : undefined;
     if (!type)
@@ -1433,7 +1512,11 @@ function preparePackagedAsset(candidate, asset, localAssetIds, logical, force) {
         return { blocked: { ...candidate, type, action: 'unsupported_type' } };
     const claimed = stringField(cleaned, 'asset_id');
     const computed = wire.computeAssetId(cleaned);
-    if (!claimed || !computed || claimed !== computed || claimed !== candidate.assetId || !looksLikeFullAsset(cleaned, type)) {
+    if (!claimed
+        || !computed
+        || (claimed !== computed && !frozenUnverified)
+        || claimed !== candidate.assetId
+        || !looksLikeFullAsset(cleaned, type)) {
         throw new SyncAbortError('integrity_error', '.gepx package integrity verification failed before import');
     }
     if (localAssetIds.has(cleaned.asset_id))
@@ -1500,6 +1583,10 @@ function readGepxPackage(path) {
     }
     if (obj['assets'].length > MAX_GEPX_ASSETS)
         throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+    if ((Array.isArray(obj['provenance']) && obj['provenance'].length > MAX_GEPX_SIDECAR_RECORDS)
+        || (Array.isArray(obj['sync']) && obj['sync'].length > MAX_GEPX_SIDECAR_RECORDS)) {
+        throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+    }
     const assets = [];
     const malformedAssets = [];
     obj['assets'].forEach((rawAsset, index) => {
@@ -1535,15 +1622,30 @@ function parseGepxProvenanceRecord(value) {
     const assetId = stringField(value, 'assetId');
     const source = stringField(value, 'source');
     const at = stringField(value, 'at');
-    if (!assetId || !at || (source !== 'local' && source !== 'migrated' && source !== 'hub'))
+    const frozenContentId = stringField(value, 'frozenContentId');
+    if (!assetId
+        || !at
+        || Number.isNaN(Date.parse(at))
+        || typeof value['trusted'] !== 'boolean'
+        || (source !== 'local' && source !== 'migrated' && source !== 'hub')
+        || (frozenContentId !== undefined && !/^sha256:[0-9a-f]{64}$/.test(frozenContentId)))
         return null;
+    const rawDecision = value['decision'];
+    if (rawDecision !== undefined && rawDecision !== 'promoted' && rawDecision !== 'revoked')
+        return null;
+    const decision = rawDecision === 'promoted' || rawDecision === 'revoked'
+        ? rawDecision
+        : undefined;
     return {
         assetId,
         source,
-        trusted: value['trusted'] === true,
+        trusted: value['trusted'],
         at,
+        ...(decision ? { decision } : {}),
+        ...(stringField(value, 'decidedBy') ? { decidedBy: stringField(value, 'decidedBy') } : {}),
         ...(stringField(value, 'promotedBy') ? { promotedBy: stringField(value, 'promotedBy') } : {}),
         ...(stringField(value, 'reason') ? { reason: stringField(value, 'reason') } : {}),
+        ...(frozenContentId ? { frozenContentId } : {}),
     };
 }
 function parseGepxSyncRecord(value) {

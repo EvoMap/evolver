@@ -70,6 +70,8 @@ export interface AntiGeneBenchmarkOptions {
     minFailureDelta?: number;
     now?: () => number;
     eventsPath?: string;
+    /** Apply the pre-IDF semantic scorer consistently to both A/B arms. */
+    disableSemanticIdf?: boolean;
 }
 export interface AntiGeneBenchmarkDeps {
     store: AssetStoreProvider;

@@ -829,7 +829,7 @@ async function callRecipeWithAuthRetry(hub, tag, fn, io) {
         if (!authErrorIndicatesStaleNodeSecret(e))
             throw e;
         io.err(`[${tag}] Hub reported a stale node secret; rotating credentials once and retrying...`);
-        const hello = await hub.hello({ rotate: true });
+        const hello = await hub.hello({ rotate: true, evolverVersion: getCliVersion() });
         if (!hello.ok) {
             io.err(`[${tag}] Could not auto-rotate credentials: ${hello.error ?? 'unknown'}`);
             io.err('  Recover by resetting the Hub credential, then re-run `evolver login` or update EVOMAP_NODE_SECRET.');

@@ -1,15 +1,16 @@
 import type { AssetStoreProvider } from '../assetstore/provider.js';
 import { type ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
-import type { GeneCandidateInput } from '../algo/geneSelection.js';
+import type { GeneCandidateInput, SelectionGuardMode } from '../algo/geneSelection.js';
 import type { CycleEngine, ExecutionFailureKind, SolidifyPermitGate } from '../algo/cycleEngine.js';
 import { type AutonomousSafety } from './autonomousCycle.js';
-import type { GitRunner, ValidateHook } from './claudeBridge.js';
+import { type GitRunner, type ValidateHook } from './claudeBridge.js';
 import type { AgentRunner } from './runnerRegistry.js';
 import { type OpenPrLister } from './openPrRegistry.js';
 import type { ReuseOutcomeSummary, ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { PersonalityStore } from '../personality/store.js';
 import type { MemoryGraphProvider } from '../algo/memoryGraph.js';
+import type { SelectionPolicy } from '../algo/ucb1.js';
 import { type LearningPacketSink, type TraceSink } from '../trace/learningTrace.js';
 import type { TraceReadOptions } from '../trace/trajectoryExport.js';
 export interface AutoExecTask {
@@ -106,6 +107,14 @@ export interface AutoExecDeps {
     memoryGraph?: MemoryGraphProvider;
     /** Optional daemon-level explicit strategy preset name, e.g. EVOLVE_STRATEGY. */
     strategyName?: string;
+    /** Emergency rollback for semantic IDF selection. Omit to keep IDF enabled. */
+    disableSemanticIdf?: boolean;
+    /** Experimental plateau selection policy. Omit to preserve engine-health + legacy drift. */
+    selectionPolicy?: SelectionPolicy;
+    /** Production relevance-guard rollout. Omit only for legacy/custom composition. */
+    selectionGuard?: SelectionGuardMode;
+    /** Optional score floor canary. Omit to keep the selector default of zero. */
+    selectionFloor?: number;
     /** Optional evolvable personality store shared with CycleEngine and the exec prompt. */
     personality?: PersonalityStore;
     /** Test/custom seam: inject a runner instead of spawning a real agent. */
