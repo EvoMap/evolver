@@ -60,7 +60,7 @@ export interface ExecBridgeOptions {
     /**
      * Run the agent in a throwaway git worktree of `cwd` instead of the repo's real working tree (finding #39.4):
      * the agent's edits land in an isolated checkout, never touching the user's working tree. The diff is measured
-     * there, captured as a patch (proof.gitDiff.patchRef), and the worktree is removed. `cwd` must be a git repo.
+     * there, captured as a patch (proof.git_diff.patch_ref), and the worktree is removed. `cwd` must be a git repo.
      */
     isolation?: 'worktree';
     /**

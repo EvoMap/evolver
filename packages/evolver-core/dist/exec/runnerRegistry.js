@@ -592,6 +592,10 @@ export function spawnCapture(cmd, args, opts) {
                 });
             });
         });
+        // Defined input is delivered and closed by stdin.end(opts.input) above. With no input, still close the pipe so
+        // EOF-driven CLIs cannot hang.
+        if (opts.input === undefined)
+            child.stdin?.end();
     });
 }
 /** Map the shared process result into the failure taxonomy used by plain-text runners. */
@@ -774,6 +778,45 @@ function geminiMessage(value) {
 function geminiWarnings(value) {
     return Array.isArray(value) ? value.map(geminiMessage).filter(Boolean) : [];
 }
+/** Accept only native-session-safe ids so Learning Ops never joins on garbage envelope fields. */
+function geminiSessionId(value) {
+    if (typeof value !== 'string')
+        return undefined;
+    const sessionId = value.trim();
+    return NATIVE_SESSION_ID_PATTERN.test(sessionId) ? sessionId : undefined;
+}
+function withGeminiSessionId(result, envelope) {
+    const sessionId = geminiSessionId(envelope.session_id);
+    return sessionId !== undefined ? { ...result, sessionId } : result;
+}
+/**
+ * Gemini sometimes prints non-JSON diagnostics before the structured envelope.
+ * Prefer pure JSON; otherwise accept the last top-level JSON object in stdout.
+ */
+function parseGeminiStdout(stdout) {
+    const trimmed = stdout.trim();
+    if (!trimmed)
+        return null;
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+            return parsed;
+    }
+    catch {
+        // fall through to last-object recovery
+    }
+    for (let index = trimmed.lastIndexOf('{'); index >= 0; index = trimmed.lastIndexOf('{', index - 1)) {
+        try {
+            const parsed = JSON.parse(trimmed.slice(index));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                return parsed;
+        }
+        catch {
+            // keep scanning earlier braces
+        }
+    }
+    return null;
+}
 /** Interpret one bounded Gemini subprocess result. Structured output and diagnostics require complete capture. */
 export function classifyGeminiRunnerResult(result, timeoutMs) {
     if (result.termination === 'timeout') {
@@ -791,14 +834,8 @@ export function classifyGeminiRunnerResult(result, timeoutMs) {
             exitCode: result.code,
         };
     }
-    let envelope;
-    try {
-        const parsed = JSON.parse(result.stdout);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-            throw new Error('JSON object required');
-        envelope = parsed;
-    }
-    catch {
+    const envelope = parseGeminiStdout(result.stdout);
+    if (!envelope) {
         const error = result.stderr || (result.code === 0 ? 'gemini returned invalid JSON output' : `gemini exited with code ${String(result.code)}`);
         return { ok: false, output: result.stdout, error, failureKind: result.code === 0 ? 'invalid_output' : 'non_zero_exit', exitCode: result.code };
     }
@@ -808,19 +845,19 @@ export function classifyGeminiRunnerResult(result, timeoutMs) {
         ? GEMINI_TERMINATION_WARNINGS.find(({ pattern }) => warnings.some((warning) => pattern.test(warning)))?.error
         : undefined;
     if (terminationError) {
-        return { ok: false, output: geminiMessage(envelope.response), error: terminationError, failureKind: 'runtime_error', exitCode: result.code };
+        return withGeminiSessionId({ ok: false, output: geminiMessage(envelope.response), error: terminationError, failureKind: 'runtime_error', exitCode: result.code }, envelope);
     }
     const denial = [structuredError, ...warnings, result.stderr].find((message) => GEMINI_PERMISSION_DENIAL_RE.test(message));
     if (denial) {
-        return { ok: false, output: geminiMessage(envelope.response), error: denial, failureKind: 'permission_denied', exitCode: result.code };
+        return withGeminiSessionId({ ok: false, output: geminiMessage(envelope.response), error: denial, failureKind: 'permission_denied', exitCode: result.code }, envelope);
     }
     if (result.code !== 0) {
-        return { ok: false, output: geminiMessage(envelope.response), error: structuredError || result.stderr || `gemini exited with code ${String(result.code)}`, failureKind: 'non_zero_exit', exitCode: result.code };
+        return withGeminiSessionId({ ok: false, output: geminiMessage(envelope.response), error: structuredError || result.stderr || `gemini exited with code ${String(result.code)}`, failureKind: 'non_zero_exit', exitCode: result.code }, envelope);
     }
     if (structuredError) {
-        return { ok: false, output: geminiMessage(envelope.response), error: structuredError, failureKind: 'runtime_error', exitCode: result.code };
+        return withGeminiSessionId({ ok: false, output: geminiMessage(envelope.response), error: structuredError, failureKind: 'runtime_error', exitCode: result.code }, envelope);
     }
-    return { ok: true, output: geminiMessage(envelope.response), exitCode: result.code };
+    return withGeminiSessionId({ ok: true, output: geminiMessage(envelope.response), exitCode: result.code }, envelope);
 }
 /** Build verified Gemini CLI argv. The prompt is appended separately as one argv element with shell:false. */
 export function geminiRunnerArgs(opts = {}) {
@@ -1014,7 +1051,10 @@ export function makeCursorHeadlessRunner(opts = {}, platform = process.platform)
     };
 }
 const RUNNER_SPECS = {
-    claude: { name: 'claude', makeRunner: makeClaudeHeadlessRunner, envAllow: { prefixes: ['ANTHROPIC_', 'CLAUDE_'] } },
+    // AWS_ prefix is allowlisted so the claude CLI can authenticate against Amazon Bedrock (CLAUDE_CODE_USE_BEDROCK=1
+    // + AWS_REGION/AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY). This is a legitimate runner-auth channel,
+    // symmetric to CURSOR_/OPENAI_ for the other runners; no other runner inherits it.
+    claude: { name: 'claude', makeRunner: makeClaudeHeadlessRunner, envAllow: { prefixes: ['ANTHROPIC_', 'CLAUDE_', 'AWS_'] } },
     codex: { name: 'codex', makeRunner: makeCodexHeadlessRunner, envAllow: { prefixes: ['OPENAI_', 'CODEX_'] } },
     // cursor keeps only its OWN auth env (CURSOR_); like every runner it never inherits another's vendor key.
     cursor: { name: 'cursor', makeRunner: makeCursorHeadlessRunner, envAllow: { prefixes: ['CURSOR_'] } },

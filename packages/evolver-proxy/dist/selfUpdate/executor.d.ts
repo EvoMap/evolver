@@ -23,6 +23,8 @@ export interface SelfUpdateResult {
     appliedVia?: 'binary' | 'tarball';
     /** Durable installs are not successful until the relaunched daemon completes startup health checks. */
     confirmationPending?: true;
+    /** A bounded integrity warning from cleanup that did not change the primary update outcome. */
+    cleanupWarning?: string;
 }
 /** The hub's force_update directive (inbound message payload). */
 export interface ForceUpdateDirective {
@@ -60,6 +62,8 @@ export interface SelfUpdateDeps {
     policy: 'off' | 'prompt' | 'auto';
     /** Current installed version (read from package.json by the caller). */
     currentVersion: string;
+    /** Lazy cross-process lease that serializes self-update with lifecycle mutations. */
+    acquireLifecycleLease?: () => Promise<SelfUpdateLifecycleLease> | SelfUpdateLifecycleLease;
     /** Resolve a trusted manifest when the hub directive does not carry one. */
     resolveManifest?: (directive: ForceUpdateDirective, currentVersion: string) => Promise<unknown> | unknown;
     /** Download the staged release for the target version. Throws/rejects on failure. */
@@ -74,19 +78,26 @@ export interface SelfUpdateDeps {
     publicKey?: string;
     /** Best-effort telemetry sink for the structured outcome (never throws into the update path). */
     onTelemetry?: (result: SelfUpdateResult) => void;
+    /** One-shot operator warning sink for a lifecycle lease cleanup integrity failure. */
+    onCleanupWarning?: (warning: string, result: SelfUpdateResult) => void;
+}
+export interface SelfUpdateLifecycleLease {
+    assertOwned(): Promise<void> | void;
+    release(): Promise<void> | void;
 }
 /** Test-only: reset the mutex between cases. Not part of the public update path. */
 export declare function _resetSelfUpdateMutex(): void;
 /**
- * Execute a force_update directive end to end: decide → (mutex) → download → VERIFY → atomic replace → restart.
+ * Execute a force_update directive end to end: fast exits → lease → resolve/decide → download → VERIFY → replace → restart.
  *
  * Order is load-bearing:
  *  1. policy off → do nothing (explicit opt-out; auto is hard-gated upstream by supervisor + public key).
- *  2. decideUpdate (pure): reject bad manifests, NOOP when already satisfied (no download, no restart).
- *  3. mutex: exactly one execution; concurrent callers get `already_in_progress` and touch no disk.
- *  4. download the staged release.
- *  5. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
- *  6. atomicReplace, then restart(). Only reached after verification passed.
+ *  2. reject malformed/already-satisfied required versions without acquiring the lifecycle owner lease.
+ *  3. mutex + lifecycle owner lease: exactly one executor may resolve or mutate release state.
+ *  4. resolve and decideUpdate (pure): reject bad manifests or NOOP under the held lease.
+ *  5. download the staged release.
+ *  6. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
+ *  7. atomicReplace, then restart(). Only reached after verification passed.
  *
  * Never throws: every failure becomes a structured SelfUpdateResult so the daemon can report it and keep running
  * on the old (intact) version.

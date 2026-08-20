@@ -13,7 +13,11 @@ export interface ReuseParseResult {
 export interface PublishParseResult {
     ok: boolean;
     assetRefs?: string[];
+    geneRef?: string;
+    autoPair?: boolean;
     dryRun?: boolean;
+    repair?: boolean;
+    noRecipe?: boolean;
     jsonOut?: boolean;
     reason?: ContractReason;
     message?: string;
@@ -54,6 +58,7 @@ interface ContractHubTransport {
     fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
     validate(bundle: readonly assetstore.AssetRecord[]): Promise<HubCallResult>;
     publish(bundle: readonly assetstore.AssetRecord[]): Promise<HubCallResult>;
+    composeRecipe?(payload: hub.RecipeComposeInput): Promise<hub.RecipeComposeResult>;
 }
 interface PrivateContractProxy {
     status(): Promise<unknown>;
@@ -68,6 +73,7 @@ interface PrivateContractProxy {
     submitAssetBundle(bundle: {
         assets: unknown[];
         expected_hub_mode?: 'private';
+        compose_recipe?: boolean;
     }): Promise<unknown>;
 }
 export interface CliContractDeps {
@@ -88,6 +94,8 @@ export declare function runPublishCommand(args: readonly string[], deps?: CliCon
 export declare function parseReuseArgs(args: readonly string[]): ReuseParseResult;
 export declare function parsePublishArgs(args: readonly string[]): PublishParseResult;
 export declare function buildPublishBundle(refs: readonly string[], deps?: CliContractDeps): Promise<PublishBundleResult>;
+/** Resolve `<asset_id|logical_id|path>` the way publish does. Shared so `asset-repair` speaks the same refs. */
+export declare function loadAssetRef(ref: string, deps: CliContractDeps): Promise<assetstore.AssetRecord>;
 export declare function hasExplicitValidatePass(body: unknown): boolean;
 export declare function _inspectCliContractsForTest(value: unknown): string;
 export {};

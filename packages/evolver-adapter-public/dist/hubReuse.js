@@ -32,10 +32,17 @@ const GENE_WIRE_KEYS = new Set([
     'routing_hint',
     'tool_policy',
     'generation_meta',
+    // K_auto projection-key coordinates + runtime authorship (v2-delta; ride-along until gep-sdk 1.13).
+    'model_name',
+    'claims',
+    'scope',
+    'runtime_profile',
+    'verifier_profile',
     'asset_id',
 ]);
 const HUB_DELIVERY_METADATA_KEYS = new Set([
     'status',
+    'trust_state',
     'success_streak',
     'reputation_score',
     'gdi_score',
@@ -55,8 +62,15 @@ const HUB_DELIVERY_METADATA_KEYS = new Set([
     'semanticSimilarity',
     '_search_score',
     'search_score',
+    '_match_score',
+    'match_score',
+    '_retrieval_rank',
+    'retrieval_rank',
     'payload_backfill_reason',
+    'original_asset_id',
     'asset_type',
+    'local_id',
+    'source',
     'bundle_id',
     'callable',
     'payload_ready',
@@ -246,10 +260,15 @@ function stripHubPayloadMetadata(rec) {
     }
     return out;
 }
-function stripHubDeliveryMetadataForIntegrity(rec) {
+// Shared content projection for by-id verification and sync quarantine classification.
+export function stripHubDeliveryMetadataForIntegrity(rec) {
     const out = { ...rec };
-    for (const key of HUB_DELIVERY_METADATA_KEYS)
+    for (const key of HUB_DELIVERY_METADATA_KEYS) {
+        // Hub ranking streak is metadata for Genes, while Capsule.success_streak is canonical content.
+        if (key === 'success_streak' && out['type'] === 'Capsule')
+            continue;
         delete out[key];
+    }
     // Hub ranking confidence is metadata for Genes, while Capsule.confidence is canonical content.
     if (out['type'] === 'Gene')
         delete out['confidence'];
@@ -290,6 +309,10 @@ export function toGeneCandidate(rec) {
     const signalsMatch = strArr(r['signals_match'] ?? r['signalsMatch']) ?? [];
     const reuseCount = num(r['reuse_count'] ?? r['reuseCount']) ?? 0;
     const generationSource = algo.geneGenerationSource(r, geneId);
+    // Project onto the wire allowlist first, then re-run strict K_auto on the same bytes selection
+    // will see. Soft-preference must not stamp membership from hub delivery metadata that strip drops.
+    const hubAsset = stripHubPayloadMetadata(rec);
+    const kautoMember = algo.decideKauto(hubAsset).inKauto;
     return {
         geneId,
         assetId,
@@ -301,7 +324,8 @@ export function toGeneCandidate(rec) {
         ...(typeof r['category'] === 'string' ? { category: r['category'] } : {}),
         ...(typeof r['summary'] === 'string' ? { summary: r['summary'] } : {}),
         ...(generationSource ? { generationSource } : {}),
-        hubAsset: stripHubPayloadMetadata(rec),
+        ...(kautoMember ? { kautoMember: true } : {}),
+        hubAsset,
     };
 }
 /**

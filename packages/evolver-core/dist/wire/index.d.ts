@@ -2,7 +2,7 @@
  * 资产 wire 层. SSOT = @evomap/gep-sdk/schemas/*.schema.json (D19).
  * 字段一律 snake_case 锁定 (asset_id 跨实现契约); 本仓不发明 wire 字段, 只镜像 + 重导出工具.
  */
-import type { GeneRoutingHint, GeneToolPolicy, GenerationMeta } from './geneHints.js';
+import type { GeneRoutingHint, GeneToolPolicy, GenerationMeta, GeneClaim, GeneScope, GeneRuntimeProfile, GeneVerifierProfile } from './geneHints.js';
 export { SCHEMA_VERSION, canonicalize, computeAssetId, verifyAssetId } from '@evomap/gep-sdk';
 export type GepCategory = typeof import('@evomap/gep-sdk').GEP_GENE_CATEGORIES[number];
 export type OutcomeStatus = typeof import('@evomap/gep-sdk').GEP_OUTCOME_STATUSES[number];
@@ -35,6 +35,11 @@ export interface Gene {
     routing_hint?: GeneRoutingHint | null;
     tool_policy?: GeneToolPolicy | null;
     generation_meta?: GenerationMeta | null;
+    model_name?: string;
+    claims?: GeneClaim[] | null;
+    scope?: GeneScope | null;
+    runtime_profile?: GeneRuntimeProfile | null;
+    verifier_profile?: GeneVerifierProfile | null;
     asset_id: string;
 }
 /** Capsule = 表现型/纯进化产物 (capsule.schema.json). */
@@ -99,5 +104,5 @@ export interface Mutation {
     expected_effect: string;
     risk_level: RiskLevel;
 }
-export { validateWire, schemaProperties, type WireValidation } from './schemaGate.js';
-export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENERATION_SOURCES, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, stripGeneHints, type RoutingTier, type ReasoningLevel, type ToolPolicySeverity, type GenerationSource, type GeneRoutingHint, type GeneToolPolicy, type GeneGenerationHeuristics, type GenerationMeta, } from './geneHints.js';
+export { validateWire, validateWireDeep, wireSchemaIssues, schemaProperties, type WireValidation, type WireSchemaIssue, } from './schemaGate.js';
+export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENERATION_SOURCES, CLAIM_KINDS, ENV_CLASSES, VERIFIER_DECISIONS, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, normalizeClaims, normalizeGeneScope, normalizeRuntimeProfile, normalizeVerifierProfile, stripGeneHints, type RoutingTier, type ReasoningLevel, type ToolPolicySeverity, type GenerationSource, type ClaimKind, type EnvClass, type VerifierDecision, type GeneRoutingHint, type GeneToolPolicy, type GeneGenerationHeuristics, type GenerationMeta, type GeneClaim, type GeneScope, type GeneRuntimeProfile, type GeneVerifierProfile, } from './geneHints.js';

@@ -1,7 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, rm, } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, win32 } from 'node:path';
 import { SELF_UPDATE_FAILURE_CODES, SelfUpdateFailureError, selfUpdateFailure, } from './failureCodes.js';
 export const WINDOWS_UPDATER_WORKER_ARG = '--evolver-windows-updater-worker';
 const WORK_ITEM_SCHEMA_VERSION = 1;
@@ -9,6 +10,7 @@ const RESULT_SCHEMA_VERSION = 1;
 const MAX_WORK_ITEM_BYTES = 64 * 1024;
 const COPY_BUFFER_BYTES = 1024 * 1024;
 const OPERATION_ID_PATTERN = /^[0-9a-f]{32}$/;
+const HOST_WINDOWS_SYSTEM_ROOT = process.env['SystemRoot']?.trim() || 'C:\\Windows';
 /** Paths are fixed so the stable controller never consumes descriptor-supplied executable paths. */
 export function resolveWindowsUpdaterPaths(stateDirInput) {
     const stateDir = assertAbsoluteCleanPath(stateDirInput, 'state_dir');
@@ -36,6 +38,28 @@ export async function bindWindowsManagedExecutable(options) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${options.mismatchLabel ?? options.label}_exec_mismatch`);
     }
     return { stateDir, executablePath };
+}
+/**
+ * Bind the fixed helper and verify the persisted executable generation before
+ * the lifecycle owner creates a worker process. The worker repeats this check
+ * after consuming fd4 and before any target mutation.
+ */
+export async function revalidatePendingWindowsUpdaterHelper(options) {
+    assertWindowsPlatform(options.platform ?? process.platform);
+    const requestedPaths = resolveWindowsUpdaterPaths(options.stateDir);
+    const bound = await bindWindowsManagedExecutable({
+        stateDir: options.stateDir,
+        executablePath: options.helperPath ?? requestedPaths.helperPath,
+        relativePath: ['windows-updater', 'updater.exe'],
+        label: 'helper_revalidation',
+        mismatchLabel: 'helper',
+        platform: options.platform,
+    });
+    const paths = resolveWindowsUpdaterPaths(bound.stateDir);
+    const workItem = await readWorkItem(paths.pendingPath);
+    await assertWindowsUpdaterHelperTrust({ ...paths, stateDir: bound.stateDir }, options.assertHelperTrust);
+    await assertHelperLaunchSnapshot(bound.executablePath, workItem.helper_identity);
+    return bound;
 }
 /**
  * Prepare a launcher-consumed update descriptor. This function never mutates
@@ -99,6 +123,9 @@ export async function prepareWindowsExecutableSwap(options) {
         });
     }
     const helperIdentity = await snapshotRegularFile(paths.helperPath, 'helper');
+    if (helperIdentity.nlink !== '1') {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.COPY_FAILED, 'windows_updater_helper_unsafe');
+    }
     if (!safeDigestEqual(helperIdentity.sha256, helperSourceIdentity.sha256)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.COPY_FAILED, 'windows_updater_helper_digest_mismatch');
     }
@@ -150,7 +177,7 @@ export async function applyPendingWindowsExecutableSwap(options = {}) {
     let workItem;
     try {
         workItem = await readWorkItem(paths.pendingPath);
-        await validateWorkItem(workItem, paths, stateDir);
+        await validateWorkItem(workItem, paths, stateDir, options.assertHelperTrust);
     }
     catch (error) {
         const result = {
@@ -219,11 +246,14 @@ export async function maybeRunWindowsUpdaterWorkerFromArgv(options = {}) {
         return 64;
     if (argv.length !== 2 || argv[0] !== 'proxy' || argv[1] !== WINDOWS_UPDATER_WORKER_ARG)
         return 64;
+    if (options.startupGateConsumed !== true)
+        return 64;
     try {
         const result = await applyPendingWindowsExecutableSwap({
             stateDir: options.env?.['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim() || undefined,
             platform: options.platform,
             workerExecPath: options.processExecPath,
+            ...(options.assertHelperTrust ? { assertHelperTrust: options.assertHelperTrust } : {}),
         });
         return result.status === 'completed' ? 0 : 1;
     }
@@ -250,7 +280,7 @@ async function commitPreparedHelper(helperTempPath, helperPath, sourceIdentity) 
     }
     await rename(helperTempPath, helperPath);
 }
-async function validateWorkItem(workItem, paths, stateDir) {
+async function validateWorkItem(workItem, paths, stateDir, assertHelperTrust) {
     if (!OPERATION_ID_PATTERN.test(workItem.operation_id)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_operation_id_invalid');
     }
@@ -276,7 +306,8 @@ async function validateWorkItem(workItem, paths, stateDir) {
     workItem.target_path = targetPath;
     workItem.backup_path = backupPath;
     workItem.source_path = sourcePath;
-    await assertSnapshot(paths.helperPath, workItem.helper_identity, 'helper');
+    await assertWindowsUpdaterHelperTrust({ ...paths, stateDir }, assertHelperTrust);
+    await assertHelperLaunchSnapshot(paths.helperPath, workItem.helper_identity);
     await assertSnapshot(backupPath, workItem.backup_identity, 'backup');
     await assertSnapshot(sourcePath, workItem.source_identity, 'source');
 }
@@ -344,6 +375,16 @@ function parseIdentity(value) {
         ctime_ns: requireString(value, 'ctime_ns'),
         sha256: requireString(value, 'sha256'),
     };
+    const generationKeys = ['birthtime_ns', 'nlink', 'mode'];
+    const suppliedGenerationKeys = generationKeys.filter((key) => value[key] !== undefined);
+    if (suppliedGenerationKeys.length !== 0 && suppliedGenerationKeys.length !== generationKeys.length) {
+        throw new Error('identity_generation');
+    }
+    if (suppliedGenerationKeys.length === generationKeys.length) {
+        identity.birthtime_ns = requireString(value, 'birthtime_ns');
+        identity.nlink = requireString(value, 'nlink');
+        identity.mode = requireString(value, 'mode');
+    }
     assertSha256(identity.sha256, 'identity_sha256');
     return identity;
 }
@@ -377,6 +418,12 @@ async function assertSnapshot(path, expected, label) {
     const actual = await snapshotRegularFile(path, label);
     if (!sameIdentity(actual, expected)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}_changed`);
+    }
+}
+async function assertHelperLaunchSnapshot(path, expected) {
+    const actual = await snapshotRegularFile(path, 'helper');
+    if (actual.nlink !== '1' || !sameHelperLaunchIdentity(actual, expected)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_helper_changed');
     }
 }
 async function copyRegularFileExclusive(sourcePath, destinationPath, expectedSource, mode) {
@@ -540,6 +587,88 @@ async function assertNoSymlinkedParent(path, label) {
         }
     }
 }
+async function assertWindowsUpdaterHelperTrust(paths, override) {
+    const pending = await lstat(paths.pendingPath, { bigint: true }).catch((error) => {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_pending_unreadable', {
+            cause: error,
+        });
+    });
+    if (!pending.isFile() || pending.isSymbolicLink() || pending.nlink !== 1n) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_pending_unsafe');
+    }
+    try {
+        await (override ?? assertNativeWindowsUpdaterHelperTrust)(paths);
+    }
+    catch (error) {
+        if (error instanceof SelfUpdateFailureError)
+            throw error;
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_helper_acl_untrusted', {
+            cause: error,
+        });
+    }
+}
+function assertNativeWindowsUpdaterHelperTrust(paths) {
+    if (process.platform !== 'win32')
+        return;
+    const checks = [
+        { path: paths.helperPath, parentOnly: false },
+        { path: paths.pendingPath, parentOnly: false },
+    ];
+    const root = parse(paths.directory).root;
+    let current = paths.directory;
+    let leaf = true;
+    for (;;) {
+        checks.push({ path: current, parentOnly: !leaf });
+        leaf = false;
+        if (samePath(current, root))
+            break;
+        current = dirname(current);
+    }
+    try {
+        execFileSync(trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', windowsUpdaterAclScript(checks)], { stdio: 'ignore', timeout: 10_000, windowsHide: true });
+    }
+    catch (error) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_helper_acl_untrusted', {
+            cause: error,
+        });
+    }
+}
+function windowsUpdaterAclScript(checks) {
+    const encodedChecks = Buffer.from(JSON.stringify(checks), 'utf8').toString('base64');
+    const d = String.fromCharCode(36);
+    return [
+        `${d}ErrorActionPreference = 'Stop'`,
+        'try {',
+        `  ${d}json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedChecks}'))`,
+        `  ${d}checks = ${d}json | ConvertFrom-Json`,
+        `  ${d}userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
+        `  ${d}trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'`,
+        `  ${d}trustedOwners = @(${d}userSid, 'S-1-5-18', 'S-1-5-32-544', ${d}trustedInstaller)`,
+        `  ${d}trustedWriters = @(${d}userSid, 'S-1-5-18', 'S-1-5-32-544', ${d}trustedInstaller, 'S-1-3-0', 'S-1-3-4')`,
+        `  ${d}parentDanger = [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership`,
+        `  ${d}contentDanger = [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::CreateDirectories`,
+        `  foreach (${d}check in @(${d}checks)) {`,
+        `    ${d}acl = Get-Acl -LiteralPath ${d}check.path`,
+        `    ${d}owner = ${d}acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
+        `    if (${d}trustedOwners -notcontains ${d}owner) { exit 21 }`,
+        `    ${d}danger = if (${d}check.parentOnly) { ${d}parentDanger } else { ${d}parentDanger -bor ${d}contentDanger }`,
+        `    foreach (${d}rule in @(${d}acl.Access)) {`,
+        `      if (${d}rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }`,
+        `      if ((${d}rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }`,
+        `      if ((${d}rule.FileSystemRights -band ${d}danger) -eq 0) { continue }`,
+        `      try { ${d}sid = ${d}rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { exit 22 }`,
+        `      if (${d}trustedWriters -notcontains ${d}sid) { exit 23 }`,
+        '    }',
+        '  }',
+        '} catch { exit 24 }',
+    ].join('; ');
+}
+function trustedWindowsSystemExecutable(name) {
+    if (!win32.isAbsolute(HOST_WINDOWS_SYSTEM_ROOT) || /[\r\n\0]/.test(HOST_WINDOWS_SYSTEM_ROOT)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_system_root_untrusted');
+    }
+    return win32.join(HOST_WINDOWS_SYSTEM_ROOT, 'System32', name);
+}
 function symlinkTraversalRoot(path) {
     const parsedRoot = parse(path).root;
     if (process.platform !== 'win32')
@@ -564,7 +693,10 @@ function assertStatIdentity(left, right, label) {
         || left.ino !== right.ino
         || left.size !== right.size
         || left.mtimeNs !== right.mtimeNs
-        || left.ctimeNs !== right.ctimeNs) {
+        || left.ctimeNs !== right.ctimeNs
+        || left.birthtimeNs !== right.birthtimeNs
+        || left.nlink !== right.nlink
+        || left.mode !== right.mode) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}`);
     }
 }
@@ -577,11 +709,13 @@ function assertDirectoryIdentity(left, right, label) {
     }
 }
 function sameStatIdentity(stat, identity) {
-    return stat.dev.toString() === identity.dev
+    const strictLegacyIdentity = stat.dev.toString() === identity.dev
         && stat.ino.toString() === identity.ino
         && stat.size.toString() === identity.size
         && stat.mtimeNs.toString() === identity.mtime_ns
         && stat.ctimeNs.toString() === identity.ctime_ns;
+    return strictLegacyIdentity
+        && (!hasStrongGeneration(identity) || statMatchesStrongGeneration(stat, identity));
 }
 function identityFromStat(stat, digest) {
     return {
@@ -590,15 +724,48 @@ function identityFromStat(stat, digest) {
         size: stat.size.toString(),
         mtime_ns: stat.mtimeNs.toString(),
         ctime_ns: stat.ctimeNs.toString(),
+        birthtime_ns: stat.birthtimeNs.toString(),
+        nlink: stat.nlink.toString(),
+        mode: stat.mode.toString(),
         sha256: digest,
     };
 }
 function sameIdentity(left, right) {
-    return sameContent(left, right)
+    const strictLegacyIdentity = sameContent(left, right)
         && left.dev === right.dev
         && left.ino === right.ino
         && left.mtime_ns === right.mtime_ns
         && left.ctime_ns === right.ctime_ns;
+    return strictLegacyIdentity
+        && (!hasStrongGeneration(right) || sameStrongGeneration(left, right));
+}
+function sameHelperLaunchIdentity(actual, expected) {
+    if (!hasStrongGeneration(expected))
+        return sameIdentity(actual, expected);
+    return expected.nlink === '1'
+        && sameContent(actual, expected)
+        && actual.dev === expected.dev
+        && actual.ino === expected.ino
+        && actual.mtime_ns === expected.mtime_ns
+        && sameStrongGeneration(actual, expected);
+}
+function hasStrongGeneration(identity) {
+    return identity.birthtime_ns !== undefined
+        && identity.nlink !== undefined
+        && identity.mode !== undefined;
+}
+function sameStrongGeneration(left, right) {
+    return hasStrongGeneration(left)
+        && hasStrongGeneration(right)
+        && left.birthtime_ns === right.birthtime_ns
+        && left.nlink === right.nlink
+        && left.mode === right.mode;
+}
+function statMatchesStrongGeneration(stat, identity) {
+    return hasStrongGeneration(identity)
+        && stat.birthtimeNs.toString() === identity.birthtime_ns
+        && stat.nlink.toString() === identity.nlink
+        && stat.mode.toString() === identity.mode;
 }
 function sameContent(left, right) {
     return left.size === right.size && safeDigestEqual(left.sha256, right.sha256);

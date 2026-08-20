@@ -54,7 +54,13 @@ export interface RecipeFromSkillsOptions {
     publish: boolean;
     jsonOut: boolean;
 }
-export type RecipeOptions = RecipeBuildOptions | RecipeReuseOptions | RecipeFromSkillsOptions;
+export interface RecipeSearchOptions {
+    sub: 'search';
+    q?: string;
+    limit?: number;
+    jsonOut: boolean;
+}
+export type RecipeOptions = RecipeBuildOptions | RecipeReuseOptions | RecipeFromSkillsOptions | RecipeSearchOptions;
 export declare function runRecipeCommand(argv: readonly string[], deps?: RecipeCliDeps): Promise<number>;
 export declare function createRecipeHubFromEnv(env?: NodeJS.ProcessEnv, connectHub?: (opts: ConnectPublicOptions) => {
     hub: PublicHubCapability;

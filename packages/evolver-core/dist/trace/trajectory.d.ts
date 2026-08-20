@@ -78,5 +78,13 @@ export interface TraceTrajectoryDraft {
     coverage: TraceCoverageItem[];
 }
 export declare function traceRecordToTurnDraft(record: NativeTraceRecord): TraceTurnDraft | null;
+/**
+ * Exact-join helper for Learning Ops: return the unique non-empty session id across turns.
+ * Fail closed — 0 or >1 distinct ids yield null. Matches the correlation key contract used by
+ * Darwin (`cc::<session_id>` ↔ packet `traceEvents[].sessionId`).
+ */
+export declare function uniqueSessionId(turns: readonly {
+    session_id?: string | null;
+}[]): string | null;
 export declare function buildTraceTrajectoryDraft(records: readonly NativeTraceRecord[]): TraceTrajectoryDraft;
 export declare function coverageForTurns(turns: readonly TraceTurnDraft[]): TraceCoverageItem[];

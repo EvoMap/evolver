@@ -53,6 +53,28 @@ export class AgentRunTraceRecorder {
         this.opts = opts;
     }
     get events() { return this.recorded; }
+    get sessionId() { return this.opts.sessionId; }
+    /**
+     * Late-bind a session id discovered after run start (e.g. unique proxy llm_turn session).
+     * Backfills already-recorded events so the whole trajectory carries the join key.
+     * Fail closed on empty/whitespace values and conflicting rebinds.
+     */
+    bindSessionId(sessionId) {
+        const next = sessionId.trim();
+        if (next.length === 0) {
+            throw new Error('sessionId must be a non-empty string');
+        }
+        const current = this.opts.sessionId;
+        if (current !== undefined) {
+            if (current === next)
+                return;
+            throw new Error(`sessionId already bound to ${current}; refusing to rebind to ${next}`);
+        }
+        this.opts.sessionId = next;
+        for (const event of this.recorded) {
+            event.sessionId = next;
+        }
+    }
     runStarted(input = {}) {
         return this.record('run.started', {
             ...(input.taskSummary !== undefined ? { taskSummary: input.taskSummary } : {}),

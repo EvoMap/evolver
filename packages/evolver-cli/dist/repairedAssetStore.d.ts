@@ -1,0 +1,2 @@
+import { assetstore } from '@evomap/evolver-core';
+export declare function storeRepairedAsset(asset: assetstore.AssetRecord, store: assetstore.AssetStoreProvider, env: NodeJS.ProcessEnv): Promise<boolean>;

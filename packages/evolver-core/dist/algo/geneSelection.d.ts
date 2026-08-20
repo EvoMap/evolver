@@ -49,6 +49,13 @@ export interface GeneCandidateInput {
      */
     reuseAdjust?: number;
     /**
+     * Soft preference for genes whose five K_auto coordinates are machine-decidable (decideKauto.inKauto).
+     * Assembly stamps this when the source record clears the strict predicate. SOFT only: it re-orders near-ties
+     * among already-admitted candidates and can NEVER resurrect a gene excluded by trust/review/ban. Absent/false
+     * → 0 contribution, so the historical catalogue (strict membership 0%) is not zero-scored.
+     */
+    kautoMember?: boolean;
+    /**
      * Authoritative provenance tag from Gene.generation_meta.source. The legacy `gene_distilled_` prefix remains a
      * fallback only for old candidates that do not carry this field.
      */
@@ -100,7 +107,8 @@ export interface SelectionInput {
 export interface ScoredCandidate {
     geneId: string;
     assetId?: string;
-    score: number; /** Internal expanded match in [0,1]; omitted from root-event candidate payloads. */
+    score: number;
+    /** Internal expanded match in [0,1]; omitted from root-event candidate payloads. */
     matchScore?: number;
     reasons: string[];
     health?: GeneHealth;
@@ -178,12 +186,55 @@ export declare const TASK_DOMAIN_WEIGHT = 0.08;
 /** signals_match is weak domain evidence; its maximum score contribution is 0.08 * 0.5 = 0.04. */
 export declare const TASK_DOMAIN_SIGNAL_EVIDENCE = 0.5;
 /**
- * Version of the full engine-health weight vector (health 0.6 + signal-match 0.4 − epigenetic penalty
- * + CONFIDENCE_WEIGHT × confidence + REUSE_WEIGHT × reuse-sentiment). Bumped whenever a factor is added so golden
- * weight snapshots track the change. Composed from the health-weights version so a change to either layer shows.
+ * Soft boost for strict K_auto members. Smaller than CONFIDENCE_WEIGHT: membership is a writer-side property,
+ * not verified cycle history, so it only breaks near-ties between already-eligible candidates.
  */
-export declare const LEGACY_SELECTION_WEIGHTS_VERSION = "sel-5-domain(gh-2,conf=0.15,memory=0.12,reuse=0.1,domain=0.08)";
-export declare const SELECTION_WEIGHTS_VERSION = "sel-6-idf-domain(gh-2,conf=0.15,memory=0.12,reuse=0.1,domain=0.08)";
+export declare const KAUTO_WEIGHT = 0.05;
+/**
+ * Version of the full engine-health weight vector (health 0.6 + signal-match 0.4 − epigenetic penalty
+ * + CONFIDENCE_WEIGHT × confidence + REUSE_WEIGHT × reuse-sentiment + KAUTO_WEIGHT × kauto-member).
+ * Bumped whenever a factor is added so golden weight snapshots track the change. Composed from the
+ * health-weights version so a change to either layer shows.
+ */
+export declare const LEGACY_SELECTION_WEIGHTS_VERSION = "sel-6-domain(gh-2,conf=0.15,memory=0.12,reuse=0.1,domain=0.08)";
+export declare const SELECTION_WEIGHTS_VERSION = "sel-7-idf-domain(gh-2,conf=0.15,memory=0.12,reuse=0.1,domain=0.08)";
+export interface KautoAblationPoolResult {
+    lambda: number;
+    ranking: Array<{
+        rank: number;
+        geneId: string;
+        assetId?: string;
+        score: number;
+        scoreBase: number;
+        kautoContribution: number;
+        kautoMember: boolean;
+    }>;
+    selectedGeneId: string | null;
+    selectedAssetId?: string;
+    scoreBaseMin: number;
+    scoreBaseMax: number;
+    scoreBaseMean: number;
+}
+export interface KautoAblationCompare {
+    lambdas: readonly number[];
+    pools: KautoAblationPoolResult[];
+    /** Pairs (baseline λ=0 vs each λ>0) where any gene's rank changed. */
+    rankChangesByLambda: Record<string, number>;
+    /** Pairs where the selected (top) gene changed vs λ=0. */
+    selectedChangesByLambda: Record<string, boolean>;
+    /** Pairs where the top-k set changed vs λ=0. */
+    topKChangesByLambda: Record<string, number>;
+    topK: number;
+}
+/**
+ * Offline λ ablation over an already-admitted candidate pool.
+ * Does not run hard gates / force / distilled fallback — those stay outside the soft preference.
+ * Pure ranking sensitivity for score_T2 = score_base + λ · 1[k_a ∈ K_auto].
+ */
+export declare function ablateKautoLambda(input: Pick<SelectionInput, 'signals' | 'candidates' | 'semanticCorpus' | 'disableSemanticIdf'>, lambdas?: readonly number[], opts?: {
+    topK?: number;
+    floor?: number;
+}): KautoAblationCompare;
 interface SelectionGuardAssessment {
     wouldAbstain: boolean;
     reason?: SelectionGuardReason;

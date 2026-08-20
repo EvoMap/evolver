@@ -1,6 +1,13 @@
 import { type Capsule } from '../wire/index.js';
-import type { ProofOfWork } from '../schema/proofOfWork.js';
+import { type ProofOfWork } from '../schema/proofOfWork.js';
 export type ResolutionStatus = 'pending' | 'suppressed_observationally' | 'resolved_by_evidence' | 'regressed' | 'inconclusive';
+export interface FailureEvidenceIdentityInput {
+    failureId?: string;
+    rootAttemptId?: string;
+    executionId?: string;
+    verifierDigest?: string;
+    artifactDigest?: string;
+}
 export interface SolidifyInput {
     geneId: string;
     trigger: readonly string[];
@@ -11,6 +18,8 @@ export interface SolidifyInput {
         score: number;
     };
     proofOfWork?: ProofOfWork;
+    /** Failure-threshold identity. Stored only for failed Capsules; retry roots dedupe automatic fan-out. */
+    failureIdentity?: FailureEvidenceIdentityInput;
     /** 是否有强证据(validation/测试在证据下通过). 默认 false → 不自动升级到 resolved. */
     strongEvidence?: boolean;
     /** regressed 判定阈: 失败且分低于此 → regressed, 否则 inconclusive. 默认 0.3. */
@@ -22,7 +31,7 @@ export interface SolidifyResult {
     producedValue: boolean;
     reasons: string[];
 }
-/** ProofOfWork 是否表明有实际产出(解锁非 coding agent, 批注#17/#19). */
+/** ProofOfWork 是否表明有实际产出(解锁非 coding agent, 批注#17/#19). #961: 兼容读 helper(snake_case 优先, 回退旧 camelCase 存量). */
 export declare function proofIndicatesOutput(p?: ProofOfWork): boolean;
 /**
  * 两级 resolution(M4A-8) + ProofOfWork 判价值(M4A-5):

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, realpath, rename, rm, writeFile, } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, open, realpath, rename, rm, writeFile, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import { ops } from '@evomap/evolver-core';
@@ -17,6 +17,32 @@ const UNIX_CONTROLLER_DIRECTORY = 'unix-controller';
 const UNIX_CONTROLLER_NAME = 'evolver-recovery-controller';
 const WINDOWS_CONTROLLER_DIRECTORY = 'windows-controller';
 const WINDOWS_CONTROLLER_NAME = 'evolver-recovery-controller.exe';
+function bootstrapClaimOwnershipReceiptPath(claimPath) {
+    const canonical = resolve(claimPath);
+    const claimName = basename(canonical);
+    if (!/\.bootstrap-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.claim$/i
+        .test(claimName)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_has_no_transaction_owner');
+    }
+    return join(dirname(canonical), `${claimName.slice(0, -'.claim'.length)}.rollback`);
+}
+async function syncDirectoryDurably(path) {
+    let handle;
+    try {
+        handle = await open(path, constants.O_RDONLY);
+        await handle.sync();
+    }
+    catch (error) {
+        if (isErrno(error, 'EINVAL'))
+            return;
+        if (process.platform === 'win32' && (isErrno(error, 'EPERM') || isErrno(error, 'EACCES')))
+            return;
+        throw error;
+    }
+    finally {
+        await handle?.close().catch(() => { });
+    }
+}
 export async function inspectDurableSelfUpdate(options) {
     const paths = await resolveTransactionPaths(options, false);
     if (!paths)
@@ -52,7 +78,18 @@ export async function provisionStableUnixRecoveryController(options) {
     const owner = await acquireLock(paths.lock, options.pid ?? process.pid);
     const controllerDirectory = join(paths.root, UNIX_CONTROLLER_DIRECTORY);
     const controllerPath = join(controllerDirectory, UNIX_CONTROLLER_NAME);
-    const temporaryPath = join(controllerDirectory, `.${UNIX_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    const temporaryPath = options.artifactClaimPath
+        ?? join(controllerDirectory, `.${UNIX_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    if (dirname(resolve(temporaryPath)) !== resolve(controllerDirectory)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unix_controller_claim_outside_directory');
+    }
+    const ownershipReceiptPath = options.replaceExisting === false && options.artifactClaimPath !== undefined
+        ? bootstrapClaimOwnershipReceiptPath(temporaryPath)
+        : undefined;
+    if (ownershipReceiptPath && !options.onArtifactPublished) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_has_no_durable_owner_callback');
+    }
+    let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
         const loadedJournal = await readJournal(paths.journal);
         if (loadedJournal) {
@@ -63,16 +100,50 @@ export async function provisionStableUnixRecoveryController(options) {
         }
         await ensureSecureDirectory(paths.root);
         await ensureSecureDirectory(controllerDirectory);
+        if (options.replaceExisting === false) {
+            try {
+                await lstat(controllerPath);
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, `bootstrap_controller_already_exists:${controllerPath}`);
+            }
+            catch (error) {
+                if (!isErrno(error, 'ENOENT'))
+                    throw error;
+            }
+        }
         const targetIdentity = await assertRegularNonSymlink(paths.targetPath, 'target');
         const targetBytes = await readRegularFile(paths.targetPath);
-        await writeExclusiveFile(temporaryPath, targetBytes, 0o700);
+        await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
+            ? {
+                ownershipReceiptPath,
+                onClaimCreated: () => options.onArtifactPublished(controllerPath, temporaryPath),
+            }
+            : undefined);
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
-        await rename(temporaryPath, controllerPath);
+        if (options.replaceExisting === false) {
+            await link(temporaryPath, controllerPath);
+            await syncDirectoryDurably(controllerDirectory);
+            await options.onArtifactPublished?.(controllerPath, temporaryPath);
+            if (ownershipReceiptPath) {
+                await rm(ownershipReceiptPath, { force: true });
+                await syncDirectoryDurably(controllerDirectory);
+            }
+            await rm(temporaryPath, { force: true });
+            await syncDirectoryDurably(controllerDirectory);
+            retainClaimOnFailure = false;
+        }
+        else {
+            await rename(temporaryPath, controllerPath);
+            await syncDirectoryDurably(controllerDirectory);
+        }
         await chmod(controllerPath, 0o700);
         return controllerPath;
     }
     finally {
-        await rm(temporaryPath, { force: true }).catch(() => { });
+        if (!retainClaimOnFailure) {
+            if (ownershipReceiptPath)
+                await rm(ownershipReceiptPath, { force: true }).catch(() => { });
+            await rm(temporaryPath, { force: true }).catch(() => { });
+        }
         await releaseLock(paths.lock, owner).catch(() => { });
     }
 }
@@ -132,7 +203,17 @@ export async function provisionStableWindowsRecoveryController(options, processE
     const owner = await acquireLock(paths.lock, options.pid ?? process.pid);
     const controllerDirectory = join(paths.root, WINDOWS_CONTROLLER_DIRECTORY);
     const controllerPath = stableWindowsRecoveryControllerPathForStateDir(paths.root);
-    const temporaryPath = join(controllerDirectory, `.${WINDOWS_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    const temporaryPath = options.artifactClaimPath ?? join(controllerDirectory, `.${WINDOWS_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    if (dirname(resolve(temporaryPath)) !== resolve(controllerDirectory)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'windows_controller_claim_outside_directory');
+    }
+    const ownershipReceiptPath = options.replaceExisting === false && options.artifactClaimPath !== undefined
+        ? bootstrapClaimOwnershipReceiptPath(temporaryPath)
+        : undefined;
+    if (ownershipReceiptPath && !options.onArtifactPublished) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_windows_controller_claim_has_no_durable_owner_callback');
+    }
+    let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
         const loadedJournal = await readJournal(paths.journal);
         if (loadedJournal) {
@@ -151,24 +232,60 @@ export async function provisionStableWindowsRecoveryController(options, processE
         }
         await ensureSecureDirectory(paths.root);
         await ensureSecureDirectory(controllerDirectory);
+        if (options.replaceExisting === false) {
+            try {
+                await lstat(controllerPath);
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, `bootstrap_windows_controller_already_exists:${controllerPath}`);
+            }
+            catch (error) {
+                if (!isErrno(error, 'ENOENT'))
+                    throw error;
+            }
+        }
         const targetIdentity = await assertRegularNonSymlink(paths.targetPath, 'target');
         const targetBytes = await readRegularFile(paths.targetPath);
-        await writeExclusiveFile(temporaryPath, targetBytes, 0o700);
+        await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
+            ? {
+                ownershipReceiptPath,
+                onClaimCreated: () => options.onArtifactPublished(controllerPath, temporaryPath),
+            }
+            : undefined);
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
-        try {
-            await assertRegularNonSymlink(controllerPath, 'windows_controller');
-            await rm(controllerPath);
+        if (options.replaceExisting !== false) {
+            try {
+                await assertRegularNonSymlink(controllerPath, 'windows_controller');
+                await rm(controllerPath);
+            }
+            catch (error) {
+                if (!isErrno(error, 'ENOENT'))
+                    throw error;
+            }
         }
-        catch (error) {
-            if (!isErrno(error, 'ENOENT'))
-                throw error;
+        if (options.replaceExisting === false) {
+            await link(temporaryPath, controllerPath);
+            await syncDirectoryDurably(controllerDirectory);
+            await options.onArtifactPublished?.(controllerPath, temporaryPath);
+            if (ownershipReceiptPath) {
+                await rm(ownershipReceiptPath, { force: true });
+                await syncDirectoryDurably(controllerDirectory);
+            }
+            await rm(temporaryPath, { force: true });
+            await syncDirectoryDurably(controllerDirectory);
+            retainClaimOnFailure = false;
         }
-        await rename(temporaryPath, controllerPath);
+        else {
+            await rename(temporaryPath, controllerPath);
+            await syncDirectoryDurably(controllerDirectory);
+        }
         await chmod(controllerPath, 0o700);
         return controllerPath;
     }
     finally {
-        await rm(temporaryPath, { force: true }).catch(() => { });
+        if (!retainClaimOnFailure) {
+            if (ownershipReceiptPath)
+                await rm(ownershipReceiptPath, { force: true }).catch(() => { });
+            await rm(temporaryPath, { force: true }).catch(() => { });
+        }
         await releaseLock(paths.lock, owner).catch(() => { });
     }
 }
@@ -787,15 +904,46 @@ async function readRegularFile(source) {
         await sourceHandle.close().catch(() => { });
     }
 }
-async function writeExclusiveFile(destination, bytes, mode) {
-    const destinationHandle = await open(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+async function writeExclusiveFile(destination, bytes, mode, publication) {
+    const stagingPath = publication?.ownershipReceiptPath ?? destination;
+    if (publication
+        && dirname(resolve(publication.ownershipReceiptPath)) !== dirname(resolve(destination))) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_outside_directory');
+    }
+    let stagingCreated = false;
+    let claimPublished = false;
+    const destinationHandle = await open(stagingPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+    stagingCreated = true;
     try {
         await destinationHandle.writeFile(bytes);
-        await destinationHandle.sync();
         await destinationHandle.chmod(mode);
+        await destinationHandle.sync();
+        if (publication) {
+            await syncDirectoryDurably(dirname(destination));
+            const [opened, receipt] = await Promise.all([
+                destinationHandle.stat({ bigint: true }),
+                lstat(publication.ownershipReceiptPath, { bigint: true }),
+            ]);
+            if (!opened.isFile() || opened.dev <= 0n || opened.ino <= 0n
+                || receipt.dev !== opened.dev || receipt.ino !== opened.ino) {
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_mismatch');
+            }
+            await link(publication.ownershipReceiptPath, destination);
+            await syncDirectoryDurably(dirname(destination));
+            claimPublished = true;
+            const claim = await lstat(destination, { bigint: true });
+            if (claim.dev !== opened.dev || claim.ino !== opened.ino) {
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_receipt_mismatch');
+            }
+            await publication.onClaimCreated();
+        }
     }
     finally {
         await destinationHandle.close().catch(() => { });
+        if (publication && stagingCreated && !claimPublished) {
+            await rm(stagingPath, { force: true }).catch(() => { });
+            await syncDirectoryDurably(dirname(stagingPath)).catch(() => { });
+        }
     }
 }
 async function restoreBackup(paths, journal, force = false) {

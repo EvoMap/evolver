@@ -8,6 +8,7 @@ import { isWithinRoot } from './claudeBridge.js';
 import { findSignalHints } from './openPrRegistry.js';
 import { AgentRunTraceRecorder, buildLearningPacketDraft } from '../trace/learningTrace.js';
 import { collectRunLlmTurns } from '../trace/proxyTurns.js';
+import { uniqueSessionId } from '../trace/trajectory.js';
 /** Same path-containment as the bridge guard — used here to refuse before running anything (clean verdict). */
 function withinAllowlist(repo, roots) {
     return roots.some((root) => isWithinRoot(repo, root));
@@ -235,6 +236,16 @@ export async function runAutoExecTask(deps, rawTask, safety) {
             const proxyTraces = deps.learningTrace.proxyTraces;
             if (proxyTraces) {
                 const turns = collectRunLlmTurns(proxyTraces.dir, { startMs: runStartMs, endMs: proxyTraceClock() }, proxyTraces.readOptions ? { readOptions: proxyTraces.readOptions } : {});
+                // Exact-join key for Darwin: bind the unique proxy session before folding turns so
+                // every subsequent event (and backfilled earlier ones) carries the same sessionId.
+                // Fail closed when 0 or >1 sessions appear — never invent a correlation key.
+                const sid = uniqueSessionId(turns);
+                if (sid !== null) {
+                    try {
+                        traceRecorder.bindSessionId(sid);
+                    }
+                    catch { /* observability only */ }
+                }
                 for (const turn of turns)
                     traceRecorder.recordLlmTurn(turn);
             }

@@ -10,8 +10,8 @@
 // and degrades to the agent `/pack apply` path on any non-ok result. Two hard rules follow:
 //   1. Print EXACTLY ONE envelope object to STDOUT on BOTH success and failure (in --json mode).
 //   2. NEVER let a token/secret reach any stream — error text is mapped to fixed messages / redacted.
-import { assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled } from '@evomap/evolver-adapter-public';
+import { assetrepair, assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
+import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv } from './recipe.js';
 import { getCliVersion } from './version.js';
@@ -24,29 +24,6 @@ const REUSE_USAGE = [
 // Flags that consume the following token as their value. firstPositional must skip those values so a flag value
 // (e.g. the `reference` in `--mode reference`) is never mistaken for a bare positional asset id.
 const VALUE_FLAGS = new Set(['--id', '--mode', '--run']);
-// Keep this list limited to Hub-only fields. `confidence` is canonical Capsule content and must
-// survive integrity verification even though delivery rows also use a field with that name.
-const HUB_METADATA_KEYS = new Set([
-    'credit_cost',
-    'gdi_score',
-    'success_rate',
-    'reuse_count',
-    'ranking_score',
-    'source_node_id',
-    'fetched_at',
-    'receipt',
-    'hub_receipt',
-    'already_purchased',
-    '_semantic_similarity',
-    'semantic_similarity',
-    '_search_score',
-    'search_score',
-    '_match_score',
-    'match_score',
-    '_retrieval_rank',
-    'retrieval_rank',
-    'original_asset_id',
-]);
 export async function runReuseCommand(argv, deps = {}) {
     const ctx = {
         jsonOut: argv.includes('--json'),
@@ -81,13 +58,19 @@ export async function runReuseCommand(argv, deps = {}) {
         const store = deps.store ?? new assetstore.LocalJsonlProvider(deps.assetsDir ?? events.assetsDir(env));
         // 1) Already in the local recall library → reuse is idempotent: log + ok, no hub round-trip.
         const local = await resolveLocalReuseAsset(store, opts.id);
-        if (local && !isUnsafeUnverifiedLocalAsset(local, store, deps)) {
-            logReuse(deps, opts, local, 'local');
-            return emit({ ok: true, status: 'ok', message: 'asset already in local recall library' }, ctx);
+        if (local) {
+            const disposition = localReuseDisposition(local, store, deps);
+            if (disposition === 'revoked') {
+                return emit({ ok: false, status: 'integrity_failed', message: 'local asset has been revoked' }, ctx);
+            }
+            if (disposition === 'reusable') {
+                logReuse(deps, opts, local, 'local');
+                return emit({ ok: true, status: 'ok', message: 'asset already in local recall library' }, ctx);
+            }
         }
         // 2) Dry-run: describe the intended pull, touch nothing.
         if (isHubDryRunEnabled(env)) {
-            return emit({ ok: true, status: 'dry_run', message: `would fetch ${opts.id} and write it to the local recall library` }, ctx);
+            return emit({ ok: true, status: 'dry_run', message: 'would fetch the requested asset and write it to the local recall library' }, ctx);
         }
         // 3) Pull the global asset by id, write it into the local recall library (put dedups → idempotent on repeat).
         const hub = deps.hub ?? createReuseFetcherFromEnv(env, deps);
@@ -97,23 +80,29 @@ export async function runReuseCommand(argv, deps = {}) {
         // trust. Best-effort by design:
         // a hello failure must not block the fetch — the fetch's own error path classifies precisely.
         await establishReuseTrust(hub);
-        const asset = await hub.fetchAssetById(opts.id);
-        if (!asset)
-            return emit({ ok: false, status: 'not_found', message: `asset ${opts.id} not found on the hub` }, ctx);
-        const { record, verified } = await ingestHubAsset(store, deps, asset, opts.id);
+        // This command owns the quarantine path below. Keep the shared adapter strict for every other caller and
+        // explicitly request an exact declared-ID delivery only where we will revalidate and freeze it as unverified.
+        const delivery = await fetchReuseDelivery(hub, opts.id);
+        if (delivery.status === 'absent')
+            return emit({ ok: false, status: 'not_found', message: 'asset not found on the hub' }, ctx);
+        if (delivery.status === 'rejected')
+            return emit(rejectedDeliveryOutcome(delivery.reason), ctx);
+        const { record, verified, repaired } = await ingestHubAsset(store, deps, delivery.asset, opts.id);
         logReuse(deps, opts, record, 'hub');
         // Both land the asset (exit 0). A verified reuse is a plain success; an unverified one is a first-class
         // success too — the operator's save happened — but carries reason `unverified` so the desktop adapter can
         // surface "added (unverified)" instead of a plain "added". status stays `ok` so older desktop builds, which
         // key success on status==='ok' and ignore reason, keep working unchanged.
-        return emit(verified
-            ? { ok: true, status: 'ok', message: 'reused into local recall library' }
-            : {
-                ok: true,
-                status: 'ok',
-                reason: 'unverified',
-                message: 'reused into local recall library as untrusted: hub-delivered content does not match its content fingerprint and could not be verified',
-            }, ctx);
+        if (verified)
+            return emit({ ok: true, status: 'ok', message: 'reused into local recall library' }, ctx);
+        return emit({
+            ok: true,
+            status: 'ok',
+            reason: 'unverified',
+            message: repaired
+                ? 'reused into local recall library as untrusted: hub-delivered content was incomplete and was repaired to a schema-valid record; it does not match its content fingerprint and could not be verified'
+                : 'reused into local recall library as untrusted: hub-delivered content does not match its content fingerprint and could not be verified',
+        }, ctx);
     }
     catch (e) {
         return emit(mapError(e), ctx);
@@ -130,14 +119,7 @@ function createReuseFetcherFromEnv(env, deps) {
     return {
         fetchAssetById: async (assetId) => {
             const body = await proxy.fetchAsset({ assetId, expectedHubMode: 'private' });
-            const root = recordValue(body);
-            const payload = recordValue(root['payload']);
-            const assets = Array.isArray(root['assets']) ? root['assets'] : Array.isArray(payload['assets']) ? payload['assets'] : [];
-            const asset = assets.find((candidate) => {
-                const record = recordValue(candidate);
-                return record['asset_id'] === assetId || record['id'] === assetId;
-            });
-            return asset && typeof asset === 'object' && !Array.isArray(asset) ? asset : null;
+            return selectPrivateReuseAsset(body, assetId);
         },
     };
 }
@@ -146,6 +128,48 @@ function configuredHubMode(env) {
     if (value === 'public' || value === 'private')
         return value;
     throw new Error('EVOMAP_HUB_MODE must be public or private');
+}
+function selectPrivateReuseAsset(body, requestedId) {
+    const root = recordValue(body);
+    const payload = recordValue(root['payload']);
+    const candidates = Array.isArray(root['assets'])
+        ? root['assets']
+        : Array.isArray(payload['assets'])
+            ? payload['assets']
+            : [];
+    const matches = [];
+    for (const candidate of candidates) {
+        const record = optionalRecord(candidate);
+        if (!record || !privateDeliveryMatchesRequestedId(record, requestedId))
+            continue;
+        const asset = record;
+        const delivery = unwrapHubAssetContent(asset);
+        const cleaned = stripHubDeliveryMetadataForIntegrity(delivery.content);
+        let canonical;
+        try {
+            canonical = wire.canonicalize(cleaned);
+        }
+        catch {
+            throw integrityError(delivery.synthesized);
+        }
+        matches.push({ asset, canonical, synthesized: delivery.synthesized });
+    }
+    if (matches.length === 0)
+        return null;
+    if (matches.some((match) => match.canonical !== matches[0].canonical)) {
+        throw integrityError(matches.some((match) => match.synthesized));
+    }
+    return matches.find((match) => match.synthesized)?.asset ?? matches[0].asset;
+}
+function privateDeliveryMatchesRequestedId(record, requestedId) {
+    const payload = optionalRecord(record['payload']);
+    if (requestedId.startsWith('sha256:')) {
+        return stringField(record, 'asset_id') === requestedId
+            || (payload !== undefined && stringField(payload, 'asset_id') === requestedId);
+    }
+    return stringField(record, 'id') === requestedId
+        || stringField(record, 'local_id') === requestedId
+        || (payload !== undefined && stringField(payload, 'id') === requestedId);
 }
 /** Flags this CLI understands. parseReuseArgs walks argv and rejects anything outside this set with reason
  *  `unsupported` so a typoed flag never silently falls through to a Hub round-trip — review blocker on V1 #283
@@ -170,7 +194,7 @@ export function parseReuseArgs(argv) {
             const eq = token.indexOf('=');
             const flag = eq >= 0 ? token.slice(0, eq) : token;
             if (!KNOWN_REUSE_FLAGS.has(flag))
-                return { ok: false, status: 'unsupported', error: `unsupported reuse argument: ${flag}` };
+                return { ok: false, status: 'unsupported', error: 'unsupported reuse argument' };
             if (eq < 0 && VALUE_FLAGS.has(flag)) {
                 // Value flag in space form consumes the next token; skip it so it doesn't get re-checked as a flag/positional.
                 const next = argv[i + 1];
@@ -183,10 +207,10 @@ export function parseReuseArgs(argv) {
         // `--`-prefixed check above and would otherwise be silently accepted as an asset id, violating the
         // fail-closed contract. Legal asset ids (`sha256:…`, `gene_distilled_…`, logical ids) never start with `-`.
         if (token.startsWith('-'))
-            return { ok: false, status: 'unsupported', error: `unsupported reuse argument: ${token}` };
+            return { ok: false, status: 'unsupported', error: 'unsupported reuse argument' };
         // First (and only) bare positional is the asset id; further positionals are unsupported.
         if (positional !== undefined)
-            return { ok: false, status: 'unsupported', error: `unsupported reuse argument: ${token}` };
+            return { ok: false, status: 'unsupported', error: 'unsupported reuse argument' };
         positional = token;
     }
     if (!jsonOut)
@@ -195,7 +219,7 @@ export function parseReuseArgs(argv) {
     // typo'd/extra arg — or a conflicting second id — pass fail-OPEN, contradicting the fail-closed contract.
     const idFromFlag = flagValue(argv, '--id');
     if (idFromFlag !== null && positional !== undefined) {
-        return { ok: false, status: 'unsupported', error: `unsupported reuse argument: ${positional}` };
+        return { ok: false, status: 'unsupported', error: 'unsupported reuse argument' };
     }
     const id = idFromFlag ?? positional;
     if (!id)
@@ -217,29 +241,49 @@ class ReuseIntegrityError extends Error {
 const INTEGRITY_MISMATCH_MESSAGE = 'hub-delivered content does not match the asset content fingerprint';
 const INTEGRITY_BACKFILLED_MESSAGE = 'hub delivered a synthesized payload for this asset; the original published content is unavailable for verification';
 const INTEGRITY_LOGICAL_ID_MESSAGE = 'hub-delivered asset does not match the requested logical id';
+const INTEGRITY_INCOMPLETE_MESSAGE = 'hub-delivered content is missing fields that cannot be repaired without the original publisher';
+const INTEGRITY_REVOKED_MESSAGE = 'hub-delivered asset has been revoked';
 function integrityError(synthesized) {
     return new ReuseIntegrityError(synthesized ? INTEGRITY_BACKFILLED_MESSAGE : INTEGRITY_MISMATCH_MESSAGE);
 }
 async function ingestHubAsset(store, deps, asset, requestedId) {
-    const delivered = stripHubMetadata(unwrapHubAssetContent(asset));
-    // `payload_backfill_reason` is a hub DELIVERY marker (unwrapHubAssetContent lifts it onto the content so a
-    // synthesized payload can be classified). It is NOT publisher content, so it must be excluded from EVERY hash
-    // — identity, the local-conflict check, AND the stored bytes — and never persisted. Capture the
-    // classification fact, then drop the marker ONCE, up front: hashing it here but stripping it before storage
-    // made assertNoLocalReuseIdConflict hash a different byte string than what landed on disk, throwing a false
-    // id conflict on the second reuse of the same synthesized asset (Bugbot HIGH, broke idempotency).
-    const synthesized = stringField(delivered, 'payload_backfill_reason') !== undefined;
-    const cleaned = withoutHubDeliveryMarkers(delivered);
+    const delivery = unwrapHubAssetContent(asset);
+    // Use the same content projection as the public adapter and sync. Delivery metadata is classified first, then
+    // removed from every hash and from the stored bytes; Capsule confidence remains canonical content.
+    const projection = stripHubDeliveryMetadataForIntegrity(delivery.content);
+    const synthesized = delivery.synthesized;
+    const type = stringField(projection, 'type');
+    const contentAssetId = stringField(projection, 'asset_id');
+    if ((type !== 'Gene' && type !== 'Capsule') || !contentAssetId || !isContentAssetId(contentAssetId)) {
+        throw integrityError(synthesized);
+    }
+    // The hub delivers a LOSSY projection of the published record (dropped `schema_version`/`id`, emptied
+    // `constraints`, extra non-schema keys — measured across promoted genes on 2026-08-14), so a schema verdict
+    // here is a verdict on the DELIVERY, not on the asset. Repair it into a storable record instead of throwing
+    // the asset away; the identity guards below stay untouched, and the result is still quarantined as unverified.
+    const repair = repairHubProjection(projection, contentAssetId);
+    if (!repair.ok)
+        throw new ReuseIntegrityError(repair.message);
+    const cleaned = repair.record;
+    try {
+        assetstore.assertCapsuleGeneBinding(cleaned);
+    }
+    catch (error) {
+        if (error instanceof assetstore.CapsuleGeneBindingError)
+            throw integrityError(synthesized);
+        throw error;
+    }
     const actualAssetId = wire.computeAssetId(cleaned);
-    const contentAssetId = stringField(cleaned, 'asset_id');
-    if (!actualAssetId || !contentAssetId) {
+    if (!actualAssetId || !isContentAssetId(actualAssetId)) {
         // Malformed beyond classification — no computable hash or no declared id — stays a hard reject.
         throw integrityError(synthesized);
     }
     // Identity guards stay STRICT: a hub that returned a DIFFERENT asset than requested (a self-consistent asset
     // B under a request for A, or a different logical id) is a delivery fault, not the hub's known content-rewrite
     // of the RIGHT asset — reject it so a reuse never silently pulls the wrong gene.
-    if (isContentAssetId(requestedId)) {
+    if (requestedId.startsWith('sha256:')) {
+        if (!isContentAssetId(requestedId))
+            throw integrityError(synthesized);
         if (contentAssetId !== requestedId)
             throw integrityError(synthesized);
     }
@@ -256,23 +300,60 @@ async function ingestHubAsset(store, deps, asset, requestedId) {
         const stored = await assetstore.ingestUntrustedConditional(store, provenance, cleaned);
         if (stored.status === 'logical_collision')
             throw new Error('local asset id conflict');
-        return { record: { ...cleaned, asset_id: stored.asset_id }, verified: true };
+        return { record: { ...cleaned, asset_id: stored.asset_id }, verified: true, repaired: false };
     }
     const reason = synthesized ? 'unverified_hub_synthesized' : 'unverified_hub_rewrite';
     const stored = await assetstore.ingestUnverifiedConditional(store, provenance, cleaned, reason);
     if (stored.status === 'logical_collision')
         throw new Error('local asset id conflict');
-    return { record: { ...cleaned, asset_id: stored.asset_id }, verified: false };
+    return { record: { ...cleaned, asset_id: stored.asset_id }, verified: false, repaired: repair.repaired };
 }
 /**
- * Drop hub DELIVERY markers that unwrapHubAssetContent lifts onto the content for classification but that must
- * never reach content-addressed storage. Right now that is `payload_backfill_reason`; keeping this as a named
- * helper localizes the "these keys describe HOW the hub delivered the asset, not the asset" rule.
+ * Make a hub delivery storable without letting it drift off the network identity it was fetched under.
+ * `repairAssetRecord` re-derives `asset_id` from the repaired content by design; here the DECLARED network id
+ * must survive instead, because the quarantine write freezes the repaired body under that id.
  */
-function withoutHubDeliveryMarkers(asset) {
-    const rest = { ...asset };
-    delete rest['payload_backfill_reason'];
-    return rest;
+function repairHubProjection(projection, declaredAssetId) {
+    const report = assetrepair.repairAssetRecord(projection);
+    if (report.status === 'already_valid')
+        return { ok: true, record: projection, repaired: false };
+    if (report.status === 'unrepairable') {
+        return { ok: false, message: `${INTEGRITY_INCOMPLETE_MESSAGE}: ${blockerSummary(report.blockers)}` };
+    }
+    const repairedContent = report.changes.some((change) => change.path !== 'asset_id');
+    return {
+        ok: true,
+        record: { ...report.asset, asset_id: declaredAssetId },
+        repaired: repairedContent,
+    };
+}
+// Hard rule 2 of this command: nothing dynamic reaches a stream unfiltered. Field paths come from the schema
+// gate, but an `additionalProperties` path is named by hub-controlled content — so only plain field-path shapes
+// pass, and only a handful of them.
+const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]]{1,40}$/;
+function blockerSummary(blockers) {
+    const fields = [...new Set(blockers.map((blocker) => blocker.path))]
+        .filter((path) => SAFE_FIELD_PATH.test(path))
+        .slice(0, 5);
+    return fields.length > 0 ? `unrepairable fields: ${fields.join(', ')}` : 'the delivered record could not be classified';
+}
+async function fetchReuseDelivery(hub, assetId) {
+    const options = { allowUnverifiedExactIdentity: true };
+    if (hub.fetchAssetDeliveryById)
+        return hub.fetchAssetDeliveryById(assetId, options);
+    const asset = await hub.fetchAssetById(assetId, options);
+    return asset ? { status: 'delivered', asset, verified: true } : { status: 'absent' };
+}
+// A delivered-but-refused asset is NOT a missing asset. Reporting both as `not_found` sent operators looking for
+// an asset the hub was serving the whole time; each rejection now names what the hub actually did.
+function rejectedDeliveryOutcome(reason) {
+    const messages = {
+        identity_mismatch: 'hub delivered an asset whose identity does not match the requested id',
+        revoked: INTEGRITY_REVOKED_MESSAGE,
+        ambiguous: 'hub delivered conflicting copies of the requested asset',
+        unverified_not_allowed: INTEGRITY_MISMATCH_MESSAGE,
+    };
+    return { ok: false, status: 'integrity_failed', message: messages[reason] };
 }
 async function resolveLocalReuseAsset(store, id) {
     // A logical id does not identify an asset type. Gene and Capsule ids may overlap, so only the Hub can resolve
@@ -280,35 +361,62 @@ async function resolveLocalReuseAsset(store, id) {
     return isContentAssetId(id) ? store.get(id) : null;
 }
 function unwrapHubAssetContent(asset) {
-    const payload = asset.payload;
-    if (payload && typeof payload === 'object' && !Array.isArray(payload) && stringField(payload, 'asset_id')) {
-        const content = payload;
-        const backfillReason = stringField(asset, 'payload_backfill_reason');
-        if (backfillReason && stringField(payload, 'payload_backfill_reason') === undefined) {
-            return { ...content, payload_backfill_reason: backfillReason };
-        }
-        return content;
+    const row = asset;
+    const payload = optionalRecord(row['payload']);
+    // Revocation is a delivery decision, not canonical content. Reject it before wrapper unwrapping or metadata
+    // stripping can erase the marker and accidentally turn a revoked listing/fetch race into an ingestible asset.
+    if (hasRevokedDeliveryMarker(row) || (payload !== undefined && hasRevokedDeliveryMarker(payload))) {
+        throw new ReuseIntegrityError(INTEGRITY_REVOKED_MESSAGE);
     }
-    return asset;
+    const outerType = stringField(row, 'type');
+    const innerType = payload ? stringField(payload, 'type') : undefined;
+    const synthesized = stringField(row, 'payload_backfill_reason') !== undefined
+        || (payload !== undefined && stringField(payload, 'payload_backfill_reason') !== undefined);
+    // A typed row is already a raw GEP record. Do not reinterpret a canonical payload field as a delivery wrapper.
+    if (outerType !== undefined || !payload || innerType === undefined) {
+        const transportType = stringField(row, 'asset_type');
+        const transportLogicalId = stringField(row, 'local_id');
+        if ((transportType !== undefined && transportType !== outerType)
+            || (transportLogicalId !== undefined && transportLogicalId !== stringField(row, 'id'))) {
+            throw integrityError(synthesized);
+        }
+        return { content: asset, synthesized };
+    }
+    const outerAssetId = stringField(row, 'asset_id');
+    const innerAssetId = stringField(payload, 'asset_id');
+    const outerAssetType = stringField(row, 'asset_type');
+    const innerLogicalId = stringField(payload, 'id');
+    if (!outerAssetId
+        || !innerAssetId
+        || outerAssetId !== innerAssetId
+        || (outerAssetType !== undefined && outerAssetType !== innerType)
+        || (stringField(row, 'id') !== undefined && stringField(row, 'id') !== innerLogicalId)
+        || (stringField(row, 'local_id') !== undefined && stringField(row, 'local_id') !== innerLogicalId)) {
+        throw integrityError(synthesized);
+    }
+    return { content: payload, synthesized };
 }
-function stripHubMetadata(asset) {
-    const out = {};
-    for (const [key, value] of Object.entries(asset))
-        if (!HUB_METADATA_KEYS.has(key))
-            out[key] = value;
-    return out;
+function hasRevokedDeliveryMarker(record) {
+    return ['status', 'trust_state'].some((key) => {
+        const value = record[key];
+        return typeof value === 'string' && value.trim().toLowerCase() === 'revoked';
+    });
 }
 function storeBaseDir(store, deps) {
     return store instanceof assetstore.LocalJsonlProvider
         ? store.baseDir
         : deps.assetsDir ?? events.assetsDir(deps.env ?? process.env);
 }
-function isUnsafeUnverifiedLocalAsset(asset, store, deps) {
-    if (wire.verifyAssetId(asset))
-        return false;
+function localReuseDisposition(asset, store, deps) {
     const record = new assetstore.ProvenanceStore(storeBaseDir(store, deps)).get(asset.asset_id);
-    if (record?.trusted === true || record?.decision !== undefined)
-        return false;
+    // An explicit revoke dominates content-hash validity and every prior trust state. Do not let a canonical body
+    // bypass the operator decision, and do not fall through to Hub refetch: this local id is intentionally blocked.
+    if (record?.decision === 'revoked')
+        return 'revoked';
+    if (wire.verifyAssetId(asset))
+        return 'reusable';
+    if (record?.trusted === true || record?.decision === 'promoted')
+        return 'reusable';
     const supportedReason = (record?.source === 'hub'
         && (record.reason === 'unverified_hub_rewrite' || record.reason === 'unverified_hub_synthesized')) || (record?.source === 'migrated' && record.reason === 'unverified_gepx_import');
     const isActiveWaiver = supportedReason
@@ -317,14 +425,14 @@ function isUnsafeUnverifiedLocalAsset(asset, store, deps) {
         && record.decidedBy === undefined
         && record.promotedBy === undefined
         && record.frozenContentId === wire.computeAssetId(asset);
-    return !isActiveWaiver;
+    return isActiveWaiver ? 'reusable' : 'refetch';
 }
 function stringField(record, key) {
     const value = record[key];
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 function isContentAssetId(value) {
-    return value.startsWith('sha256:');
+    return /^sha256:[0-9a-f]{64}$/.test(value);
 }
 function logReuse(deps, opts, asset, source) {
     // AssetCallLog.append is best-effort (never throws) — a logging failure must not break the reuse write.
@@ -373,6 +481,9 @@ function hubErrorField(body) {
 function recordValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
+function optionalRecord(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+}
 function mapError(e) {
     if (e instanceof ReuseIntegrityError) {
         return { ok: false, status: 'integrity_failed', message: e.message };
@@ -414,15 +525,18 @@ function mapError(e) {
         return { ok: false, status: 'unavailable', message: 'private Hub proxy is not configured' };
     }
     if (/Hub URL|EVOMAP_HUB_URL|A2A_HUB_URL/i.test(msg)) {
-        return { ok: false, status: 'unavailable', message: redact(msg) };
+        return { ok: false, status: 'unavailable', message: 'hub URL configuration is invalid' };
     }
     if (/Hub credentials|node identity|evolver login|EVOMAP_NODE_SECRET/i.test(msg)) {
-        return { ok: false, status: 'unauthorized', message: redact(msg) };
+        return { ok: false, status: 'unauthorized', message: 'hub authentication failed; run `evolver login` or set EVOMAP_NODE_SECRET' };
     }
     if (/\b(?:hub|http)\s*5\d\d\b/i.test(msg) || /\b(network|fetch failed|ECONN[A-Z_]*|ENOTFOUND|ETIMEDOUT)\b/i.test(msg)) {
         return { ok: false, status: 'network', message: 'hub is unreachable' };
     }
-    return { ok: false, status: 'internal_error', message: redact(msg) };
+    if (msg === 'local asset id conflict') {
+        return { ok: false, status: 'internal_error', message: 'local asset id conflict' };
+    }
+    return { ok: false, status: 'internal_error', message: 'reuse operation failed' };
 }
 function emit(outcome, ctx) {
     if (ctx.jsonOut) {
@@ -437,15 +551,6 @@ function emit(outcome, ctx) {
         ctx.stderr(`reuse failed (${outcome.status}): ${outcome.message}`);
     }
     return outcome.ok ? 0 : 1;
-}
-/** Defensive redaction so a stray credential in an error string never reaches stdout/stderr. */
-function redact(value) {
-    return value
-        .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-        .replace(/\b([A-Z][A-Z0-9_]*(?:_SECRET|_TOKEN))\b\s*[:=]\s*["']?[^"',\s;}]+/g, '$1=[redacted]')
-        .replace(/\b(authorization|node_secret|nodeSecret|access_token|refresh_token|token|secret)\b\s*[:=]\s*["']?[^"',\s;}]+/gi, '$1=[redacted]')
-        .replace(/\bsk-[A-Za-z0-9-]{16,}/g, 'sk-[redacted]')
-        .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, 'gh_[redacted]');
 }
 function flagValue(args, flag) {
     for (let i = 0; i < args.length; i += 1) {

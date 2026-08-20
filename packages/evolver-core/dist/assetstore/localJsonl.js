@@ -8,7 +8,8 @@ function resultLogicalId(logicalId) {
         ? logicalId
         : undefined;
 }
-function signalsOf(a) {
+/** Signal names a record advertises, across the four key spellings the pool uses. */
+export function signalsOf(a) {
     const out = [];
     for (const key of ['signals_match', 'signals', 'trigger', 'trigger_signals']) {
         const v = a[key];
@@ -245,6 +246,10 @@ export class LocalJsonlProvider {
                 break;
         }
         return out;
+    }
+    listAll(kind) {
+        this.ensureFresh();
+        return [...this.index.values()].filter((record) => kind === undefined || record.type === kind);
     }
     async search(q) {
         this.ensureFresh();

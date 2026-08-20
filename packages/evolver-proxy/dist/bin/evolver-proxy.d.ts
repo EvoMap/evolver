@@ -2,12 +2,14 @@
 import { mailbox } from '@evomap/evolver-core';
 import { PrivateNodeCredentialStore } from '../private/nodeCredentialStore.js';
 import { loadEnvFileFromEnv } from './envFile.js';
+import { type DegradedStartupBootstrapResult } from '../selfUpdate/bootstrap.js';
 import { type SelfUpdatePolicy } from '../selfUpdate/policy.js';
 import { type ReleaseBinaryOptions } from '../selfUpdate/releaseBinary.js';
 import { rollbackDurableSelfUpdate, type SelfUpdateRecoveryOptions, type SelfUpdateRecoveryResult, type StagedBinaryProbe } from '../selfUpdate/transaction.js';
 import { maybeRunWindowsUpdaterWorkerFromArgv } from '../selfUpdate/windowsUpdater.js';
 import { maybeRunUnixRecoveryController } from '../selfUpdate/unixController.js';
 import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsController.js';
+import { consumeRecoveryChildStartGate } from '../selfUpdate/recoveryChildStartGate.js';
 import type { AtpProxyClient, ProxyDaemonDeps, ProxyTickReport } from '../daemon/proxyDaemon.js';
 import type { HelloLifecycleMode, HelloResult, HeartbeatOptions, HeartbeatResult } from '../lifecycle/manager.js';
 import type { InboundResult } from '../sync/engine.js';
@@ -15,7 +17,16 @@ import type { InboundResult } from '../sync/engine.js';
 export interface RunProxyMainOptions {
     environmentPrepared?: boolean;
     recoveryPrepared?: SelfUpdateRecoveryResult;
+    requireLifecycleBootstrapState?: boolean;
+    /** Test-only transport seam. Production always resolves the configured hub runtime. */
+    connectRuntime?: typeof connectHubRuntime;
+    /** Test-only bounded loop seam. Production always runs the managed proxy loop. */
+    runLoop?: Parameters<typeof runManagedProxyLoop>[0]['runLoop'];
 }
+export declare function writeBootstrapStartupResult(result: DegradedStartupBootstrapResult, writers?: {
+    stdout?: (text: string) => void;
+    stderr?: (text: string) => void;
+}): 0 | 1 | undefined;
 export declare function runProxyMain(options?: RunProxyMainOptions): Promise<void>;
 export declare function recoverBoundDurableSelfUpdate(options: Omit<SelfUpdateRecoveryOptions, 'beforeJournalMutation'>): Promise<SelfUpdateRecoveryResult>;
 export declare function loadProxyEnvFile(env: NodeJS.ProcessEnv): ReturnType<typeof loadEnvFileFromEnv>;
@@ -52,6 +63,7 @@ export interface RunProxyCliOptions {
     runUnixRecoveryController?: typeof maybeRunUnixRecoveryController;
     runWindowsRecoveryController?: typeof maybeRunWindowsRecoveryController;
     runWindowsUpdaterWorker?: typeof maybeRunWindowsUpdaterWorkerFromArgv;
+    consumeChildStartGate?: typeof consumeRecoveryChildStartGate;
 }
 export interface ProxyCliPathOptions {
     home?: string;

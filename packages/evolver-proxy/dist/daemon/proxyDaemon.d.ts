@@ -144,6 +144,8 @@ export declare class ProxyDaemon {
     private readonly collaborationFacade;
     private readonly publishRecallVerifier;
     private readonly proxyHandler;
+    private readonly hub;
+    private readonly recipeComposeStarted;
     private ipc;
     private readonly now;
     private readonly random;
@@ -231,6 +233,7 @@ export declare class ProxyDaemon {
     private cacheRemoteAssetSearch;
     private publishAssetSubmitSynchronously;
     private createSynchronousAssetSubmitEnvelope;
+    private composeRecipeAfterAcceptedSubmit;
     private currentHubMode;
     private handleHubModeBoundOutbound;
     private publishSynchronousBundle;

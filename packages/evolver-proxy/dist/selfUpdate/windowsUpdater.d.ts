@@ -38,6 +38,22 @@ export interface ApplyWindowsUpdaterOptions {
     workerExecPath?: string;
     platform?: NodeJS.Platform;
     renameFn?: typeof rename;
+    /** Test seam; production always evaluates the native Windows owner/writer policy. */
+    assertHelperTrust?: WindowsUpdaterHelperTrust;
+}
+export interface WindowsUpdaterHelperTrustPaths {
+    stateDir: string;
+    directory: string;
+    helperPath: string;
+    pendingPath: string;
+}
+export type WindowsUpdaterHelperTrust = (paths: WindowsUpdaterHelperTrustPaths) => void | Promise<void>;
+export interface RevalidateWindowsUpdaterHelperOptions {
+    stateDir: string;
+    helperPath?: string;
+    platform?: NodeJS.Platform;
+    /** Test seam; production always evaluates the native Windows owner/writer policy. */
+    assertHelperTrust?: WindowsUpdaterHelperTrust;
 }
 export interface BindWindowsManagedExecutableOptions {
     stateDir: string;
@@ -55,6 +71,12 @@ export interface BoundWindowsManagedExecutable {
 export declare function resolveWindowsUpdaterPaths(stateDirInput: string): WindowsUpdaterPaths;
 /** Bind a fixed executable below the private state root without following directory links. */
 export declare function bindWindowsManagedExecutable(options: BindWindowsManagedExecutableOptions): Promise<BoundWindowsManagedExecutable>;
+/**
+ * Bind the fixed helper and verify the persisted executable generation before
+ * the lifecycle owner creates a worker process. The worker repeats this check
+ * after consuming fd4 and before any target mutation.
+ */
+export declare function revalidatePendingWindowsUpdaterHelper(options: RevalidateWindowsUpdaterHelperOptions): Promise<BoundWindowsManagedExecutable>;
 /**
  * Prepare a launcher-consumed update descriptor. This function never mutates
  * the live executable and never spawns a competing relaunch process.
@@ -76,4 +98,7 @@ export declare function maybeRunWindowsUpdaterWorkerFromArgv(options?: {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     processExecPath?: string;
+    startupGateConsumed?: boolean;
+    /** Test seam; production always evaluates the native Windows owner/writer policy. */
+    assertHelperTrust?: WindowsUpdaterHelperTrust;
 }): Promise<number | undefined>;

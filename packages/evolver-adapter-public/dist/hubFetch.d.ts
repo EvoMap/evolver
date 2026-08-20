@@ -84,9 +84,9 @@ export interface HubFetchDeps {
     deadlineScheduler?: HubDeadlineScheduler;
 }
 /**
- * 公版 hub HTTP 客户端(M6-6). 每请求经 AuthProvider 取凭证: POST 通常注入 body; GET 与 strict hello envelope
- * 走 **Authorization: Bearer <node_secret>** 头(hub 只从 header/body 读 node_secret, 绝不从 query — #8);
- * sender_id 是标识非凭证, 留 query/body.
+ * 公版 hub HTTP 客户端(M6-6). 每请求经 AuthProvider 取凭证: legacy node_secret 对 GET 与 strict
+ * GEP envelope POST 走 **Authorization: Bearer <node_secret>** 头，绝不进入 query 或 envelope body；
+ * 其余兼容 REST POST 保留既有 body contract。sender_id 是标识非凭证, 留 query/body.
  * 401/403→AuthError(reauth), 4xx→HubClientError(终态), 5xx→重试.
  * 非 JSON Hub 响应(WAF/HTML/captive portal/gateway text)→HubUnreachableError, 不触发 auth recovery.
  */

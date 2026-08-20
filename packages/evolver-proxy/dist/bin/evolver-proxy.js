@@ -2,9 +2,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve, win32 } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { daemon, hub as hubNs, mailbox } from '@evomap/evolver-core';
+import { bootstrap as coreBootstrap, daemon, hub as hubNs, mailbox, util } from '@evomap/evolver-core';
 import { AtpHubClient, connectPublicHub, globalFetchLike, isNodeSecret, parseNodeSecretVersion } from '@evomap/evolver-adapter-public';
 import { ProxyDaemon } from '../daemon/proxyDaemon.js';
 import { resolveHubMode, resolveHubUrl } from '../daemon/selectHub.js';
@@ -19,27 +19,47 @@ import { publishProxySettings } from './proxySettings.js';
 import { expandHomePath, loadEnvFileFromEnv } from './envFile.js';
 import { readLegacyNodeId, resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
 import { createClaimNudge, wrapHelloWithClaimNudge } from '../lifecycle/claimNudge.js';
-import { bootstrapDegradedSelfUpdateStartup } from '../selfUpdate/bootstrap.js';
+import { acquireLifecycleBootstrapOwnerLease, assertSupervisedLifecycleBootstrapState, bootstrapDegradedSelfUpdateStartup, clearRecoveryControllerLifecycleOwnerCapability, lifecycleBootstrapStatePresent, publishRecoveryControllerLifecycleStartupAttestation, RECOVERY_CONTROLLER_LIFECYCLE_OWNER_CAPABILITY_ENV, } from '../selfUpdate/bootstrap.js';
 import { getCurrentVersion } from '../selfUpdate/version.js';
 import { resolveEffectiveSelfUpdatePolicy, selfUpdateSupervisorAttested, } from '../selfUpdate/policy.js';
 import { resolveSelfUpdatePublicKey } from '../selfUpdate/builtinKey.js';
-import { atomicReplaceExecutable, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, resolveSelfUpdateTarget, } from '../selfUpdate/releaseBinary.js';
+import { atomicReplaceExecutable, assertSelfUpdateProcessTargetBound as assertReleaseSelfUpdateProcessTargetBound, downloadGithubReleaseArtifact, resolveGithubReleaseManifest, } from '../selfUpdate/releaseBinary.js';
 import { beginDurableSelfUpdate, confirmDurableSelfUpdate, recoverDurableSelfUpdate, rollbackDurableSelfUpdate, } from '../selfUpdate/transaction.js';
-import { SELF_UPDATE_FAILURE_CODES } from '../selfUpdate/failureCodes.js';
-import { maybeRunWindowsUpdaterWorkerFromArgv } from '../selfUpdate/windowsUpdater.js';
+import { SELF_UPDATE_FAILURE_CODES, selfUpdateFailure } from '../selfUpdate/failureCodes.js';
+import { maybeRunWindowsUpdaterWorkerFromArgv, WINDOWS_UPDATER_WORKER_ARG, } from '../selfUpdate/windowsUpdater.js';
 import { maybeRunUnixRecoveryController } from '../selfUpdate/unixController.js';
 import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsController.js';
+import { consumeRecoveryChildStartGate, RECOVERY_CHILD_START_GATE_ENV, } from '../selfUpdate/recoveryChildStartGate.js';
+import { publishLifecycleBootstrapReadiness } from '../selfUpdate/bootstrapReadiness.js';
 import { finalizeSelfUpdateRecoveryLastUpdate } from '../selfUpdate/lastUpdate.js';
+export function writeBootstrapStartupResult(result, writers = {}) {
+    const line = `${result.message}\n`;
+    if (result.disposition === 'handoff') {
+        (writers.stdout ?? ((text) => { process.stdout.write(text); }))(line);
+        return result.exitCode;
+    }
+    (writers.stderr ?? ((text) => { process.stderr.write(text); }))(line);
+    return result.disposition === 'fail_closed' ? result.exitCode : undefined;
+}
 export async function runProxyMain(options = {}) {
+    if (process.env[RECOVERY_CHILD_START_GATE_ENV] !== undefined) {
+        throw new Error('self_update_recovery_child_start_gate_unconsumed');
+    }
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
         process.stdout.write(proxyUsage());
         return;
     }
     // Recovery must run before any hub/store/runtime initialization. In particular,
     // a broken store or env-file pointer must not prevent a pending-health update from restoring the old binary.
+    const requireLifecycleBootstrapState = options.requireLifecycleBootstrapState
+        ?? unpinnedLegacySupervisorRequiresLifecycleState(process.env);
+    const recoveryEnvironment = proxyRecoveryEnvironment(process.env);
+    assertSupervisedLifecycleBootstrapState(recoveryEnvironment, {
+        requireLifecycleState: requireLifecycleBootstrapState,
+    });
     const recovery = options.recoveryPrepared
         ?? await recoverBoundDurableSelfUpdate({
-            env: proxyRecoveryEnvironment(process.env),
+            env: recoveryEnvironment,
             processExecPath: process.execPath,
         });
     if (recovery.outcome === 'blocked') {
@@ -51,6 +71,15 @@ export async function runProxyMain(options = {}) {
         const envFile = loadProxyEnvFile(process.env);
         if (envFile.error)
             throw new Error(`failed to load EVOLVER_ENV_FILE: ${safeLoopMessage(envFile.error)}`);
+    }
+    assertSupervisedLifecycleBootstrapState(process.env, {
+        requireLifecycleState: requireLifecycleBootstrapState,
+    });
+    try {
+        publishRecoveryControllerLifecycleStartupAttestation(process.env);
+    }
+    finally {
+        clearRecoveryControllerLifecycleOwnerCapability(process.env);
     }
     let storePath;
     let store;
@@ -89,18 +118,13 @@ export async function runProxyMain(options = {}) {
         // unsupervised foreground runs keep starting; explicit 'auto' stays fail-closed at assembly below.
         const effectiveSelfUpdate = resolveEffectiveSelfUpdatePolicy(process.env);
         selfUpdatePolicy = effectiveSelfUpdate.policy;
-        if (effectiveSelfUpdate.degraded) {
-            // First-run bootstrap: try to register our own user-level durable launcher so a bare
-            // `npm install` run becomes permanently self-updating. Any failure/skip keeps the degraded
-            // 'off' startup; success hands restart ownership to the service manager.
+        const recoverLifecycleBootstrap = !selfUpdateSupervisorAttested(process.env)
+            && lifecycleBootstrapStatePresent(process.env);
+        if (effectiveSelfUpdate.degraded || recoverLifecycleBootstrap) {
             const bootstrap = await bootstrapDegradedSelfUpdateStartup(process.env, process.platform);
-            if (bootstrap.handedOver) {
-                // Exit cleanly so the just-activated service instance can bind the IPC port; systemd
-                // RestartSec / launchd ThrottleInterval absorb the short hand-off window if we lose the race.
-                process.stdout.write(`${bootstrap.message}\n`);
-                process.exit(0);
-            }
-            process.stderr.write(`${bootstrap.message}\n`);
+            const bootstrapExitCode = writeBootstrapStartupResult(bootstrap);
+            if (bootstrapExitCode !== undefined)
+                process.exit(bootstrapExitCode);
         }
         const proxyStartedAt = new Date().toISOString();
         publishLocalProxySettings = () => {
@@ -120,7 +144,7 @@ export async function runProxyMain(options = {}) {
         const privateNodeCredentialStore = mode === 'private'
             ? new PrivateNodeCredentialStore(storePath)
             : undefined;
-        const runtime = await connectHubRuntime({
+        const runtime = await (options.connectRuntime ?? connectHubRuntime)({
             mode,
             hubUrl,
             senderId,
@@ -152,6 +176,11 @@ export async function runProxyMain(options = {}) {
                 throw new Error(`self_update_confirmation_failed:${confirmation.outcome}`);
             }
         }
+        publishLifecycleBootstrapReadiness({
+            env: process.env,
+            startedAt: proxyStartedAt,
+            ipcUrl: `http://127.0.0.1:${port}`,
+        });
     }
     catch (error) {
         if (recovery.outcome === 'pending_health') {
@@ -182,6 +211,7 @@ export async function runProxyMain(options = {}) {
         store: store,
         notifier: systemdNotifier,
         logger: process.stderr,
+        ...(options.runLoop ? { runLoop: options.runLoop } : {}),
     });
 }
 export async function recoverBoundDurableSelfUpdate(options) {
@@ -197,6 +227,9 @@ export function loadProxyEnvFile(env) {
     const lifecycleStateDir = env['EVOLVER_LIFECYCLE_STATE_DIR'];
     const stateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR'];
     const targetPath = env['EVOLVER_SELF_UPDATE_TARGET_PATH'];
+    const bootstrapTransactionId = env[coreBootstrap.LIFECYCLE_BOOTSTRAP_TRANSACTION_ENV];
+    const recoveryControllerOwnerCapability = env[RECOVERY_CONTROLLER_LIFECYCLE_OWNER_CAPABILITY_ENV];
+    const recoveryChildStartGate = env[RECOVERY_CHILD_START_GATE_ENV];
     const systemRootBindings = Object.entries(env)
         .filter(([key]) => key.toLowerCase() === 'systemroot');
     const result = loadEnvFileFromEnv(env);
@@ -208,8 +241,22 @@ export function loadProxyEnvFile(env) {
         if (value !== undefined)
             env[key] = value;
     }
+    if (recoveryControllerOwnerCapability === undefined) {
+        delete env[RECOVERY_CONTROLLER_LIFECYCLE_OWNER_CAPABILITY_ENV];
+    }
+    else {
+        env[RECOVERY_CONTROLLER_LIFECYCLE_OWNER_CAPABILITY_ENV] =
+            recoveryControllerOwnerCapability;
+    }
+    if (recoveryChildStartGate === undefined) {
+        delete env[RECOVERY_CHILD_START_GATE_ENV];
+    }
+    else {
+        env[RECOVERY_CHILD_START_GATE_ENV] = recoveryChildStartGate;
+    }
     if (supervisor === undefined) {
         delete env['EVOLVER_SELF_UPDATE_SUPERVISOR'];
+        delete env[coreBootstrap.LIFECYCLE_BOOTSTRAP_TRANSACTION_ENV];
     }
     else {
         env['EVOLVER_SELF_UPDATE_SUPERVISOR'] = supervisor;
@@ -219,6 +266,12 @@ export function loadProxyEnvFile(env) {
             env['EVOLVER_SELF_UPDATE_STATE_DIR'] = stateDir;
         if (targetPath !== undefined)
             env['EVOLVER_SELF_UPDATE_TARGET_PATH'] = targetPath;
+        if (bootstrapTransactionId !== undefined) {
+            env[coreBootstrap.LIFECYCLE_BOOTSTRAP_TRANSACTION_ENV] = bootstrapTransactionId;
+        }
+        else {
+            delete env[coreBootstrap.LIFECYCLE_BOOTSTRAP_TRANSACTION_ENV];
+        }
     }
     return result;
 }
@@ -226,6 +279,11 @@ function proxyRecoveryEnvironment(env) {
     const recoveryEnv = { ...env };
     loadProxyEnvFile(recoveryEnv);
     return recoveryEnv;
+}
+function unpinnedLegacySupervisorRequiresLifecycleState(env) {
+    return selfUpdateSupervisorAttested(env)
+        && !env['EVOLVER_LIFECYCLE_STATE_DIR']?.trim()
+        && Boolean(env['EVOLVER_ENV_FILE']?.trim());
 }
 function finalizeRecoveryTelemetry(store, recovery) {
     try {
@@ -390,27 +448,44 @@ function applyProxyCliPathOptions(options, env) {
 export async function runProxyCli(options = {}) {
     const argv = options.argv ?? process.argv.slice(2);
     const env = options.env ?? process.env;
+    const platform = options.platform ?? process.platform;
+    const processExecPath = options.processExecPath ?? process.execPath;
+    const startupGateRole = recoveryChildStartGateRole(argv);
+    let startupGateConsumed = false;
+    try {
+        startupGateConsumed = await (options.consumeChildStartGate ?? consumeRecoveryChildStartGate)(env, startupGateRole);
+        if (!startupGateConsumed
+            && (startupGateRole === 'windows-updater'
+                || env[RECOVERY_CONTROLLER_LIFECYCLE_OWNER_CAPABILITY_ENV] !== undefined)) {
+            throw new Error('self_update_recovery_child_start_gate_required');
+        }
+    }
+    catch (error) {
+        process.stderr.write(`[evolver-proxy] fatal: ${safeLoopErrorMessage(error)}\n`);
+        return 1;
+    }
     const unixControllerExitCode = await (options.runUnixRecoveryController ?? maybeRunUnixRecoveryController)({
         argv,
         env,
-        platform: options.platform ?? process.platform,
-        processExecPath: options.processExecPath ?? process.execPath,
+        platform,
+        processExecPath,
     });
     if (unixControllerExitCode !== undefined)
         return unixControllerExitCode;
     const windowsControllerExitCode = await (options.runWindowsRecoveryController ?? maybeRunWindowsRecoveryController)({
         argv,
         env,
-        platform: options.platform ?? process.platform,
-        processExecPath: options.processExecPath ?? process.execPath,
+        platform,
+        processExecPath,
     });
     if (windowsControllerExitCode !== undefined)
         return windowsControllerExitCode;
     const workerExitCode = await (options.runWindowsUpdaterWorker ?? maybeRunWindowsUpdaterWorkerFromArgv)({
         argv,
         env,
-        platform: options.platform ?? process.platform,
-        processExecPath: options.processExecPath ?? process.execPath,
+        platform,
+        processExecPath,
+        startupGateConsumed,
     });
     if (workerExitCode !== undefined)
         return workerExitCode;
@@ -424,9 +499,14 @@ export async function runProxyCli(options = {}) {
         if (cliOptions.envFile)
             env['EVOLVER_ENV_FILE'] = cliOptions.envFile;
         applyProxyCliPathOptions(cliOptions, env);
+        const requireLifecycleBootstrapState = unpinnedLegacySupervisorRequiresLifecycleState(env);
+        const recoveryEnvironment = proxyRecoveryEnvironment(env);
+        assertSupervisedLifecycleBootstrapState(recoveryEnvironment, {
+            requireLifecycleState: requireLifecycleBootstrapState,
+        });
         const recovery = options.recoverStartup || !options.runMain
             ? await (options.recoverStartup ?? recoverBoundDurableSelfUpdate)({
-                env: proxyRecoveryEnvironment(env),
+                env: recoveryEnvironment,
                 processExecPath: options.processExecPath ?? process.execPath,
             })
             : undefined;
@@ -441,6 +521,7 @@ export async function runProxyCli(options = {}) {
         }
         await (options.runMain ?? runProxyMain)({
             environmentPrepared: true,
+            requireLifecycleBootstrapState,
             ...(recovery ? { recoveryPrepared: recovery } : {}),
         });
         return 0;
@@ -452,6 +533,16 @@ export async function runProxyCli(options = {}) {
     finally {
         uninstallUnhandledRejectionGuard();
     }
+}
+function recoveryChildStartGateRole(argv) {
+    if (argv.length === 1 && argv[0] === 'proxy')
+        return 'proxy-target';
+    if (argv.length === 2
+        && argv[0] === 'proxy'
+        && argv[1] === WINDOWS_UPDATER_WORKER_ARG) {
+        return 'windows-updater';
+    }
+    return undefined;
 }
 if (isDirectRun(import.meta.url, process.argv[1])) {
     void runProxyCli().then((exitCode) => {
@@ -729,24 +820,77 @@ export function createSelfUpdateDeps(policy, currentVersion, env = process.env, 
         requireSignedManifest: true,
     };
     const assertBound = () => assertSelfUpdateProcessTargetBound(releaseOpts);
+    let activeLifecycleLease;
+    const acquireLifecycleLease = () => {
+        assertBound();
+        if (activeLifecycleLease) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED, 'self_update_lifecycle_owner_lease_already_active');
+        }
+        let acquired;
+        try {
+            acquired = acquireLifecycleBootstrapOwnerLease(env);
+        }
+        catch (error) {
+            if (error instanceof util.LockTimeoutError) {
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED, 'self_update_lifecycle_owner_lock_busy', { cause: error });
+            }
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, `self_update_lifecycle_owner_lease_acquire_failed:${safeLoopErrorMessage(error)}`, { cause: error });
+        }
+        let released = false;
+        const lease = {
+            assertOwned: () => {
+                if (released || activeLifecycleLease !== lease) {
+                    throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, 'self_update_lifecycle_owner_lease_not_active');
+                }
+                assertBound();
+                try {
+                    acquired.assertOwned();
+                }
+                catch (error) {
+                    throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, `self_update_lifecycle_owner_lease_lost:${safeLoopErrorMessage(error)}`, { cause: error });
+                }
+            },
+            release: () => {
+                if (released)
+                    return;
+                try {
+                    acquired.release();
+                }
+                finally {
+                    released = true;
+                    if (activeLifecycleLease === lease)
+                        activeLifecycleLease = undefined;
+                }
+            },
+        };
+        activeLifecycleLease = lease;
+        return lease;
+    };
+    const assertOperationAllowed = () => {
+        if (!activeLifecycleLease) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, 'self_update_lifecycle_owner_lease_required');
+        }
+        activeLifecycleLease.assertOwned();
+    };
     assertBound();
     return {
         policy,
         currentVersion,
+        acquireLifecycleLease,
         resolveManifest: (directive) => {
-            assertBound();
+            assertOperationAllowed();
             return resolveGithubReleaseManifest(directive, releaseOpts);
         },
         download: (targetVersion, directive) => {
-            assertBound();
+            assertOperationAllowed();
             return downloadGithubReleaseArtifact(targetVersion, directive, releaseOpts);
         },
         atomicReplace: (stagedPath) => {
-            assertBound();
+            assertOperationAllowed();
             return atomicReplaceExecutable(stagedPath, releaseOpts);
         },
         beginTransaction: async (targetVersion) => {
-            assertBound();
+            assertOperationAllowed();
             const transaction = await beginDurableSelfUpdate(targetVersion, {
                 ...releaseOpts,
                 currentVersion,
@@ -754,44 +898,33 @@ export function createSelfUpdateDeps(policy, currentVersion, env = process.env, 
             });
             return {
                 ...transaction,
+                adoptDownloaded: async (download) => {
+                    assertOperationAllowed();
+                    return transaction.adoptDownloaded(download);
+                },
+                markVerified: async (artifacts) => {
+                    assertOperationAllowed();
+                    await transaction.markVerified(artifacts);
+                },
                 install: async () => {
-                    assertBound();
+                    assertOperationAllowed();
                     await transaction.install();
+                },
+                markRestartRequested: async () => {
+                    assertOperationAllowed();
+                    await transaction.markRestartRequested();
                 },
             };
         },
-        restart: restart ?? (() => { process.exit(78); }),
+        restart: () => {
+            assertOperationAllowed();
+            (restart ?? (() => { process.exit(78); }))();
+        },
         publicKey,
     };
 }
 export function assertSelfUpdateProcessTargetBound(options, allowUnresolvedTarget = false) {
-    let targetPath;
-    try {
-        targetPath = resolveSelfUpdateTarget(options).path;
-    }
-    catch {
-        if (allowUnresolvedTarget)
-            return;
-        throw new Error('self_update_process_target_mismatch');
-    }
-    const processExecPath = options.processExecPath ?? process.execPath;
-    try {
-        if (canonicalExecutablePath(processExecPath) !== canonicalExecutablePath(targetPath)) {
-            throw new Error('self_update_process_target_mismatch');
-        }
-    }
-    catch {
-        throw new Error('self_update_process_target_mismatch');
-    }
-}
-function canonicalExecutablePath(path) {
-    const canonical = realpathSync.native(path);
-    if (process.platform !== 'win32')
-        return resolve(canonical);
-    const withoutNamespace = canonical
-        .replace(/^\\\\\?\\UNC\\/i, '\\\\')
-        .replace(/^\\\\\?\\/i, '');
-    return win32.normalize(withoutNamespace).toLowerCase();
+    assertReleaseSelfUpdateProcessTargetBound(options, allowUnresolvedTarget);
 }
 export function resolvePublicNodeSecret(deps) {
     const explicit = resolveExplicitPublicNodeCredentials(process.env);

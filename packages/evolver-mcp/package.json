@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-mcp",
-  "version": "2.0.2",
+  "version": "2.0.20",
   "private": false,
   "type": "module",
   "engines": {
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.2",
+    "@evomap/evolver-core": "2.0.20",
     "smol-toml": "^1.6.1"
   },
   "repository": {

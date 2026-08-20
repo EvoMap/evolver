@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { algo, assetstore, events, exec, verify, wire, workflow } from '@evomap/evolver-core';
+import { algo, assetstore, events, exec, schema, verify, wire, workflow } from '@evomap/evolver-core';
 import { readAutoExecConfig } from './autoexecConfig.js';
 import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MAX_CONCURRENT_RUNS = 4;
@@ -256,10 +256,11 @@ function safeScore(value) {
     return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 function diffSummary(result) {
-    const diff = result.proofOfWork?.kind === 'git_diff' ? result.proofOfWork.gitDiff : undefined;
+    // #961: snake_case 优先, 兼容读旧 camelCase 存量资产(gitDiffOf).
+    const diff = result.proofOfWork?.kind === 'git_diff' ? schema.gitDiffOf(result.proofOfWork) : undefined;
     return {
-        changedFiles: Number.isSafeInteger(diff?.files) && (diff?.files ?? -1) >= 0 ? diff.files : 0,
-        changedLines: Number.isSafeInteger(diff?.lines) && (diff?.lines ?? -1) >= 0 ? diff.lines : 0,
+        changedFiles: Number.isSafeInteger(diff?.files) && (diff?.files ?? -1) >= 0 ? (diff?.files ?? 0) : 0,
+        changedLines: Number.isSafeInteger(diff?.lines) && (diff?.lines ?? -1) >= 0 ? (diff?.lines ?? 0) : 0,
     };
 }
 async function requireReviewedGene(context, store, provenance, review) {

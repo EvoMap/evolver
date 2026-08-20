@@ -118,7 +118,7 @@ export function parseAssetSyncRecord(value) {
         || !remoteAssetId) {
         return null;
     }
-    const logicalId = stringField(record, 'logicalId');
+    const logicalId = rawStringField(record, 'logicalId');
     const status = stringField(record, 'status');
     const runKey = optionalStrictString(record, 'runKey');
     const inventoryKey = optionalStrictString(record, 'inventoryKey');
@@ -358,6 +358,10 @@ function objectRecord(value) {
 function stringField(value, key) {
     const raw = value[key];
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+function rawStringField(value, key) {
+    const raw = value[key];
+    return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 function optionalStrictString(value, key) {
     const raw = value[key];

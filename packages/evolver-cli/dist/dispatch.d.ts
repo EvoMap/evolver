@@ -6,7 +6,6 @@ interface ProxyCliModule {
 type ProxyCliImporter = () => Promise<ProxyCliModule>;
 export declare function runProxyCommand(argv: string[], importer?: ProxyCliImporter): Promise<number>;
 export type CommandHandler = (argv: string[]) => Promise<number>;
-/** Verbs dispatched asynchronously ahead of the synchronous runCli core. cli.ts drives its dispatch from this. */
 export declare const ASYNC_COMMANDS: Readonly<Record<string, CommandHandler>>;
 /** Verbs handled by the synchronous runCli core (read-only views + local ops). Kept in sync with runCli's switch
  *  — the source of truth for these stays runCli; this list completes the surface for the registry contract. */

@@ -5,7 +5,7 @@ export function parseGitShortstat(out) {
     const del = /(\d+)\s+deletions?\(-\)/.exec(out)?.[1];
     return { files: Number(files ?? 0), lines: Number(ins ?? 0) + Number(del ?? 0) };
 }
-/** Build a git_diff ProofOfWork from a parsed diff stat. */
+/** Build a git_diff ProofOfWork from a parsed diff stat. #961: wire keys follow gep-sdk snake_case. */
 export function gitDiffProof(stat, patchRef) {
-    return { kind: 'git_diff', gitDiff: { files: stat.files, lines: stat.lines, ...(patchRef ? { patchRef } : {}) } };
+    return { kind: 'git_diff', git_diff: { files: stat.files, lines: stat.lines, ...(patchRef ? { patch_ref: patchRef } : {}) } };
 }

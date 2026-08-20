@@ -222,6 +222,7 @@ export async function runSkillDistill(argv, injected = {}) {
         return 1;
     }
     process.stdout.write(`skill-distill: gene ${res.geneId} ${res.quarantined ? 'QUARANTINED (awaiting `evolver review --approve`)' : 'recorded'}\n`);
+    process.stdout.write('  preferred hub artifact is Recipe (`evolver recipe build --publish`), not Skill Store\n');
     if (res.capsuleId)
         process.stdout.write(`  → capsule ${res.capsuleId} (real execution evidence)\n`);
     else {

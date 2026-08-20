@@ -6,3 +6,4 @@ export * from './metaSignals.js';
 export * from './cycleHistoryFromEvents.js';
 export * from './curriculum.js';
 export * from './taskDomain.js';
+export * from './scopeVocabulary.js';

@@ -50,6 +50,7 @@ export declare class ReuseCache {
     setPayload(assetId: string, payload: hub.AssetRecord): void;
     clear(): void;
 }
+export declare function stripHubDeliveryMetadataForIntegrity(rec: hub.AssetRecord): hub.AssetRecord;
 /**
  * Map a hub search row (AssetRecord with arbitrary quality fields) → the core's price-free HubMetadata.
  * Accepts both camelCase and the hub's snake_case (gdi_score / success_rate / reuse_count / ...). Drops any

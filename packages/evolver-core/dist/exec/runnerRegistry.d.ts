@@ -33,6 +33,11 @@ export interface AgentRunResult {
     error?: string;
     failureKind?: 'spawn_failed' | 'timeout' | 'cancelled' | 'permission_denied' | 'non_zero_exit' | 'invalid_output' | 'runtime_error';
     exitCode?: number | null;
+    /**
+     * Native harness session id reported by the runner, when available.
+     * Used as the Learning Ops exact-join key (`traceEvents[].sessionId`) when proxy llm_turn fold cannot supply one.
+     */
+    sessionId?: string;
     /** Runner-reported worktree used for the run; the bridge must verify it before reading or cleanup. */
     managedWorktreePath?: string;
 }

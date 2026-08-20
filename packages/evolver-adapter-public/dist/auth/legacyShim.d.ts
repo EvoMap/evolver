@@ -13,8 +13,8 @@ export type NodeSecretVersionHandler = (nodeSecretVersion?: number) => void;
  */
 export type NodeSecretDivergenceHandler = () => void;
 /**
- * node_secret 双轨过渡(M6-5, 6 个月). 包旧 64-hex node_secret 成 AuthProvider.
- * **node_secret 走 request body**(gep-a2a 契约, 实测 dev: requireNodeSecret 读 body 非 header), 不轮换.
+ * LegacyAuthShim exposes node_secret as a transport-neutral credential field. HubFetch promotes it to
+ * Authorization: Bearer for GET and strict GEP envelope endpoints before egress.
  */
 export declare class LegacyAuthShim implements hub.AuthProvider {
     private nodeSecret;

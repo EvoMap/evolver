@@ -9,7 +9,15 @@ export interface HubLearningPacketSinkOptions {
     /** Optional node identity recorded on the packet (hub nodeId column). */
     nodeId?: () => string | undefined;
 }
-/** Deterministic content hash over the draft body (hub contentHash column, dedup aid). */
+/**
+ * Deterministic content hash over the draft body (hub contentHash column, dedup aid).
+ *
+ * Bare 64-hex, NOT `sha256:`-prefixed: the hub column is VarChar(64), so a prefixed
+ * digest is 71 chars and every upload failed with a Prisma "value too long" 500. The
+ * hub schema now rejects over-64 at validation, which would make it a 400 instead —
+ * either way the algorithm is fixed at sha256 by this contract, so the prefix carried
+ * no information.
+ */
 export declare function learningPacketContentHash(draft: trace.LearningPacketDraft): string;
 /**
  * Auth headers for the strict learning-packets routes (requireAuth reads Authorization only).

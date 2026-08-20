@@ -22,7 +22,7 @@
 // Enterprise/air-gap deployments should pin 'off' explicitly in their env file (decided by the
 // private adapter, not core).
 import { resolveSelfUpdatePublicKey } from './builtinKey.js';
-import { resolveSelfUpdateTarget } from './releaseBinary.js';
+import { selfUpdateProcessTargetBindable } from './releaseBinary.js';
 /** Resolve EVOLVER_SELF_UPDATE to a policy. Unset → 'auto' (still gated by supervisor + public key). Unrecognized → 'off' (fail-closed). */
 export function resolveSelfUpdatePolicy(env = process.env) {
     const raw = (env['EVOLVER_SELF_UPDATE'] ?? '').trim().toLowerCase();
@@ -61,13 +61,7 @@ function selfUpdatePublicKeyAvailable(env) {
  * for a target that assembly would reject.
  */
 function selfUpdateTargetBindable(env, execPath) {
-    try {
-        resolveSelfUpdateTarget({ env, processExecPath: execPath });
-        return true;
-    }
-    catch {
-        return false;
-    }
+    return selfUpdateProcessTargetBindable({ env, processExecPath: execPath });
 }
 /**
  * Resolve the policy that startup should actually run with. A default (unset) 'auto' without durable

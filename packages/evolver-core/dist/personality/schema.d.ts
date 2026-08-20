@@ -65,15 +65,15 @@ export declare const personalityStats: z.ZodObject<{
     n: z.ZodDefault<z.ZodNumber>;
     updatedAt: z.ZodDefault<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
+    fail: number;
     success: number;
     updatedAt: string | null;
-    fail: number;
     n: number;
     avgScore: number;
 }, {
+    fail?: number | undefined;
     success?: number | undefined;
     updatedAt?: string | null | undefined;
-    fail?: number | undefined;
     n?: number | undefined;
     avgScore?: number | undefined;
 }>;
@@ -88,13 +88,13 @@ export declare const personalityHistoryEntry: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     at: string;
     score: number | null;
-    outcome: string;
     key: string;
+    outcome: string;
     notes: string | null;
 }, {
     at: string;
-    outcome: string;
     key: string;
+    outcome: string;
     score?: number | null | undefined;
     notes?: string | null | undefined;
 }>;
@@ -132,15 +132,15 @@ export declare const personalityModel: z.ZodObject<{
         n: z.ZodDefault<z.ZodNumber>;
         updatedAt: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     }, "strip", z.ZodTypeAny, {
+        fail: number;
         success: number;
         updatedAt: string | null;
-        fail: number;
         n: number;
         avgScore: number;
     }, {
+        fail?: number | undefined;
         success?: number | undefined;
         updatedAt?: string | null | undefined;
-        fail?: number | undefined;
         n?: number | undefined;
         avgScore?: number | undefined;
     }>>>;
@@ -153,13 +153,13 @@ export declare const personalityModel: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         at: string;
         score: number | null;
-        outcome: string;
         key: string;
+        outcome: string;
         notes: string | null;
     }, {
         at: string;
-        outcome: string;
         key: string;
+        outcome: string;
         score?: number | null | undefined;
         notes?: string | null | undefined;
     }>, "many">>;
@@ -167,15 +167,6 @@ export declare const personalityModel: z.ZodObject<{
     extensions: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
 }, "strip", z.ZodTypeAny, {
     extensions: Record<string, unknown>;
-    updatedAt: string | null;
-    version: 1;
-    stats: Record<string, {
-        success: number;
-        updatedAt: string | null;
-        fail: number;
-        n: number;
-        avgScore: number;
-    }>;
     current: {
         type: "PersonalityState";
         rigor: number;
@@ -184,24 +175,24 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance: number;
         obedience: number;
     };
+    updatedAt: string | null;
+    version: 1;
+    stats: Record<string, {
+        fail: number;
+        success: number;
+        updatedAt: string | null;
+        n: number;
+        avgScore: number;
+    }>;
     history: {
         at: string;
         score: number | null;
-        outcome: string;
         key: string;
+        outcome: string;
         notes: string | null;
     }[];
 }, {
     extensions?: Record<string, unknown> | undefined;
-    updatedAt?: string | null | undefined;
-    version?: 1 | undefined;
-    stats?: Record<string, {
-        success?: number | undefined;
-        updatedAt?: string | null | undefined;
-        fail?: number | undefined;
-        n?: number | undefined;
-        avgScore?: number | undefined;
-    }> | undefined;
     current?: {
         type?: "PersonalityState" | undefined;
         rigor?: number | undefined;
@@ -210,10 +201,19 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance?: number | undefined;
         obedience?: number | undefined;
     } | undefined;
+    updatedAt?: string | null | undefined;
+    version?: 1 | undefined;
+    stats?: Record<string, {
+        fail?: number | undefined;
+        success?: number | undefined;
+        updatedAt?: string | null | undefined;
+        n?: number | undefined;
+        avgScore?: number | undefined;
+    }> | undefined;
     history?: {
         at: string;
-        outcome: string;
         key: string;
+        outcome: string;
         score?: number | null | undefined;
         notes?: string | null | undefined;
     }[] | undefined;

@@ -7,7 +7,7 @@ import { type CycleStage } from '../cycle/stateMachine.js';
 import { type GeneDecision, type SelectionInput, type GeneCandidateInput, type AntiWarning, type SelectionGuardMode } from './geneSelection.js';
 import { type EnvFingerprint } from '../bootstrap/envFingerprint.js';
 import type { PersonalityStore } from '../personality/store.js';
-import { type ResolutionStatus } from './solidify.js';
+import { type FailureEvidenceIdentityInput, type ResolutionStatus } from './solidify.js';
 import type { ProofOfWork } from '../schema/proofOfWork.js';
 import { type ClassifyRecentEvent } from './cycleFailureClassifier.js';
 import type { MemoryGraphGeneEvidence } from './memoryGraph.js';
@@ -26,6 +26,8 @@ export interface ExecutionResult {
     };
     proofOfWork?: ProofOfWork;
     strongEvidence?: boolean;
+    /** Optional logical failure identity supplied by the runner; absent keeps the failure as legacy advisory evidence. */
+    failureIdentity?: FailureEvidenceIdentityInput;
     /** Structured runner failure metadata. Safe to persist; unlike sessionLog it contains no transcript text. */
     failureKind?: ExecutionFailureKind;
     exitCode?: number | null;
@@ -34,8 +36,8 @@ export interface ExecutionResult {
      * outcome. It is the host-side context classifyCycleFailure needs to reach the host_no_transcript /
      * host_provider_error buckets on the PRODUCTION path (#279): an empty transcript means the host gave evolver
      * nothing to evolve from; a provider-error string (429 / quota / context-length) means the host's LLM call
-     * failed, not the gene. Consumed only for failure triage and NEVER persisted to event payloads (the engine
-     * writes only the derived failure_class), so it adds no root_events bloat and leaks no transcript content.
+     * failed, not the gene. Consumed only for failure triage and NEVER persisted to event payloads; the engine
+     * writes only the derived failure_class, so it adds no root_events bloat and leaks no transcript content.
      */
     sessionLog?: string;
 }

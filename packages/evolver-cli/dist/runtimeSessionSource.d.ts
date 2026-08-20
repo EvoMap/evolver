@@ -4,6 +4,11 @@ export interface RuntimeSessionSource {
     label: string;
     sessionId?: string;
     resumeIdentityProvenance?: 'canonical_native_transcript';
+    /**
+     * Canonical task domain slug when producer resolved exactly one `task_domain:` token.
+     * Absent/ambiguous/invalid domains are never invented here — omit the field.
+     */
+    taskDomain?: string;
     turns: NormalizedTurn[];
 }
 export interface RuntimeSessionParseDiagnostics {

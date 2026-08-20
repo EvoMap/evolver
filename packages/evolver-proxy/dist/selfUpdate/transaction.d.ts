@@ -71,9 +71,17 @@ export type SelfUpdateRecoveryOptions = Omit<DurableSelfUpdateOptions, 'currentV
 };
 export interface StableUnixRecoveryControllerOptions extends SelfUpdateRecoveryOptions {
     platform?: NodeJS.Platform;
+    /** Bootstrap uses create-only ownership; explicit install-service keeps replacement semantics. */
+    replaceExisting?: boolean;
+    artifactClaimPath?: string;
+    onArtifactPublished?: (path: string, claimPath: string) => void | Promise<void>;
 }
 export interface StableWindowsRecoveryControllerOptions extends SelfUpdateRecoveryOptions {
     platform?: NodeJS.Platform;
+    /** Bootstrap uses create-only ownership; explicit install-service keeps replacement semantics. */
+    replaceExisting?: boolean;
+    artifactClaimPath?: string;
+    onArtifactPublished?: (path: string, claimPath: string) => void | Promise<void>;
 }
 export declare function inspectDurableSelfUpdate(options: SelfUpdateRecoveryOptions): Promise<SelfUpdateRecoveryResult>;
 export declare function resolveStableUnixRecoveryControllerPath(options: StableUnixRecoveryControllerOptions): Promise<string>;

@@ -1,5 +1,5 @@
 /** V1→V2 asset path / schema mapping — Refs #684 (R4 Asset-format, 5 sub-items). */
-export declare const CURRENT_WIRE_SCHEMA_VERSION: "1.12.1";
+export declare const CURRENT_WIRE_SCHEMA_VERSION: "1.13.0";
 export declare const V1_EVENT_SCHEMA_VERSION_EXAMPLE: "1.6.0";
 /** Machine-readable mapping for the five issue rows. */
 export declare const ASSET_FORMAT_MAP: readonly [{
@@ -7,7 +7,7 @@ export declare const ASSET_FORMAT_MAP: readonly [{
     readonly severity: "major";
     readonly v1: "events.jsonl in the selected current store, or repository legacy assets/gep (EvolutionEvent plus ValidationReport rows; stored schema often 1.6.0)";
     readonly v2: "content-addressed EvolutionEvent JSONL; existing schema_version is preserved";
-    readonly migrate: "import-v1 injects 1.12.1 only when schema_version is missing; frozen hash mismatches remain untrusted; ValidationReport rows are validated, counted, and preserved in the V1 source";
+    readonly migrate: "import-v1 injects 1.13.0 only when schema_version is missing; frozen hash mismatches remain untrusted; ValidationReport rows are validated, counted, and preserved in the V1 source";
 }, {
     readonly id: 2;
     readonly severity: "cosmetic";

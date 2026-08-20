@@ -3,15 +3,14 @@
  * router (routing_hint) or restrict tools (tool_policy). Ported from v1 src/gep/schemas/gene.js (PR #93,
  * "wire routing_hint and tool_policy into Gene schema").
  *
- * v2-delta (feature-gate): these fields are NOT yet in @evomap/gep-sdk's gene.schema.json
- * (additionalProperties:false), so a Gene carrying them is not a schema-valid gep-sdk asset until a
- * gep-sdk gene-schema bump — exactly how Capsule's proof_of_work / resolution_status were v2-delta before
- * the 1.11.0 bump made them first-class. That invalidity is surfaced ONLY by the advisory validateWire
- * (wire/schemaGate) — at intake on the hint-stripped core, and via the evolver_gep_build pre-publish
- * preview — plus the hub's own schema check on receipt; there is NO enforced local egress gate (the
- * publish/egress path is sanitize-only and does not call validateWire). Until a bump the hints ride along
- * LOCALLY (intake pool + v1→v2 import fidelity); nothing in this repo wires them to a runtime consumer yet
- * (the proxy model router's `gene_hint` seam is the eventual tier consumer — see
+ * routing_hint / tool_policy and the K_auto coordinates are first-class in @evomap/gep-sdk 1.13.0, so they
+ * are normalized here rather than stripped. generation_meta and model_name remain local-only annotations for
+ * now. The advisory validateWire still surfaces any malformed shape — at intake on the local-only slice, and
+ * via the evolver_gep_build pre-publish preview — plus the hub's own schema check on receipt; there is NO
+ * enforced local egress gate (the publish/egress path is sanitize-only and does not call validateWire).
+ *
+ * Until a future schema bump, nothing in this repo wires these annotations to a runtime consumer yet (the
+ * proxy model router's `gene_hint` seam is the eventual tier consumer — see
  * packages/evolver-proxy/src/router/modelRouter.ts).
  *
  * Enum strings are matched case-sensitively by the consuming router / tool-gate — keep them EXACT. The
@@ -55,7 +54,7 @@ export interface GeneGenerationHeuristics {
     has_corrective_insight?: boolean;
 }
 /**
- * The full provenance + quality metadata block (V1 `gene._source`). Lives on Gene as the v2-delta field
+ * The full provenance + quality metadata block (V1 `gene._source`). Lives on Gene as the local-only field
  * `generation_meta`. `source` is the only required key; the rest is descriptive for reviewers / future
  * governance. `quality_score` is a coarse [0,1] tier-anchored score (evolved 0.7 / distilled 0.4 / manual 0.3
  * baseline + bonuses); `overcame_errors` is the mutation_log copy that the trajectory overcame.
@@ -67,12 +66,56 @@ export interface GenerationMeta {
     overcame_errors?: string[];
 }
 /**
- * The v2-delta hint field names, in one place — the intake gate strips these before the gep-sdk schema check.
- * IMPORTANT: when a gep-sdk gene-schema bump makes one of these first-class, REMOVE it from this list in the
- * same change. Otherwise intakeGene keeps stripping a now-validated field before validateWire (fail-open — the
- * field's new schema constraints go unchecked at intake) while asset_id still commits it.
+ * K_auto projection-key coordinates a Gene MAY carry so its record is machine-decidable in the strict
+ * automatic-governance subdomain (paper §K_auto; validator: algo/kautoValidator.ts). These four fields are the
+ * DEDICATED, structured form of the coordinates that production previously expressed only through proxy fields
+ * (category≈claim, signals_match≈scope, model_name≈runtime, validation≈verifier). The strict measurement
+ * (bench/thesis/result-kauto-strict.json) found the dedicated fields populated at 0% and three coordinates
+ * (version/claim/scope) undecidable for 100% of 5,665 real rows — the writer side simply never emitted them.
+ *
+ * Shapes mirror gep-sdk 1.13.0 gene.schema.json (PR: add Gene K_auto coordinates), the schema-authoritative
+ * definition, EXACTLY so a gene minted here validates once the SDK bump lands:
+ *   claims:           {predicate:string, kind?:'behavioral'|'structural'|'performance'|'safety'}[]
+ *   scope:            {signals:string[], predicate?:string}
+ *   runtime_profile:  {runtime:string, env_class?:'ci'|'local'|'prod'|'sandbox'}
+ *   verifier_profile: {verifier:string, decision?:'pass'|'fail'|'inconclusive'}
+ *
+ * Since gep-sdk 1.13.0, these four coordinates are first-class Gene fields: the intake schema gate validates
+ * their dedicated structure instead of stripping them as local-only hints. They still ride along in asset_id
+ * (canonicalize hashes every own key), so a silent strip on the hub side would change the hashed bytes and fail
+ * gene_asset_id_verification_failed; the hub allowlist admits them for exactly this reason.
  */
-export declare const GENE_HINT_FIELDS: readonly ["routing_hint", "tool_policy", "generation_meta"];
+export declare const CLAIM_KINDS: readonly ["behavioral", "structural", "performance", "safety"];
+export type ClaimKind = (typeof CLAIM_KINDS)[number];
+export interface GeneClaim {
+    predicate: string;
+    kind?: ClaimKind;
+}
+export declare const ENV_CLASSES: readonly ["ci", "local", "prod", "sandbox"];
+export type EnvClass = (typeof ENV_CLASSES)[number];
+export interface GeneRuntimeProfile {
+    runtime: string;
+    env_class?: EnvClass;
+}
+export declare const VERIFIER_DECISIONS: readonly ["pass", "fail", "inconclusive"];
+export type VerifierDecision = (typeof VERIFIER_DECISIONS)[number];
+export interface GeneVerifierProfile {
+    verifier: string;
+    decision?: VerifierDecision;
+}
+export interface GeneScope {
+    signals: string[];
+    predicate?: string;
+}
+/**
+ * The still-local-only Gene field names, in one place — the intake gate strips these before the gep-sdk schema
+ * check. IMPORTANT: when a gep-sdk gene-schema bump makes one of these first-class, REMOVE it from this list in
+ * the same change. Otherwise intakeGene keeps stripping a now-validated field before validateWire (fail-open —
+ * the field's new schema constraints go unchecked at intake) while asset_id still commits it.
+ *
+ * Only generation_meta and model_name remain local-only annotations for now, so the strip list is just those two.
+ */
+export declare const GENE_HINT_FIELDS: readonly ["generation_meta", "model_name"];
 /**
  * Normalize an arbitrary routing_hint fragment to a strict { tier?, reasoning_level? } object, or null.
  * Unknown enum values are dropped (a stray tier would fail the consumer's exhaustive match and route as if
@@ -101,5 +144,34 @@ export declare function normalizeToolPolicy(raw: unknown): GeneToolPolicy | null
  * alone is a meaningful provenance tag); only a missing/unknown source yields null.
  */
 export declare function normalizeGenerationMeta(raw: unknown): GenerationMeta | null;
-/** Strip the v2-delta hint fields from a gene-shaped object (used to validate the gep-sdk-known core). */
+/**
+ * Normalize an arbitrary claims fragment to a strict GeneClaim[] or null. A claim survives only with a
+ * non-empty string `predicate`; `kind` is kept only if it is one of the closed enum members (a stray kind is
+ * dropped, mirroring the enum typeguards for tier/severity). Predicates are trimmed and length-bounded so a
+ * runaway string cannot bloat the hashed bytes. An empty result → null ("no explicit claim"), which keeps the
+ * gene OUT of strict K_auto rather than fabricating a coordinate.
+ */
+export declare function normalizeClaims(raw: unknown): GeneClaim[] | null;
+/**
+ * Normalize an arbitrary scope fragment to a strict { signals, predicate? } object or null. `signals` keeps only
+ * non-empty trimmed strings; the block collapses to null when none survive (an empty signal list is not a scope).
+ * `predicate` is kept only as a non-empty trimmed string. Deliberately lossy like the hint normalizers.
+ */
+export declare function normalizeGeneScope(raw: unknown): GeneScope | null;
+/**
+ * Normalize an arbitrary runtime_profile fragment to { runtime, env_class? } or null. `runtime` must be a
+ * non-empty trimmed string (the coordinate is meaningless without it); `env_class` is kept only if it is a
+ * closed enum member. Note this is DISTINCT from the flat `model_name` field — model_name records WHICH LLM
+ * produced the gene (an authorship/tier signal); runtime_profile records the EXECUTION environment class the
+ * claims were established under. A producer may set either, both, or neither.
+ */
+export declare function normalizeRuntimeProfile(raw: unknown): GeneRuntimeProfile | null;
+/**
+ * Normalize an arbitrary verifier_profile fragment to { verifier, decision? } or null. `verifier` must be a
+ * non-empty trimmed string; `decision` is kept only if it is a closed enum member. This is the verifier IDENTITY
+ * axis (e.g. 'npm-test', 'gep-verify@1.4'); the substantive-command bar the strict validator applies is checked
+ * downstream in kautoValidator.decideVerifier, not here — this layer only shapes the field.
+ */
+export declare function normalizeVerifierProfile(raw: unknown): GeneVerifierProfile | null;
+/** Strip only local-only Gene annotations before validating against the gep-sdk schema. */
 export declare function stripGeneHints(gene: Record<string, unknown>): Record<string, unknown>;

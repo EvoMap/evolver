@@ -107,6 +107,13 @@ export declare class AgentRunTraceRecorder {
     private readonly recorded;
     constructor(opts: AgentRunTraceRecorderOptions);
     get events(): readonly TraceEvent[];
+    get sessionId(): string | undefined;
+    /**
+     * Late-bind a session id discovered after run start (e.g. unique proxy llm_turn session).
+     * Backfills already-recorded events so the whole trajectory carries the join key.
+     * Fail closed on empty/whitespace values and conflicting rebinds.
+     */
+    bindSessionId(sessionId: string): void;
     runStarted(input?: RunStartedInput): TraceEvent;
     modelCalled(input?: ModelCalledInput): TraceEvent;
     toolCalled(input: ToolCalledInput): TraceEvent;

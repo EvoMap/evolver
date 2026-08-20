@@ -20,3 +20,5 @@ export * from './evolutionEvent.js';
 export * from './cycleEngine.js';
 export * from './strategyPresets.js';
 export * from './cycleFailureClassifier.js';
+export * from './kautoValidator.js';
+export * from './kautoProjection.js';

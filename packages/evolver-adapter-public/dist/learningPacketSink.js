@@ -19,16 +19,47 @@ function failureCategoryFor(failureKind) {
         return 'tool_error';
     return 'other';
 }
-function outcomeStatusFor(status) {
-    if (status === 'success')
-        return 'succeeded';
+/**
+ * Map the runtime's outcome onto the hub OUTCOME_STATUSES enum, tiered by whether an
+ * external verifier actually adjudicated the run.
+ *
+ * A verified run gets a definite verdict (`succeeded` / `failed`). An unverified one
+ * gets `partially_succeeded` -- deliberately NOT `succeeded`, and no longer omitted:
+ *
+ * - Omitting it (the previous behaviour) threw the run away. The packet reached the
+ *   hub with no outcome at all, which is indistinguishable from a run nobody looked
+ *   at, so a consumer could not tell "we don't know" from "not recorded".
+ * - Calling it `succeeded` would be worse: the runtime only knows the turn loop
+ *   ended without crashing, which is not evidence the task was done correctly.
+ *   Training on that teaches format imitation.
+ *
+ * `partially_succeeded` says exactly what is true -- it ran to completion and nobody
+ * checked the result -- and pairs with `verifier` being absent, so a consumer filters
+ * on the verifier rather than having to infer trust from the status. Darwin's training
+ * path takes only rows with a real verifier; see docs/rsi-stage1-plan.md.
+ * @param status Runtime-side outcome.
+ * @param verified True when an external verifier ran (evaluation.placeholder === false).
+ * @returns A hub OUTCOME_STATUSES value.
+ */
+function outcomeStatusFor(status, verified) {
     if (status === 'failed')
         return 'failed';
-    return undefined;
+    if (status === 'success' && verified)
+        return 'succeeded';
+    // Ran to completion, unadjudicated -- or the runtime itself is unsure.
+    return 'partially_succeeded';
 }
-/** Deterministic content hash over the draft body (hub contentHash column, dedup aid). */
+/**
+ * Deterministic content hash over the draft body (hub contentHash column, dedup aid).
+ *
+ * Bare 64-hex, NOT `sha256:`-prefixed: the hub column is VarChar(64), so a prefixed
+ * digest is 71 chars and every upload failed with a Prisma "value too long" 500. The
+ * hub schema now rejects over-64 at validation, which would make it a 400 instead —
+ * either way the algorithm is fixed at sha256 by this contract, so the prefix carried
+ * no information.
+ */
 export function learningPacketContentHash(draft) {
-    return `sha256:${createHash('sha256').update(JSON.stringify(draft)).digest('hex')}`;
+    return createHash('sha256').update(JSON.stringify(draft)).digest('hex');
 }
 /**
  * Auth headers for the strict learning-packets routes (requireAuth reads Authorization only).
@@ -47,7 +78,7 @@ export async function learningOpsAuthHeaders(auth, method, path) {
 export function learningPacketWireBody(draft, nodeId) {
     const truncated = draft.trajectory.length > HUB_TRACE_EVENTS_MAX;
     const events = draft.trajectory.slice(0, HUB_TRACE_EVENTS_MAX);
-    const outcomeStatus = outcomeStatusFor(draft.evaluation.outcomeStatus);
+    const outcomeStatus = outcomeStatusFor(draft.evaluation.outcomeStatus, draft.evaluation.placeholder === false);
     const failureCategory = failureCategoryFor(draft.evaluation.failureCategory);
     return {
         schemaVersion: draft.schemaVersion,
@@ -60,7 +91,7 @@ export function learningPacketWireBody(draft, nodeId) {
         idempotencyKey: `${draft.source.repo}:${draft.source.run}`,
         contentHash: learningPacketContentHash(draft),
         ...(nodeId ? { nodeId } : {}),
-        ...(outcomeStatus ? { outcomeStatus } : {}),
+        outcomeStatus,
         // evaluation fill-in (slice 6): a non-placeholder evaluation carries the runtime's external verifier
         // ('automated_test' is in the hub VERIFIERS enum); passed/score details ride inside payload.evaluation.
         ...(draft.evaluation.verifier !== null ? { verifier: draft.evaluation.verifier } : {}),
@@ -116,10 +147,20 @@ export class HubLearningPacketSink {
                 redirect: 'manual',
                 body: JSON.stringify(learningPacketWireBody(draft, this.opts.nodeId?.())),
             });
-            if (res.status === 201) {
+            // Hub route returns 201 Created. The public website BFF/proxy in front of
+            // /api/learning-packets has been observed to surface the same body as 200.
+            // Accept both when a packet id is present so a successful write is never
+            // reported as hub 200 rejection (which previously made every live upload
+            // look failed while the row was already stored).
+            if (res.status === 201 || res.status === 200) {
                 const body = await res.json().catch(() => null);
                 const packet = body && typeof body === 'object' ? body.packet : undefined;
-                return { accepted: true, ...(typeof packet?.id === 'string' ? { reason: packet.id } : {}) };
+                if (typeof packet?.id === 'string') {
+                    return { accepted: true, reason: packet.id };
+                }
+                if (res.status === 201)
+                    return { accepted: true };
+                // Bare 200 without a packet body is not a create success we can claim.
             }
             if (res.status === 409)
                 return { accepted: true, reason: 'duplicate_source' };

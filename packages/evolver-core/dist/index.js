@@ -10,6 +10,7 @@ export * as daemon from './daemon/index.js';
 export * as material from './material/index.js';
 export * as mailbox from './mailbox/index.js';
 export * as assetstore from './assetstore/index.js';
+export * as assetrepair from './assetrepair/index.js';
 export * as strategy from './strategy/index.js';
 export * as algo from './algo/index.js';
 export * as personality from './personality/index.js';
@@ -27,5 +28,6 @@ export * as util from './util/index.js';
 export * as trace from './trace/index.js';
 export * as issueReporter from './issueReporter/index.js';
 export * as feedback from './feedback/index.js';
+export * as compatibility from './modelCompatibility.js';
 // Re-export commonly used validation functions at top level for convenience
 export { isValidationCommandAllowed } from './verify/validation.js';

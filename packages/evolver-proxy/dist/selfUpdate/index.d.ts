@@ -6,3 +6,4 @@ export * from './transaction.js';
 export * from './failureCodes.js';
 export * from './unixController.js';
 export * from './windowsController.js';
+export * from './bootstrapReadiness.js';

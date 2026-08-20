@@ -30,6 +30,24 @@ export class EvolverProxyClient {
             ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
         });
     }
+    searchRecipes(args) {
+        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
+        return this.call('POST', '/recipe/search', {
+            ...(args.q ? { q: args.q } : {}),
+            ...(args.limit !== undefined ? { limit: args.limit } : {}),
+            ...(args.cursor ? { cursor: args.cursor } : {}),
+            ...(args.sort ? { sort: args.sort } : {}),
+            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
+        });
+    }
+    expressRecipe(args) {
+        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
+        return this.call('POST', '/recipe/express', {
+            recipe_id: args.recipeId,
+            ...(args.inputPayload ? { input_payload: args.inputPayload } : {}),
+            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
+        });
+    }
     fetchAsset(args) {
         const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
         return this.call('POST', '/asset/fetch', {

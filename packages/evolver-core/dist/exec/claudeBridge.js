@@ -646,6 +646,14 @@ export function makeClaudeExecBridge(opts, internal) {
                     ...(opts.agentOptions?.model !== undefined ? { model: opts.agentOptions.model } : {}),
                     ...(run.exitCode !== undefined && run.exitCode !== null ? { stopReason: `exit_${run.exitCode}` } : {}),
                 });
+                // Prefer an authoritative native session id from the runner when present. This covers Gemini and
+                // any future harness that reports a session id without also writing proxy llm_turn rows.
+                if (typeof run.sessionId === 'string' && run.sessionId.length > 0) {
+                    try {
+                        opts.traceRecorder?.bindSessionId(run.sessionId);
+                    }
+                    catch { /* observability only */ }
+                }
                 if (!run.ok) {
                     opts.traceRecorder?.toolFailed({
                         toolName: 'agent_runner',
@@ -778,10 +786,14 @@ export function makeClaudeExecBridge(opts, internal) {
                 reason = summarizeViolations(violations);
             }
             preservePatchRef = patchRef !== undefined && ownsPatchRef;
+            const failureIdentity = !passed && stat.files > 0
+                ? { rootAttemptId: mutation.id, executionId: randomUUID() }
+                : undefined;
             result = {
                 outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
                 proofOfWork: proof,
                 strongEvidence: passed && stat.files > 0,
+                ...(failureIdentity ? { failureIdentity } : {}),
                 ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
                 ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
                 // On a FAILED outcome, hand the agent transcript (stdout + stderr) to the cycle engine as host-side

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { createGunzip } from 'node:zlib';
 import { ops } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES, SelfUpdateFailureError, selfUpdateFailure } from './failureCodes.js';
@@ -30,6 +31,10 @@ export const MAX_TARBALL_BYTES = 64 * 1024 * 1024;
  * bombs fail before the extractor accumulates unbounded output in memory.
  */
 export const MAX_EXTRACTED_TARBALL_BYTES = 128 * 1024 * 1024;
+const SELF_UPDATE_RELEASE_BINARY_RE = /^evolver(?:\.exe|-(?:darwin-(?:arm64|x64)|linux-(?:arm64|x64)|windows-x64\.exe))?$/;
+export function isStandaloneReleaseBinaryName(name) {
+    return SELF_UPDATE_RELEASE_BINARY_RE.test(name.toLowerCase());
+}
 export function requiredVersionForRelease(raw) {
     try {
         return ops.requireSelfUpdateVersion(raw, 'required_version');
@@ -209,9 +214,47 @@ export function resolveSelfUpdateTarget(opts = {}) {
     // correctly even when this check runs on a POSIX host (shape probes, tests).
     const segments = execPath.split(/[/\\]+/).filter(Boolean);
     const name = (segments.length > 0 ? segments[segments.length - 1] : basename(execPath)).toLowerCase();
-    if (name.startsWith('evolver'))
+    if (isStandaloneReleaseBinaryName(name))
         return { path: execPath, explicit: false };
     throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.INSTALL_GUARD_UNREADABLE, `self_update_target_required:${execPath}`);
+}
+export function assertSelfUpdateProcessTargetBound(options, allowUnresolvedTarget = false) {
+    let targetPath;
+    try {
+        targetPath = resolveSelfUpdateTarget(options).path;
+    }
+    catch {
+        if (allowUnresolvedTarget)
+            return;
+        throw new Error('self_update_process_target_mismatch');
+    }
+    const processExecPath = options.processExecPath ?? process.execPath;
+    try {
+        if (canonicalExecutablePath(processExecPath) !== canonicalExecutablePath(targetPath)) {
+            throw new Error('self_update_process_target_mismatch');
+        }
+    }
+    catch {
+        throw new Error('self_update_process_target_mismatch');
+    }
+}
+export function selfUpdateProcessTargetBindable(options) {
+    try {
+        assertSelfUpdateProcessTargetBound(options);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function canonicalExecutablePath(path) {
+    const canonical = realpathSync.native(path);
+    if (process.platform !== 'win32')
+        return resolve(canonical);
+    const withoutNamespace = canonical
+        .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+        .replace(/^\\\\\?\\/i, '');
+    return win32.normalize(withoutNamespace).toLowerCase();
 }
 function releaseDownloadUrl(releaseUrl, version, assetName) {
     let base;
@@ -391,7 +434,7 @@ function shaForAsset(sums, assetName) {
 }
 function assertSafeExecutableTarget(targetPath, explicitTarget) {
     const name = basename(targetPath).toLowerCase();
-    if ((name === 'node' || name === 'node.exe' || !name.startsWith('evolver')) && !explicitTarget) {
+    if (!isStandaloneReleaseBinaryName(name) && !explicitTarget) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.INSTALL_GUARD_NAME_MISMATCH, `unsafe_self_update_target:${targetPath}`);
     }
 }

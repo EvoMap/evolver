@@ -38,5 +38,6 @@ export function shadowHubCapability(cap, sink, mode) {
             },
         },
         ...(cap.capabilities ? { capabilities: () => cap.capabilities() } : {}),
+        ...(cap.recipes ? { recipes: cap.recipes } : {}),
     };
 }

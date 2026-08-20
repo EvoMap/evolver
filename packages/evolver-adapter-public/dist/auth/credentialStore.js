@@ -596,7 +596,8 @@ export class CredentialStore {
                 throw new CredentialStoreError(`ancestor directory ${path} changed during ACL validation`);
             }
             for (let attempt = 0; attempt < 5; attempt += 1) {
-                const initialState = securityStateOf(bigFstat(fd));
+                const initialMetadata = bigFstat(fd);
+                const initialState = securityStateOf(initialMetadata);
                 let output;
                 try {
                     output = this.darwinAclReader(path);
@@ -613,11 +614,32 @@ export class CredentialStore {
                     !sameIdentity(after, identity) || !sameIdentity(openedAfter, identity)) {
                     throw new CredentialStoreError(`ancestor directory ${path} changed during ACL validation`);
                 }
-                const metadataStable = sameSecurityState(initialState, after) &&
-                    sameSecurityState(initialState, openedAfter);
-                if (metadataStable) {
+                if (sameSecurityState(initialState, after) && sameSecurityState(initialState, openedAfter)) {
                     this.securedAncestorStates.set(path, securityStateOf(openedAfter));
                     return;
+                }
+                if (sameDarwinAncestorMetadata(initialMetadata, after)
+                    && sameDarwinAncestorMetadata(initialMetadata, openedAfter)) {
+                    let confirmedOutput;
+                    try {
+                        confirmedOutput = this.darwinAclReader(path);
+                    }
+                    catch {
+                        throw new CredentialStoreError(`ancestor directory ${path} ACL could not be inspected`);
+                    }
+                    if (hasUnsafeDarwinAllowAcl(confirmedOutput, rejectAnyAllow)) {
+                        throw new CredentialStoreError(`ancestor directory ${path} grants access through an extended ACL`);
+                    }
+                    const confirmedPath = bigLstat(path);
+                    const confirmedOpened = bigFstat(fd);
+                    if (confirmedOutput === output
+                        && !confirmedPath.isSymbolicLink()
+                        && confirmedPath.isDirectory()
+                        && sameDarwinAncestorMetadata(initialMetadata, confirmedPath)
+                        && sameDarwinAncestorMetadata(initialMetadata, confirmedOpened)) {
+                        this.securedAncestorStates.set(path, securityStateOf(confirmedOpened));
+                        return;
+                    }
                 }
             }
             throw new CredentialStoreError(`ancestor directory ${path} changed during ACL validation`);
@@ -1055,6 +1077,13 @@ function sameIdentity(left, right) {
 }
 function sameSecurityState(left, right) {
     return sameIdentity(left, right) && left.ctimeNs === right.ctimeNs;
+}
+function sameDarwinAncestorMetadata(left, right) {
+    return sameIdentity(left, right)
+        && right.isDirectory()
+        && !right.isSymbolicLink()
+        && left.uid === right.uid
+        && left.mode === right.mode;
 }
 function samePathSecurityStates(left, right) {
     return left.length === right.length && left.every((state, index) => {

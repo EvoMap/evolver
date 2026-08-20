@@ -14,6 +14,8 @@
  * | `OPENCLAW_WORKSPACE` | *(manual)* | Partial V2 support does not preserve V1 workspace and bridge semantics |
  * | `EVOLVER_NO_PARENT_GIT` | *(none)* | V2 uses `EVOLVER_REPO_ROOT` or nearest Git root |
  * | `EVOLVER_VERBOSE` | *(none)* | V2 has no global switch; opt in to feature-specific diagnostics manually |
+ * | `EVOLVER_OPENAI_COMPATIBLE_BASE_URLS` | *(manual)* | Defensive compatibility spelling; canonical V1 used the EVOMAP-prefixed key |
+ * | `EVOMAP_OPENAI_COMPATIBLE_BASE_URLS` | *(manual)* | Canonical V1 compatible-origin allowlist; selected base and credential were separate |
  * | `EVOLVER_AUTO_ISSUE` | *(none)* | V2 creates local drafts; submit requires explicit approval-gated flow |
  * | `EVOLVER_ROLLBACK_MODE` | *(none)* | V2 uses worktree/snapshot/recovery policy |
  * | `WORKER_ENABLED` | *(none)* | No merchant-worker resolver in V2 |

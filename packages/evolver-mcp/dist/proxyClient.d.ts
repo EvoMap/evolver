@@ -26,6 +26,18 @@ export interface ProxySearchArgs {
     limit?: number;
     expectedHubMode?: 'public' | 'private';
 }
+export interface ProxyRecipeSearchArgs {
+    q?: string;
+    limit?: number;
+    cursor?: string;
+    sort?: string;
+    expectedHubMode?: 'public' | 'private';
+}
+export interface ProxyRecipeExpressArgs {
+    recipeId: string;
+    inputPayload?: Record<string, unknown>;
+    expectedHubMode?: 'public' | 'private';
+}
 export interface ProxyFetchArgs {
     assetId?: string;
     assetIds?: string[];
@@ -34,6 +46,7 @@ export interface ProxyFetchArgs {
 export interface ProxyAssetBundle {
     assets: unknown[];
     expected_hub_mode?: 'public' | 'private';
+    compose_recipe?: boolean;
 }
 export interface ProxyReuseResultArgs {
     assetId: string;
@@ -71,6 +84,8 @@ export declare class EvolverProxyClient {
         signal?: AbortSignal;
     }): Promise<unknown>;
     search(args: ProxySearchArgs): Promise<unknown>;
+    searchRecipes(args: ProxyRecipeSearchArgs): Promise<unknown>;
+    expressRecipe(args: ProxyRecipeExpressArgs): Promise<unknown>;
     fetchAsset(args: ProxyFetchArgs): Promise<unknown>;
     searchAgents(args: ProxyAgentSearchArgs): Promise<unknown>;
     getAgentProfile(agentId: string, timeoutMs?: number): Promise<unknown>;

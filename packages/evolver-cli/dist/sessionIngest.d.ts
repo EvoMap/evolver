@@ -1,6 +1,12 @@
 import { events, material as materialNs } from '@evomap/evolver-core';
 import { type RuntimeSessionMaterialSnapshotV1 } from './materialSnapshot.js';
-import { type RuntimeSessionParseDiagnostics } from './runtimeSessionSource.js';
+import { type RuntimeSessionParseDiagnostics, type RuntimeSessionSource } from './runtimeSessionSource.js';
+/**
+ * Stamp a resolved canonical task domain onto each source when turn/signal text carries exactly one
+ * valid `task_domain:` token. Never invents domains; absent/ambiguous/invalid → leave field unset.
+ * Additive only — does not mutate parse diagnostics or turn content.
+ */
+export declare function stampResolvedTaskDomain(sources: readonly RuntimeSessionSource[]): RuntimeSessionSource[];
 /** Material consumer group shared by ingestion and the downstream cycle consumer. */
 export declare const INGEST_CONSUMER_GROUP = "cycle";
 /** Injectable substrate dependencies for session and trace ingestion. */

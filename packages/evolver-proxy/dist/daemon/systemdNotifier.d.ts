@@ -19,6 +19,7 @@ interface SystemdNotifierOptions {
     execFile?: SystemdNotifyExec;
     readyRetryDelaysMs?: readonly number[];
     sleep?: (delayMs: number) => Promise<void>;
+    notifyCommand?: string;
 }
 export declare function systemdWatchdogIntervalMs(env?: NodeJS.ProcessEnv): number;
 export declare class SystemdNotifier {
@@ -29,6 +30,7 @@ export declare class SystemdNotifier {
     private readonly execFile;
     private readonly readyRetryDelaysMs;
     private readonly sleep;
+    private readonly notifyCommand;
     private timer;
     private readySent;
     private readyInFlight;

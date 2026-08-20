@@ -1,5 +1,7 @@
 export * from './provider.js';
 export * from './localJsonl.js';
+export * from './foreignJsonlSource.js';
+export * from './unionReadStore.js';
 export * from './localAssetStoreSnapshot.js';
 export * from './assetStoreHealth.js';
 export * from './assetSidecarRecovery.js';

@@ -37,6 +37,8 @@ export async function runRecipeCommand(argv, deps = {}) {
                 return await runRecipeBuildDryRun(parsed.value, deps.store, { log, err });
             if (parsed.value.sub === 'from-skills')
                 return await runRecipeFromSkills(parsed.value, undefined, deps, { log, err }, true);
+            if (parsed.value.sub === 'search')
+                return runRecipeSearchDryRun(parsed.value, { log });
             return runRecipeReuseDryRun(parsed.value, { log });
         }
         const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
@@ -49,6 +51,8 @@ export async function runRecipeCommand(argv, deps = {}) {
             return await runRecipeBuild(parsed.value, hub, deps.store, { log, err });
         if (parsed.value.sub === 'from-skills')
             return await runRecipeFromSkills(parsed.value, hub, deps, { log, err }, false);
+        if (parsed.value.sub === 'search')
+            return await runRecipeSearch(parsed.value, hub, { log, err });
         return await runRecipeReuse(parsed.value, hub, { log, err });
     }
     catch (e) {
@@ -68,6 +72,49 @@ async function runRecipeBuildDryRun(opts, store, io) {
     }
     else {
         io.log('[recipe build] dry-run: would leave the recipe as draft.');
+    }
+    return 0;
+}
+function runRecipeSearchDryRun(opts, io) {
+    const action = opts.q ? 'search_recipe' : 'list_recipe';
+    io.log(`[recipe search] dry-run: would ${opts.q ? `search recipes q=${JSON.stringify(opts.q)}` : 'list published recipes'}.`);
+    if (opts.jsonOut) {
+        io.log(JSON.stringify({
+            dry_run: true,
+            would: action,
+            ...(opts.q ? { q: opts.q } : {}),
+            ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+            recipes: [],
+        }, null, 2));
+    }
+    return 0;
+}
+async function runRecipeSearch(opts, hub, io) {
+    const recipes = hub.recipes;
+    if (!recipes) {
+        io.err('recipe capability is not available for the configured Hub adapter');
+        return 1;
+    }
+    const request = {
+        ...(opts.q ? { q: opts.q } : {}),
+        ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+    };
+    const receipt = opts.q
+        ? await callRecipeWithAuthRetry(hub, 'recipe search', () => recipes.search(request), io)
+        : await callRecipeWithAuthRetry(hub, 'recipe search', () => recipes.list(request), io);
+    io.log(`[recipe search] ${receipt.recipes.length} recipe(s).`);
+    if (opts.jsonOut) {
+        io.log(JSON.stringify(receipt.raw ?? receipt, null, 2));
+        return 0;
+    }
+    for (const recipe of receipt.recipes) {
+        const row = recipe && typeof recipe === 'object' && !Array.isArray(recipe) ? recipe : {};
+        const id = typeof row['id'] === 'string' ? row['id']
+            : typeof row['recipe_id'] === 'string' ? row['recipe_id']
+                : typeof row['recipeId'] === 'string' ? row['recipeId']
+                    : undefined;
+        const title = typeof row['title'] === 'string' ? row['title'] : undefined;
+        io.log(id && title ? `  ${id}  ${title}` : id ? `  ${id}` : `  ${JSON.stringify(recipe)}`);
     }
     return 0;
 }
@@ -153,13 +200,16 @@ function resolveRecipeHubUrl(env) {
 }
 export function parseRecipeArgs(argv) {
     const sub = argv[0];
-    if (sub !== 'build' && sub !== 'reuse' && sub !== 'from-skills')
-        return { ok: false, error: 'recipe subcommand must be build|reuse|from-skills' };
+    if (sub !== 'build' && sub !== 'reuse' && sub !== 'from-skills' && sub !== 'search') {
+        return { ok: false, error: 'recipe subcommand must be build|reuse|from-skills|search' };
+    }
     const args = argv.slice(1);
     if (sub === 'build')
         return parseBuildArgs(args);
     if (sub === 'from-skills')
         return parseFromSkillsArgs(args);
+    if (sub === 'search')
+        return parseSearchArgs(args);
     return parseReuseArgs(args);
 }
 async function runRecipeBuild(opts, hub, store, io) {
@@ -881,6 +931,23 @@ function parseFromSkillsArgs(args) {
         },
     };
 }
+function parseSearchArgs(args) {
+    const q = flagValue(args, '--q') ?? flagValue(args, '--query') ?? firstPositional(args) ?? undefined;
+    const limitRaw = flagValue(args, '--limit');
+    const limit = limitRaw === null ? undefined : Number(limitRaw);
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
+        return { ok: false, error: '--limit must be a positive integer' };
+    }
+    return {
+        ok: true,
+        value: {
+            sub: 'search',
+            ...(q ? { q } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            jsonOut: args.includes('--json'),
+        },
+    };
+}
 function parseReuseArgs(args) {
     const recipeId = flagValue(args, '--id') ?? firstPositional(args);
     if (!recipeId)
@@ -1278,5 +1345,7 @@ function recipeUsage() {
         '  evolver recipe from-skills --manifest <file> [--publish] [--json]',
         '      Distills ordered SKILL.md steps with execution evidence, then creates a recipe.',
         '  evolver recipe reuse --id <recipe_id> [--input <json-object>] [--json]',
+        '  evolver recipe search [--q <text>] [--limit <n>] [--json]',
+        '      Default agent lookup. Express a hit with `evolver recipe reuse`. Gene/Capsule search is fallback.',
     ].join('\n');
 }

@@ -47,9 +47,24 @@ export function makeDistillDrain(c) {
         for (const source of sources) {
             if (drafted >= draftLimit)
                 return { ack: false, drafted };
-            const candidate = draftGeneCandidate(source.turns, signals.extractSignals(source.turns), source.agent);
-            if (!candidate)
+            const draftedCandidate = draftGeneCandidate(source.turns, signals.extractSignals(source.turns), source.agent);
+            if (!draftedCandidate)
                 continue; // too thin to distill
+            // Carry producer-resolved task domain into draft signals_match so selection can score domain evidence.
+            // Only attach when the source already carries a resolved slug (fail-closed stamp at ingest).
+            let candidate = draftedCandidate;
+            if (source.taskDomain) {
+                try {
+                    const domainToken = signals.taskDomainSignal(source.taskDomain);
+                    const existingSignals = candidate.signals_match ?? [];
+                    if (!existingSignals.includes(domainToken)) {
+                        candidate = { ...candidate, signals_match: [...existingSignals, domainToken] };
+                    }
+                }
+                catch {
+                    // Invalid slug on the source — leave signals_match untouched (never invent).
+                }
+            }
             // Value/novelty gate (#117 improvement 3): drop thin / near-duplicate drafts BEFORE they reach the human
             // review queue. Ack the material (a deliberate skip, not a failure — nothing to retry).
             const { admission, existing } = await assessDraftAdmissionFromStore(c.store, candidate);

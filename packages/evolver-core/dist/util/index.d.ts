@@ -1,3 +1,4 @@
-export * from './fileLock.js';
+export { acquireLock, attachLockGuardianToProcess, clearLockGuardianForProcess, inspectFileLockOwnerProcess, LockReleaseError, LockTimeoutError, MAX_LOCK_OWNER_BYTES, releaseLock, retainLockGuardianForProcess, readFileLockProcessStartIdentity, sameFileLockProcessStartIdentity, parseFileLockProcessStartIdentity, syncSleep, transferLockOwnershipToProcess, UnsafeLockPathError, } from './fileLock.js';
+export type { AcquireLockOptions, AttachLockGuardianResult, ClearLockGuardianResult, FileLockOwnerRecord, FileLockOwnerProcessStatus, FileLockProcessStartIdentity, ReleaseLockReason, ReleaseLockResult, RetainLockGuardianResult, TransferLockOwnershipReason, TransferLockOwnershipResult, UnsafeLockPathReason, } from './fileLock.js';
 export * from './fetchPort.js';
 export * from './version.js';

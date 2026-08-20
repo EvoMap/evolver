@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { bootstrap, hub as hubNs, signals } from '@evomap/evolver-core';
+import { bootstrap, hub as hubNs, signals, wire } from '@evomap/evolver-core';
 import { AuthError, HubFetch, HubClientError, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire, searchQueryToSearchOnlyWire, } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
 import { getWorkspaceKeychainMode } from './auth/workspaceKeychain.js';
 import { agentDirectoryFailure, parsePublicAgentPage, parsePublicAgentProfile, paginatePublicAgentPage, mergePublicAgentPages, publicAgentSearchQuery, publicTaskDiscoveryQuery, PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES, unsupportedPublicAvailability, unsupportedPublicSort, withDirectoryTimeout, } from './agentDirectory.js';
-import { assetMatchesId } from './hubReuse.js';
+import { assetMatchesId, stripHubDeliveryMetadataForIntegrity } from './hubReuse.js';
 export const INBOUND_LIMIT = 100;
 export const OUTBOUND_MAX_BATCH = 50;
 export const OUTBOUND_MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -22,6 +22,12 @@ export const USED_ASSET_IDS_MAX = 50;
 export const USED_ASSET_ID_MAX_LEN = 200;
 export const LEARNING_ASSET_IDS_MAX = 50;
 export const LEARNING_ASSET_ID_MAX_LEN = 128;
+export class MalformedAccountAssetPageError extends Error {
+    constructor() {
+        super('Hub account asset page is malformed');
+        this.name = 'MalformedAccountAssetPageError';
+    }
+}
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
 export function gepEnvelope(messageType, payload, options = {}) {
     return {
@@ -97,6 +103,8 @@ export class PublicHubCapability {
         publish: async (recipeId, options) => this.publishRecipe(recipeId, options),
         get: async (recipeId) => this.getRecipe(recipeId),
         express: async (recipeId, request = {}) => this.expressRecipe(recipeId, request),
+        search: async (request = {}) => this.searchRecipes(request),
+        list: async (request = {}) => this.listRecipes(request),
     };
     constructor(opts) {
         this.opts = opts;
@@ -280,12 +288,56 @@ export class PublicHubCapability {
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToFetchWire(query)));
         return assetsFromBody(body);
     }
-    async fetchAssetById(assetId) {
+    /**
+     * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to
+     * `null`, so a caller could not tell "the hub does not have this" from "the hub delivered something the
+     * client refuses" — and the CLI reported both as `not_found` on assets that demonstrably exist (#964).
+     */
+    async fetchAssetDeliveryById(assetId, options) {
         const id = assetId.trim();
         if (!id)
-            return null;
+            return { status: 'absent' };
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', { asset_ids: [id] }));
-        return assetsFromBody(body).find((asset) => fetchResultMatchesId(asset, id)) ?? null;
+        const matches = [];
+        for (const row of assetCandidatesFromBody(body)) {
+            const asset = unwrapFetchDeliveryRow(row);
+            if (!fetchDeliveryIdentityConsistent(row, asset))
+                return { status: 'rejected', reason: 'identity_mismatch' };
+            if (isContentAssetIdRequest(id)) {
+                // Identity is what this gate is for: the delivery must bind the REQUESTED content id through its own
+                // canonical `asset_id`. Whether the delivered body then hashes to that id, or satisfies the wire schema,
+                // is a trust question the caller resolves (quarantine + repair) — not grounds to drop the asset here.
+                if (!assetMatchesId(asset, id) && stringField(asset, 'asset_id') !== id) {
+                    return { status: 'rejected', reason: 'identity_mismatch' };
+                }
+                if (isRevokedFetchDelivery(row))
+                    return { status: 'rejected', reason: 'revoked' };
+                matches.push(asset);
+                continue;
+            }
+            if (fetchResultMatchesId(asset, id)) {
+                if (isRevokedFetchDelivery(row))
+                    return { status: 'rejected', reason: 'revoked' };
+                matches.push(asset);
+            }
+        }
+        if (matches.length === 0)
+            return { status: 'absent' };
+        const result = unambiguousFetchResult(matches);
+        if (!result)
+            return { status: 'rejected', reason: 'ambiguous' };
+        // Logical-id lookups retain their historical matching semantics. Only a canonical sha256 lookup can opt in
+        // to a content-hash drift, and every non-opted-in caller remains strict.
+        const verified = assetMatchesId(result, id);
+        if (verified || !isContentAssetIdRequest(id))
+            return { status: 'delivered', asset: result, verified: true };
+        return options?.allowUnverifiedExactIdentity === true
+            ? { status: 'delivered', asset: result, verified: false }
+            : { status: 'rejected', reason: 'unverified_not_allowed' };
+    }
+    async fetchAssetById(assetId, options) {
+        const outcome = await this.fetchAssetDeliveryById(assetId, options);
+        return outcome.status === 'delivered' ? outcome.asset : null;
     }
     /**
      * #69: search != fetch. Free-text is the hub's vector endpoint (GET /a2a/assets/semantic-search?q=);
@@ -368,16 +420,18 @@ export class PublicHubCapability {
             ...(opts.scope === 'published' && opts.status && opts.status !== 'all' ? { status: opts.status } : {}),
         };
         const body = await this.http.call('GET', path, undefined, query);
-        const payload = asRecord(body['payload']) ?? body;
+        const payload = Object.prototype.hasOwnProperty.call(body, 'payload')
+            ? asRecord(body['payload'])
+            : body;
+        if (!payload)
+            throw new MalformedAccountAssetPageError();
         const assets = accountAssetsFromPayload(payload);
         const count = numberField(payload, 'count');
-        const nextCursor = stringField(payload, 'next_cursor') ?? stringField(payload, 'nextCursor');
-        const hasMore = booleanField(payload, 'has_more') ?? booleanField(payload, 'hasMore') ?? Boolean(nextCursor);
+        const pagination = accountPaginationFromPayload(payload);
         return {
             assets,
             ...(count !== undefined ? { count } : {}),
-            hasMore,
-            ...(nextCursor ? { nextCursor } : {}),
+            ...pagination,
         };
     }
     /**
@@ -580,6 +634,20 @@ export class PublicHubCapability {
             ...recipeReceiptFromBody(body),
             ...(recipe !== undefined ? { recipe } : {}),
         };
+    }
+    async searchRecipes(request = {}) {
+        if (isHubDryRunEnabled()) {
+            return dryRunRecipeSearchReceipt('search_recipe', request);
+        }
+        const body = await this.http.call('GET', '/a2a/recipe/search', undefined, recipeSearchQuery(request));
+        return recipeSearchReceiptFromBody(body);
+    }
+    async listRecipes(request = {}) {
+        if (isHubDryRunEnabled()) {
+            return dryRunRecipeSearchReceipt('list_recipe', request);
+        }
+        const body = await this.http.call('GET', '/a2a/recipe/list', undefined, recipeSearchQuery(request));
+        return recipeSearchReceiptFromBody(body);
     }
     async expressRecipe(recipeId, request = {}) {
         if (isHubDryRunEnabled()) {
@@ -826,6 +894,58 @@ function recipeOrganismIdFromPayload(payload) {
         ? stringField(organism, 'id') ?? stringField(organism, 'organism_id') ?? stringField(organism, 'organismId')
         : undefined;
 }
+function recipeSearchQuery(request) {
+    return {
+        ...(request.q ? { q: request.q } : {}),
+        ...(request.limit !== undefined ? { limit: request.limit } : {}),
+        ...(request.cursor ? { cursor: request.cursor } : {}),
+        ...(request.sort ? { sort: request.sort } : {}),
+    };
+}
+function recipeListFromRecord(value) {
+    for (const key of ['recipes', 'items', 'results']) {
+        const found = value[key];
+        if (Array.isArray(found))
+            return found;
+    }
+    const nested = asRecord(value['data']);
+    if (!nested)
+        return undefined;
+    for (const key of ['recipes', 'items', 'results']) {
+        const found = nested[key];
+        if (Array.isArray(found))
+            return found;
+    }
+    return undefined;
+}
+function recipeSearchReceiptFromBody(body) {
+    const payload = recipePayload(body);
+    const recipes = recipeListFromRecord(payload) ?? recipeListFromRecord(body) ?? [];
+    const nextCursor = stringField(payload, 'next_cursor')
+        ?? stringField(payload, 'nextCursor')
+        ?? stringField(body, 'next_cursor')
+        ?? stringField(body, 'nextCursor');
+    const hasMore = booleanField(payload, 'has_more')
+        ?? booleanField(payload, 'hasMore')
+        ?? booleanField(body, 'has_more')
+        ?? booleanField(body, 'hasMore');
+    return {
+        recipes,
+        ...(nextCursor ? { nextCursor } : {}),
+        ...(hasMore !== undefined ? { hasMore } : {}),
+        raw: body,
+    };
+}
+function dryRunRecipeSearchReceipt(action, request) {
+    return {
+        recipes: [],
+        raw: {
+            dry_run: true,
+            would: action,
+            ...request,
+        },
+    };
+}
 function recipeReceiptFromBody(body) {
     const payload = recipePayload(body);
     const recipe = asRecord(payload['recipe']);
@@ -850,7 +970,7 @@ function dryRunRecipeReceipt(action, recipeId, extra = {}) {
         },
     };
 }
-function assetsFromBody(body) {
+function assetCandidatesFromBody(body) {
     const payload = asRecord(body['payload']);
     const candidates = [
         body['asset'],
@@ -861,15 +981,25 @@ function assetsFromBody(body) {
         ...(Array.isArray(payload?.['results']) ? payload['results'] : []),
     ];
     return candidates
-        .filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)))
-        .map(unwrapFetchDeliveryRow);
+        .filter((candidate) => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate)));
+}
+function assetsFromBody(body) {
+    return assetCandidatesFromBody(body).map(unwrapFetchDeliveryRow);
 }
 // Delivery-row metadata carried over onto the unwrapped GEP record. Ranking fields are consumed by
 // hubReuse and stripped before canonical storage. `payload_backfill_reason` must also survive this
 // boundary so integrity consumers can report that the Hub synthesized the payload (#570). Do not
 // carry `confidence`: it is transport metadata on Gene rows but canonical content on Capsules, so
 // overloading it can either poison a Gene hash or overwrite Capsule content (#565).
-const FETCH_ROW_CARRYOVER_KEYS = ['gdi_score', 'success_rate', 'reuse_count', 'source_node_id', 'payload_backfill_reason'];
+const FETCH_ROW_CARRYOVER_KEYS = [
+    'gdi_score',
+    'success_rate',
+    'reuse_count',
+    'source_node_id',
+    'payload_backfill_reason',
+    'status',
+    'trust_state',
+];
 /**
  * The live hub's /a2a/fetch results are DELIVERY ROWS, not raw GEP records (#565, observed on
  * evomap.ai 2026-07-22): the record itself nests under `payload`, while the row's own keys are
@@ -893,20 +1023,89 @@ function unwrapFetchDeliveryRow(row) {
     }
     return { ...inner, ...carryover };
 }
-function accountAssetsFromPayload(payload) {
-    const candidates = [
-        payload['assets'],
-        payload['results'],
-        payload['items'],
-    ];
-    for (const candidate of candidates) {
-        if (!Array.isArray(candidate))
-            continue;
-        return candidate
-            .filter((asset) => Boolean(asset && typeof asset === 'object' && !Array.isArray(asset)))
-            .map(unwrapFetchDeliveryRow);
+function fetchDeliveryIdentityConsistent(row, asset) {
+    const outer = row;
+    if (typeof outer['type'] === 'string') {
+        const transportType = stringField(outer, 'asset_type');
+        if (transportType !== undefined && transportType !== outer['type'])
+            return false;
+        const transportLogicalId = stringField(outer, 'local_id');
+        if (transportLogicalId !== undefined && transportLogicalId !== stringField(outer, 'id'))
+            return false;
+        return true;
     }
-    return [];
+    const inner = asRecord(outer['payload']);
+    if (!inner)
+        return false;
+    const outerAssetId = stringField(outer, 'asset_id');
+    const innerAssetId = stringField(inner, 'asset_id');
+    if (!outerAssetId || !innerAssetId || outerAssetId !== innerAssetId)
+        return false;
+    const outerType = stringField(outer, 'asset_type');
+    const innerType = stringField(inner, 'type');
+    if (outerType !== undefined && outerType !== innerType)
+        return false;
+    const innerLogicalId = stringField(inner, 'id');
+    for (const key of ['id', 'local_id']) {
+        const outerLogicalId = stringField(outer, key);
+        if (outerLogicalId !== undefined && outerLogicalId !== innerLogicalId)
+            return false;
+    }
+    for (const key of ['status', 'trust_state']) {
+        const outerMarker = stringField(outer, key);
+        const innerMarker = stringField(inner, key);
+        const outerRevoked = isRevokedMarker(outerMarker);
+        const innerRevoked = isRevokedMarker(innerMarker);
+        if (outerMarker !== undefined && innerMarker !== undefined && outerRevoked !== innerRevoked)
+            return false;
+    }
+    return asset === row || stringField(asset, 'asset_id') === innerAssetId;
+}
+function isRevokedFetchDelivery(row) {
+    const record = row;
+    const nested = asRecord(record['payload']);
+    return [record, ...(nested ? [nested] : [])].some((value) => (isRevokedMarker(value['status'])
+        || isRevokedMarker(value['trust_state'])));
+}
+function isRevokedMarker(raw) {
+    return typeof raw === 'string' && raw.trim().toLowerCase() === 'revoked';
+}
+function accountAssetsFromPayload(payload) {
+    const keys = ['assets', 'results', 'items']
+        .filter((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (keys.length !== 1)
+        throw new MalformedAccountAssetPageError();
+    const candidate = payload[keys[0]];
+    if (!Array.isArray(candidate) || candidate.some((asset) => !asset || typeof asset !== 'object' || Array.isArray(asset))) {
+        throw new MalformedAccountAssetPageError();
+    }
+    return candidate.map((row) => {
+        const asset = unwrapFetchDeliveryRow(row);
+        return fetchDeliveryIdentityConsistent(row, asset) ? asset : row;
+    });
+}
+function accountPaginationFromPayload(payload) {
+    const snakeHasMore = payload['has_more'];
+    const camelHasMore = payload['hasMore'];
+    if ((snakeHasMore !== undefined && typeof snakeHasMore !== 'boolean')
+        || (camelHasMore !== undefined && typeof camelHasMore !== 'boolean')
+        || (snakeHasMore === undefined && camelHasMore === undefined)
+        || (typeof snakeHasMore === 'boolean' && typeof camelHasMore === 'boolean' && snakeHasMore !== camelHasMore)) {
+        throw new MalformedAccountAssetPageError();
+    }
+    const hasMore = typeof snakeHasMore === 'boolean' ? snakeHasMore : camelHasMore;
+    const rawCursors = [payload['next_cursor'], payload['nextCursor']]
+        .filter((value) => value !== undefined && value !== null);
+    if (rawCursors.some((value) => typeof value !== 'string' || !value.trim())) {
+        throw new MalformedAccountAssetPageError();
+    }
+    if (rawCursors.length === 2 && rawCursors[0] !== rawCursors[1]) {
+        throw new MalformedAccountAssetPageError();
+    }
+    const nextCursor = rawCursors[0];
+    if (hasMore !== Boolean(nextCursor))
+        throw new MalformedAccountAssetPageError();
+    return { hasMore, ...(nextCursor ? { nextCursor } : {}) };
 }
 function learningAssetsFromPayload(payload) {
     const candidates = [
@@ -1010,7 +1209,30 @@ function failureReason(error) {
 function fetchResultMatchesId(asset, requestedId) {
     if (assetMatchesId(asset, requestedId))
         return true;
-    return !requestedId.startsWith('sha256:') && Boolean(asset && stringField(asset, 'id') === requestedId);
+    if (!asset)
+        return false;
+    if (!requestedId.startsWith('sha256:'))
+        return stringField(asset, 'id') === requestedId;
+    return false;
+}
+function unambiguousFetchResult(matches) {
+    if (matches.length === 0)
+        return null;
+    let canonical;
+    try {
+        canonical = wire.canonicalize(stripHubDeliveryMetadataForIntegrity(matches[0]));
+        for (const asset of matches.slice(1)) {
+            if (wire.canonicalize(stripHubDeliveryMetadataForIntegrity(asset)) !== canonical)
+                return null;
+        }
+    }
+    catch {
+        return null;
+    }
+    return matches.find((asset) => stringField(asset, 'payload_backfill_reason') !== undefined) ?? matches[0];
+}
+function isContentAssetIdRequest(requestedId) {
+    return /^sha256:[0-9a-f]{64}$/.test(requestedId);
 }
 function stringField(value, key) {
     return typeof value[key] === 'string' && value[key].length > 0 ? value[key] : undefined;

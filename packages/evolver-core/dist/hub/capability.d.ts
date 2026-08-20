@@ -238,12 +238,27 @@ export interface RecipeExpressRequest {
 export interface RecipeExpressionReceipt extends RecipeReceipt {
     organismId?: string;
 }
+/** Search/list published recipes. Empty `q` is valid; adapters may fall through to list. */
+export interface RecipeSearchRequest {
+    q?: string;
+    limit?: number;
+    cursor?: string;
+    sort?: string;
+}
+export interface RecipeSearchReceipt {
+    recipes: unknown[];
+    nextCursor?: string;
+    hasMore?: boolean;
+    raw: unknown;
+}
 /** Optional Hub recipe/DNA capability. Core stays wire-agnostic; adapters own REST shape. */
 export interface RecipeCapability {
     create(request: RecipeCreateRequest): Promise<RecipeReceipt>;
     publish(recipeId: string, options?: RecipePublishOptions): Promise<RecipeReceipt>;
     get(recipeId: string): Promise<RecipeFetchReceipt>;
     express(recipeId: string, request?: RecipeExpressRequest): Promise<RecipeExpressionReceipt>;
+    search(request?: RecipeSearchRequest): Promise<RecipeSearchReceipt>;
+    list(request?: RecipeSearchRequest): Promise<RecipeSearchReceipt>;
 }
 export type HubCapabilityName = 'publish' | 'fetch' | 'search' | 'task' | 'mailbox' | 'auth' | 'audit' | 'air_gap' | 'tenant_isolation' | 'marketplace' | 'economy' | 'questions' | 'recipes' | 'agent_directory' | 'learning_assets';
 /** hub 能力清单(可选). core 据此动态适配 UI/行为, "按需耦合". */
@@ -300,6 +315,30 @@ export interface AuthProvider {
     /** 撤销凭证(机器丢失/泄露). */
     revoke(credentialId: string): Promise<void>;
 }
+/**
+ * By-id fetch is content-addressed by default. Integrity-sensitive callers may
+ * explicitly opt in to receiving a schema-valid delivery whose declared
+ * asset_id matches the request while its current content hash does not.
+ */
+export interface FetchAssetByIdOptions {
+    allowUnverifiedExactIdentity?: boolean;
+}
+/** Why a by-id fetch produced no asset. `absent` is the ONLY one that means the hub does not have it. */
+export type AssetDeliveryRejection = 'identity_mismatch' | 'revoked' | 'ambiguous' | 'unverified_not_allowed';
+/**
+ * The outcome of a by-id fetch. `verified:false` means the delivery is bound to the requested id but its body
+ * hashes to something else — usable only under quarantine, never as canonical content.
+ */
+export type AssetDeliveryOutcome = {
+    status: 'delivered';
+    asset: AssetRecord;
+    verified: boolean;
+} | {
+    status: 'absent';
+} | {
+    status: 'rejected';
+    reason: AssetDeliveryRejection;
+};
 export interface HubCapability {
     /**
      * 异步发布. 公版 /a2a/publish 收 **bundle**[Gene,Capsule,(EvolutionEvent)](一个 cycle 的产物一起发, +GDI);
@@ -311,7 +350,7 @@ export interface HubCapability {
     /** 搜索资产. 与 fetch 同 shape, 差异在 hub 侧召回策略. */
     search(query: HubQuery): Promise<AssetRecord[]>;
     /** 可选: 按 content-addressed asset_id 拉单个 full asset. private adapter/proxy 用它保证只 fetch 一个 winner. */
-    fetchAssetById?(assetId: string): Promise<AssetRecord | null>;
+    fetchAssetById?(assetId: string, options?: FetchAssetByIdOptions): Promise<AssetRecord | null>;
     /** 可选: 报告某个资产被复用后的结果. PHub/enterprise adapter 实现; 不支持时 runtime 应明确降级. */
     recordReuseResult?(report: ReuseResultReport): Promise<ReuseResultReceipt>;
     /** 可选: 列出 hub 端 runtime learning assets. Missing means the adapter does not support this MVP surface. */

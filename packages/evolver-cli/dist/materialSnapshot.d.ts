@@ -14,6 +14,8 @@ interface SnapshotSource {
     label: string;
     sessionId?: string;
     resumeIdentityProvenance?: 'canonical_native_transcript';
+    /** Optional resolved task domain slug; omitted for old snapshots / unresolved sources. */
+    taskDomain?: string;
     evidenceSummary: RuntimeSessionEvidenceSummary;
     turns: SnapshotTurn[];
 }

@@ -24,6 +24,7 @@ export declare class FakeHubCapability implements HubCapability {
     }>;
     readonly auth: AuthProvider;
     agentDirectory?: import('./agentDirectory.js').AgentDirectoryCapability;
+    recipes?: import('./capability.js').RecipeCapability;
     nextPollAfterMs: number | undefined;
     constructor(opts?: FakeHubOptions);
     /** 测试注入: 排一条 inbound 事件供 poll 拉. */

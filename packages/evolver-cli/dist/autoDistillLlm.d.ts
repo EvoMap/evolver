@@ -62,6 +62,26 @@ export declare function p3Decide(mode: Exclude<AutoDistillLlmMode, 'off'>, rec: 
     cooldownMs?: number;
     maxAttempts?: number;
 }): 'spawn' | 'enforced_idempotent_skip' | 'shadow_idempotent_skip' | 'failed_exhausted' | 'p3_cooldown';
+/**
+ * Resolve a distilled candidate's hard scope facets against the vocabulary the existing genes actually declare.
+ *
+ * This closes the failure the autonomous-scope experiment isolated (bench/thesis/result-recovery-autoscope-joint-metric.json):
+ * a distiller told that `required:<tag>` is a hard facet chose one in 5/5 runs and aimed it at the right dimension, but
+ * wrote `required:v2` where the live signal is `rounding-v2`. A facet is matched against live signals, so it never
+ * matched and the asset was never eligible anywhere. The distiller cannot be blamed for that: it reads solved code and
+ * never observes the retrieval vocabulary. Here the substrate supplies what it cannot see.
+ *
+ * Conservative by construction: only an exact hit or a single unambiguous qualifier relation is rewritten. Ambiguous
+ * and unknown tags are left EXACTLY as the distiller wrote them, because silently retargeting a scope key on a weak
+ * similarity would be a worse governance failure than an unmatched facet — scope decides what enters agent context.
+ */
+export declare function resolveCandidateScopeFacets(candidate: algo.GeneCandidate, existingGenes: readonly assetstore.AssetRecord[]): {
+    candidate: algo.GeneCandidate;
+    rewrites: Array<{
+        from: string;
+        to: string;
+    }>;
+};
 export declare function parseDistillOutput(stdout: string): unknown | null;
 export declare function asGeneCandidate(value: unknown): algo.GeneCandidate | null;
 export declare function jaccardDuplicate(candidate: algo.GeneCandidate, existing: readonly algo.ExistingGeneRef[], threshold?: number): string | null;

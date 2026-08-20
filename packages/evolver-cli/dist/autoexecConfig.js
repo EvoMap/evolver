@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { verify } from '@evomap/evolver-core';
-const DEFAULT_POLL_MS = 60_000;
+// Default resident-loop cadence: 30s base, still multiplied by idle sleepMultiplier and single-flight gated.
+const DEFAULT_POLL_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_VALIDATION_PROFILES = 32;
 const MAX_VALIDATION_COMMANDS = 16;

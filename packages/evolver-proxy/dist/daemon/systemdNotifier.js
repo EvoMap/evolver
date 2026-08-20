@@ -1,9 +1,15 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 const SYSTEMD_NOTIFY_TIMEOUT_MS = 5_000;
 const MIN_WATCHDOG_INTERVAL_MS = 1_000;
 const DEFAULT_READY_RETRY_DELAYS_MS = [250, 750];
 const MAX_READY_RETRIES = 4;
 const MAX_READY_RETRY_DELAY_MS = 5_000;
+const SYSTEMD_NOTIFY_CANDIDATES = [
+    '/usr/bin/systemd-notify',
+    '/bin/systemd-notify',
+    '/run/current-system/sw/bin/systemd-notify',
+];
 const defaultSystemdNotifyExec = (command, args, options, callback) => {
     execFile(command, [...args], options, (error) => { callback(error); });
 };
@@ -21,6 +27,7 @@ export class SystemdNotifier {
     execFile;
     readyRetryDelaysMs;
     sleep;
+    notifyCommand;
     timer;
     readySent = false;
     readyInFlight;
@@ -32,6 +39,9 @@ export class SystemdNotifier {
         this.execFile = options.execFile ?? defaultSystemdNotifyExec;
         this.readyRetryDelaysMs = normalizeReadyRetryDelays(options.readyRetryDelaysMs ?? DEFAULT_READY_RETRY_DELAYS_MS);
         this.sleep = options.sleep ?? sleepMs;
+        this.notifyCommand = options.notifyCommand
+            ?? SYSTEMD_NOTIFY_CANDIDATES.find((candidate) => existsSync(candidate))
+            ?? SYSTEMD_NOTIFY_CANDIDATES[0];
     }
     async ready() {
         if (!this.active())
@@ -123,7 +133,7 @@ export class SystemdNotifier {
     notify(state) {
         return new Promise((resolve) => {
             try {
-                this.execFile('systemd-notify', [state], {
+                this.execFile(this.notifyCommand, [state], {
                     env: this.env,
                     timeout: SYSTEMD_NOTIFY_TIMEOUT_MS,
                     windowsHide: true,

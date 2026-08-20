@@ -9,6 +9,7 @@ import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
 import { draftGeneCandidate } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
+import { isSyncCommandName, renderCommandGroups } from './commandCatalog.js';
 import { parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync, mkdirSync, } from 'node:fs';
 import { homedir } from 'node:os';
@@ -66,17 +67,7 @@ export function cliUsage() {
         '  --env-file <path>    Environment file',
         '',
         'Commands:',
-        '  Daemon:      proxy, lifecycle, proxy-token, doctor, setup-hooks',
-        '  Evolution:   run, cycle, autoexec, solidify, distill, review, thesis',
-        '  Memory:      ingest, inject, recall, reuse, reuse-report, recall-verify-report',
-        '               narrative, gene-value',
-        '  Assets:      asset-log, asset-trust, asset-health, material, recipe, skill',
-        '  Hub:         login, logout, phub, sync, publish, fetch, buy, orders, verify, atp',
-        '  Operations:  status, daily, workflow status, cycles, trigger, value,',
-        '               retention, replay, rebuild-views, issue-report',
-        '  Tools:       dashboard, webui, trajectory-export, migrate',
-        '  Advanced:    anti-gene-benchmark, anti-gene-rollout, reset-local-secret',
-        '               skill-distill, skill-md-update',
+        ...renderCommandGroups(),
         '',
         'Run evolver <command> --help for command-specific options.',
         '',
@@ -1779,6 +1770,21 @@ export function runCli(argv) {
         process.stdout.write(cliUsage());
         return 0;
     }
+    // `cycle` is async-dispatched at the top level, but keep the legacy direct runCli seam for callers that still
+    // invoke `cycle show` through this exported function.
+    if (cmd === 'cycle') {
+        if (argv[1] !== 'show' || !argv[2]) {
+            process.stderr.write('用法: evolver cycle show <id>\n');
+            return 1;
+        }
+        for (const t of showCycle(readEvents(), argv[2]).timeline)
+            process.stdout.write(`#${t.seq} ${t.type}  ${t.title}\n`);
+        return 0;
+    }
+    if (!isSyncCommandName(cmd)) {
+        process.stderr.write(`Unknown command: ${cmd}\n\n${cliUsage()}`);
+        return 1;
+    }
     switch (cmd) {
         case 'rebuild-views': {
             const r = rebuildViews();
@@ -1795,15 +1801,6 @@ export function runCli(argv) {
         case 'cycles': {
             for (const c of listCycles(readEvents()))
                 process.stdout.write(`${c.cycleId}  ${c.finalStage}  (${c.events} events)\n`);
-            return 0;
-        }
-        case 'cycle': {
-            if (argv[1] !== 'show' || !argv[2]) {
-                process.stderr.write('用法: evolver cycle show <id>\n');
-                return 1;
-            }
-            for (const t of showCycle(readEvents(), argv[2]).timeline)
-                process.stdout.write(`#${t.seq} ${t.type}  ${t.title}\n`);
             return 0;
         }
         case 'trigger': {
@@ -1824,8 +1821,7 @@ export function runCli(argv) {
             process.stdout.write(`replayed → MV: ${r.rebuilt.join(', ')}\n`);
             return 0;
         }
-        default:
-            process.stderr.write(`Unknown command: ${cmd}\n\n${cliUsage()}`);
-            return 1;
     }
+    const unreachable = cmd;
+    return unreachable;
 }

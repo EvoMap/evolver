@@ -13,8 +13,8 @@ export interface MappedAsset {
  * - asset_id: 有则**冻结**(原样); 缺失时新算(recomputed=true). 若映射改变正文，importer 会用
  *   content-bound provenance 隔离 frozen mismatch，而不是把它默认为可信资产(Refs #677).
  * - v2 新增 optional(resolution_status/proof_of_work/...) v1 无 → 自然省略(不合成).
- * - Gene 的 routing_hint/tool_policy 是 v2-delta(v1 PR #93): gep-sdk gene.schema.json 尚无 → schemaProperties
- *   不含它们, 默认会落 sidecar; 这里按已知 delta 归一化后保留在 record(保真). 存在但归一化为 null 的脏值
- *   (如 {tier:'ultra'})落 sidecar(可审计, 不静默丢); v1 的 null/缺省干净省略, 不污染 sidecar.
+ * - Gene 的 routing_hint/tool_policy/generation_meta 需要先 normalize，不能走 raw-copy；这里维护迁移本地
+ *   的阻断集，避免 future schema promotion 让 `allowed.has(k)` 把原始脏值直接塞进 record。
+ *   v1 的 null/缺省干净省略；存在但归一化失败的脏值落 dropped 便于审计。
  */
 export declare function mapV1Asset(kind: V1Kind, v1: Record<string, unknown>): MappedAsset;

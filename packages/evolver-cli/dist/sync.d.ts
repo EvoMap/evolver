@@ -5,7 +5,7 @@ export interface SyncAccountAssetLister {
     listAccountAssets(opts: AccountAssetListOptions): Promise<AccountAssetListResult>;
 }
 export interface SyncAccountAssetHub extends SyncAccountAssetLister {
-    fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
+    fetchAssetById(assetId: string, options?: hubNs.FetchAssetByIdOptions): Promise<assetstore.AssetRecord | null>;
 }
 export interface SyncCliDeps {
     hub?: SyncAccountAssetLister | SyncAccountAssetHub;

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { algo, assetstore, events, exec, hub, verify } from '@evomap/evolver-core';
+import { algo, assetstore, events, exec, hub, signals, verify } from '@evomap/evolver-core';
 import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MIN_CAPSULES = 10;
 const DEFAULT_MAX_CAPSULES = 24;
@@ -99,6 +99,37 @@ function normalizedSignals(record) {
     const raw = record['signals_match'];
     return Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
 }
+/**
+ * Resolve a distilled candidate's hard scope facets against the vocabulary the existing genes actually declare.
+ *
+ * This closes the failure the autonomous-scope experiment isolated (bench/thesis/result-recovery-autoscope-joint-metric.json):
+ * a distiller told that `required:<tag>` is a hard facet chose one in 5/5 runs and aimed it at the right dimension, but
+ * wrote `required:v2` where the live signal is `rounding-v2`. A facet is matched against live signals, so it never
+ * matched and the asset was never eligible anywhere. The distiller cannot be blamed for that: it reads solved code and
+ * never observes the retrieval vocabulary. Here the substrate supplies what it cannot see.
+ *
+ * Conservative by construction: only an exact hit or a single unambiguous qualifier relation is rewritten. Ambiguous
+ * and unknown tags are left EXACTLY as the distiller wrote them, because silently retargeting a scope key on a weak
+ * similarity would be a worse governance failure than an unmatched facet — scope decides what enters agent context.
+ */
+export function resolveCandidateScopeFacets(candidate, existingGenes) {
+    const tags = candidate.signals_match?.map(String) ?? [];
+    if (tags.length === 0 || existingGenes.length === 0)
+        return { candidate, rewrites: [] };
+    const vocab = signals.scopeVocabularyFromRecords(existingGenes);
+    const rewrites = [];
+    const next = tags.map((tag) => {
+        if (!tag.startsWith('required:'))
+            return tag;
+        const r = signals.resolveScopeTag(tag, vocab);
+        if (r.status !== 'resolved')
+            return tag;
+        const to = `required:${r.resolved}`;
+        rewrites.push({ from: tag, to });
+        return to;
+    });
+    return rewrites.length > 0 ? { candidate: { ...candidate, signals_match: next }, rewrites } : { candidate, rewrites: [] };
+}
 function existingGeneRefs(records) {
     return records.map((record) => ({
         id: typeof record['id'] === 'string' ? record['id'] : undefined,
@@ -144,6 +175,15 @@ function buildDistillPrompt(input) {
         signals_match: gene['signals_match'],
         summary: gene['summary'],
     })));
+    // Scope-language alignment (review ②): show the model the signals the store ACTUALLY uses BEFORE it chooses a
+    // scope facet. The autonomous-scope experiment (result-recovery-autoscope-joint-metric.json) isolated the
+    // failure as structural, not a model weakness — the distiller reads solved source code and never observes the
+    // retrieval vocabulary its consumers present, so it wrote `required:v2` where the live signal was `rounding-v2`
+    // and the asset matched nothing. `resolveCandidateScopeFacets` corrects that post-hoc only for the single
+    // unambiguous qualifier relation; surfacing the real vocabulary up front lets the model pick a signal that
+    // EXISTS in the first place, covering the ambiguous/unknown cases the post-hoc rewrite deliberately refuses to
+    // guess. Descriptive, not prescriptive: it does not forbid a genuinely new signal, only makes the real ones visible.
+    const vocab = signals.scopeVocabularyFromRecords(input.existingGenes);
     return [
         'You are synthesizing one high-quality EvoMap Gene from recurring successful Capsules.',
         'Return only JSON. Do not use markdown. Do not include commentary.',
@@ -154,11 +194,23 @@ function buildDistillPrompt(input) {
         '- Strategy steps must be concrete, defensive, and reusable.',
         '- Validation must be light. Prefer ["node --version"]. Do not use test suites, node --test, jest, mocha, or node -e.',
         '- Avoid duplicating existing genes.',
+        // Scope facets are matched against LIVE retrieval signals, so a facet naming a signal that does not exist is
+        // dead on arrival. Reuse a signal from OBSERVED_SIGNALS below when it names the scope you mean; only invent a
+        // new signal for a genuinely new scope dimension. For a hard scope facet write `required:<signal>` using the
+        // EXACT signal string as it appears there (e.g. `required:rounding-v2`, never a bare qualifier like `required:v2`).
+        '- Scope signals must name signals that exist: reuse an OBSERVED_SIGNALS entry verbatim unless the scope is genuinely new.',
+        // K_auto coordinates (optional but preferred). Intake fills honest defaults when omitted; when present they
+        // must use closed vocabularies so the gene can enter automatic claim-level governance.
+        '- Optional K_auto fields: claims (closed predicates), scope.signals (prefer namespaced terms like capability:<signal> or repo:org/name), runtime_profile, verifier_profile.',
+        '- claims[].predicate MUST be one of: source_of_truth, requires_service, requires_tool, forbids_action, output_contract, ordering_constraint, environment_precondition.',
         '',
         'Required JSON shape:',
-        '{"type":"Gene","id":"gene_distilled_<descriptive-kebab-name>","summary":"...","category":"repair|optimize|innovate|explore","signals_match":["signal"],"preconditions":["condition"],"strategy":["step"],"constraints":{"max_files":3,"forbidden_paths":[".git","node_modules"]},"validation":["node --version"]}',
+        '{"type":"Gene","id":"gene_distilled_<descriptive-kebab-name>","summary":"...","category":"repair|optimize|innovate|explore","signals_match":["signal"],"preconditions":["condition"],"strategy":["step"],"constraints":{"max_files":3,"forbidden_paths":[".git","node_modules"]},"validation":["node --version"],"claims":[{"predicate":"output_contract","kind":"behavioral"}],"scope":{"signals":["capability:signal"]},"runtime_profile":{"runtime":"model-id","env_class":"local"},"verifier_profile":{"verifier":"evolver-sandboxed-validation","decision":"pass"}}',
         '',
         `DATA_HASH: ${input.dataHash}`,
+        'OBSERVED_SIGNALS (signal (asset_count), most-used first — reuse these exact strings for scope):',
+        signals.renderScopeVocabulary(vocab),
+        '',
         'SUCCESS_CAPSULES:',
         JSON.stringify(capsules, null, 2),
         '',
@@ -268,6 +320,12 @@ export function asGeneCandidate(value) {
             },
         } : {}),
         ...(Array.isArray(value['validation']) ? { validation: value['validation'].map(String) } : {}),
+        // K_auto coordinates: pass through when the model supplies them. intakeGene normalizes + fills honest
+        // defaults for any missing coordinate so forward genes can enter strict K_auto without inventing claims.
+        ...(value['claims'] !== undefined ? { claims: value['claims'] } : {}),
+        ...(value['scope'] !== undefined ? { scope: value['scope'] } : {}),
+        ...(value['runtime_profile'] !== undefined ? { runtime_profile: value['runtime_profile'] } : {}),
+        ...(value['verifier_profile'] !== undefined ? { verifier_profile: value['verifier_profile'] } : {}),
         // An LLM-distilled gene is distilled from prior capsule/session evidence (not a verified fail→pass trajectory,
         // not a human-taught gene) → `distilled` per V1 #302 classifyProvenance. intakeGene normalizes + validates it.
         generation_meta: { source: 'distilled' },
@@ -509,7 +567,13 @@ export async function autoDistillLlm(options) {
         return { ok: false, mode, reason: 'no_gene_in_response', dataHash: input.dataHash };
     }
     const existing = existingGeneRefs(input.existingGenes);
-    const normalized = normalizeValidation(candidate0, cwd).candidate;
+    // Resolve hard scope facets against the observed vocabulary BEFORE dedup/intake, so a near-miss facet
+    // (`required:v2` for a store that declares `rounding-v2`) becomes eligible instead of silently unmatched.
+    const scoped = resolveCandidateScopeFacets(candidate0, input.existingGenes);
+    if (scoped.rewrites.length > 0) {
+        console.warn(`[AutoDistill] resolved scope facet(s) against store vocabulary: ${scoped.rewrites.map((r) => `${r.from} -> ${r.to}`).join(', ')}`);
+    }
+    const normalized = normalizeValidation(scoped.candidate, cwd).candidate;
     const duplicate = jaccardDuplicate(normalized, existing, envFloat(env, 'EVOLVER_AUTO_DISTILL_LLM_DUP_JACCARD', DEFAULT_DUP_JACCARD));
     if (duplicate) {
         patchState(statePath, input.dataHash, { failed_attempts_inc: true }, hashCap);

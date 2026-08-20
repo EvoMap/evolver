@@ -5,6 +5,30 @@ import { isCursorStateVscdbPath } from '@evomap/evolver-runtime-adapters';
 import { emitSessionRecall } from './autoRecall.js';
 import { buildRuntimeSessionMaterialSnapshot } from './materialSnapshot.js';
 import { isRuntimeSessionSourcePath, parseRuntimeSessionSourcesWithDiagnostics, } from './runtimeSessionSource.js';
+/** Wire-form `task_domain:` tokens embedded in session text (case-insensitive match; resolver fail-closes). */
+const TASK_DOMAIN_TOKEN_RE = /\btask_domain:[A-Za-z0-9][A-Za-z0-9-]{0,63}\b/gi;
+/**
+ * Stamp a resolved canonical task domain onto each source when turn/signal text carries exactly one
+ * valid `task_domain:` token. Never invents domains; absent/ambiguous/invalid → leave field unset.
+ * Additive only — does not mutate parse diagnostics or turn content.
+ */
+export function stampResolvedTaskDomain(sources) {
+    return sources.map((source) => {
+        const tokens = [];
+        for (const turn of source.turns) {
+            const text = `${turn.text ?? ''}\n${turn.errorMessage ?? ''}\n${turn.toolResult ?? ''}`;
+            for (const match of text.matchAll(TASK_DOMAIN_TOKEN_RE)) {
+                tokens.push(match[0].toLowerCase());
+            }
+        }
+        const resolution = signals.resolveTaskDomainSignals(tokens);
+        if (resolution.status !== 'resolved')
+            return source;
+        if (source.taskDomain === resolution.slug)
+            return source;
+        return { ...source, taskDomain: resolution.slug };
+    });
+}
 /** Material consumer group shared by ingestion and the downstream cycle consumer. */
 export const INGEST_CONSUMER_GROUP = 'cycle';
 export function resolveIngestDeps(deps) {
@@ -115,7 +139,7 @@ export async function runSessionIngestTick(dirs, deps = {}) {
             continue;
         }
         try {
-            const parsedSources = parsed.sources;
+            const parsedSources = stampResolvedTaskDomain(parsed.sources);
             const agent = parsedSources[0] ? toMaterialSourceAgent(parsedSources[0].agent) : undefined;
             if (parsedSources.length === 0 || !agent)
                 continue;

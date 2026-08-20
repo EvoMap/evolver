@@ -1,5 +1,5 @@
 // Artifact GC (ported + generalized from v1 src/ops/cleanup.js). A resident daemon accumulates artifacts —
-// exec patch files (proof.gitDiff.patchRef under tmpdir), old event logs, scratch prompts — that nothing ever
+// exec patch files (proof.git_diff.patch_ref under tmpdir), old event logs, scratch prompts — that nothing ever
 // reclaims. This applies a two-phase retention policy to a directory: (1) age-based, always keeping the N
 // newest regardless of age; (2) a hard count cap as a safety backstop. Generic over a filename pattern so the
 // daemon can GC each artifact kind. Best-effort + graceful: a missing dir or an undeletable file never throws.

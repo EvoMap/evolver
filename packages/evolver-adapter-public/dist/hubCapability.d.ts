@@ -58,6 +58,9 @@ export interface AccountAssetListResult {
     hasMore: boolean;
     nextCursor?: string;
 }
+export declare class MalformedAccountAssetPageError extends Error {
+    constructor();
+}
 /** 完整 GEP-A2A 信封(实测 dev: publish/fetch/validate 等协议消息端点必须全信封, 非仅 protocol+message_type). */
 export declare function gepEnvelope(messageType: string, payload: unknown, options?: {
     messageId?: string;
@@ -149,7 +152,13 @@ export declare class PublicHubCapability implements hub.HubCapability {
     private heartbeatMeta;
     publish(bundle: hub.AssetRecord[], options?: hub.PublishOptions): Promise<hub.PublishReceipt>;
     fetch(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
-    fetchAssetById(assetId: string): Promise<hub.AssetRecord | null>;
+    /**
+     * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to
+     * `null`, so a caller could not tell "the hub does not have this" from "the hub delivered something the
+     * client refuses" — and the CLI reported both as `not_found` on assets that demonstrably exist (#964).
+     */
+    fetchAssetDeliveryById(assetId: string, options?: hub.FetchAssetByIdOptions): Promise<hub.AssetDeliveryOutcome>;
+    fetchAssetById(assetId: string, options?: hub.FetchAssetByIdOptions): Promise<hub.AssetRecord | null>;
     /**
      * #69: search != fetch. Free-text is the hub's vector endpoint (GET /a2a/assets/semantic-search?q=);
      * signal/id queries use the Hub's free search-only phase on /a2a/fetch. /a2a/fetch does NOT do semantic,
@@ -185,6 +194,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     createRecipe(request: hub.RecipeCreateRequest): Promise<hub.RecipeReceipt>;
     publishRecipe(recipeId: string, options?: hub.RecipePublishOptions): Promise<hub.RecipeReceipt>;
     getRecipe(recipeId: string): Promise<hub.RecipeFetchReceipt>;
+    searchRecipes(request?: hub.RecipeSearchRequest): Promise<hub.RecipeSearchReceipt>;
+    listRecipes(request?: hub.RecipeSearchRequest): Promise<hub.RecipeSearchReceipt>;
     expressRecipe(recipeId: string, request?: hub.RecipeExpressRequest): Promise<hub.RecipeExpressionReceipt>;
     task: {
         claim: (taskId: string) => Promise<{

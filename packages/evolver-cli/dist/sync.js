@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, writeFileSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
-import { AuthError, connectPublicHub, HubClientError, HubUnreachableError, isHubDryRunEnabled, resolveHubUrl, } from '@evomap/evolver-adapter-public';
+import { AuthError, connectPublicHub, HubClientError, HubUnreachableError, isHubDryRunEnabled, MalformedAccountAssetPageError, resolveHubUrl, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv, resolveRecipeHubResumeIdentityFingerprint } from './recipe.js';
 import { getCliVersion } from './version.js';
@@ -28,44 +29,18 @@ const USAGE = [
 const VALUE_FLAGS = new Set(['--scope', '--type', '--status', '--limit', '--page-size', '--purchased-cursor', '--published-cursor', '--export', '--import']);
 const GEPX_TYPE = 'evomap.gepx';
 const GEPX_VERSION = 1;
-const HUB_METADATA_KEYS = new Set([
-    'credit_cost',
-    'gdi_score',
-    'success_rate',
-    'reuse_count',
-    'ranking_score',
-    'source_node_id',
-    'fetched_at',
-    'receipt',
-    'hub_receipt',
-    'already_purchased',
-    '_semantic_similarity',
-    'semantic_similarity',
-    '_search_score',
-    'search_score',
-    '_match_score',
-    'match_score',
-    '_retrieval_rank',
-    'retrieval_rank',
-    'original_asset_id',
-    'payload_backfill_reason',
-    'asset_type',
-    'local_id',
-    'payload',
-    'payload_backfill_reason',
-    'source',
-    'status',
-]);
 const MISSING_ASSET_ID = '[missing]';
+const UNVERIFIED_HUB_WRITE_PENDING_REASON = 'unverified_hub_write_pending';
 export async function runSyncCommand(argv, deps = {}) {
     const out = deps.stdout ?? ((line) => { process.stdout.write(`${line}\n`); });
     const err = deps.stderr ?? ((line) => { process.stderr.write(`${line}\n`); });
+    const textOut = (line) => { out(formatTerminalText(line)); };
     const parsed = parseSyncArgs(argv);
     if (!parsed.ok)
         return emitFailure(parsed.reason, parsed.message, parsed.jsonOut, out, err);
     if ('help' in parsed) {
         if (parsed.jsonOut)
-            out(JSON.stringify({ ok: true, group: GROUP, mode: 'help', usage: USAGE }));
+            out(stringifyJsonOutput({ ok: true, group: GROUP, mode: 'help', usage: USAGE }));
         else
             out(USAGE);
         return 0;
@@ -88,17 +63,17 @@ export async function runSyncCommand(argv, deps = {}) {
                     ? await executeSyncWrite(parsed.value, runtimeDeps)
                     : await executeSyncPreview(parsed.value, runtimeDeps);
         if (parsed.value.jsonOut)
-            out(JSON.stringify(result));
+            out(stringifyJsonOutput(result));
         else if (result.mode === 'preview')
-            emitTextPreview(result, out);
+            emitTextPreview(result, textOut);
         else if (result.mode === 'export')
-            emitTextExport(result, out);
+            emitTextExport(result, textOut);
         else if (result.mode === 'import_preview')
-            emitTextImportPreview(result, out);
+            emitTextImportPreview(result, textOut);
         else if (result.mode === 'import')
-            emitTextImport(result, out);
+            emitTextImport(result, textOut);
         else
-            emitTextWrite(result, out);
+            emitTextWrite(result, textOut);
         if ('failures' in result && result.failures.length > 0)
             return 1;
         if (result.mode === 'import' && result.blocked.length > 0)
@@ -242,6 +217,7 @@ async function buildSyncPreview(opts, deps, listing = {
     const store = deps.store ?? new assetstore.LocalJsonlProvider(deps.assetsDir ?? events.assetsDir());
     const local = await localIndex(store);
     const { purchased, published, failures, inventoryComplete, nextCursors } = await listRemoteRows(hub, opts, listing);
+    const provenanceSnapshot = previewProvenanceSnapshot(store, deps);
     const counts = {
         remotePurchased: purchased.length,
         remotePublished: published.length,
@@ -252,22 +228,27 @@ async function buildSyncPreview(opts, deps, listing = {
         unsupported: 0,
         integrityError: 0,
         wouldImport: 0,
+        unverifiedWouldImport: 0,
         forcedImport: 0,
         skippedLimit: 0,
         fetchFailed: 0,
         writeFailed: 0,
     };
     const unique = new Map();
+    const conflictingDuplicateAssetIds = new Set();
     const missingAssetId = [];
     for (const row of purchased)
-        addUnique(unique, missingAssetId, row, 'purchased');
+        addUnique(unique, missingAssetId, conflictingDuplicateAssetIds, row, 'purchased');
     for (const row of published)
-        addUnique(unique, missingAssetId, row, 'published');
+        addUnique(unique, missingAssetId, conflictingDuplicateAssetIds, row, 'published');
     counts.uniqueRemote = unique.size + missingAssetId.length;
     const candidates = [];
     const pendingLogical = new Map(local.logical);
     for (const { row, source } of [...unique.values(), ...missingAssetId]) {
-        const candidate = classifyRemote(row, source, { byAssetId: local.byAssetId, logical: pendingLogical });
+        const assetId = rawStringField(row, 'asset_id');
+        const candidate = assetId && conflictingDuplicateAssetIds.has(assetId)
+            ? classifyConflictingRemoteDuplicate(row, source)
+            : classifyRemote(row, source, { ...local, logical: pendingLogical }, provenanceSnapshot);
         candidates.push(candidate);
         if (candidate.action === 'already_local')
             counts.alreadyLocal += 1;
@@ -277,6 +258,8 @@ async function buildSyncPreview(opts, deps, listing = {
             counts.idCollision += 1;
         else if (candidate.action === 'would_import') {
             counts.wouldImport += 1;
+            if (candidate.verification === 'unverified')
+                counts.unverifiedWouldImport += 1;
             if (candidate.logicalId && (candidate.type === 'Gene' || candidate.type === 'Capsule')) {
                 pendingLogical.set(`${candidate.type}:${candidate.logicalId}`, candidate.assetId);
             }
@@ -331,8 +314,11 @@ async function executeSyncWrite(opts, deps) {
     const runKey = syncRunKey(opts, env, deps);
     const inventoryKey = syncInventoryKey(opts, env, deps);
     const inventoryScan = prepareInventoryScan(syncLedger, inventoryKey, opts);
-    const preview = await buildSyncPreview(opts, { ...deps, env, hub, store }, inventoryScan);
+    const preview = await buildSyncPreview(opts, { ...deps, env, hub, store, provenance }, inventoryScan);
     const local = await localIndex(store);
+    const provenanceSnapshot = provenance.snapshot();
+    const pendingUnverifiedRecoveryIds = await reactivatePendingUnverifiedCandidates(preview.candidates, store, provenanceSnapshot);
+    const thinFrozenRevalidationIds = reactivateThinFrozenCandidates(preview.candidates, local, provenanceSnapshot);
     const checkpointEnabled = !preview.failures.some((failure) => failure.stage === 'list');
     const previousRun = opts.resume && checkpointEnabled ? syncLedger.latestIncompleteRun(runKey) : null;
     const runId = previousRun?.runId ?? randomUUID();
@@ -370,7 +356,6 @@ async function executeSyncWrite(opts, deps) {
         });
     }
     const failures = [...preview.failures];
-    const provenanceSnapshot = provenance.snapshot();
     const resumed = previousRun
         ? await reconcileResumeCandidates({
             candidates: finalCandidates,
@@ -392,14 +377,19 @@ async function executeSyncWrite(opts, deps) {
         if (candidate.action !== 'would_import' && !(opts.force && candidate.action === 'id_collision'))
             continue;
         const checkpoint = previousRun?.processed.get(candidate.assetId);
-        if (checkpoint && checkpoint.outcome !== 'failed' && local.byAssetId.has(candidate.assetId))
+        if (checkpoint
+            && checkpoint.outcome !== 'failed'
+            && local.byAssetId.has(candidate.assetId)
+            && !pendingUnverifiedRecoveryIds.has(candidate.assetId)
+            && !thinFrozenRevalidationIds.has(candidate.assetId))
             continue;
         let preparedAsset;
         try {
-            const fetched = await hub.fetchAssetById(candidate.assetId);
+            const fetched = await hub.fetchAssetById(candidate.assetId, { allowUnverifiedExactIdentity: true });
             if (!fetched)
                 throw new SyncAbortError('not_found', 'Hub asset disappeared before import');
-            preparedAsset = prepareFetchedAsset(candidate, fetched, local.byAssetId, pendingLogical, opts.force);
+            preparedAsset = prepareFetchedAsset(candidate, fetched, local.byAssetId, pendingLogical, opts.force, pendingUnverifiedRecoveryIds.has(candidate.assetId)
+                || thinFrozenRevalidationIds.has(candidate.assetId));
         }
         catch (error) {
             const mapped = mapSyncError(error);
@@ -407,33 +397,82 @@ async function executeSyncWrite(opts, deps) {
             appendRunCheckpoint({ runId, runKey, state: 'progress', remoteAssetId: candidate.assetId, outcome: 'failed', reason: mapped.reason });
             updateFinalCandidate(finalCandidates, candidate, mapped.reason === 'integrity_error'
                 ? { ...candidate, action: 'integrity_error' }
-                : { ...candidate, action: 'fetch_failed', failureReason: mapped.reason });
+                : mapped.reason === 'remote_revoked'
+                    ? { ...candidate, action: 'tombstone', failureReason: mapped.reason }
+                    : { ...candidate, action: 'fetch_failed', failureReason: mapped.reason });
             continue;
         }
         if ('blocked' in preparedAsset) {
             updateFinalCandidate(finalCandidates, candidate, preparedAsset.blocked);
             continue;
         }
-        const logicalId = stringField(preparedAsset.asset, 'id');
+        if (thinFrozenRevalidationIds.has(candidate.assetId)) {
+            try {
+                const persistedProvenance = provenance.get(candidate.assetId);
+                const stored = await readBackStoredAsset(store, candidate.assetId, preparedAsset.asset, false, persistedProvenance, preparedAsset.asset.type);
+                if (!preparedAsset.frozenUnverified
+                    || !preparedAsset.verificationReason
+                    || !preparedAsset.frozenContentId
+                    || !isActiveFrozenWaiver(persistedProvenance, candidate.assetId, preparedAsset.frozenContentId)
+                    || !assetstore.frozenAssetRecordsEqual(stored, preparedAsset.asset)) {
+                    throw new SyncAbortError('integrity_error', 'Fetched Hub body differs from frozen local content');
+                }
+                updateFinalCandidate(finalCandidates, candidate, {
+                    ...candidate,
+                    action: 'already_local',
+                    verification: 'unverified',
+                    verificationReason: preparedAsset.verificationReason,
+                });
+                appendRunCheckpoint({
+                    runId,
+                    runKey,
+                    state: 'progress',
+                    remoteAssetId: candidate.assetId,
+                    outcome: 'already_local',
+                });
+            }
+            catch (error) {
+                const mapped = mapSyncError(error);
+                failures.push({ stage: 'fetch', assetId: candidate.assetId, reason: mapped.reason });
+                appendRunCheckpoint({
+                    runId,
+                    runKey,
+                    state: 'progress',
+                    remoteAssetId: candidate.assetId,
+                    outcome: 'failed',
+                    reason: mapped.reason,
+                });
+                updateFinalCandidate(finalCandidates, candidate, mapped.reason === 'integrity_error'
+                    ? { ...candidate, action: 'integrity_error', failureReason: mapped.reason }
+                    : { ...candidate, action: 'fetch_failed', failureReason: mapped.reason });
+            }
+            continue;
+        }
+        const logicalId = rawStringField(preparedAsset.asset, 'id');
+        const finalCandidateBase = {
+            assetId: candidate.assetId,
+            type: candidate.type,
+            source: candidate.source,
+            ...(candidate.status ? { status: candidate.status } : {}),
+            ...(logicalId ? { logicalId } : {}),
+            ...(preparedAsset.frozenUnverified && preparedAsset.verificationReason
+                ? { verification: 'unverified', verificationReason: preparedAsset.verificationReason }
+                : {}),
+        };
         const finalCandidate = preparedAsset.forced
             ? {
-                ...candidate,
-                ...(logicalId ? { logicalId } : {}),
+                ...finalCandidateBase,
                 action: 'force_import',
                 collisionWithAssetId: preparedAsset.collisionWithAssetId,
             }
-            : {
-                assetId: candidate.assetId,
-                type: candidate.type,
-                source: candidate.source,
-                ...(candidate.status ? { status: candidate.status } : {}),
-                ...(logicalId ? { logicalId } : {}),
-                action: 'would_import',
-            };
+            : { ...finalCandidateBase, action: 'would_import' };
         updateFinalCandidate(finalCandidates, candidate, finalCandidate);
         prepared.push({
             candidate: finalCandidate,
             asset: preparedAsset.asset,
+            ...(preparedAsset.frozenUnverified ? { frozenUnverified: true } : {}),
+            ...(preparedAsset.verificationReason ? { verificationReason: preparedAsset.verificationReason } : {}),
+            ...(preparedAsset.frozenContentId ? { frozenContentId: preparedAsset.frozenContentId } : {}),
             ...(preparedAsset.forced ? { forced: true, collisionWithAssetId: preparedAsset.collisionWithAssetId } : {}),
         });
         if (logicalId)
@@ -442,7 +481,9 @@ async function executeSyncWrite(opts, deps) {
     const written = [];
     for (const item of prepared) {
         try {
-            const stored = await assetstore.ingestUntrustedConditional(store, provenance, item.asset, { allowLogicalCollision: opts.force }, 'hub');
+            const stored = item.frozenUnverified && item.verificationReason
+                ? await assetstore.ingestUnverifiedConditional(store, provenance, item.asset, item.verificationReason, { allowLogicalCollision: opts.force }, 'hub')
+                : await assetstore.ingestUntrustedConditional(store, provenance, item.asset, { allowLogicalCollision: opts.force }, 'hub');
             const assetId = stored.asset_id;
             if (stored.status === 'logical_collision') {
                 updateFinalCandidate(finalCandidates, item.candidate, {
@@ -453,10 +494,23 @@ async function executeSyncWrite(opts, deps) {
                 });
                 continue;
             }
-            await readBackStoredAsset(store, assetId, item.asset);
+            const persistedProvenance = provenance.get(assetId);
+            await readBackStoredAsset(store, assetId, item.asset, false, persistedProvenance, item.asset.type);
             if (stored.status === 'already_exists') {
                 updateFinalCandidate(finalCandidates, item.candidate, { ...item.candidate, assetId, action: 'already_local' });
-                appendRunCheckpoint({ runId, runKey, state: 'progress', remoteAssetId: item.candidate.assetId, outcome: 'already_local' });
+                if (item.frozenUnverified && !syncLedger.getForRunKey(runKey, assetId)) {
+                    appendSyncRecord(syncLedger, item.candidate, item.asset, runKey, inventoryKey, {
+                        ...(item.forced ? { forced: true } : {}),
+                        ...(item.collisionWithAssetId ? { collisionWithAssetId: item.collisionWithAssetId } : {}),
+                    });
+                }
+                appendRunCheckpoint({
+                    runId,
+                    runKey,
+                    state: 'progress',
+                    remoteAssetId: item.candidate.assetId,
+                    outcome: item.frozenUnverified ? 'imported' : 'already_local',
+                });
                 continue;
             }
             const collisionWithAssetId = stored.collisionWithAssetId ?? item.collisionWithAssetId;
@@ -476,6 +530,9 @@ async function executeSyncWrite(opts, deps) {
                 source: writtenCandidate.source,
                 stored: true,
                 trusted: false,
+                verification: item.frozenUnverified ? 'unverified' : 'verified',
+                ...(item.verificationReason ? { verificationReason: item.verificationReason } : {}),
+                ...(item.frozenContentId ? { frozenContentId: item.frozenContentId } : {}),
                 ...(writtenCandidate.logicalId ? { logicalId: writtenCandidate.logicalId } : {}),
                 ...(writtenCandidate.status ? { status: writtenCandidate.status } : {}),
                 ...(forced ? { forced: true } : {}),
@@ -486,11 +543,9 @@ async function executeSyncWrite(opts, deps) {
             const mapped = mapSyncError(error);
             failures.push({ stage: 'write', assetId: item.candidate.assetId, reason: mapped.reason });
             appendRunCheckpoint({ runId, runKey, state: 'progress', remoteAssetId: item.candidate.assetId, outcome: 'failed', reason: mapped.reason });
-            updateFinalCandidate(finalCandidates, item.candidate, {
-                ...item.candidate,
-                action: 'write_failed',
-                failureReason: mapped.reason,
-            });
+            updateFinalCandidate(finalCandidates, item.candidate, mapped.reason === 'integrity_error'
+                ? { ...item.candidate, action: 'integrity_error', failureReason: mapped.reason }
+                : { ...item.candidate, action: 'write_failed', failureReason: mapped.reason });
         }
     }
     const retryableInventoryFailure = failures.some(isRetryableAssetFailure);
@@ -613,9 +668,19 @@ async function executeSyncExport(opts, deps) {
         provenance: provenanceRecords,
         sync: syncRecords,
     };
+    let serialized;
+    try {
+        serialized = `${JSON.stringify(pkg, null, 2)}\n`;
+    }
+    catch {
+        throw new SyncAbortError('export_failed', 'could not serialize .gepx package');
+    }
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_GEPX_BYTES) {
+        throw new SyncAbortError('gepx_too_large', '.gepx package exceeds the 64 MiB limit');
+    }
     try {
         mkdirSync(dirname(opts.exportPath), { recursive: true });
-        writeFileSync(opts.exportPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+        writeFileSync(opts.exportPath, serialized, 'utf8');
     }
     catch {
         throw new SyncAbortError('export_failed', 'could not write .gepx file');
@@ -632,7 +697,7 @@ async function executeSyncExport(opts, deps) {
         assets: assets.map((asset) => ({
             assetId: asset.asset_id,
             type: asset.type,
-            ...(stringField(asset, 'id') ? { logicalId: stringField(asset, 'id') } : {}),
+            ...(rawStringField(asset, 'id') ? { logicalId: rawStringField(asset, 'id') } : {}),
             trusted: provenanceSnapshot.get(asset.asset_id)?.trusted ?? true,
             synced: Boolean(syncLedger.get(asset.asset_id)),
         })),
@@ -673,7 +738,7 @@ async function executeGepxImportWrite(opts, deps) {
             updateFinalCandidate(finalCandidates, candidate, preparedAsset.blocked);
             continue;
         }
-        const logicalId = stringField(preparedAsset.asset, 'id');
+        const logicalId = rawStringField(preparedAsset.asset, 'id');
         const finalCandidate = preparedAsset.forced
             ? {
                 ...candidate,
@@ -794,6 +859,7 @@ function emptyPreview(scope) {
             unsupported: 0,
             integrityError: 0,
             wouldImport: 0,
+            unverifiedWouldImport: 0,
             forcedImport: 0,
             skippedLimit: 0,
             fetchFailed: 0,
@@ -827,6 +893,7 @@ function emptyCounts(uniqueRemote = 0) {
         unsupported: 0,
         integrityError: 0,
         wouldImport: 0,
+        unverifiedWouldImport: 0,
         forcedImport: 0,
         skippedLimit: 0,
         fetchFailed: 0,
@@ -940,6 +1007,8 @@ async function listAll(hub, opts, pageSize, failures, budget) {
             failures.push({ stage: 'list', scope: opts.scope, reason: 'malformed_page' });
             break;
         }
+        const hasMore = result['hasMore'];
+        const nextCursor = result['nextCursor'];
         const pageRows = result['assets'];
         if (pageRows.length > requestedPageLimit) {
             failures.push({ stage: 'list', scope: opts.scope, reason: 'oversized_page' });
@@ -959,15 +1028,22 @@ async function listAll(hub, opts, pageSize, failures, budget) {
                 continue;
             }
             rows.push(row);
-            const assetId = stringField(row, 'asset_id');
+            const assetId = rawStringField(row, 'asset_id');
             if (assetId)
                 budget.uniqueAssetIds.add(assetId);
         }
         const uniqueProgress = budget.uniqueAssetIds.size - uniqueBefore;
-        if (!result['hasMore']) {
+        if ((!hasMore && nextCursor !== undefined) || (hasMore && (typeof nextCursor !== 'string' || !nextCursor.trim()))) {
+            failures.push({ stage: 'list', scope: opts.scope, reason: 'invalid_remote_pagination' });
+            break;
+        }
+        if (hasMore && typeof nextCursor === 'string' && !isValidOpaqueCursor(nextCursor)) {
+            failures.push({ stage: 'list', scope: opts.scope, reason: 'malformed_cursor' });
+            break;
+        }
+        if (!hasMore) {
             return { rows, complete: consumedPageRows === pageRows.length, nextCursor: undefined };
         }
-        const nextCursor = result['nextCursor'];
         if (typeof nextCursor !== 'string' || !nextCursor.trim()) {
             failures.push({ stage: 'list', scope: opts.scope, reason: 'invalid_remote_pagination' });
             break;
@@ -984,10 +1060,6 @@ async function listAll(hub, opts, pageSize, failures, budget) {
         consecutivePagesWithoutUniqueProgress = uniqueProgress === 0 ? consecutivePagesWithoutUniqueProgress + 1 : 0;
         if (consecutivePagesWithoutUniqueProgress > MAX_CONSECUTIVE_PAGES_WITHOUT_UNIQUE_PROGRESS) {
             failures.push({ stage: 'list', scope: opts.scope, reason: 'no_unique_progress_limit' });
-            break;
-        }
-        if (!isValidOpaqueCursor(nextCursor)) {
-            failures.push({ stage: 'list', scope: opts.scope, reason: 'malformed_cursor' });
             break;
         }
         if (nextCursor === cursor || seenCursors.has(nextCursor)) {
@@ -1012,28 +1084,112 @@ function isValidOpaqueCursor(cursor) {
     }
     return true;
 }
-function addUnique(target, missingAssetId, row, source) {
-    const assetId = stringField(row, 'asset_id');
+function addUnique(target, missingAssetId, conflictingDuplicateAssetIds, row, source) {
+    const assetId = rawStringField(row, 'asset_id');
     if (!assetId) {
         missingAssetId.push({ row, source });
         return;
     }
-    if (target.has(assetId))
+    const existing = target.get(assetId);
+    if (!existing) {
+        target.set(assetId, { row, source });
         return;
-    target.set(assetId, { row, source });
+    }
+    const merged = mergeDuplicateRemoteRows(existing.row, row, assetId);
+    if (!merged)
+        conflictingDuplicateAssetIds.add(assetId);
+    else
+        target.set(assetId, {
+            row: merged,
+            source: existing.source === 'purchased' || source === 'purchased' ? 'purchased' : existing.source,
+        });
+}
+function classifyConflictingRemoteDuplicate(row, source) {
+    return {
+        assetId: rawStringField(row, 'asset_id') ?? MISSING_ASSET_ID,
+        type: 'unknown',
+        source,
+        action: 'integrity_error',
+        failureReason: 'conflicting_remote_duplicate',
+    };
+}
+function mergeDuplicateRemoteRows(left, right, assetId) {
+    const leftIdentity = remoteDuplicateIdentity(left, assetId);
+    const rightIdentity = remoteDuplicateIdentity(right, assetId);
+    if (leftIdentity.invalid || rightIdentity.invalid)
+        return null;
+    if (leftIdentity.declaredType
+        && rightIdentity.declaredType
+        && leftIdentity.declaredType !== rightIdentity.declaredType)
+        return null;
+    if (leftIdentity.logicalId && rightIdentity.logicalId && leftIdentity.logicalId !== rightIdentity.logicalId)
+        return null;
+    if (leftIdentity.tombstone !== rightIdentity.tombstone)
+        return null;
+    if (leftIdentity.canonicalBody && rightIdentity.canonicalBody && leftIdentity.canonicalBody !== rightIdentity.canonicalBody) {
+        return null;
+    }
+    if (leftIdentity.canonicalBody && !rightIdentity.canonicalBody)
+        return left;
+    if (rightIdentity.canonicalBody && !leftIdentity.canonicalBody)
+        return right;
+    if (leftIdentity.synthesized !== rightIdentity.synthesized)
+        return leftIdentity.synthesized ? left : right;
+    return stableRemoteRowKey(left) <= stableRemoteRowKey(right) ? left : right;
+}
+function remoteDuplicateIdentity(row, assetId) {
+    const type = remoteType(row);
+    const declaredType = remoteDeclaredType(row);
+    const logicalId = remoteLogicalId(row);
+    const delivery = unwrapLiveHubDelivery(row, assetId);
+    let canonicalBody;
+    let invalid = delivery.invalid;
+    if (!invalid && type && declaresFullAssetPayload(delivery.content, type)) {
+        const cleaned = stripHubDeliveryMetadataForIntegrity(delivery.content);
+        if (!looksLikeFullAsset(cleaned, type) || !wire.validateWireDeep(cleaned).ok) {
+            invalid = true;
+        }
+        else {
+            try {
+                canonicalBody = wire.canonicalize(cleaned);
+            }
+            catch {
+                invalid = true;
+            }
+        }
+    }
+    return {
+        ...(declaredType ? { declaredType } : {}),
+        ...(logicalId ? { logicalId } : {}),
+        tombstone: isRemoteTombstoneDelivery(row),
+        ...(canonicalBody ? { canonicalBody } : {}),
+        synthesized: Boolean(stringField(delivery.content, 'payload_backfill_reason')
+            ?? stringField(row, 'payload_backfill_reason')),
+        invalid,
+    };
+}
+function stableRemoteRowKey(row) {
+    try {
+        return wire.canonicalize(row);
+    }
+    catch {
+        return JSON.stringify(row) ?? '';
+    }
 }
 async function localIndex(store) {
     const byAssetId = new Set();
     const logical = new Map();
+    const recordsByAssetId = new Map();
     for (const kind of ['Gene', 'Capsule']) {
         for (const row of await store.list(kind, Number.MAX_SAFE_INTEGER)) {
             byAssetId.add(row.asset_id);
-            const logicalId = stringField(row, 'id');
+            recordsByAssetId.set(row.asset_id, row);
+            const logicalId = rawStringField(row, 'id');
             if (logicalId)
                 logical.set(`${kind}:${logicalId}`, row.asset_id);
         }
     }
-    return { byAssetId, logical };
+    return { byAssetId, logical, recordsByAssetId };
 }
 async function listLocalExportAssets(store, opts) {
     const kinds = opts.type ? [opts.type] : ['Gene', 'Capsule'];
@@ -1046,8 +1202,8 @@ async function listLocalExportAssets(store, opts) {
     }
     return assets.slice(0, opts.limit);
 }
-function classifyRemote(row, source, local) {
-    const assetId = stringField(row, 'asset_id') ?? MISSING_ASSET_ID;
+function classifyRemote(row, source, local, provenanceSnapshot) {
+    const assetId = rawStringField(row, 'asset_id') ?? MISSING_ASSET_ID;
     const type = remoteType(row);
     const logicalId = remoteLogicalId(row);
     const status = stringField(row, 'status');
@@ -1060,20 +1216,67 @@ function classifyRemote(row, source, local) {
     };
     if (assetId === MISSING_ASSET_ID)
         return { ...base, action: 'integrity_error' };
-    if (isRemoteTombstone(row))
+    if (!isContentAssetId(assetId))
+        return { ...base, action: 'integrity_error' };
+    if (unwrapLiveHubDelivery(row, assetId).invalid)
+        return { ...base, action: 'integrity_error' };
+    if (isRemoteTombstoneDelivery(row))
         return { ...base, action: 'tombstone' };
     if (type !== 'Gene' && type !== 'Capsule')
         return { ...base, action: 'unsupported_type' };
-    if (remotePayloadIntegrityInvalid(row, type, assetId))
+    const payloadVerification = inspectRemotePayload(row, type, assetId);
+    if (payloadVerification === 'invalid')
         return { ...base, action: 'integrity_error' };
-    if (local.byAssetId.has(assetId))
-        return { ...base, action: 'already_local' };
+    const isUnverified = payloadVerification === 'unverified_hub_rewrite'
+        || payloadVerification === 'unverified_hub_synthesized';
+    const verifiedBase = isUnverified
+        ? { ...base, verification: 'unverified', verificationReason: payloadVerification }
+        : base;
+    if (local.byAssetId.has(assetId)) {
+        if (payloadVerification === 'unavailable') {
+            const stored = local.recordsByAssetId.get(assetId);
+            const localComputed = stored ? wire.computeAssetId(stored) : null;
+            if (!stored
+                || stored.asset_id !== assetId
+                || stored.type !== type
+                || !localComputed) {
+                return {
+                    ...base,
+                    action: 'integrity_error',
+                    failureReason: 'local_content_integrity_mismatch',
+                };
+            }
+            if (localComputed !== assetId) {
+                if (!isActiveFrozenWaiver(provenanceSnapshot.get(assetId), assetId, localComputed, true)) {
+                    return {
+                        ...base,
+                        action: 'integrity_error',
+                        failureReason: 'local_frozen_waiver_mismatch',
+                    };
+                }
+                return {
+                    ...base,
+                    action: 'already_local',
+                    verification: 'unverified',
+                };
+            }
+        }
+        if (payloadVerification !== 'unavailable'
+            && !inlineContentMatchesLocal(row, type, assetId, local.recordsByAssetId.get(assetId), provenanceSnapshot.get(assetId))) {
+            return {
+                ...base,
+                action: 'integrity_error',
+                failureReason: 'frozen_remote_content_changed',
+            };
+        }
+        return { ...verifiedBase, action: 'already_local' };
+    }
     if (logicalId) {
         const localAssetId = local.logical.get(`${type}:${logicalId}`);
         if (localAssetId && localAssetId !== assetId)
-            return { ...base, action: 'id_collision', collisionWithAssetId: localAssetId };
+            return { ...verifiedBase, action: 'id_collision', collisionWithAssetId: localAssetId };
     }
-    return { ...base, action: 'would_import' };
+    return { ...verifiedBase, action: 'would_import' };
 }
 function classifyGepxAssets(pkg, opts, local) {
     const classified = uniqueGepxAssets(pkg)
@@ -1150,14 +1353,14 @@ function indexUniqueGepxProvenance(pkg) {
     return indexed;
 }
 function normalizeGepxAsset(asset, provenance) {
-    const cleaned = stripHubMetadata(asset);
-    const assetId = stringField(cleaned, 'asset_id') ?? stringField(asset, 'asset_id') ?? MISSING_ASSET_ID;
+    const cleaned = { ...asset };
+    const assetId = rawStringField(cleaned, 'asset_id') ?? MISSING_ASSET_ID;
     const type = cleaned.type === 'Gene' || cleaned.type === 'Capsule' ? cleaned.type : undefined;
-    const logicalId = stringField(cleaned, 'id');
+    const logicalId = rawStringField(cleaned, 'id');
     let integrityError = false;
     let frozenUnverified = false;
     if (type) {
-        const claimed = stringField(cleaned, 'asset_id');
+        const claimed = rawStringField(cleaned, 'asset_id');
         const fullAsset = looksLikeFullAsset(cleaned, type);
         const computed = fullAsset ? wire.computeAssetId(cleaned) : undefined;
         const supportedFrozenProvenance = provenance
@@ -1177,6 +1380,7 @@ function normalizeGepxAsset(asset, provenance) {
             && provenance.frozenContentId === computed);
         integrityError = assetId === MISSING_ASSET_ID
             || !claimed
+            || !isContentAssetId(assetId)
             || !fullAsset
             || !computed
             || claimed !== assetId
@@ -1203,6 +1407,7 @@ function countsFromCandidates(base, candidates) {
         unsupported: 0,
         integrityError: 0,
         wouldImport: 0,
+        unverifiedWouldImport: 0,
         forcedImport: 0,
         skippedLimit: 0,
         fetchFailed: 0,
@@ -1229,6 +1434,9 @@ function countsFromCandidates(base, candidates) {
             counts.unsupported += 1;
         else if (candidate.action === 'integrity_error')
             counts.integrityError += 1;
+        if (candidate.action === 'would_import' && candidate.verification === 'unverified') {
+            counts.unverifiedWouldImport += 1;
+        }
     }
     return counts;
 }
@@ -1243,41 +1451,221 @@ function isBlockedCandidate(candidate) {
         && candidate.action !== 'already_local'
         && candidate.action !== 'skipped_limit';
 }
-function remotePayloadIntegrityInvalid(row, type, assetId) {
-    const payload = asRecord(row.payload);
-    const source = payload ?? row;
-    if (!looksLikeFullAsset(source, type))
-        return false;
-    const candidate = stripHubMetadata({ ...source, type, asset_id: stringField(source, 'asset_id') ?? assetId });
-    return Boolean(candidate.asset_id && wire.computeAssetId(candidate) !== candidate.asset_id);
+function inspectRemotePayload(row, type, assetId) {
+    const delivery = unwrapLiveHubDelivery(row, assetId);
+    if (delivery.invalid)
+        return 'invalid';
+    const source = delivery.content;
+    if (!looksLikeFullAsset(source, type)) {
+        return declaresFullAssetPayload(source, type) ? 'invalid' : 'unavailable';
+    }
+    const candidate = stripHubDeliveryMetadataForIntegrity(source);
+    if (!wire.validateWireDeep(candidate).ok)
+        return 'invalid';
+    const claimed = rawStringField(candidate, 'asset_id');
+    if (!claimed || !isContentAssetId(claimed) || claimed !== assetId)
+        return 'invalid';
+    const computed = wire.computeAssetId(candidate);
+    if (!computed)
+        return 'invalid';
+    if (computed === claimed)
+        return 'verified';
+    return stringField(source, 'payload_backfill_reason') ?? stringField(row, 'payload_backfill_reason')
+        ? 'unverified_hub_synthesized'
+        : 'unverified_hub_rewrite';
 }
-function prepareFetchedAsset(candidate, fetched, localAssetIds, logical, force) {
-    const type = fetched.type === 'Gene' || fetched.type === 'Capsule' ? fetched.type : undefined;
+function inlineContentMatchesLocal(row, type, assetId, local, provenance) {
+    const delivery = unwrapLiveHubDelivery(row, assetId);
+    if (delivery.invalid || !local)
+        return false;
+    const remote = stripHubDeliveryMetadataForIntegrity(delivery.content);
+    const remoteComputed = wire.computeAssetId(remote);
+    const localComputed = wire.computeAssetId(local);
+    if (!remoteComputed
+        || !localComputed
+        || local.asset_id !== assetId
+        || local.type !== type
+        || remoteComputed !== localComputed
+        || !assetstore.frozenAssetRecordsEqual(local, remote))
+        return false;
+    if (remoteComputed === assetId)
+        return true;
+    return isActiveFrozenWaiver(provenance, assetId, remoteComputed, true);
+}
+function isActiveFrozenWaiver(provenance, assetId, frozenContentId, allowPending = false) {
+    return Boolean(provenance?.assetId === assetId
+        && provenance.trusted === false
+        && provenance.frozenContentId === frozenContentId
+        && provenance.decision === undefined
+        && provenance.decidedBy === undefined
+        && provenance.promotedBy === undefined
+        && ((provenance.source === 'hub'
+            && (provenance.reason === 'unverified_hub_rewrite' || provenance.reason === 'unverified_hub_synthesized'))
+            || (provenance.source === 'migrated' && provenance.reason === 'unverified_gepx_import')
+            || (allowPending && provenance.source === 'hub' && provenance.reason === UNVERIFIED_HUB_WRITE_PENDING_REASON)));
+}
+function unwrapLiveHubDelivery(row, expectedAssetId) {
+    const nested = asRecord(row.payload);
+    if (Object.prototype.hasOwnProperty.call(row, 'type') || !nested) {
+        const directType = rawStringField(row, 'type');
+        const directLogicalId = rawStringField(row, 'id');
+        const aliasType = rawStringField(row, 'asset_type');
+        const aliasLogicalId = rawStringField(row, 'local_id');
+        return {
+            content: row,
+            invalid: Boolean(hasInvalidLiveIdentityField(row, ['asset_id', 'type', 'asset_type', 'id', 'local_id'])
+                || (aliasType !== undefined && directType !== undefined && aliasType !== directType)
+                || (aliasLogicalId !== undefined && directLogicalId !== undefined && aliasLogicalId !== directLogicalId)),
+        };
+    }
+    const outerAssetId = rawStringField(row, 'asset_id');
+    const outerType = rawStringField(row, 'asset_type');
+    const outerLogicalIds = [rawStringField(row, 'id'), rawStringField(row, 'local_id')]
+        .filter((value) => value !== undefined);
+    const innerAssetId = rawStringField(nested, 'asset_id');
+    const innerType = rawStringField(nested, 'type');
+    const innerAliasType = rawStringField(nested, 'asset_type');
+    const innerLogicalId = rawStringField(nested, 'id');
+    const innerAliasLogicalId = rawStringField(nested, 'local_id');
+    const invalid = Boolean(hasInvalidLiveIdentityField(row, ['asset_id', 'asset_type', 'id', 'local_id'])
+        || hasInvalidLiveIdentityField(nested, ['asset_id', 'type', 'asset_type', 'id', 'local_id'])
+        || outerAssetId === undefined
+        || outerAssetId !== expectedAssetId
+        || innerAssetId === undefined
+        || innerAssetId !== expectedAssetId
+        || innerType === undefined
+        || (outerType !== undefined && innerType !== undefined && outerType !== innerType)
+        || (innerAliasType !== undefined && innerAliasType !== innerType)
+        || (outerLogicalIds.length > 0 && innerLogicalId === undefined)
+        || (innerLogicalId !== undefined && outerLogicalIds.some((outerLogicalId) => outerLogicalId !== innerLogicalId))
+        || (innerAliasLogicalId !== undefined && innerAliasLogicalId !== innerLogicalId));
+    const backfillReason = stringField(row, 'payload_backfill_reason');
+    return {
+        content: backfillReason && stringField(nested, 'payload_backfill_reason') === undefined
+            ? { ...nested, payload_backfill_reason: backfillReason }
+            : nested,
+        invalid,
+    };
+}
+function prepareFetchedAsset(candidate, fetched, localAssetIds, logical, force, allowExistingFrozenFinalize = false) {
+    if (isRemoteTombstoneDelivery(fetched)) {
+        throw new SyncAbortError('remote_revoked', 'Hub asset was revoked before import');
+    }
+    const delivery = unwrapLiveHubDelivery(fetched, candidate.assetId);
+    if (delivery.invalid)
+        throw new SyncAbortError('integrity_error', 'Hub delivery identity changed before import');
+    const delivered = delivery.content;
+    const type = delivered.type === 'Gene' || delivered.type === 'Capsule' ? delivered.type : undefined;
     if (!type)
-        return { blocked: { ...candidate, type: fetched.type ?? candidate.type, action: 'unsupported_type' } };
+        return { blocked: { ...candidate, type: delivered.type ?? candidate.type, action: 'unsupported_type' } };
     if (type !== candidate.type)
         throw new SyncAbortError('integrity_error', 'Hub asset type changed before import');
-    const cleaned = stripHubMetadata(fetched);
-    const claimed = stringField(cleaned, 'asset_id');
-    const computed = wire.computeAssetId(cleaned);
-    if (!claimed || !computed || claimed !== computed || claimed !== candidate.assetId) {
-        throw new SyncAbortError('integrity_error', 'Hub asset integrity verification failed before import');
-    }
+    const cleaned = stripHubDeliveryMetadataForIntegrity(delivered);
+    const claimed = rawStringField(cleaned, 'asset_id');
     if (!looksLikeFullAsset(cleaned, type)) {
         throw new SyncAbortError('integrity_error', 'Hub asset payload is incomplete');
     }
-    if (localAssetIds.has(cleaned.asset_id))
+    if (!wire.validateWireDeep(cleaned).ok) {
+        throw new SyncAbortError('integrity_error', 'Hub asset failed wire schema validation before import');
+    }
+    const computed = wire.computeAssetId(cleaned);
+    if (!claimed || !computed || !isContentAssetId(claimed) || claimed !== candidate.assetId) {
+        throw new SyncAbortError('integrity_error', 'Hub asset identity verification failed before import');
+    }
+    const logicalId = rawStringField(cleaned, 'id');
+    if (candidate.logicalId && logicalId !== candidate.logicalId) {
+        throw new SyncAbortError('integrity_error', 'Hub asset logical id changed before import');
+    }
+    const frozenUnverified = computed !== claimed;
+    const verificationReason = frozenUnverified
+        ? stringField(delivered, 'payload_backfill_reason')
+            ? 'unverified_hub_synthesized'
+            : 'unverified_hub_rewrite'
+        : undefined;
+    const verification = frozenUnverified
+        ? { frozenUnverified: true, verificationReason, frozenContentId: computed }
+        : {};
+    if (localAssetIds.has(cleaned.asset_id) && !allowExistingFrozenFinalize) {
         return { blocked: { ...candidate, action: 'already_local' } };
-    const logicalId = stringField(cleaned, 'id');
+    }
     if (logicalId) {
         const localAssetId = logical.get(`${type}:${logicalId}`);
         if (localAssetId && localAssetId !== cleaned.asset_id) {
             if (force)
-                return { asset: cleaned, forced: true, collisionWithAssetId: localAssetId };
+                return { asset: cleaned, ...verification, forced: true, collisionWithAssetId: localAssetId };
             return { blocked: { ...candidate, logicalId, action: 'id_collision', collisionWithAssetId: localAssetId } };
         }
     }
-    return { asset: cleaned };
+    return { asset: cleaned, ...verification };
+}
+async function reactivatePendingUnverifiedCandidates(candidates, store, provenanceSnapshot) {
+    const recoveryIds = new Set();
+    for (const candidate of [...candidates]) {
+        if (candidate.action !== 'already_local' || (candidate.type !== 'Gene' && candidate.type !== 'Capsule'))
+            continue;
+        const record = provenanceSnapshot.get(candidate.assetId);
+        if (record?.assetId !== candidate.assetId
+            || record.source !== 'hub'
+            || record.trusted !== false
+            || record.reason !== UNVERIFIED_HUB_WRITE_PENDING_REASON
+            || !record.frozenContentId
+            || record.decision !== undefined
+            || record.decidedBy !== undefined
+            || record.promotedBy !== undefined)
+            continue;
+        let stored;
+        try {
+            stored = await store.get(candidate.assetId);
+        }
+        catch {
+            continue;
+        }
+        const computed = stored ? wire.computeAssetId(stored) : null;
+        const storedLogicalId = stored ? rawStringField(stored, 'id') : undefined;
+        if (!stored
+            || stored.asset_id !== candidate.assetId
+            || stored.type !== candidate.type
+            || !looksLikeFullAsset(stored, candidate.type)
+            || !wire.validateWireDeep(stored).ok
+            || !computed
+            || computed === candidate.assetId
+            || computed !== record.frozenContentId
+            || (candidate.logicalId !== undefined && storedLogicalId !== candidate.logicalId))
+            continue;
+        recoveryIds.add(candidate.assetId);
+        updateFinalCandidate(candidates, candidate, {
+            ...candidate,
+            action: 'would_import',
+            verification: 'unverified',
+        });
+    }
+    return recoveryIds;
+}
+function reactivateThinFrozenCandidates(candidates, local, provenanceSnapshot) {
+    const revalidationIds = new Set();
+    for (const candidate of [...candidates]) {
+        if (candidate.action !== 'already_local'
+            || candidate.verification !== 'unverified'
+            || candidate.verificationReason !== undefined
+            || (candidate.type !== 'Gene' && candidate.type !== 'Capsule'))
+            continue;
+        const stored = local.recordsByAssetId.get(candidate.assetId);
+        const frozenContentId = stored ? wire.computeAssetId(stored) : null;
+        if (!stored
+            || stored.asset_id !== candidate.assetId
+            || stored.type !== candidate.type
+            || !frozenContentId
+            || frozenContentId === candidate.assetId
+            || !isActiveFrozenWaiver(provenanceSnapshot.get(candidate.assetId), candidate.assetId, frozenContentId))
+            continue;
+        revalidationIds.add(candidate.assetId);
+        updateFinalCandidate(candidates, candidate, {
+            ...candidate,
+            action: 'would_import',
+            verification: 'unverified',
+        });
+    }
+    return revalidationIds;
 }
 function resumePlannedCandidates(candidates, previousRun, inventoryComplete) {
     const plan = previousRun.plan;
@@ -1338,7 +1726,7 @@ function mergeCandidatePlan(previous, current) {
 function assertNoConflictingGepxDuplicates(pkg) {
     const seen = new Map();
     for (const asset of pkg.assets) {
-        const assetId = stringField(asset, 'asset_id');
+        const assetId = rawStringField(asset, 'asset_id');
         if (!assetId)
             continue;
         const serialized = JSON.stringify(asset);
@@ -1458,18 +1846,9 @@ async function readBackStoredAsset(store, assetId, expected, allowFrozenUnverifi
         && expected
         && assetstore.frozenAssetRecordsEqual(stored, expected)
         && computed === expectedComputed);
-    const supportedFrozenProvenance = provenance?.assetId === assetId
-        && provenance.trusted === false
-        && provenance.decision === undefined
-        && provenance.decidedBy === undefined
-        && provenance.promotedBy === undefined
-        && ((provenance.source === 'hub'
-            && (provenance.reason === 'unverified_hub_rewrite' || provenance.reason === 'unverified_hub_synthesized'))
-            || (provenance.source === 'migrated' && provenance.reason === 'unverified_gepx_import'));
     const provenanceBoundFrozenBody = Boolean(stored
         && computed
-        && supportedFrozenProvenance
-        && provenance.frozenContentId === computed);
+        && isActiveFrozenWaiver(provenance, assetId, computed));
     if (!stored ||
         stored.asset_id !== assetId ||
         (!exactFrozenBody && !provenanceBoundFrozenBody && computed !== assetId) ||
@@ -1488,14 +1867,14 @@ function appendSyncRecord(syncLedger, candidate, asset, runKey, inventoryKey, ex
         remoteAssetId: candidate.assetId,
         runKey,
         inventoryKey,
-        ...(stringField(asset, 'id') ? { logicalId: stringField(asset, 'id') } : {}),
+        ...(rawStringField(asset, 'id') ? { logicalId: rawStringField(asset, 'id') } : {}),
         ...(candidate.status ? { status: candidate.status } : {}),
         ...extra,
     });
 }
 function syncRecordMatches(record, candidate, asset) {
     const scope = candidate.source === 'published' ? 'published' : 'purchased';
-    const logicalId = stringField(asset, 'id');
+    const logicalId = rawStringField(asset, 'id');
     return record.assetId === candidate.assetId &&
         record.remoteAssetId === candidate.assetId &&
         record.type === asset.type &&
@@ -1504,24 +1883,25 @@ function syncRecordMatches(record, candidate, asset) {
         (!logicalId || record.logicalId === logicalId);
 }
 function preparePackagedAsset(candidate, asset, localAssetIds, logical, force, frozenUnverified = false) {
-    const cleaned = stripHubMetadata(asset);
+    const cleaned = { ...asset };
     const type = cleaned.type === 'Gene' || cleaned.type === 'Capsule' ? cleaned.type : undefined;
     if (!type)
         return { blocked: { ...candidate, type: cleaned.type ?? candidate.type, action: 'unsupported_type' } };
     if (type !== candidate.type)
         return { blocked: { ...candidate, type, action: 'unsupported_type' } };
-    const claimed = stringField(cleaned, 'asset_id');
+    const claimed = rawStringField(cleaned, 'asset_id');
     const computed = wire.computeAssetId(cleaned);
     if (!claimed
         || !computed
         || (claimed !== computed && !frozenUnverified)
         || claimed !== candidate.assetId
+        || !isContentAssetId(claimed)
         || !looksLikeFullAsset(cleaned, type)) {
         throw new SyncAbortError('integrity_error', '.gepx package integrity verification failed before import');
     }
     if (localAssetIds.has(cleaned.asset_id))
         return { blocked: { ...candidate, action: 'already_local' } };
-    const logicalId = stringField(cleaned, 'id');
+    const logicalId = rawStringField(cleaned, 'id');
     if (logicalId) {
         const localAssetId = logical.get(`${type}:${logicalId}`);
         if (localAssetId && localAssetId !== cleaned.asset_id) {
@@ -1548,33 +1928,32 @@ function looksLikeFullAsset(value, type) {
         stringField(value, 'summary') &&
         asRecord(value['outcome']));
 }
-function stripHubMetadata(asset) {
-    const out = {};
-    for (const [key, value] of Object.entries(asset))
-        if (!HUB_METADATA_KEYS.has(key))
-            out[key] = value;
-    return out;
+function declaresFullAssetPayload(value, type) {
+    if (Object.prototype.hasOwnProperty.call(value, 'schema_version'))
+        return true;
+    if (type === 'Gene') {
+        return Boolean(stringField(value, 'id')
+            && stringField(value, 'category')
+            && Array.isArray(value['signals_match'])
+            && Array.isArray(value['strategy'])
+            && asRecord(value['constraints'])
+            && Array.isArray(value['validation']));
+    }
+    return Boolean(stringField(value, 'id')
+        && stringField(value, 'gene')
+        && stringField(value, 'summary')
+        && asRecord(value['outcome']));
 }
 function readGepxPackage(path) {
     if (!path)
         throw new SyncAbortError('invalid_arg', '--import requires a file');
-    if (!existsSync(path))
-        throw new SyncAbortError('gepx_read_failed', 'could not read .gepx file');
+    let parsed;
     try {
-        const stat = statSync(path);
-        if (!stat.isFile() || stat.size > MAX_GEPX_BYTES)
-            throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+        parsed = JSON.parse(readBoundedGepxText(path));
     }
     catch (error) {
         if (error instanceof SyncAbortError)
             throw error;
-        throw new SyncAbortError('gepx_read_failed', 'could not read .gepx file');
-    }
-    let parsed;
-    try {
-        parsed = JSON.parse(readFileSync(path, 'utf8'));
-    }
-    catch {
         throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
     }
     const obj = asRecord(parsed);
@@ -1591,9 +1970,7 @@ function readGepxPackage(path) {
     const malformedAssets = [];
     obj['assets'].forEach((rawAsset, index) => {
         const asset = asRecord(rawAsset);
-        const assetId = asset && typeof asset['asset_id'] === 'string' && asset['asset_id'].trim()
-            ? asset['asset_id']
-            : undefined;
+        const assetId = asset ? rawStringField(asset, 'asset_id') : undefined;
         if (!asset || !assetId) {
             malformedAssets.push({ index, ...(assetId ? { assetId } : {}) });
             return;
@@ -1616,13 +1993,93 @@ function readGepxPackage(path) {
         sync,
     };
 }
+function readBoundedGepxText(path) {
+    let before;
+    try {
+        before = lstatSync(path, { bigint: true });
+    }
+    catch {
+        throw new SyncAbortError('gepx_read_failed', 'could not read .gepx file');
+    }
+    if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(MAX_GEPX_BYTES)) {
+        throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+    }
+    let descriptor;
+    try {
+        descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    }
+    catch {
+        throw new SyncAbortError('gepx_read_failed', 'could not read .gepx file');
+    }
+    let opened;
+    let text;
+    try {
+        opened = fstatSync(descriptor, { bigint: true });
+        if (!opened.isFile()
+            || opened.size > BigInt(MAX_GEPX_BYTES)
+            || opened.dev !== before.dev
+            || opened.ino !== before.ino
+            || opened.size !== before.size) {
+            throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+        }
+        const chunks = [];
+        let total = 0;
+        while (total <= MAX_GEPX_BYTES) {
+            const remaining = MAX_GEPX_BYTES + 1 - total;
+            if (remaining <= 0)
+                break;
+            const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+            const count = readSync(descriptor, chunk, 0, chunk.length, null);
+            if (count === 0)
+                break;
+            chunks.push(chunk.subarray(0, count));
+            total += count;
+        }
+        if (total > MAX_GEPX_BYTES)
+            throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+        const settled = fstatSync(descriptor, { bigint: true });
+        if (settled.dev !== opened.dev
+            || settled.ino !== opened.ino
+            || settled.size !== opened.size
+            || settled.mtimeNs !== opened.mtimeNs
+            || settled.ctimeNs !== opened.ctimeNs) {
+            throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+        }
+        text = Buffer.concat(chunks, total).toString('utf8');
+    }
+    catch (error) {
+        if (error instanceof SyncAbortError)
+            throw error;
+        throw new SyncAbortError('gepx_read_failed', 'could not read .gepx file');
+    }
+    finally {
+        closeSync(descriptor);
+    }
+    let after;
+    try {
+        after = lstatSync(path, { bigint: true });
+    }
+    catch {
+        throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+    }
+    if (!after.isFile()
+        || after.isSymbolicLink()
+        || after.dev !== before.dev
+        || after.ino !== before.ino
+        || after.size !== before.size
+        || after.mtimeNs !== before.mtimeNs
+        || after.ctimeNs !== before.ctimeNs) {
+        throw new SyncAbortError('invalid_gepx', 'invalid .gepx package');
+    }
+    return text;
+}
 function parseGepxProvenanceRecord(value) {
     if (!value)
         return null;
-    const assetId = stringField(value, 'assetId');
+    const assetId = rawStringField(value, 'assetId');
     const source = stringField(value, 'source');
     const at = stringField(value, 'at');
-    const frozenContentId = stringField(value, 'frozenContentId');
+    const frozenContentId = rawStringField(value, 'frozenContentId');
     if (!assetId
         || !at
         || Number.isNaN(Date.parse(at))
@@ -1651,12 +2108,12 @@ function parseGepxProvenanceRecord(value) {
 function parseGepxSyncRecord(value) {
     if (!value)
         return null;
-    const assetId = stringField(value, 'assetId');
-    const type = stringField(value, 'type');
-    const source = stringField(value, 'source');
-    const scope = stringField(value, 'scope');
+    const assetId = rawStringField(value, 'assetId');
+    const type = rawStringField(value, 'type');
+    const source = rawStringField(value, 'source');
+    const scope = rawStringField(value, 'scope');
     const syncedAt = stringField(value, 'syncedAt');
-    const remoteAssetId = stringField(value, 'remoteAssetId');
+    const remoteAssetId = rawStringField(value, 'remoteAssetId');
     if (!assetId || (type !== 'Gene' && type !== 'Capsule') || source !== 'hub' || (scope !== 'purchased' && scope !== 'published') || !syncedAt || !remoteAssetId) {
         return null;
     }
@@ -1667,47 +2124,71 @@ function parseGepxSyncRecord(value) {
         scope,
         syncedAt,
         remoteAssetId,
-        ...(stringField(value, 'logicalId') ? { logicalId: stringField(value, 'logicalId') } : {}),
+        ...(rawStringField(value, 'logicalId') ? { logicalId: rawStringField(value, 'logicalId') } : {}),
         ...(stringField(value, 'status') ? { status: stringField(value, 'status') } : {}),
         ...(value['forced'] === true ? { forced: true } : {}),
-        ...(stringField(value, 'collisionWithAssetId') ? { collisionWithAssetId: stringField(value, 'collisionWithAssetId') } : {}),
+        ...(rawStringField(value, 'collisionWithAssetId') ? { collisionWithAssetId: rawStringField(value, 'collisionWithAssetId') } : {}),
     };
 }
 function remoteType(row) {
-    const payload = asRecord(row.payload);
-    const raw = stringField(row, 'type') ?? stringField(row, 'asset_type') ?? (payload ? stringField(payload, 'type') : undefined);
+    const raw = remoteDeclaredType(row);
     return raw === 'Gene' || raw === 'Capsule' ? raw : undefined;
+}
+function remoteDeclaredType(row) {
+    const payload = asRecord(row.payload);
+    return rawStringField(row, 'type')
+        ?? rawStringField(row, 'asset_type')
+        ?? (payload ? rawStringField(payload, 'type') : undefined);
 }
 function remoteLogicalId(row) {
     const payload = asRecord(row.payload);
-    return stringField(row, 'id') ?? stringField(row, 'local_id') ?? (payload ? stringField(payload, 'id') : undefined);
+    if (!Object.prototype.hasOwnProperty.call(row, 'type') && payload && rawStringField(payload, 'type') !== undefined) {
+        return rawStringField(row, 'local_id') ?? rawStringField(payload, 'id');
+    }
+    return rawStringField(row, 'id')
+        ?? rawStringField(row, 'local_id')
+        ?? (payload ? rawStringField(payload, 'id') : undefined);
+}
+function isContentAssetId(value) {
+    return /^sha256:[0-9a-f]{64}$/.test(value);
 }
 function isRemoteTombstone(row) {
     return stringField(row, 'status')?.toLowerCase() === 'revoked'
         || stringField(row, 'trust_state')?.toLowerCase() === 'revoked';
 }
+function isRemoteTombstoneDelivery(row) {
+    if (isRemoteTombstone(row))
+        return true;
+    const nested = asRecord(row.payload);
+    return nested ? isRemoteTombstone(nested) : false;
+}
 function emitTextPreview(preview, out) {
     const c = preview.counts;
     out(`sync preview: scope=${preview.scope} purchased=${c.remotePurchased} published=${c.remotePublished} unique=${c.uniqueRemote}`);
-    out(`  would_import=${c.wouldImport} forced_import=${c.forcedImport} skipped_limit=${c.skippedLimit} fetch_failed=${c.fetchFailed} write_failed=${c.writeFailed} already_local=${c.alreadyLocal} tombstone=${c.tombstone} id_collision=${c.idCollision} unsupported=${c.unsupported} integrity_error=${c.integrityError}`);
+    out(`  would_import=${c.wouldImport} unverified_would_import=${c.unverifiedWouldImport} forced_import=${c.forcedImport} skipped_limit=${c.skippedLimit} fetch_failed=${c.fetchFailed} write_failed=${c.writeFailed} already_local=${c.alreadyLocal} tombstone=${c.tombstone} id_collision=${c.idCollision} unsupported=${c.unsupported} integrity_error=${c.integrityError}`);
     out(`  reconciliation: accounted=${preview.reconciliation.accounted}/${preview.reconciliation.remoteUnique} failed=${preview.reconciliation.failed} inventory_complete=${preview.reconciliation.inventoryComplete} missing_remote=${preview.reconciliation.missingRemote} consistent=${preview.reconciliation.consistent}`);
     emitTextNextCursors(preview.nextCursors, out);
     for (const candidate of preview.candidates.slice(0, 10)) {
-        out(`  ${candidate.action}: ${candidate.type} ${candidate.assetId}${candidate.logicalId ? ` (${candidate.logicalId})` : ''}`);
+        out(`  ${candidate.action}: ${candidate.type} ${candidate.assetId}${candidate.logicalId ? ` (${candidate.logicalId})` : ''}${formatHubVerification(candidate)}`);
     }
 }
 function emitTextWrite(result, out) {
     const c = result.counts;
     out(`sync ${result.mode}: scope=${result.scope} purchased=${c.remotePurchased} published=${c.remotePublished} unique=${c.uniqueRemote}`);
-    out(`  written=${result.written.length} blocked=${result.blocked.length} would_import=${c.wouldImport} forced_import=${c.forcedImport} skipped_limit=${c.skippedLimit} fetch_failed=${c.fetchFailed} write_failed=${c.writeFailed} already_local=${c.alreadyLocal} tombstone=${c.tombstone} id_collision=${c.idCollision} unsupported=${c.unsupported} integrity_error=${c.integrityError}`);
+    out(`  written=${result.written.length} blocked=${result.blocked.length} would_import=${c.wouldImport} unverified_would_import=${c.unverifiedWouldImport} forced_import=${c.forcedImport} skipped_limit=${c.skippedLimit} fetch_failed=${c.fetchFailed} write_failed=${c.writeFailed} already_local=${c.alreadyLocal} tombstone=${c.tombstone} id_collision=${c.idCollision} unsupported=${c.unsupported} integrity_error=${c.integrityError}`);
     out(`  reconciliation: accounted=${result.reconciliation.accounted}/${result.reconciliation.remoteUnique} imported=${result.reconciliation.imported} resumed=${result.resumed} failed=${result.reconciliation.failed} inventory_complete=${result.reconciliation.inventoryComplete} missing_remote=${result.reconciliation.missingRemote} consistent=${result.reconciliation.consistent}`);
     emitTextNextCursors(result.nextCursors, out);
     for (const asset of result.written.slice(0, 10)) {
-        out(`  imported: ${asset.type} ${asset.assetId}${asset.logicalId ? ` (${asset.logicalId})` : ''}`);
+        out(`  imported: ${asset.type} ${asset.assetId}${asset.logicalId ? ` (${asset.logicalId})` : ''}${formatHubVerification(asset)}`);
     }
     for (const candidate of result.blocked.slice(0, 10)) {
         out(`  blocked/${candidate.action}: ${candidate.type} ${candidate.assetId}${candidate.logicalId ? ` (${candidate.logicalId})` : ''}`);
     }
+}
+function formatHubVerification(value) {
+    if (value.verification !== 'unverified')
+        return '';
+    return ` [verification=unverified${value.verificationReason ? ` reason=${value.verificationReason}` : ''}]`;
 }
 function emitTextNextCursors(nextCursors, out) {
     if (nextCursors.purchased)
@@ -1757,16 +2238,22 @@ function loadSyncEnv(env) {
         throw new SyncAbortError('env_file_unavailable', 'Configured environment file is unavailable');
 }
 function emitFailure(reason, message, jsonOut, out, err) {
-    const payload = { ok: false, group: GROUP, reason, message: redact(message) };
+    const payload = { ok: false, group: GROUP, reason, message: formatTerminalText(message) };
     if (jsonOut)
-        out(JSON.stringify(payload));
+        out(stringifyJsonOutput(payload));
     else
-        err(`sync failed (${reason}): ${payload.message}`);
+        err(formatTerminalText(`sync failed (${reason}): ${message}`));
     return 1;
 }
 function mapSyncError(error) {
     if (error instanceof SyncAbortError)
         return { reason: error.reason, message: error.message };
+    if (error instanceof MalformedAccountAssetPageError) {
+        return { reason: 'malformed_page', message: 'Hub account asset page is malformed' };
+    }
+    if (error instanceof assetstore.FrozenAssetIdCollisionError) {
+        return { reason: 'integrity_error', message: 'Frozen Hub asset conflicts with existing content or provenance' };
+    }
     if (error instanceof assetstore.InvalidConditionalPutResultError) {
         return { reason: 'conditional_write_invalid', message: 'Conditional asset write returned an invalid result' };
     }
@@ -1887,15 +2374,15 @@ function cursorFingerprintsMatch(left, right) {
 }
 function syncInventoryIdentity(opts, env, deps) {
     const privateMode = isPrivateHubMode(env);
+    const suppliedIdentityFingerprint = suppliedResumeIdentityFingerprint(deps);
     return {
         mode: String(env['EVOMAP_HUB_MODE'] ?? 'public').trim().toLowerCase(),
         hubUrl: privateMode ? requirePrivateHubUrl(env) : resolveHubUrl(env),
         account: privateMode
             ? firstNonEmptyEnv(env, ['EVOMAP_ENTERPRISE_SUBJECT', 'EVOMAP_PRIVATE_SUBJECT', 'PHUB_ENTERPRISE_SUBJECT', 'USER']) ?? 'evolver-proxy'
             : '',
-        credentialFingerprint: privateMode
-            ? syncCredentialFingerprint(env)
-            : publicResumeIdentityFingerprint(env, deps),
+        credentialFingerprint: suppliedIdentityFingerprint
+            ?? (privateMode ? syncCredentialFingerprint(env) : publicResumeIdentityFingerprint(env, deps)),
         scope: opts.scope,
         type: opts.type ?? '',
         status: opts.status,
@@ -1979,9 +2466,6 @@ function reconcileInventorySnapshot(snapshot, missingRemote) {
     };
 }
 function publicResumeIdentityFingerprint(env, deps) {
-    const supplied = deps.resumeIdentityFingerprint?.trim();
-    if (supplied)
-        return createHash('sha256').update(supplied).digest('hex');
     if (!deps.hub)
         return resolveRecipeHubResumeIdentityFingerprint(env);
     return createHash('sha256').update(JSON.stringify({
@@ -2068,11 +2552,101 @@ function reconcile(candidates, failures, imported, final, inventoryComplete, mis
 function storeBaseDir(store, deps) {
     return store instanceof assetstore.LocalJsonlProvider ? store.baseDir : deps.assetsDir ?? events.assetsDir();
 }
+function suppliedResumeIdentityFingerprint(deps) {
+    const supplied = deps.resumeIdentityFingerprint;
+    return supplied === undefined ? undefined : createHash('sha256').update(supplied).digest('hex');
+}
+function previewProvenanceSnapshot(store, deps) {
+    if (deps.provenance)
+        return deps.provenance.snapshot();
+    if (store instanceof assetstore.LocalJsonlProvider || deps.assetsDir) {
+        return new assetstore.ProvenanceStore(storeBaseDir(store, deps), deps.now).snapshot();
+    }
+    return new Map();
+}
 function redact(value) {
     return value
         .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
         .replace(/\b([A-Z][A-Z0-9_]*(?:_SECRET|_TOKEN))\b\s*[:=]\s*["']?[^"',\s;}]+/g, '$1=[redacted]')
         .replace(/\b(authorization|node_secret|nodeSecret|access_token|refresh_token|token|secret)\b\s*[:=]\s*["']?[^"',\s;}]+/gi, '$1=[redacted]');
+}
+function stringifyJsonOutput(value) {
+    let output = '';
+    for (const character of JSON.stringify(value)) {
+        const codePoint = character.codePointAt(0);
+        output += codePoint !== undefined && isTerminalControlCodePoint(codePoint)
+            ? `\\u${codePoint.toString(16).padStart(4, '0')}`
+            : character;
+    }
+    return output;
+}
+function formatTerminalText(value) {
+    const withoutAnsi = redactAnsiSequences(value);
+    const withoutSecrets = redact(withoutAnsi)
+        .replace(/\b[A-Za-z]:[\\/][^\s\x22'<>|\x5b\x5d]*/g, '[redacted-path]')
+        .replace(/\\\\[^\s\x22'<>|\x5b\x5d]+\\[^\s\x22'<>|\x5b\x5d]*/g, '[redacted-path]')
+        .replace(/(^|[\s(\x22'=])\/(?:[^/\s\x22'<>|\x5b\x5d]+\/?)+/g, '$1[redacted-path]');
+    let output = '';
+    for (const character of withoutSecrets) {
+        const codePoint = character.codePointAt(0);
+        output += codePoint !== undefined && isTerminalControlCodePoint(codePoint)
+            ? `\\u{${codePoint.toString(16).toUpperCase().padStart(4, '0')}}`
+            : character;
+    }
+    return output;
+}
+function redactAnsiSequences(value) {
+    let output = '';
+    for (let index = 0; index < value.length;) {
+        const code = value.charCodeAt(index);
+        const next = value.charCodeAt(index + 1);
+        const csi = code === 0x9b || (code === 0x1b && next === 0x5b);
+        if (csi) {
+            let end = index + (code === 0x1b ? 2 : 1);
+            while (end < value.length) {
+                const current = value.charCodeAt(end);
+                end += 1;
+                if (current >= 0x40 && current <= 0x7e)
+                    break;
+            }
+            output += ' [escaped-ansi] ';
+            index = end;
+            continue;
+        }
+        const osc = code === 0x9d || (code === 0x1b && next === 0x5d);
+        if (osc) {
+            let end = index + (code === 0x1b ? 2 : 1);
+            while (end < value.length) {
+                const current = value.charCodeAt(end);
+                if (current === 0x07) {
+                    end += 1;
+                    break;
+                }
+                if (current === 0x1b && value.charCodeAt(end + 1) === 0x5c) {
+                    end += 2;
+                    break;
+                }
+                end += 1;
+            }
+            output += ' [escaped-ansi] ';
+            index = end;
+            continue;
+        }
+        output += value[index];
+        index += 1;
+    }
+    return output;
+}
+function isTerminalControlCodePoint(codePoint) {
+    return codePoint <= 0x1f
+        || (codePoint >= 0x7f && codePoint <= 0x9f)
+        || codePoint === 0x061c
+        || codePoint === 0x200e
+        || codePoint === 0x200f
+        || codePoint === 0x2028
+        || codePoint === 0x2029
+        || (codePoint >= 0x202a && codePoint <= 0x202e)
+        || (codePoint >= 0x2066 && codePoint <= 0x2069);
 }
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
@@ -2080,4 +2654,17 @@ function asRecord(value) {
 function stringField(value, key) {
     const raw = value[key];
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+function rawStringField(value, key) {
+    const raw = value[key];
+    return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+function hasInvalidLiveIdentityField(value, keys) {
+    const record = value;
+    return keys.some((key) => {
+        if (!Object.prototype.hasOwnProperty.call(record, key))
+            return false;
+        const raw = record[key];
+        return typeof raw !== 'string' || raw.length === 0 || raw !== raw.trim();
+    });
 }

@@ -64,6 +64,8 @@ export class ProxyDaemon {
     collaborationFacade;
     publishRecallVerifier;
     proxyHandler;
+    hub;
+    recipeComposeStarted = new Set();
     ipc;
     now;
     random;
@@ -124,6 +126,7 @@ export class ProxyDaemon {
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
         this.atp = deps.atp;
         const hubToUse = shadow ? shadow_.shadowHubCapability(deps.hub, deps.shadowSink, 'shadow') : deps.hub;
+        this.hub = hubToUse;
         const hubBindings = hubNs.makeHubBindings(hubToUse, deps.publishSanitizeEnv
             ? { sanitize: { env: deps.publishSanitizeEnv } }
             : {});
@@ -195,6 +198,8 @@ export class ProxyDaemon {
                     }
                     catch { /* best-effort */ }
                 }
+                // Recipe is the preferred public artifact. Failure here must not retry the already-accepted asset publish.
+                this.composeRecipeAfterAcceptedSubmit(envelope);
             },
             onOutboundTerminal: (envelope, error) => {
                 this.collaborationFacade.handleOutboundTerminal(envelope, error);
@@ -631,6 +636,7 @@ export class ProxyDaemon {
             return { ok: false, reason: 'self_update_not_configured' };
         const currentVersion = this.deps.selfUpdate.currentVersion ?? this.deps.evolverVersion ?? '0.0.0';
         const originalTelemetry = this.deps.selfUpdate.onTelemetry;
+        const originalCleanupWarning = this.deps.selfUpdate.onCleanupWarning;
         const selfUpdateDeps = {
             ...this.deps.selfUpdate,
             currentVersion,
@@ -640,6 +646,15 @@ export class ProxyDaemon {
                     now: this.now(),
                 });
                 originalTelemetry?.(result);
+            },
+            onCleanupWarning: (warning, result) => {
+                try {
+                    this.store.setState('self_update:last_cleanup_warning', safeDaemonMessage(`self_update_cleanup_warning:${warning}`, MAX_PROXY_TICK_ERROR_LENGTH));
+                }
+                catch {
+                    // The returned result still carries cleanupWarning when operator state is unavailable.
+                }
+                originalCleanupWarning?.(warning, result);
             },
         };
         return executeForceUpdate(directive, selfUpdateDeps);
@@ -799,6 +814,65 @@ export class ProxyDaemon {
             ctx.json(200, { results, assets: results, query: body });
             return true;
         }
+        if (ctx.route === 'POST /recipe/search') {
+            const body = (await ctx.readJson());
+            if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
+            const recipes = this.hub.recipes;
+            if (!recipes) {
+                ctx.json(501, { error: 'recipe_unsupported' });
+                return true;
+            }
+            const limit = boundedRequestLimit(body.limit, 10, 50);
+            if (limit === undefined) {
+                ctx.json(400, { error: 'invalid_limit' });
+                return true;
+            }
+            const q = [body.q, body.query, body.text].find((value) => typeof value === 'string' && value.trim().length > 0);
+            const cursor = typeof body.cursor === 'string' && body.cursor.trim() ? body.cursor.trim() : undefined;
+            const sort = typeof body.sort === 'string' && body.sort.trim() ? body.sort.trim() : undefined;
+            const request = {
+                ...(q ? { q } : {}),
+                limit,
+                ...(cursor ? { cursor } : {}),
+                ...(sort ? { sort } : {}),
+            };
+            const receipt = q ? await recipes.search(request) : await recipes.list(request);
+            ctx.json(200, {
+                recipes: receipt.recipes,
+                ...(receipt.nextCursor ? { nextCursor: receipt.nextCursor } : {}),
+                ...(receipt.hasMore !== undefined ? { hasMore: receipt.hasMore } : {}),
+                query: body,
+            });
+            return true;
+        }
+        if (ctx.route === 'POST /recipe/express') {
+            const body = asRecord(await ctx.readJson());
+            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
+            const recipes = this.hub.recipes;
+            if (!recipes) {
+                ctx.json(501, { error: 'recipe_unsupported' });
+                return true;
+            }
+            const recipeId = typeof body['recipe_id'] === 'string'
+                ? body['recipe_id']
+                : typeof body['recipeId'] === 'string'
+                    ? body['recipeId']
+                    : '';
+            if (!recipeId.trim()) {
+                ctx.json(400, { error: 'recipe_id_required' });
+                return true;
+            }
+            const inputPayload = asRecord(body['input_payload']) ?? asRecord(body['inputPayload']) ?? {};
+            const receipt = await recipes.express(recipeId.trim(), { inputPayload });
+            ctx.json(200, receipt);
+            return true;
+        }
         if (ctx.route === 'POST /asset/fetch') {
             const body = (await ctx.readJson());
             if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
@@ -871,11 +945,12 @@ export class ProxyDaemon {
                     ctx.json(400, { error: 'mode=sync requires a full asset bundle' });
                     return true;
                 }
-                await this.publishAssetSubmitSynchronously(ctx, outboundBundle);
+                await this.publishAssetSubmitSynchronously(ctx, outboundBundle, hubNs.recipeComposeRequested(body));
                 return true;
             }
             const payload = {
                 assets: outboundBundle,
+                compose_recipe: hubNs.recipeComposeRequested(body),
                 [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
             };
             const requestId = typeof body['request_id'] === 'string' && ASYNC_ASSET_SUBMIT_REQUEST_ID.test(body['request_id'])
@@ -971,6 +1046,9 @@ export class ProxyDaemon {
                         source: 'conversation_distillation',
                         distill_id: distill.distill_id,
                         assets: [distill.gene, distill.capsule],
+                        compose_recipe: body['publish_recipe'] !== false,
+                        title: typeof body.title === 'string' ? body.title : undefined,
+                        description: typeof body.summary === 'string' ? body.summary : undefined,
                         [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
                     },
                     runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
@@ -1128,14 +1206,14 @@ export class ProxyDaemon {
             staleUntil: now + this.assetSearchCacheTtlMs + this.assetSearchStaleGraceMs,
         });
     }
-    async publishAssetSubmitSynchronously(ctx, items) {
+    async publishAssetSubmitSynchronously(ctx, items, composeRecipe = true) {
         const classified = classifySynchronousAssetSubmit(items);
         if (!classified.ok) {
             ctx.json(422, { error: classified.error, code: 'invalid_asset_submit' });
             return;
         }
         if (classified.kind === 'wire') {
-            const envelope = this.createSynchronousAssetSubmitEnvelope(classified.bundle, undefined, ctx.now);
+            const envelope = this.createSynchronousAssetSubmitEnvelope(classified.bundle, undefined, ctx.now, composeRecipe);
             this.writeSynchronousAssetSubmitOutcome(ctx, await this.publishSynchronousBundle(envelope));
             return;
         }
@@ -1146,7 +1224,7 @@ export class ProxyDaemon {
                 results.push({ ok: false, error: converted.error, statusCode: 422 });
                 continue;
             }
-            const envelope = this.createSynchronousAssetSubmitEnvelope(converted.bundle, 'v1_loose_asset_compat', ctx.now);
+            const envelope = this.createSynchronousAssetSubmitEnvelope(converted.bundle, 'v1_loose_asset_compat', ctx.now, composeRecipe);
             const outcome = await this.publishSynchronousBundle(envelope);
             if (outcome.kind === 'accepted') {
                 const receipt = outcome.receipt;
@@ -1181,7 +1259,7 @@ export class ProxyDaemon {
             results,
         });
     }
-    createSynchronousAssetSubmitEnvelope(bundle, source, now) {
+    createSynchronousAssetSubmitEnvelope(bundle, source, now, composeRecipe = true) {
         const canonicalBundle = [...bundle].sort(compareSynchronousAssetSubmitAssets);
         const runtimeNamespace = this.deps.runtimeNamespace ?? 'default';
         const idempotencyKey = synchronousAssetSubmitKey(this.synchronousAssetSubmitScope, runtimeNamespace, this.currentHubMode(), canonicalBundle);
@@ -1191,12 +1269,22 @@ export class ProxyDaemon {
             payload: {
                 ...(source ? { source } : {}),
                 assets: canonicalBundle,
+                compose_recipe: composeRecipe,
                 [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
             },
             idempotencyKey,
             runtimeNamespace,
             now,
         });
+    }
+    composeRecipeAfterAcceptedSubmit(envelope) {
+        if (envelope.type !== 'asset_submit')
+            return;
+        const key = envelope.idempotencyKey || envelope.id;
+        if (this.recipeComposeStarted.has(key))
+            return;
+        this.recipeComposeStarted.add(key);
+        void hubNs.composeRecipeAfterAssetPublish(this.hub, asRecord(envelope.payload)).catch(() => { });
     }
     currentHubMode() {
         return this.deps.hubMode ?? 'public';
@@ -1267,6 +1355,7 @@ export class ProxyDaemon {
                     this.publishRecallVerifier.observeAcceptedPublish(envelope, receipt);
                 }
                 catch { /* best-effort */ }
+                this.composeRecipeAfterAcceptedSubmit(envelope);
             }
             if (this.store.getById(envelope.id)?.status !== 'in_flight')
                 this.store.complete(envelope.id, this.now());
@@ -1348,6 +1437,7 @@ export class ProxyDaemon {
                     this.publishRecallVerifier.observeAcceptedPublish(envelope, receipt);
                 }
                 catch { /* best-effort */ }
+                this.composeRecipeAfterAcceptedSubmit(envelope);
             }
             return receipt;
         }

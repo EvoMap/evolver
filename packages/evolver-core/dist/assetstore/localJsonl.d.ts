@@ -1,4 +1,6 @@
 import { type AssetKind, type AssetRecord, type AssetStoreProvider, type ConditionalPutOptions, type ConditionalPutResult, type PutResult, type SearchQuery } from './provider.js';
+/** Signal names a record advertises, across the four key spellings the pool uses. */
+export declare function signalsOf(a: AssetRecord): string[];
 /**
  * 本地 jsonl 资产库(M3-2, 移植 v1 src/gep/assetStore.js 单写锁).
  * 每 kind 一文件(genes/capsules/events.jsonl); append-only; O_EXCL 文件锁防并发写撕裂;
@@ -29,6 +31,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     get(assetId: string): Promise<AssetRecord | null>;
     findByLogicalId(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
+    listAll(kind?: AssetKind): AssetRecord[];
     search(q: SearchQuery): Promise<AssetRecord[]>;
     /**
      * Opt-in log compaction: rewrite each kind's jsonl keeping ONE line per asset_id (last wins),

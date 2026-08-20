@@ -14,6 +14,8 @@
  * | `OPENCLAW_WORKSPACE` | *(manual)* | Partial V2 support does not preserve V1 workspace and bridge semantics |
  * | `EVOLVER_NO_PARENT_GIT` | *(none)* | V2 uses `EVOLVER_REPO_ROOT` or nearest Git root |
  * | `EVOLVER_VERBOSE` | *(none)* | V2 has no global switch; opt in to feature-specific diagnostics manually |
+ * | `EVOLVER_OPENAI_COMPATIBLE_BASE_URLS` | *(manual)* | Defensive compatibility spelling; canonical V1 used the EVOMAP-prefixed key |
+ * | `EVOMAP_OPENAI_COMPATIBLE_BASE_URLS` | *(manual)* | Canonical V1 compatible-origin allowlist; selected base and credential were separate |
  * | `EVOLVER_AUTO_ISSUE` | *(none)* | V2 creates local drafts; submit requires explicit approval-gated flow |
  * | `EVOLVER_ROLLBACK_MODE` | *(none)* | V2 uses worktree/snapshot/recovery policy |
  * | `WORKER_ENABLED` | *(none)* | No merchant-worker resolver in V2 |
@@ -55,6 +57,27 @@ export const V1_DEPRECATION_TABLE = [
         migrationAction: 'remove',
         guidance: 'V2 has no global verbose switch. Remove this variable and opt in to a ' +
             'feature-specific flag such as EVOLVER_HOOK_VERBOSE=1 only when hook diagnostics are needed.',
+    },
+    {
+        v1Name: 'EVOLVER_OPENAI_COMPATIBLE_BASE_URLS',
+        v2Equivalent: null,
+        migrationAction: 'manual',
+        guidance: 'This compatibility spelling was not resolved by the canonical V1 runtime, but it is tracked defensively. ' +
+            'V2 has no multi-base or arbitrary OpenAI-compatible resolver. Review the workload before cutover. ' +
+            'While either legacy list key remains set, configure the exact canonical pair EVOLVER_LLM_OPENAI_BASE_URL ' +
+            'and EVOLVER_LLM_OPENAI_API_KEY for one official https://*.api.openai.com/v1 endpoint. ' +
+            'LiteLLM, OpenRouter, Azure OpenAI, MiniMax, DeepSeek, Moonshot, and custom endpoints are not drop-in routes; ' +
+            'do not copy their credentials into the V2 OpenAI route.',
+    },
+    {
+        v1Name: 'EVOMAP_OPENAI_COMPATIBLE_BASE_URLS',
+        v2Equivalent: null,
+        migrationAction: 'manual',
+        guidance: 'Canonical V1 treated this comma-separated value as an allowed-origin list; EVOMAP_OPENAI_BASE_URL still selected one ' +
+            'endpoint and EVOMAP_OPENAI_API_KEY or OPENAI_API_KEY supplied its credential. V2 requires a workload-by-workload review ' +
+            'and has no automatic mapping. While the legacy list remains set, only the exact canonical pair ' +
+            'EVOLVER_LLM_OPENAI_BASE_URL and EVOLVER_LLM_OPENAI_API_KEY acknowledges migration; otherwise keep the incompatible ' +
+            'workload outside the V2 OpenAI route.',
     },
     {
         v1Name: 'EVOLVER_AUTO_ISSUE',

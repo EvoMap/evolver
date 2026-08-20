@@ -1,18 +1,24 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { inspect, format } from 'node:util';
-import { assetstore, events, hub, wire, algo, verify } from '@evomap/evolver-core';
+import { assetrepair, assetstore, events, hub, wire, algo, verify } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { resolveAtpSenderId } from './atp.js';
+import { storeRepairedAsset } from './repairedAssetStore.js';
 import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
 const REUSE_CONTRACT = 'reuse.v1';
 const PUBLISH_CONTRACT = 'publish.v1';
 const REVERSIBILITY = 'irreversible';
+const OAUTH_AUTH_REQUIRED_MESSAGE = "Hub authentication required; run 'evolver login' and retry";
+const LEGACY_AUTH_REQUIRED_MESSAGE = 'Hub node authentication failed; verify the configured node credentials and retry';
+const PRIVATE_AUTH_REQUIRED_MESSAGE = 'Private Hub authentication failed; verify proxy enrollment, credentials, and hub mode';
+const BUNDLE_REQUIRED_MESSAGE = 'publish requires Gene + Capsule bundle; pass --gene <id|path> --capsule <id|path>';
 const MAX_ASSETS = 50;
 const PUBLISH_USAGE = [
-    'usage: evolver publish --asset <gene_id_or_path> --asset <capsule_id_or_path> --json [--dry-run]',
-    '       evolver publish --gene <id_or_path> --capsule <id_or_path> --json [--dry-run]',
+    'usage: evolver publish --asset <gene_id_or_path> --asset <capsule_id_or_path> --json [--dry-run] [--repair] [--no-recipe]',
+    '       evolver publish --gene <id_or_path> --capsule <id_or_path> --json [--dry-run] [--no-recipe]',
+    '       evolver publish --gene <id_or_path> --auto-pair --json [--dry-run] [--no-recipe]',
 ].join('\n');
 const ASSET_FLAGS = new Set(['--asset', '--gene', '--capsule', '--event']);
 const STABLE_CONTRACT_REASONS = new Set([
@@ -140,7 +146,7 @@ export async function runPublishCommand(args, deps = {}) {
         runtimeDeps = { ...deps, env: preserveInheritedSecrets(runtimeEnv, inheritedEnv) };
     }
     catch (err) {
-        const failure = classifyError(err, 'publish');
+        const failure = classifyError(err, 'publish', deps.env ?? process.env);
         return writeJson(out, publishFailure(failure.reason, failure.message, {
             retryable: failure.retryable,
             mode: parsed.dryRun ? 'dry_run' : 'publish',
@@ -149,7 +155,10 @@ export async function runPublishCommand(args, deps = {}) {
     const write = (value, code) => writeJson(out, value, code, runtimeDeps);
     return withMachineJsonConsole(Boolean(parsed.jsonOut), runtimeDeps, async () => {
         try {
-            const bundle = await buildPublishBundle(assetRefs, runtimeDeps);
+            const effectiveRefs = parsed.autoPair
+                ? await autoPairPublishRefs(assetRefs, parsed.geneRef, runtimeDeps)
+                : assetRefs;
+            const bundle = await buildPublishBundle(effectiveRefs, runtimeDeps);
             if (!bundle.ok) {
                 return write(publishFailure(bundle.reason, bundle.message, { retryable: false, gates: bundle.gates }), 1);
             }
@@ -165,9 +174,16 @@ export async function runPublishCommand(args, deps = {}) {
                     assets: bundle.assets,
                 }), 1);
             }
-            const transport = deps.transport ?? createDefaultTransport(runtimeDeps);
+            const transport = deps.transport ?? createDefaultTransport(runtimeDeps, {
+                composeRecipe: parsed.noRecipe !== true,
+            });
             const validate = deps.validate ?? transport.validate;
-            const validation = await validate(bundle.sanitized);
+            // A field-level refusal is a defect in the RECORD, not a verdict on the work in it. Read the Hub's own
+            // `details[]`, mend what is mechanically derivable, and (only when asked) try once more — otherwise the
+            // envelope still carries the plan, so the operator can see the asset is salvageable instead of losing it.
+            const validationAttempt = await callHubWithRepair(validate, bundle.sanitized, parsed.repair === true);
+            const validation = validationAttempt.result;
+            let effectiveAssets = validationAttempt.assets;
             const validationCredits = extractCredits(validation.body);
             const validationUnavailable = transport.validationCapabilityOptional === true
                 && isValidationCapabilityUnavailable(validation.body);
@@ -187,34 +203,44 @@ export async function runPublishCommand(args, deps = {}) {
                     bundle.gates.quality = 'fail';
                     if (!bundle.blockReasons.includes('quality_gate_failed'))
                         bundle.blockReasons.push('quality_gate_failed');
-                    return write(dryRunEnvelope(bundle, validationCredits, detail), 0);
+                    return write(dryRunEnvelope(bundle, validationCredits, detail, validationAttempt), 0);
                 }
-                return write(publishFailure(reason, publishReasonMessage(reason), {
+                return write(publishFailure(reason, publishReasonMessage(reason, runtimeDeps.env), {
                     retryable: publishRetryable(reason),
                     mode: parsed.dryRun ? 'dry_run' : 'publish',
                     gates: parsed.dryRun ? bundle.gates : { ...bundle.gates, quality: 'fail' },
                     assets: bundle.assets,
                     ...(detail ? { detail } : {}),
                     ...(validationCredits ? { credits: validationCredits } : {}),
+                    ...repairEnvelopeField(validationAttempt),
                 }), 1);
             }
             if (parsed.dryRun)
-                return write(dryRunEnvelope(bundle, validationCredits), 0);
+                return write(dryRunEnvelope(bundle, validationCredits, undefined, validationAttempt), 0);
             const publish = deps.publish ?? transport.publish;
-            const published = await publish(bundle.sanitized);
+            const publishAttempt = await callHubWithRepair(publish, effectiveAssets, parsed.repair === true);
+            const published = publishAttempt.result;
+            effectiveAssets = publishAttempt.assets;
+            const repairApplied = mergeRepairAttempts(validationAttempt, publishAttempt);
             const publishCredits = extractCredits(published.body);
             if (!published.ok) {
                 const reason = publishReasonFromResponse(published.status, published.body);
                 const detail = hubDetailFromBody(published.body);
-                return write(publishFailure(reason, publishReasonMessage(reason), {
+                return write(publishFailure(reason, publishReasonMessage(reason, runtimeDeps.env), {
                     retryable: publishRetryable(reason),
                     mode: 'publish',
                     gates: bundle.gates,
                     assets: bundle.assets,
                     ...(detail ? { detail } : {}),
                     ...(publishCredits ? { credits: publishCredits } : {}),
+                    ...repairEnvelopeField(repairApplied),
                 }), 1);
             }
+            // The repaired records are what the network now holds. Persist them so the local library and the Hub do
+            // not silently diverge; a storage failure is reported, never fatal — the publish already happened.
+            const repairPersisted = repairApplied?.applied === true
+                ? await persistRepairedBundle(effectiveAssets, bundle.sanitized, runtimeDeps)
+                : undefined;
             const payload = payloadRecord(published.body);
             const decision = stringField(payload, 'decision');
             const hubReason = stringField(payload, 'reason');
@@ -242,7 +268,11 @@ export async function runPublishCommand(args, deps = {}) {
             }
             const receiptId = stringField(payload, 'receipt_id');
             const bundleId = stringField(payload, 'bundle_id');
-            appendPublishedCapsuleCall(bundle, deps, { status, receiptId, bundleId });
+            const publishedBundle = { ...bundle, sanitized: [...effectiveAssets] };
+            appendPublishedCapsuleCall(publishedBundle, deps, { status, receiptId, bundleId });
+            const recipeId = parsed.noRecipe || deps.publish
+                ? undefined
+                : await composePublishedRecipe(transport, effectiveAssets);
             return write({
                 ok: true,
                 contract: PUBLISH_CONTRACT,
@@ -251,19 +281,94 @@ export async function runPublishCommand(args, deps = {}) {
                 reversibility: REVERSIBILITY,
                 ...(receiptId ? { receipt_id: receiptId } : {}),
                 ...(bundleId ? { bundle_id: bundleId } : {}),
+                ...(recipeId ? { recipe_id: recipeId } : {}),
                 ...(safetyCandidate ? { hub_reason: hubReason } : {}),
-                assets: bundle.assets,
+                // What the Hub actually holds — after a repair that is the mended record, not the one first submitted.
+                assets: repairApplied?.applied === true ? summarizePublishAssets(effectiveAssets) : bundle.assets,
                 ...(publishCredits ? { credits: publishCredits } : {}),
+                ...repairEnvelopeField(repairApplied, repairPersisted),
             }, 0);
         }
         catch (err) {
-            const failure = classifyError(err, 'publish');
+            const failure = classifyError(err, 'publish', runtimeDeps.env ?? process.env);
             return write(publishFailure(failure.reason, failure.message, {
                 retryable: failure.retryable,
                 mode: parsed.dryRun ? 'dry_run' : 'publish',
             }), 1);
         }
     });
+}
+async function callHubWithRepair(call, assets, allowRepair) {
+    const first = await call(assets);
+    if (first.ok)
+        return { result: first, assets, applied: false, entries: [] };
+    const plan = planBundleRepair(assets, first.body);
+    // Retry only when the WHOLE bundle is mended. One unrepairable asset means the Hub will refuse the bundle
+    // again for the same reason, and a second refusal costs the operator another paid round-trip for nothing.
+    const repairable = plan.entries.some((entry) => entry.repair_status === 'repaired')
+        && plan.entries.every((entry) => entry.repair_status !== 'unrepairable');
+    if (!repairable || !allowRepair)
+        return { result: first, assets, applied: false, entries: plan.entries };
+    // Exactly one retry: a Hub that refuses the mended record too is telling us the defect is not mechanical,
+    // and a repair loop against a paid endpoint is how you burn credits without converging.
+    const retried = await call(plan.assets);
+    return { result: retried, assets: plan.assets, applied: true, entries: plan.entries };
+}
+function planBundleRepair(assets, rejectionBody) {
+    const hubIssues = assetrepair.hubRejectionIssues(rejectionBody, {
+        assetTypes: assets.map((asset) => (typeof asset.type === 'string' ? asset.type : undefined)),
+    });
+    const bundleIssues = hubIssues.byAssetIndex.get(-1) ?? [];
+    const repaired = [];
+    const entries = [];
+    for (const [index, asset] of assets.entries()) {
+        const issues = [...(hubIssues.byAssetIndex.get(index) ?? []), ...bundleIssues];
+        const report = assetrepair.repairAssetRecord(asset, { hubIssues: issues });
+        repaired.push(report.asset ?? asset);
+        entries.push({
+            ...(asset.asset_id ? { asset_id: asset.asset_id } : {}),
+            ...(report.asset && report.asset.asset_id !== asset.asset_id ? { repaired_asset_id: report.asset.asset_id } : {}),
+            repair_status: report.status,
+            changes: report.changes.map((change) => `${change.path}: ${change.action}`),
+            blockers: report.blockers.map(repairBlockerText),
+        });
+    }
+    return { assets: repaired, entries };
+}
+function repairBlockerText(blocker) {
+    return `${blocker.path || '(record)'}: ${stripControlChars(blocker.message).replace(/\s+/g, ' ').trim()}`.slice(0, HUB_DETAIL_MAX_CHARS);
+}
+/** Report the LATER attempt's plan: it is the one describing the bundle that was actually refused last. */
+function mergeRepairAttempts(validation, publish) {
+    if (publish.applied || publish.entries.length > 0) {
+        return { ...publish, applied: publish.applied || validation.applied };
+    }
+    return validation.entries.length > 0 || validation.applied ? validation : undefined;
+}
+function repairEnvelopeField(attempt, persisted) {
+    if (!attempt || (attempt.entries.length === 0 && !attempt.applied))
+        return {};
+    return {
+        repair: {
+            applied: attempt.applied,
+            ...(persisted !== undefined ? { persisted } : {}),
+            ...(attempt.applied ? {} : { hint: 're-run with --repair to publish the mended record' }),
+            assets: attempt.entries,
+        },
+    };
+}
+async function persistRepairedBundle(published, submitted, deps) {
+    const env = deps.env ?? process.env;
+    const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(deps));
+    // Only the records repair actually changed are new locally; the untouched ones are already stored.
+    const changed = published.filter((asset, index) => asset.asset_id !== submitted[index]?.asset_id);
+    try {
+        const stored = await Promise.all(changed.map((asset) => storeRepairedAsset(asset, store, env)));
+        return stored.every(Boolean);
+    }
+    catch {
+        return false;
+    }
 }
 function appendPublishedCapsuleCall(bundle, deps, receipt) {
     const capsuleIndex = bundle.sanitized.findIndex((asset) => asset.type === 'Capsule');
@@ -329,7 +434,14 @@ export function parseReuseArgs(args) {
 }
 export function parsePublishArgs(args) {
     const assetRefs = [];
+    let geneRef;
+    let geneCount = 0;
+    let capsuleRef;
+    let hasUntypedAsset = false;
+    let autoPair = false;
     let dryRun = false;
+    let repair = false;
+    let noRecipe = false;
     let jsonOut = false;
     for (let i = 0; i < args.length; i++) {
         const token = args[i];
@@ -343,34 +455,80 @@ export function parsePublishArgs(args) {
             jsonOut = true;
             continue;
         }
+        if (token === '--auto-pair') {
+            autoPair = true;
+            continue;
+        }
+        if (token === '--repair') {
+            repair = true;
+            continue;
+        }
+        if (token === '--no-recipe') {
+            noRecipe = true;
+            continue;
+        }
         const equalFlag = [...ASSET_FLAGS].find((flag) => token.startsWith(`${flag}=`));
         if (equalFlag) {
             const value = token.slice(equalFlag.length + 1).trim();
             if (!value)
                 return { ok: false, reason: 'bundle_required', message: `${equalFlag} requires a value` };
             assetRefs.push(value);
+            if (equalFlag === '--gene') {
+                geneRef = value;
+                geneCount++;
+            }
+            if (equalFlag === '--capsule')
+                capsuleRef = value;
+            if (equalFlag === '--asset')
+                hasUntypedAsset = true;
             continue;
         }
         if (ASSET_FLAGS.has(token)) {
             const next = args[i + 1];
             if (!next || next.startsWith('--'))
                 return { ok: false, reason: 'bundle_required', message: `${token} requires a value` };
-            assetRefs.push(next.trim());
+            const value = next.trim();
+            if (!value)
+                return { ok: false, reason: 'bundle_required', message: `${token} requires a value` };
+            assetRefs.push(value);
+            if (token === '--gene') {
+                geneRef = value;
+                geneCount++;
+            }
+            if (token === '--capsule')
+                capsuleRef = value;
+            if (token === '--asset')
+                hasUntypedAsset = true;
             i++;
             continue;
         }
         if (!token.startsWith('--'))
-            return { ok: false, reason: 'unsupported', message: 'unsupported publish argument' };
-        return { ok: false, reason: 'unsupported', message: 'unsupported publish flag' };
+            return { ok: false, reason: 'unsupported', message: 'unsupported publish argument; did you mean --asset <id|path>?' };
+        if (token === '--home' || token.startsWith('--home=') || token === '--evomap-home' || token.startsWith('--evomap-home=')) {
+            return { ok: false, reason: 'unsupported', message: 'publish does not accept home flags; set EVOLVER_HOME or EVOMAP_HOME before running evolver publish' };
+        }
+        return { ok: false, reason: 'unsupported', message: "unsupported publish flag; run 'evolver publish --help'" };
     }
     if (!jsonOut)
         return { ok: false, reason: 'unsupported', message: 'publish requires --json' };
-    const refs = assetRefs.filter(Boolean);
+    if (autoPair && (geneCount !== 1 || !geneRef || capsuleRef || hasUntypedAsset)) {
+        return { ok: false, reason: 'bundle_required', message: '--auto-pair requires exactly one explicit --gene and no --asset or --capsule' };
+    }
+    const refs = assetRefs;
     if (refs.length === 0)
         return { ok: false, reason: 'bundle_required', message: 'publish requires --asset <id|path>' };
     if (refs.length > MAX_ASSETS)
         return { ok: false, reason: 'bundle_required', message: `publish supports at most ${MAX_ASSETS} assets` };
-    return { ok: true, assetRefs: refs, dryRun, jsonOut };
+    return {
+        ok: true,
+        assetRefs: refs,
+        ...(geneRef ? { geneRef } : {}),
+        ...(autoPair ? { autoPair: true } : {}),
+        dryRun,
+        repair,
+        ...(noRecipe ? { noRecipe: true } : {}),
+        jsonOut,
+    };
 }
 export async function buildPublishBundle(refs, deps = {}) {
     let original;
@@ -578,7 +736,8 @@ function withRecomputedAssetId(asset) {
     const assetId = wire.computeAssetId(asset);
     return { ...asset, asset_id: assetId ?? asset.asset_id };
 }
-async function loadAssetRef(ref, deps) {
+/** Resolve `<asset_id|logical_id|path>` the way publish does. Shared so `asset-repair` speaks the same refs. */
+export async function loadAssetRef(ref, deps) {
     if (looksLikeFile(ref)) {
         try {
             return normalizeAsset(JSON.parse(readFileSync(resolve(ref), 'utf8')));
@@ -596,37 +755,96 @@ async function loadAssetRef(ref, deps) {
         const fromStore = await findAssetInStore(ref, store);
         // `not_found`, not `schema_invalid`: nothing was located, so no schema was
         // ever read. `reuse` already reports this ref-resolution failure that way.
-        if (!fromStore) {
-            if (looksLikeAssetPath(ref))
-                throw new ContractError('not_found', `asset file not found: ${ref}`);
-            throw new ContractError('not_found', `asset not found: ${ref}`);
-        }
+        if (!fromStore)
+            throw new ContractError('not_found', 'asset not found');
         return normalizeAsset(fromStore);
     }
     const assetsDir = contractAssetsDir(deps);
     const readOnly = loadLocalAssetsReadOnly(assetsDir, ref);
-    const found = readOnly.find((asset) => asset.asset_id === ref || stringField(asset, 'id') === ref);
-    // Name the directory that was searched: the common cause is a store written
-    // by an embedder under its own home while the CLI reads the default one, and
-    // without the path there is nothing for the user to compare against.
+    const byAssetId = readOnly.filter((asset) => asset.asset_id === ref);
+    if (byAssetId.length > 1)
+        throw new ContractError('not_found', 'asset reference is ambiguous');
+    let found = byAssetId[0];
     if (!found) {
-        if (looksLikeAssetPath(ref))
-            throw new ContractError('not_found', `asset file not found: ${ref}`);
-        throw new ContractError('not_found', `asset not found: ${ref} (searched ${assetsDir})`);
+        const exactLogical = readOnly.filter((asset) => stringField(asset, 'id') === ref);
+        if (exactLogical.length > 1)
+            throw new ContractError('not_found', 'asset reference is ambiguous');
+        found = exactLogical[0];
     }
+    if (!found) {
+        const fallback = prefixedLogicalRef(ref);
+        if (fallback) {
+            const matches = readOnly.filter((asset) => asset.type === fallback.kind && stringField(asset, 'id') === fallback.id);
+            if (matches.length > 1)
+                throw new ContractError('not_found', 'asset reference is ambiguous');
+            found = matches[0];
+        }
+    }
+    if (!found)
+        throw new ContractError('not_found', 'asset not found');
     return normalizeAsset(found);
+}
+function prefixedLogicalRef(ref) {
+    const match = /^(gene|capsule):(.+)$/.exec(ref);
+    if (!match?.[2])
+        return null;
+    return { kind: match[1] === 'gene' ? 'Gene' : 'Capsule', id: match[2] };
+}
+async function findLogicalAsset(store, id, kind) {
+    if (store.findByLogicalId) {
+        const matches = await store.findByLogicalId(id, 2, kind);
+        if (matches.length > 1)
+            throw new ContractError('not_found', 'asset reference is ambiguous');
+        return matches[0] ?? null;
+    }
+    const scanLimit = 10_000;
+    const rows = await store.list(kind, scanLimit + 1);
+    if (rows.length > scanLimit)
+        throw new ContractError('not_found', 'asset lookup is truncated; use an exact asset_id');
+    const matches = rows.filter((asset) => stringField(asset, 'id') === id);
+    if (matches.length > 1)
+        throw new ContractError('not_found', 'asset reference is ambiguous');
+    return matches[0] ?? null;
 }
 async function findAssetInStore(ref, store) {
     const byAssetId = await store.get(ref);
     if (byAssetId)
         return byAssetId;
-    for (const kind of ['Gene', 'Capsule', 'EvolutionEvent']) {
-        const rows = await store.list(kind, 10_000);
-        const found = rows.find((asset) => stringField(asset, 'id') === ref);
-        if (found)
-            return found;
+    const exact = await findLogicalAsset(store, ref);
+    if (exact)
+        return exact;
+    const fallback = prefixedLogicalRef(ref);
+    return fallback ? findLogicalAsset(store, fallback.id, fallback.kind) : null;
+}
+async function autoPairPublishRefs(refs, geneRef, deps) {
+    const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(deps));
+    if (!(store instanceof assetstore.LocalJsonlProvider)) {
+        throw new ContractError('bundle_required', '--auto-pair requires a local asset store; pass --capsule <id|path> explicitly');
     }
-    return null;
+    const gene = await loadAssetRef(geneRef, { ...deps, assetStore: store });
+    if (gene.type !== 'Gene')
+        throw new ContractError('bundle_required', '--auto-pair requires a Gene reference');
+    const geneIds = new Set([gene.asset_id, stringField(gene, 'id')].filter((id) => Boolean(id)));
+    const trust = new assetstore.ProvenanceStore(store.baseDir).snapshot();
+    const candidates = store.listAll('Capsule').filter((candidate) => {
+        if (!geneIds.has(String(candidate['gene'] ?? '')))
+            return false;
+        const outcome = asRecord(candidate['outcome']);
+        if (outcome?.['status'] !== 'success')
+            return false;
+        if (trust.get(candidate.asset_id)?.trusted === false)
+            return false;
+        if (!wire.validateWireDeep(candidate).ok)
+            return false;
+        return wire.verifyAssetId(candidate);
+    });
+    if (candidates.length === 0) {
+        throw new ContractError('bundle_required', 'no eligible successful Capsule found; pass --capsule <id|path> explicitly');
+    }
+    if (candidates.length > 1) {
+        throw new ContractError('bundle_required', 'multiple eligible Capsules found; pass --capsule <id|path> explicitly');
+    }
+    return [...refs, candidates[0].asset_id];
 }
 function loadLocalAssetsReadOnly(baseDir, targetRef) {
     return [
@@ -708,7 +926,7 @@ function checkBundle(bundle) {
         return { ok: false, message: 'publish supports one Gene + one Capsule + optional one EvolutionEvent bundle' };
     }
     if (genes.length === 0 || capsules.length === 0)
-        return { ok: false, message: 'publish requires Gene + Capsule bundle' };
+        return { ok: false, message: BUNDLE_REQUIRED_MESSAGE };
     const gene = genes[0];
     const capsule = capsules[0];
     const geneIds = new Set([gene.asset_id, stringField(gene, 'id')].filter((id) => Boolean(id)));
@@ -752,7 +970,7 @@ function storeBaseDir(store, deps) {
 function contractAssetsDir(deps) {
     return deps.assetsDir ?? events.assetsDir(deps.env ?? process.env);
 }
-function dryRunEnvelope(bundle, credits, blockDetail) {
+function dryRunEnvelope(bundle, credits, blockDetail, repairAttempt) {
     const suppressPayload = bundle.blockReasons.includes('leak_detected');
     // Collect detailed messages for block reasons
     const blockDetails = [];
@@ -776,6 +994,7 @@ function dryRunEnvelope(bundle, credits, blockDetail) {
         ...(suppressPayload ? {} : { payload: { assets: bundle.sanitized } }),
         gates: bundle.gates,
         ...(credits ? { credits } : {}),
+        ...repairEnvelopeField(repairAttempt),
     };
 }
 function publishFailure(reason, message, opts) {
@@ -787,6 +1006,7 @@ function publishFailure(reason, message, opts) {
         ...(opts.assets ? { assets: opts.assets } : {}),
         ...(opts.detail ? { detail: opts.detail } : {}),
         ...(opts.credits ? { credits: opts.credits } : {}),
+        ...(opts.repair ? { repair: opts.repair } : {}),
         reason,
         retryable: opts.retryable,
         message,
@@ -864,11 +1084,25 @@ async function withMachineJsonConsole(enabled, deps, fn) {
         machineJsonStdoutBypass = previousBypass;
     }
 }
-function createDefaultTransport(deps) {
+async function composePublishedRecipe(transport, assets) {
+    if (!transport.composeRecipe)
+        return undefined;
+    try {
+        const composed = await transport.composeRecipe({
+            compose_recipe: true,
+            assets: [...assets],
+        });
+        return composed.ok && composed.recipeId ? composed.recipeId : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function createDefaultTransport(deps, opts = {}) {
     const env = loadContractEnv(deps);
     const hubMode = configuredHubMode(env);
     if (hubMode === 'private') {
-        return createPrivateTransport(env, deps.resolveProxyClient ?? resolveDefaultPrivateProxy);
+        return createPrivateTransport(env, deps.resolveProxyClient ?? resolveDefaultPrivateProxy, opts.composeRecipe !== false);
     }
     const hubUrl = resolveHubUrl(env);
     const evomapDir = resolveIdentityHome(env);
@@ -905,6 +1139,9 @@ function createDefaultTransport(deps) {
         fetchAssetById: (assetId) => connected.hub.fetchAssetById(assetId),
         validate: (bundle) => call('/a2a/validate', 'validate', bundle),
         publish: (bundle) => call('/a2a/publish', 'publish', bundle),
+        ...(opts.composeRecipe === false ? {} : {
+            composeRecipe: (payload) => hub.composeRecipeAfterAssetPublish(connected.hub, payload),
+        }),
     };
 }
 function loadContractEnv(deps) {
@@ -933,7 +1170,7 @@ function configuredHubMode(env) {
 function resolveDefaultPrivateProxy(env) {
     return proxyClientFromEnv(env);
 }
-function createPrivateTransport(env, resolveProxy) {
+function createPrivateTransport(env, resolveProxy, composeRecipe = true) {
     const proxy = resolveProxy(env);
     if (!proxy)
         throw new Error('private Hub proxy credentials are not configured');
@@ -974,6 +1211,7 @@ function createPrivateTransport(env, resolveProxy) {
                 const body = normalizePrivatePublishBody(await proxy.submitAssetBundle({
                     assets: [...bundle],
                     expected_hub_mode: 'private',
+                    ...(composeRecipe ? {} : { compose_recipe: false }),
                 }));
                 return { ok: !privatePublishExplicitFailure(body) && normalizePublishStatus(body) !== undefined, status: 200, body };
             }
@@ -1032,20 +1270,28 @@ function isAuthLikeError(err) {
     const message = err instanceof Error ? err.message : String(err);
     return /oauth|login|credential|auth|401|403|node_secret/i.test(message);
 }
-function classifyError(err, command) {
+function classifyError(err, command, env = {}) {
     if (err instanceof ContractError)
         return { reason: err.reason, message: err.safeMessage, retryable: err.reason === 'network_error' };
     if (err instanceof AuthError)
-        return { reason: 'auth_required', message: 'Hub authentication required', retryable: false };
+        return {
+            reason: 'auth_required',
+            message: command === 'publish' ? publishAuthRequiredMessage(env) : 'Hub authentication required',
+            retryable: false,
+        };
     if (err instanceof HubUnreachableError)
         return { reason: 'network_error', message: 'Hub unreachable', retryable: true };
     if (err instanceof HubClientError) {
         const reason = stableContractReasonFromBody(err.body) ?? (command === 'reuse' ? reuseReasonFromStatus(err.status) : publishReasonFromStatus(err.status));
-        return { reason, message: command === 'publish' ? publishReasonMessage(reason) : reuseReasonMessage(reason), retryable: publishRetryable(reason) };
+        return { reason, message: command === 'publish' ? publishReasonMessage(reason, env) : reuseReasonMessage(reason), retryable: publishRetryable(reason) };
     }
     const message = err instanceof Error ? err.message : String(err);
     if (/oauth|login|credential|auth|401|403|node_secret/i.test(message))
-        return { reason: 'auth_required', message: 'Hub authentication required', retryable: false };
+        return {
+            reason: 'auth_required',
+            message: command === 'publish' ? publishAuthRequiredMessage(env) : 'Hub authentication required',
+            retryable: false,
+        };
     if (/network|fetch failed|ECONN|ENOTFOUND|ETIMEDOUT|hub 5\d\d/i.test(message))
         return { reason: 'network_error', message: 'Hub unreachable', retryable: true };
     return { reason: 'internal_error', message: `evolver ${command} failed`, retryable: false };
@@ -1074,11 +1320,22 @@ function publishReasonFromResponse(status, body) {
 function publishRetryable(reason) {
     return reason === 'network_error';
 }
-function publishReasonMessage(reason) {
+function publishAuthRequiredMessage(env) {
+    const rawMode = env['EVOMAP_HUB_MODE']?.trim().toLowerCase();
+    if (rawMode && rawMode !== 'public' && rawMode !== 'private') {
+        return 'Hub authentication failed; verify EVOMAP_HUB_MODE and the configured credentials';
+    }
+    if (rawMode === 'private')
+        return PRIVATE_AUTH_REQUIRED_MESSAGE;
+    return resolveExplicitNodeCredentials(env).nodeSecret
+        ? LEGACY_AUTH_REQUIRED_MESSAGE
+        : OAUTH_AUTH_REQUIRED_MESSAGE;
+}
+function publishReasonMessage(reason, env = {}) {
     const map = {
         missing_id: 'missing asset id',
         cli_unavailable: 'evolver CLI unavailable',
-        auth_required: 'Hub authentication required',
+        auth_required: publishAuthRequiredMessage(env),
         not_found: 'asset not found',
         network_error: 'Hub unreachable',
         unsupported: 'publish unsupported',
@@ -1086,7 +1343,7 @@ function publishReasonMessage(reason) {
         redaction_unavailable: 'redaction unavailable',
         leak_detected: 'leak detected after redaction',
         schema_invalid: 'asset schema is invalid',
-        bundle_required: 'publish requires a complete asset bundle',
+        bundle_required: BUNDLE_REQUIRED_MESSAGE,
         quality_gate_failed: 'Hub quality gate failed',
         gene_unproven: 'gene has no proven success yet — run it to a successful outcome before publishing',
         insufficient_credits: 'insufficient credits',
@@ -1259,12 +1516,6 @@ function looksLikeFile(value) {
     catch {
         return false;
     }
-}
-function looksLikeAssetPath(value) {
-    return isAbsolute(value)
-        || /^[A-Za-z]:/.test(value)
-        || /[\\/]/.test(value)
-        || /\.jsonl?$/i.test(value);
 }
 function isRecord(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));

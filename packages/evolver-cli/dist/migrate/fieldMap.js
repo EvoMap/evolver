@@ -2,6 +2,7 @@ import { wire } from '@evomap/evolver-core';
 // v1→v2 source_type 枚举转换(skill2gep_distillation 等非标 → generated).
 const SOURCE_TYPE_MAP = { skill2gep_distillation: 'generated' };
 const KNOWN_SOURCE = new Set(['generated', 'reused', 'reference', 'user_authored']);
+const GENE_RAW_NORMALIZED_FIELDS = new Set(['routing_hint', 'tool_policy', 'generation_meta']);
 /**
  * v1 资产 → v2 wire(M8-2). 规则:
  * - 只留 gep-sdk schema 允许字段, 其余(avoid 等)落 dropped→sidecar(不参与 canonicalize, 不动 asset_id).
@@ -11,9 +12,9 @@ const KNOWN_SOURCE = new Set(['generated', 'reused', 'reference', 'user_authored
  * - asset_id: 有则**冻结**(原样); 缺失时新算(recomputed=true). 若映射改变正文，importer 会用
  *   content-bound provenance 隔离 frozen mismatch，而不是把它默认为可信资产(Refs #677).
  * - v2 新增 optional(resolution_status/proof_of_work/...) v1 无 → 自然省略(不合成).
- * - Gene 的 routing_hint/tool_policy 是 v2-delta(v1 PR #93): gep-sdk gene.schema.json 尚无 → schemaProperties
- *   不含它们, 默认会落 sidecar; 这里按已知 delta 归一化后保留在 record(保真). 存在但归一化为 null 的脏值
- *   (如 {tier:'ultra'})落 sidecar(可审计, 不静默丢); v1 的 null/缺省干净省略, 不污染 sidecar.
+ * - Gene 的 routing_hint/tool_policy/generation_meta 需要先 normalize，不能走 raw-copy；这里维护迁移本地
+ *   的阻断集，避免 future schema promotion 让 `allowed.has(k)` 把原始脏值直接塞进 record。
+ *   v1 的 null/缺省干净省略；存在但归一化失败的脏值落 dropped 便于审计。
  */
 export function mapV1Asset(kind, v1) {
     const allowed = new Set(wire.schemaProperties(kind));
@@ -21,14 +22,15 @@ export function mapV1Asset(kind, v1) {
     // Object.prototype setters and silently losing extension data.
     const record = Object.create(null);
     const dropped = Object.create(null);
-    // v2-delta gene 提示字段不当作"非 schema 字段"丢 sidecar — 下方归一化后保留为 record 一等字段.
-    const deltaKeys = kind === 'Gene' ? new Set(wire.GENE_HINT_FIELDS) : new Set();
+    // Gene normalization is migration-local. wire.GENE_HINT_FIELDS is only the runtime strip list for local-only
+    // annotations; do not reuse it here or a future schema promotion can re-enable raw-copy leakage.
+    const geneNormalizedFields = kind === 'Gene' ? GENE_RAW_NORMALIZED_FIELDS : null;
     for (const [k, val] of Object.entries(v1)) {
-        // Hint fields are owned EXCLUSIVELY by the normalize block below — never copied raw. This must hold even
+        // Normalized Gene fields are owned EXCLUSIVELY by the block below — never copied raw. This must hold even
         // after a future gep-sdk bump adds them to schemaProperties (allowed): otherwise `allowed.has(k)` would
-        // copy the RAW v1 hint into record, and the normalize-overwrite below only fires when normalize returns
+        // copy the RAW v1 field into record, and the normalize-overwrite below only fires when normalize returns
         // truthy — so a malformed hint (normalizes to null) would leak through un-normalized.
-        if (deltaKeys.has(k))
+        if (geneNormalizedFields?.has(k))
             continue;
         if (allowed.has(k))
             record[k] = val;
@@ -54,7 +56,7 @@ export function mapV1Asset(kind, v1) {
         // (forward-compat for a repo that carried the #302 branch). A `_source` whose generation_source normalizes away
         // (unknown enum) is NOT silently dropped — the raw `_source` stays in `dropped` for audit (it already landed there
         // above as a non-schema field). `generation_meta` itself (if a v1 gene already carried the v2 field name) is a
-        // deltaKey so it was skipped above and is handled here by normalize, same as the hints.
+        // normalized field and is handled here by normalize, same as the hints.
         if (v1['_source'] !== undefined && v1['_source'] !== null) {
             const src = v1['_source'];
             if (src && typeof src === 'object') {

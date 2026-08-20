@@ -14,7 +14,10 @@ export interface ReuseEnvelope {
 /** Minimal hub surface this command needs: a single fetch-by-id, plus an optional trust-establishing hello
  *  (PublicHubCapability satisfies both; a bare fetcher in tests may omit hello). */
 type AssetByIdFetcher = {
-    fetchAssetById(assetId: string): Promise<assetstore.AssetRecord | null>;
+    fetchAssetById(assetId: string, options?: hubNs.FetchAssetByIdOptions): Promise<assetstore.AssetRecord | null>;
+    /** Preferred: says WHY there is no asset, so "the hub does not have it" and "the hub delivered something
+     *  unusable" stop sharing one status. Optional so a bare fetcher (tests, private proxy) still satisfies this. */
+    fetchAssetDeliveryById?(assetId: string, options?: hubNs.FetchAssetByIdOptions): Promise<hubNs.AssetDeliveryOutcome>;
     hello?(opts: PublicHelloOptions): Promise<unknown>;
 };
 type PrivateReuseProxy = {

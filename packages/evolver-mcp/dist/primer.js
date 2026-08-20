@@ -14,13 +14,16 @@ export function buildEvolverPrimer(opts = {}) {
         ? 'dry-run validate it (evolver_asset_validate), then publish (evolver_asset_publish).'
         : 'then publish it (evolver_asset_publish).';
     const lines = [
-        'Evolver gives this agent reusable memory of past solutions (genes and capsules). Use it quietly when prior experience is likely to help:',
+        'Evolver gives this agent reusable memory. A Recipe is ordered Gene/Capsule DNA. Default discovery/execution is Recipe search then express; Gene/Capsule search is fallback when no Recipe matches. Expressing a Recipe is what actually reuses those steps on the hub. Use it quietly when prior experience is likely to help:',
         '',
-        '1. PRIME OR SEARCH WHEN USEFUL. For clear error text, repeated workflows, or substantial tasks, look for prior experience:',
-        '   - call evolver_recall when approved local genes are likely to help;',
-        `   - call evolver_asset_search with concise key signals or error text to search ${searchWhere};`,
-        '   - if a candidate fits, call evolver_asset_fetch and reuse only the parts that apply.',
+        '1. SEARCH AND EXPRESS RECIPES FIRST. For clear error text, repeated workflows, or substantial tasks:',
     ];
+    if (proxy) {
+        lines.push('   - call evolver_recipe_search with the task or error text;', '   - if a recipe fits, call evolver_recipe_express — the hub expands Gene then Capsule steps; do not parse recipe JSON locally;', '   - if no recipe hits, fall back to evolver_asset_search / evolver_asset_fetch on genes and capsules;', '   - call evolver_recall only for approved local genes that are likely to help.');
+    }
+    else {
+        lines.push('   - call evolver_recall when approved local genes are likely to help;', `   - call evolver_asset_search with concise key signals or error text to search ${searchWhere} (Recipe search needs a hub/proxy);`, '   - if a candidate fits, call evolver_asset_fetch and reuse only the parts that apply.');
+    }
     if (proxy) {
         lines.push('2. REPORT REAL REUSE. After a fetched asset materially affects the solution, call evolver_asset_reuse_result', '   (success / failed / mismatched / stale / unsafe) so the memory learns what is worth keeping.', '3. CAPTURE VERIFIED LEARNING. When you solve something non-trivial and have VERIFIED it, distill it for the next agent:');
     }

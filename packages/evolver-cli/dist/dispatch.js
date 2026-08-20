@@ -32,15 +32,18 @@ import { runDashboardCommand } from './dashboard.js';
 import { runIssueReportCommand } from './issueReport.js';
 import { runAssetTrustCommand } from './assetTrust.js';
 import { runAssetHealthCommand } from './assetHealth.js';
+import { runAssetRepairCommand } from './assetRepair.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat, runV1ExecCompat } from './v1Compat.js';
 import { runWorkflowCommand } from './workflow.js';
 import { runMemoryGraphCommand } from './memoryGraphOps.js';
+import { runModelCompatibilityReplay } from './modelCompatibility.js';
+import { SYNC_COMMAND_NAMES } from './commandCatalog.js';
 export async function runProxyCommand(argv, importer = () => import('@evomap/evolver-proxy/bin/evolver-proxy')) {
     const { runProxyCli } = await importer();
     return runProxyCli({ argv: ['proxy', ...argv] });
 }
 /** Verbs dispatched asynchronously ahead of the synchronous runCli core. cli.ts drives its dispatch from this. */
-export const ASYNC_COMMANDS = {
+const ASYNC_COMMAND_TABLE = {
     migrate: runMigrate,
     'asset-log': runAssetLog,
     distill: runDistill,
@@ -81,6 +84,7 @@ export const ASYNC_COMMANDS = {
     'issue-report': runIssueReportCommand,
     'asset-trust': runAssetTrustCommand,
     'asset-health': runAssetHealthCommand,
+    'asset-repair': runAssetRepairCommand,
     proxy: runProxyCommand,
     run: runV1RunCompat,
     solidify: runV1SolidifyCompat,
@@ -88,12 +92,12 @@ export const ASYNC_COMMANDS = {
     webui: runV1WebuiCompat,
     exec: runV1ExecCompat,
     workflow: runWorkflowCommand,
+    'model-compatibility-replay': runModelCompatibilityReplay,
 };
+export const ASYNC_COMMANDS = ASYNC_COMMAND_TABLE;
 /** Verbs handled by the synchronous runCli core (read-only views + local ops). Kept in sync with runCli's switch
  *  — the source of truth for these stays runCli; this list completes the surface for the registry contract. */
-export const SYNC_COMMANDS = [
-    'status', 'cycles', 'trigger', 'value', 'narrative', 'retention', 'gene-value', 'replay', 'rebuild-views', 'reset-local-secret',
-];
+export const SYNC_COMMANDS = SYNC_COMMAND_NAMES;
 /** Every top-level verb `evolver` resolves to (async-dispatched ∪ runCli core). */
 export const ALL_COMMANDS = new Set([
     ...Object.keys(ASYNC_COMMANDS),

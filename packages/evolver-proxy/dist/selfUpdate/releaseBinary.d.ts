@@ -36,6 +36,7 @@ export declare const MAX_TARBALL_BYTES: number;
  * bombs fail before the extractor accumulates unbounded output in memory.
  */
 export declare const MAX_EXTRACTED_TARBALL_BYTES: number;
+export declare function isStandaloneReleaseBinaryName(name: string): boolean;
 export declare function requiredVersionForRelease(raw: unknown): string;
 export declare function releaseAssetName(platform?: NodeJS.Platform, arch?: NodeJS.Architecture): string;
 export declare function resolveGithubReleaseManifest(directive: ForceUpdateDirective, opts?: ReleaseBinaryOptions): Promise<UpdateManifest>;
@@ -63,4 +64,6 @@ export declare function resolveSelfUpdateTarget(opts?: ReleaseBinaryOptions): {
     path: string;
     explicit: boolean;
 };
+export declare function assertSelfUpdateProcessTargetBound(options: ReleaseBinaryOptions, allowUnresolvedTarget?: boolean): void;
+export declare function selfUpdateProcessTargetBindable(options: ReleaseBinaryOptions): boolean;
 export {};

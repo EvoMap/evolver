@@ -155,7 +155,7 @@ export function buildEvolverTools(deps) {
             // Self-onboarding (#mcp-onboarding): any MCP agent can learn the quiet reuse loop when it needs guidance.
             // Mirrors the initialize.instructions primer; always present, but no longer asks the agent to narrate routine work.
             name: 'evolver_guide',
-            description: '按需说明 evolver 的静默复用机制(search→reuse→capture 循环)与各工具何时调用；不要向用户叙述例行预检、状态或空搜索。',
+            description: '按需说明 evolver 的静默复用机制(Recipe search→express, Gene/Capsule 为 fallback；search→reuse→capture 循环)与各工具何时调用；不要向用户叙述例行预检、状态或空搜索。',
             inputSchema: { type: 'object', properties: {} },
             handler: async () => ({ guide: buildEvolverPrimer({ proxy: !!deps.proxy }) }),
         },
@@ -165,7 +165,7 @@ export function buildEvolverTools(deps) {
             // later observe, from this agent's transcript, which primed genes were used. NOT a hub search (that is
             // evolver_asset_search): this is the curated, already-approved local memory, ready to reuse quietly.
             name: 'evolver_recall',
-            description: '当本机已审核通过的可复用经验 gene 可能有帮助时调用；返回信任+审核双闸后的本地 gene，并记录一条 value.inject。若传入 sessionId(= 本会话 transcript 文件名去掉 .jsonl 后缀),后续 auto-recall 能从该 transcript 观测哪些注入 gene 真正被用,为经 MCP 接入的 AI 闭合自学习环;不传则仅记录归因、无法关联到会话。命中后静默复用，并在结果明确后用 evolver_asset_reuse_result 回报。',
+            description: 'Fallback：当本机已审核通过的可复用经验 gene 可能有帮助时调用（不是 Hub Recipe 搜索）。联网默认先 evolver_recipe_search / evolver_recipe_express。返回信任+审核双闸后的本地 gene，并记录一条 value.inject。若传入 sessionId(= 本会话 transcript 文件名去掉 .jsonl 后缀),后续 auto-recall 能从该 transcript 观测哪些注入 gene 真正被用,为经 MCP 接入的 AI 闭合自学习环;不传则仅记录归因、无法关联到会话。命中后静默复用，并在结果明确后用 evolver_asset_reuse_result 回报。',
             inputSchema: { type: 'object', properties: { limit: { type: 'number' }, sessionId: { type: 'string' } } },
             handler: async (a) => {
                 const limit = optionalNonNegativeNumberArg(a, 'limit', 'evolver_recall limit must be a non-negative number') ?? 5;
@@ -198,6 +198,59 @@ export function buildEvolverTools(deps) {
             },
         },
         ...(deps.proxy ? [{
+                name: 'evolver_recipe_search',
+                description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        q: { type: 'string' },
+                        query: { type: 'string' },
+                        text: { type: 'string' },
+                        limit: { type: 'number' },
+                        cursor: { type: 'string' },
+                        sort: { type: 'string' },
+                    },
+                },
+                handler: async (a) => {
+                    const q = [a['q'], a['query'], a['text']].find((value) => typeof value === 'string' && value.trim().length > 0);
+                    const receipt = record(await deps.proxy.searchRecipes({
+                        ...(q ? { q } : {}),
+                        ...(typeof a['limit'] === 'number' ? { limit: a['limit'] } : {}),
+                        ...(typeof a['cursor'] === 'string' ? { cursor: a['cursor'] } : {}),
+                        ...(typeof a['sort'] === 'string' ? { sort: a['sort'] } : {}),
+                    }));
+                    if (Array.isArray(receipt['recipes']))
+                        return receipt['recipes'];
+                    if (Array.isArray(receipt['results']))
+                        return receipt['results'];
+                    if (Array.isArray(receipt['items']))
+                        return receipt['items'];
+                    return receipt;
+                },
+            }, {
+                name: 'evolver_recipe_express',
+                description: '表达/执行一条 Recipe：只转发 Hub POST /a2a/recipe/{id}/express。Hub 按步骤展开 Gene 再 Capsule，从而产生全网 gene/capsule 调用。不要在本地解析 recipe JSON。',
+                inputSchema: {
+                    type: 'object',
+                    required: ['recipeId'],
+                    properties: {
+                        recipeId: { type: 'string' },
+                        inputPayload: { type: 'object' },
+                    },
+                },
+                handler: async (a) => {
+                    const recipeId = str(a['recipeId']).trim();
+                    if (!recipeId)
+                        throw new Error('evolver_recipe_express requires recipeId');
+                    const inputPayload = a['inputPayload'];
+                    return deps.proxy.expressRecipe({
+                        recipeId,
+                        ...(inputPayload && typeof inputPayload === 'object' && !Array.isArray(inputPayload)
+                            ? { inputPayload: inputPayload }
+                            : {}),
+                    });
+                },
+            }, {
                 name: 'evolver_proxy_status',
                 description: '检查本机 evolver-proxy 与 PHub 的连接状态. 需要 EVOLVER_PROXY_URL/EVOLVER_IPC_TOKEN.',
                 inputSchema: { type: 'object', properties: {} },
@@ -206,8 +259,8 @@ export function buildEvolverTools(deps) {
         {
             name: 'evolver_asset_search',
             description: deps.proxy
-                ? '通过本机 evolver-proxy 搜索 PHub 经验资产(Gene/Capsule/EvolutionEvent); AntiGene 是本地负经验资产, 会直接查本地库供人工 review.'
-                : '搜索本地经验资产库(Gene/Capsule/EvolutionEvent/AntiGene). 支持 kind/信号/类目/gene 反查/文本.',
+                ? 'Fallback：当 evolver_recipe_search 无匹配 Recipe 时，通过本机 evolver-proxy 直搜 PHub 经验资产(Gene/Capsule/EvolutionEvent)。AntiGene 是本地负经验资产, 会直接查本地库供人工 review. 真正复用应优先 evolver_recipe_express。'
+                : '搜索本地经验资产库(Gene/Capsule/EvolutionEvent/AntiGene). 支持 kind/信号/类目/gene 反查/文本. 联网 Recipe 搜索需要 evolver-proxy。',
             inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: searchableKinds }, signalsAny: { type: 'array', items: { type: 'string' } }, category: { type: 'string' }, gene: { type: 'string' }, text: { type: 'string' }, limit: { type: 'number' } } },
             handler: async (a) => {
                 if (deps.proxy && a['kind'] === 'AntiGene') {
@@ -274,7 +327,7 @@ export function buildEvolverTools(deps) {
         },
         {
             name: 'evolver_distill_conversation',
-            description: '从当前 agent 对话中蒸馏可复用 Gene/Capsule. 需要具体 summary、strategy/evidence、artifacts、validation; core quality gate 会拒绝弱信号.',
+            description: '从当前对话蒸馏可复用能力. 本地仍落 Gene/Capsule, 但 Hub 默认优先发布成 Recipe, 不再优先上 Skill Store. 需要具体 summary、strategy/evidence、artifacts、validation; quality gate 会拒绝弱信号. publish=true 时默认 compose_recipe, 可用 publish_recipe=false 关掉.',
             inputSchema: {
                 type: 'object',
                 required: ['summary'],
@@ -292,6 +345,7 @@ export function buildEvolverTools(deps) {
                     validation: { type: 'array', items: { type: 'string' } },
                     persist: { type: 'boolean' },
                     publish: { type: 'boolean' },
+                    publish_recipe: { type: 'boolean', description: 'When publish=true, also compose and publish a Recipe. Defaults to true.' },
                     min_score: { type: 'integer', minimum: 1, maximum: 10 },
                 },
             },

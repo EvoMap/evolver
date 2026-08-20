@@ -12,7 +12,7 @@
 // Concurrency: a process-level mutex guarantees that concurrent force_update messages execute the update EXACTLY
 // once. The second caller short-circuits with `already_in_progress` and performs no I/O.
 import { ops } from '@evomap/evolver-core';
-import { SELF_UPDATE_FAILURE_CODES, classifySelfUpdateError, codeForDecisionReject, } from './failureCodes.js';
+import { SELF_UPDATE_FAILURE_CODES, classifySelfUpdateError, codeForDecisionReject, selfUpdateFailure, } from './failureCodes.js';
 const { decideUpdate, verifySelectedManifestArtifact } = ops;
 // Process-level mutex. Module scope is correct: there is one daemon per process, and v1's _forceUpdateInFlight had
 // the same lifetime. Guards against two force_update envelopes (or a heartbeat-driven + mailbox-driven trigger)
@@ -32,22 +32,28 @@ function report(deps, result) {
     return result;
 }
 /**
- * Execute a force_update directive end to end: decide → (mutex) → download → VERIFY → atomic replace → restart.
+ * Execute a force_update directive end to end: fast exits → lease → resolve/decide → download → VERIFY → replace → restart.
  *
  * Order is load-bearing:
  *  1. policy off → do nothing (explicit opt-out; auto is hard-gated upstream by supervisor + public key).
- *  2. decideUpdate (pure): reject bad manifests, NOOP when already satisfied (no download, no restart).
- *  3. mutex: exactly one execution; concurrent callers get `already_in_progress` and touch no disk.
- *  4. download the staged release.
- *  5. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
- *  6. atomicReplace, then restart(). Only reached after verification passed.
+ *  2. reject malformed/already-satisfied required versions without acquiring the lifecycle owner lease.
+ *  3. mutex + lifecycle owner lease: exactly one executor may resolve or mutate release state.
+ *  4. resolve and decideUpdate (pure): reject bad manifests or NOOP under the held lease.
+ *  5. download the staged release.
+ *  6. verifySelectedManifestArtifact (pure) — THE GATE. Fail → no write, no restart.
+ *  7. atomicReplace, then restart(). Only reached after verification passed.
  *
  * Never throws: every failure becomes a structured SelfUpdateResult so the daemon can report it and keep running
  * on the old (intact) version.
  */
 export async function executeForceUpdate(directive, deps) {
+    let selectedResult;
+    const finish = (result) => {
+        selectedResult = result;
+        return report(deps, result);
+    };
     if (deps.policy !== 'auto') {
-        return report(deps, {
+        return finish({
             outcome: 'disabled',
             reason: deps.policy === 'prompt' ? 'self_update_policy_prompt_requires_approval' : 'self_update_policy_off',
         });
@@ -56,63 +62,105 @@ export async function executeForceUpdate(directive, deps) {
         ? ops.normalizeRequiredVersion(directive.required_version)
         : undefined;
     if (directive.required_version !== undefined && !requiredFloor) {
-        return report(deps, {
+        return finish({
             outcome: 'rejected_decision',
             reason: 'required_version_invalid',
             failureCode: SELF_UPDATE_FAILURE_CODES.BAD_REQUIRED_VERSION,
         });
     }
     if (requiredFloor && ops.currentSatisfiesRequiredVersion(deps.currentVersion, requiredFloor)) {
-        return report(deps, { outcome: 'noop', reason: 'already_satisfied', targetVersion: requiredFloor });
+        return finish({ outcome: 'noop', reason: 'already_satisfied', targetVersion: requiredFloor });
     }
-    let manifest = directive.manifest;
-    if (deps.resolveManifest && shouldResolveManifest(directive, manifest, Boolean(deps.publicKey))) {
-        try {
-            manifest = await deps.resolveManifest(directive, deps.currentVersion);
-        }
-        catch (err) {
-            const targetVersion = ops.normalizeRequiredVersion(directive.required_version);
-            const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED);
-            return report(deps, {
-                outcome: 'download_failed',
-                reason: `manifest_resolve_failed: ${classified.detail}`,
-                failureCode: classified.failureCode,
-                ...(targetVersion ? { targetVersion } : {}),
-            });
-        }
-    }
-    const effectiveDirective = { ...directive, manifest };
-    const decision = decideUpdate({
-        current: deps.currentVersion,
-        ...(requiredFloor ? { required: requiredFloor } : {}),
-        manifest,
-    });
-    if (decision.action === 'reject') {
-        return report(deps, {
-            outcome: 'rejected_decision',
-            reason: decision.reason,
-            failureCode: codeForDecisionReject(decision.reason),
-            ...(decision.targetVersion ? { targetVersion: decision.targetVersion } : {}),
-        });
-    }
-    if (decision.action === 'noop') {
-        return report(deps, { outcome: 'noop', reason: decision.reason, ...(decision.targetVersion ? { targetVersion: decision.targetVersion } : {}) });
-    }
-    // action === 'proceed'. Take the mutex; a concurrent force_update short-circuits here with NO I/O.
+    // The mutex and lifecycle lease precede manifest resolution, which is release I/O too.
+    // Policy, malformed required-version, and already-satisfied fast exits remain lock-free.
     if (inFlight) {
-        return report(deps, { outcome: 'already_in_progress', reason: 'another_update_in_flight' });
+        return finish({ outcome: 'already_in_progress', reason: 'another_update_in_flight' });
     }
     inFlight = true;
-    const targetVersion = decision.targetVersion ?? manifest?.version ?? '';
+    let targetVersion = requiredFloor ?? '';
+    let lifecycleLease;
     let transaction;
+    const assertLifecycleLease = async () => {
+        try {
+            await lifecycleLease?.assertOwned();
+        }
+        catch (error) {
+            const classified = classifySelfUpdateError(error, SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED);
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, `self_update_lifecycle_owner_lease_lost:${classified.detail}`, { cause: error });
+        }
+    };
     try {
+        if (deps.acquireLifecycleLease) {
+            try {
+                lifecycleLease = await deps.acquireLifecycleLease();
+                await assertLifecycleLease();
+            }
+            catch (err) {
+                const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED);
+                return finish({
+                    outcome: classified.failureCode === SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED
+                        ? 'already_in_progress'
+                        : 'replace_failed',
+                    reason: classified.detail,
+                    failureCode: classified.failureCode,
+                    ...(targetVersion ? { targetVersion } : {}),
+                });
+            }
+        }
+        let manifest = directive.manifest;
+        if (deps.resolveManifest && shouldResolveManifest(directive, manifest, Boolean(deps.publicKey))) {
+            try {
+                await assertLifecycleLease();
+                manifest = await deps.resolveManifest(directive, deps.currentVersion);
+            }
+            catch (err) {
+                const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED);
+                if (classified.failureCode === SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED) {
+                    return finish({
+                        outcome: 'replace_failed',
+                        reason: classified.detail,
+                        failureCode: classified.failureCode,
+                        ...(targetVersion ? { targetVersion } : {}),
+                    });
+                }
+                return finish({
+                    outcome: 'download_failed',
+                    reason: `manifest_resolve_failed: ${classified.detail}`,
+                    failureCode: classified.failureCode,
+                    ...(targetVersion ? { targetVersion } : {}),
+                });
+            }
+        }
+        const effectiveDirective = { ...directive, manifest };
+        const decision = decideUpdate({
+            current: deps.currentVersion,
+            ...(requiredFloor ? { required: requiredFloor } : {}),
+            manifest,
+        });
+        if (decision.action === 'reject') {
+            return finish({
+                outcome: 'rejected_decision',
+                reason: decision.reason,
+                failureCode: codeForDecisionReject(decision.reason),
+                ...(decision.targetVersion ? { targetVersion: decision.targetVersion } : {}),
+            });
+        }
+        if (decision.action === 'noop') {
+            return finish({
+                outcome: 'noop',
+                reason: decision.reason,
+                ...(decision.targetVersion ? { targetVersion: decision.targetVersion } : {}),
+            });
+        }
+        targetVersion = decision.targetVersion ?? manifest?.version ?? '';
         if (deps.beginTransaction) {
             try {
+                await assertLifecycleLease();
                 transaction = await deps.beginTransaction(targetVersion);
             }
             catch (err) {
                 const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED);
-                return report(deps, {
+                return finish({
                     outcome: classified.failureCode === SELF_UPDATE_FAILURE_CODES.UPDATE_LOCKED ? 'already_in_progress' : 'replace_failed',
                     reason: classified.detail,
                     failureCode: classified.failureCode,
@@ -123,12 +171,21 @@ export async function executeForceUpdate(directive, deps) {
         // 4. Download the staged release.
         let dl;
         try {
+            await assertLifecycleLease();
             dl = await deps.download(targetVersion, effectiveDirective);
         }
         catch (err) {
-            await transaction?.abort(SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED).catch(() => { });
             const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.DOWNLOAD_FAILED);
-            return report(deps, {
+            await transaction?.abort(classified.failureCode).catch(() => { });
+            if (classified.failureCode === SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED) {
+                return finish({
+                    outcome: 'replace_failed',
+                    reason: classified.detail,
+                    failureCode: classified.failureCode,
+                    targetVersion,
+                });
+            }
+            return finish({
                 outcome: 'download_failed',
                 reason: classified.detail,
                 failureCode: classified.failureCode,
@@ -137,12 +194,13 @@ export async function executeForceUpdate(directive, deps) {
         }
         if (transaction) {
             try {
+                await assertLifecycleLease();
                 dl = await transaction.adoptDownloaded(dl);
             }
             catch (err) {
                 await transaction.abort(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED).catch(() => { });
                 const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED);
-                return report(deps, {
+                return finish({
                     outcome: 'replace_failed',
                     reason: classified.detail,
                     failureCode: classified.failureCode,
@@ -151,11 +209,24 @@ export async function executeForceUpdate(directive, deps) {
             }
         }
         // 5. THE GATE: verify the downloaded bytes against the (optionally signed) manifest BEFORE any write.
+        try {
+            await assertLifecycleLease();
+        }
+        catch (err) {
+            await transaction?.abort(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED).catch(() => { });
+            const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED);
+            return finish({
+                outcome: 'replace_failed',
+                reason: classified.detail,
+                failureCode: classified.failureCode,
+                targetVersion,
+            });
+        }
         const verification = verifySelectedManifestArtifact(manifest, dl.artifacts, ...(deps.publicKey ? [deps.publicKey] : []));
         if (!verification.ok) {
             await transaction?.abort(SELF_UPDATE_FAILURE_CODES.REJECTED_VERIFICATION).catch(() => { });
             // Verification failed → write NOTHING, restart NOTHING. Old version stays intact and runnable.
-            return report(deps, {
+            return finish({
                 outcome: 'rejected_verification',
                 reason: verification.reason,
                 failureCode: SELF_UPDATE_FAILURE_CODES.REJECTED_VERIFICATION,
@@ -163,12 +234,13 @@ export async function executeForceUpdate(directive, deps) {
             });
         }
         try {
+            await assertLifecycleLease();
             await transaction?.markVerified(dl.artifacts);
         }
         catch (err) {
             await transaction?.abort(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED).catch(() => { });
             const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED);
-            return report(deps, {
+            return finish({
                 outcome: 'replace_failed',
                 reason: classified.detail,
                 failureCode: classified.failureCode,
@@ -177,6 +249,7 @@ export async function executeForceUpdate(directive, deps) {
         }
         // 6. Verified. Atomic replace, then signal restart. A replace failure leaves the old version intact.
         try {
+            await assertLifecycleLease();
             if (transaction)
                 await transaction.install();
             else
@@ -184,7 +257,7 @@ export async function executeForceUpdate(directive, deps) {
         }
         catch (err) {
             const classified = classifySelfUpdateError(err, SELF_UPDATE_FAILURE_CODES.COPY_FAILED);
-            return report(deps, {
+            return finish({
                 outcome: 'replace_failed',
                 reason: classified.detail,
                 failureCode: classified.failureCode,
@@ -198,9 +271,11 @@ export async function executeForceUpdate(directive, deps) {
             appliedVia: dl.appliedVia ?? 'binary',
             ...(transaction ? { confirmationPending: true } : {}),
         };
-        report(deps, result);
+        finish(result);
         try {
+            await assertLifecycleLease();
             await transaction?.markRestartRequested();
+            await assertLifecycleLease();
             await deps.restart(); // v1 convention: exit(78) → supervisor relaunches the new version.
         }
         catch (err) {
@@ -210,14 +285,14 @@ export async function executeForceUpdate(directive, deps) {
             }
             catch (rollbackError) {
                 const rollback = classifySelfUpdateError(rollbackError, SELF_UPDATE_FAILURE_CODES.ROLLBACK_FAILED);
-                return report(deps, {
+                return finish({
                     outcome: 'rollback_failed',
                     reason: rollback.detail,
                     failureCode: rollback.failureCode,
                     targetVersion,
                 });
             }
-            return report(deps, {
+            return finish({
                 outcome: 'restart_failed',
                 reason: classified.detail,
                 failureCode: classified.failureCode,
@@ -228,10 +303,35 @@ export async function executeForceUpdate(directive, deps) {
     }
     finally {
         await transaction?.release().catch(() => { });
-        // Released so a later legitimate update (after a failed attempt) can proceed. On the success path the process
-        // is exiting anyway; releasing is harmless and keeps the mutex honest if restart() is a test fake that returns.
+        if (lifecycleLease) {
+            try {
+                await lifecycleLease.release();
+            }
+            catch (error) {
+                if (selectedResult) {
+                    selectedResult.cleanupWarning = boundedCleanupWarning(error);
+                    if (selectedResult.outcome === 'applied') {
+                        selectedResult.reason = 'verified_and_replaced_lifecycle_lease_release_unconfirmed';
+                    }
+                    try {
+                        deps.onCleanupWarning?.(selectedResult.cleanupWarning, selectedResult);
+                    }
+                    catch {
+                        // Cleanup reporting must not replace the primary update outcome.
+                    }
+                }
+            }
+        }
         inFlight = false;
     }
+}
+function boundedCleanupWarning(error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const normalized = raw
+        .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return (normalized || 'self_update_lifecycle_owner_lease_release_failed').slice(0, 512);
 }
 function shouldResolveManifest(directive, manifest, signatureRequired) {
     if (manifest === undefined)

@@ -72,6 +72,46 @@ const PROTECTED_REQUEST_HEADERS = new Set([
     'x-evomap-signature',
     'x-node-secret',
 ]);
+const LEGACY_BEARER_POST_PATHS = new Set([
+    '/a2a/hello',
+    '/a2a/publish',
+    '/a2a/validate',
+    '/a2a/fetch',
+    '/a2a/events/poll',
+    '/a2a/mailbox/outbound',
+]);
+function requestHeaderName(headers, name) {
+    const normalized = name.toLowerCase();
+    return Object.keys(headers).find((headerName) => headerName.toLowerCase() === normalized);
+}
+function setLegacyBearerFallback(headers, nodeSecret) {
+    const existingName = requestHeaderName(headers, 'authorization');
+    if (existingName !== undefined && headers[existingName]?.trim())
+        return false;
+    if (existingName !== undefined)
+        delete headers[existingName];
+    headers['authorization'] = `Bearer ${nodeSecret}`;
+    return true;
+}
+function legacyNodeSecret(value) {
+    return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value) ? value : undefined;
+}
+function isGepEnvelope(body) {
+    return body?.['protocol'] === 'gep-a2a'
+        && body['protocol_version'] === '1.0.0'
+        && typeof body['message_type'] === 'string'
+        && body['message_type'].trim().length > 0
+        && typeof body['message_id'] === 'string'
+        && body['message_id'].trim().length > 0
+        && typeof body['timestamp'] === 'string'
+        && Number.isFinite(Date.parse(body['timestamp']))
+        && Object.prototype.hasOwnProperty.call(body, 'payload')
+        && body['payload'] !== undefined;
+}
+function usesLegacyBearerForPost(method, path, body) {
+    return method.toUpperCase() === 'POST'
+        && (LEGACY_BEARER_POST_PATHS.has(path) || isGepEnvelope(body));
+}
 function mergeRequestHeaders(requestHeaders, signedHeaders) {
     const signedNames = new Set(Object.keys(signedHeaders ?? {}).map((name) => name.toLowerCase()));
     const headers = {};
@@ -93,9 +133,9 @@ function mergeRequestHeaders(requestHeaders, signedHeaders) {
     return { ...headers, ...signedHeaders };
 }
 /**
- * 公版 hub HTTP 客户端(M6-6). 每请求经 AuthProvider 取凭证: POST 通常注入 body; GET 与 strict hello envelope
- * 走 **Authorization: Bearer <node_secret>** 头(hub 只从 header/body 读 node_secret, 绝不从 query — #8);
- * sender_id 是标识非凭证, 留 query/body.
+ * 公版 hub HTTP 客户端(M6-6). 每请求经 AuthProvider 取凭证: legacy node_secret 对 GET 与 strict
+ * GEP envelope POST 走 **Authorization: Bearer <node_secret>** 头，绝不进入 query 或 envelope body；
+ * 其余兼容 REST POST 保留既有 body contract。sender_id 是标识非凭证, 留 query/body.
  * 401/403→AuthError(reauth), 4xx→HubClientError(终态), 5xx→重试.
  * 非 JSON Hub 响应(WAF/HTML/captive portal/gateway text)→HubUnreachableError, 不触发 auth recovery.
  */
@@ -148,26 +188,28 @@ export class HubFetch {
                             qs.set(k, String(v)); // non-credential GET params (e.g. semantic-search q)
                 // #8: credentials must NOT go in the query (leaks to access logs / proxies even over https).
                 // node_secret travels via Authorization: Bearer; the hub reads it there, never from the query.
-                const nodeSecret = creds['node_secret'];
-                if (nodeSecret !== undefined && headers['authorization'] === undefined)
-                    headers['authorization'] = `Bearer ${String(nodeSecret)}`;
+                const nodeSecret = legacyNodeSecret(creds['node_secret']);
+                if (nodeSecret !== undefined)
+                    setLegacyBearerFallback(headers, nodeSecret);
                 const q = qs.toString();
                 if (q)
                     url += `?${q}`;
             }
             else {
                 const postCreds = { ...creds };
-                const nodeSecret = postCreds['node_secret'];
-                if ((path === '/a2a/hello' || path === '/a2a/mailbox/outbound') && nodeSecret !== undefined) {
-                    if (headers['authorization'] === undefined)
-                        headers['authorization'] = `Bearer ${String(nodeSecret)}`;
-                    delete postCreds['node_secret'];
+                const postBody = { ...(bodyObj ?? {}) };
+                const nodeSecret = legacyNodeSecret(postCreds['node_secret']);
+                if (usesLegacyBearerForPost(method, path, bodyObj)) {
+                    delete postBody['node_secret'];
+                    if (nodeSecret !== undefined && setLegacyBearerFallback(headers, nodeSecret)) {
+                        delete postCreds['node_secret'];
+                    }
                 }
                 if (path === '/a2a/mailbox/outbound' && sender) {
                     const qs = new URLSearchParams({ sender_id: sender });
                     url += `?${qs.toString()}`;
                 }
-                body = JSON.stringify({ ...(sender ? { sender_id: sender } : {}), ...postCreds, ...(bodyObj ?? {}) });
+                body = JSON.stringify({ ...(sender ? { sender_id: sender } : {}), ...postCreds, ...postBody });
             }
             let res;
             try {
@@ -246,7 +288,7 @@ function hubOperationForRequest(path, bodyObj) {
             && payload['search_only'] === true)
             return 'search';
     }
-    if (path === '/a2a/assets/semantic-search' || path === '/a2a/directory/search')
+    if (path === '/a2a/assets/semantic-search' || path === '/a2a/directory/search' || path === '/a2a/recipe/search' || path === '/a2a/recipe/list')
         return 'search';
     if (path === '/a2a/heartbeat')
         return 'heartbeat';

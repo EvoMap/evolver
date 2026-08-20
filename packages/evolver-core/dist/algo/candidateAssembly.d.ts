@@ -3,6 +3,8 @@ import { type ReuseCounts } from '../ops/reuseOutcomes.js';
 import type { ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { AntiWarning, GeneCandidateInput } from './geneSelection.js';
+import { type RuntimeRegistry } from './kautoValidator.js';
+import { type CompatibilityEvidenceIndex } from '../modelCompatibility.js';
 export interface AssembleOptions {
     limit?: number;
     /** Build the bounded trusted pre-admission corpus used by semantic IDF. Default true. */
@@ -33,6 +35,22 @@ export interface AssembleOptions {
      * (default-off). Never resurrects a hard-gated gene (the trust/review/ban filters above run first).
      */
     reuseCounts?: ReadonlyMap<string, ReuseCounts>;
+    /** Exact compatibility evidence; only quarantine decisions remove candidates. */
+    compatibility?: CompatibilityEvidenceIndex;
+    /**
+     * K_auto EvidenceProjection revocation guard (T1, default-OFF). When provided, a candidate whose five
+     * coordinates are all machine-decidable AND whose current projection touches a revoked (coordinate, value)
+     * pair is treated as NOT eligible — the fail-safe "a revoked projection is not eligible" rule, applied
+     * coordinate-locally (a sibling that differs on the revoked coordinate stays eligible). `revoked` is the set
+     * produced by `projectRevocations(rootEvents)` (algo/kautoProjection). Absent (default) = deployed T2 behavior
+     * unchanged: no projection guard runs, so signal-scoped `bannedGenesFromFailures` + the soft λ preference are
+     * the only K_auto-related effects. `runtimeRegistry` is forwarded to `decideKauto` so the runtime coordinate
+     * resolves against the same registry the caller uses elsewhere.
+     */
+    kautoProjection?: {
+        revoked: ReadonlySet<string>;
+        runtimeRegistry?: RuntimeRegistry;
+    };
 }
 /** The selection pool for one cycle: the normal scored candidates + the last-resort distilled fallback (#97). */
 export interface SelectionPool {

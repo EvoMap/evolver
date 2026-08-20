@@ -204,11 +204,15 @@ export function buildRuntimeSessionMaterialSnapshot(sources, maxChars = DEFAULT_
         const safeSessionId = source.sessionId
             ? snapshotIdentity(source.sessionId, SNAPSHOT_IDENTITY_MAX_CHARS)
             : '';
+        const safeTaskDomain = source.taskDomain
+            ? snapshotIdentity(source.taskDomain, SNAPSHOT_AGENT_MAX_CHARS)
+            : '';
         snapshotSources.push({
             agent: snapshotIdentity(source.agent, SNAPSHOT_AGENT_MAX_CHARS) || 'unknown',
             label: snapshotIdentity(source.label, SNAPSHOT_IDENTITY_MAX_CHARS) || 'unknown',
             ...(safeSessionId ? { sessionId: safeSessionId } : {}),
             ...(source.resumeIdentityProvenance ? { resumeIdentityProvenance: source.resumeIdentityProvenance } : {}),
+            ...(safeTaskDomain ? { taskDomain: safeTaskDomain } : {}),
             evidenceSummary,
             turns,
         });
@@ -274,11 +278,15 @@ function sourceFromSnapshot(value) {
     const resumeIdentityProvenance = value['resumeIdentityProvenance'] === 'canonical_native_transcript'
         ? value['resumeIdentityProvenance']
         : undefined;
+    const taskDomain = typeof value['taskDomain'] === 'string' && value['taskDomain'].trim()
+        ? value['taskDomain'].trim()
+        : undefined;
     return {
         agent,
         label,
         ...(sessionId ? { sessionId } : {}),
         ...(resumeIdentityProvenance ? { resumeIdentityProvenance } : {}),
+        ...(taskDomain ? { taskDomain } : {}),
         turns,
     };
 }

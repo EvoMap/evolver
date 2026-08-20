@@ -1,4 +1,4 @@
-import { proofOfWork } from '../schema/proofOfWork.js';
+import { normalizeProofOfWork, proofOfWork } from '../schema/proofOfWork.js';
 import { proofIndicatesOutput } from '../algo/solidify.js';
 /** 扫该 gene 关联的 Capsule, 派生学习视图(只读, 不落库). */
 export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
@@ -14,7 +14,7 @@ export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
             // signal solidify uses to mark it `suppressed_observationally`) is INERT, not a real success. Counting it
             // would inflate successRate for a gene that only ever does nothing. Inert is neutral, not a failure: it is
             // excluded from BOTH sides of successRate, so it neither builds nor erodes confidence.
-            const proof = c.proof_of_work;
+            const proof = normalizeProofOfWork(c.proof_of_work);
             if (proofIndicatesOutput(proof))
                 success += 1;
             else
@@ -34,5 +34,5 @@ export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
 }
 /** M3-5: 校验 agent 提交的 proof_of_work(zod). 返回规范化值或抛. */
 export function validateProofOfWork(input) {
-    return proofOfWork.parse(input);
+    return proofOfWork.parse(normalizeProofOfWork(input) ?? input);
 }

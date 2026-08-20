@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-webui",
-  "version": "2.0.2",
+  "version": "2.0.20",
   "private": false,
   "type": "module",
   "engines": {
@@ -16,7 +16,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.2",
+    "@evomap/evolver-core": "2.0.20",
     "jsonc-parser": "3.3.1"
   },
   "repository": {

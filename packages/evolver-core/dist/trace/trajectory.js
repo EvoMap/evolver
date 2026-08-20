@@ -95,12 +95,24 @@ export function traceRecordToTurnDraft(record) {
         ...(validation !== undefined ? { validation } : {}),
     };
 }
+/**
+ * Exact-join helper for Learning Ops: return the unique non-empty session id across turns.
+ * Fail closed — 0 or >1 distinct ids yield null. Matches the correlation key contract used by
+ * Darwin (`cc::<session_id>` ↔ packet `traceEvents[].sessionId`).
+ */
+export function uniqueSessionId(turns) {
+    const sessionIds = [
+        ...new Set(turns
+            .map((turn) => turn.session_id)
+            .filter((value) => typeof value === 'string' && value.length > 0)),
+    ];
+    return sessionIds.length === 1 ? sessionIds[0] : null;
+}
 export function buildTraceTrajectoryDraft(records) {
     const turns = records.map(traceRecordToTurnDraft).filter((turn) => turn !== null);
-    const sessionIds = [...new Set(turns.map((turn) => turn.session_id).filter((value) => typeof value === 'string' && value.length > 0))];
     return {
         schema: 'evolver_trace_trajectory_draft.v1',
-        session_id: sessionIds.length === 1 ? sessionIds[0] : null,
+        session_id: uniqueSessionId(turns),
         turns,
         coverage: coverageForTurns(turns),
     };

@@ -9,6 +9,7 @@ import { type PendingSignalsContext } from '../assetstore/pendingSignals.js';
 import { type ReuseOutcomeSummary, type ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { MemoryGraphAdvice } from './memoryGraph.js';
 import type { SelectionPolicy } from './ucb1.js';
+import type { CompatibilityEvidenceIndex } from '../modelCompatibility.js';
 export interface RunCycleOptions {
     cycleId: string;
     problem: ProblemPattern;
@@ -70,6 +71,8 @@ export interface RunCycleOptions {
     recallEvents?: readonly ReuseOutcomeEvent[];
     /** Scoped local MemoryGraph query result. Omit to keep selection unchanged. */
     memoryGraphAdvice?: MemoryGraphAdvice;
+    /** Exact model compatibility evidence; quarantine decisions are removed before forced selection. */
+    compatibility?: CompatibilityEvidenceIndex;
 }
 /** Drive one full evolution cycle end-to-end: assemble candidates from the store, then run the cycle. */
 export declare function runEvolutionCycle(engine: CycleEngine, store: AssetStoreProvider, opts: RunCycleOptions): Promise<CycleResult>;
