@@ -219,7 +219,10 @@ function parseSkillMd(skillMd) {
   // discipline survives, and fold nested sub-bullets into their parent step.
   const strategyBlock = pickSectionsAll([
     'workflow', 'strategy', 'steps', 'procedure', 'quick start', 'how to',
+    'process each', 'request process', 'request path',
     'human gate', 'output contract', 'release', 'rollback', 'promotion',
+    'security', 'safety', 'credential', 'approval', 'adversarial',
+    'trust boundary', 'content isolation', 'untrusted content',
     // CJK synonyms: positive workflow + governance-tail headings.
     '工作流', '流程', '步骤', '核心方法', '方法', '快速规则', '规则',
     '输出门', '输出门槛', '人工确认', '人工门', '回滚', '发布', '晋级',
