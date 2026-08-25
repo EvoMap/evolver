@@ -289,6 +289,25 @@ describe('opencode adapter: verify (issue #531)', () => {
     } finally { cleanup(tmp); }
   });
 
+  it('verifies an edited plugin without executing workspace code', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const proofPath = path.join(tmp, 'plugin-executed');
+      const pluginPath = path.join(tmp, '.opencode', 'plugins', 'evolver.js');
+      fs.writeFileSync(
+        pluginPath,
+        `// _evolver_managed: true\nrequire('fs').writeFileSync(${JSON.stringify(proofPath)}, 'bad')\n`
+      );
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      assert.equal(fs.existsSync(proofPath), false);
+    } finally { cleanup(tmp); }
+  });
+
   it('reports ok=false when one hook script is missing', () => {
     const tmp = makeTmpDir();
     try {
@@ -303,6 +322,22 @@ describe('opencode adapter: verify (issue #531)', () => {
       const scripts = report.checks.find((c) => c.id === 'hook_scripts_present');
       assert.equal(scripts.ok, false);
       assert.match(scripts.detail, /evolver-signal-detect\.js/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports ok=false when a copied helper script is missing', () => {
+    const tmp = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(tmp, '.opencode'), { recursive: true });
+      const evolverRoot = path.resolve(__dirname, '..');
+      opencodeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      fs.unlinkSync(path.join(tmp, '.opencode', 'hooks', '_runtimePaths.js'));
+
+      const report = opencodeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      const scripts = report.checks.find((check) => check.id === 'hook_scripts_present');
+      assert.equal(scripts.ok, false);
+      assert.match(scripts.detail, /_runtimePaths\.js/);
     } finally { cleanup(tmp); }
   });
 

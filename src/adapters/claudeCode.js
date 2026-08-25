@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { mergeJsonFile, copyHookScripts, appendSectionToFile, removeHookScripts, removeMarkedSection, assertSafeConfigDir, isEvolverHookCommand, buildSafeNodeHookCommand } = require('./hookAdapter');
+const { mergeJsonFile, copyHookScripts, verifyHookScriptCopies, appendSectionToFile, removeHookScripts, removeMarkedSection, assertSafeConfigDir, isEvolverHookCommand, buildSafeNodeHookCommand } = require('./hookAdapter');
 
 const HOOK_SCRIPTS_DIR_NAME = 'hooks';
 const EVOLVER_MARKER = '<!-- evolver-evolution-memory -->';
@@ -118,6 +118,104 @@ function install({ configRoot, evolverRoot, force }) {
   };
 }
 
+function verify({ configRoot }) {
+  const claudeDir = path.join(configRoot, '.claude');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  const hooksDir = path.join(claudeDir, HOOK_SCRIPTS_DIR_NAME);
+  const claudeMdPath = path.join(configRoot, 'CLAUDE.md');
+  const checks = [];
+  let settings = null;
+  let settingsError = null;
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch (error) {
+    settingsError = error && error.message || String(error);
+  }
+  checks.push({
+    id: 'settings_json_readable',
+    ok: settings !== null,
+    detail: settings ? settingsPath : `unreadable: ${settingsError}`,
+  });
+  checks.push({
+    id: 'managed_marker',
+    ok: settings?._evolver_managed === true,
+    detail: settings?._evolver_managed === true
+      ? '_evolver_managed is true'
+      : 'settings.json is not marked as evolver-managed',
+  });
+  checks.push({
+    id: 'hooks_enabled',
+    ok: settings?.disableAllHooks !== true,
+    detail: settings?.disableAllHooks === true
+      ? 'settings.json disables all hooks'
+      : 'hooks are not globally disabled',
+  });
+
+  const expectedHooks = buildClaudeHooks('', configRoot).hooks;
+  const missingCommands = [];
+  for (const [event, expectedMatchers] of Object.entries(expectedHooks)) {
+    const actualMatchers = Array.isArray(settings?.hooks?.[event])
+      ? settings.hooks[event]
+      : [];
+    for (const expectedMatcher of expectedMatchers) {
+      const present = actualMatchers.some(actualMatcher => {
+        if ((actualMatcher?.matcher ?? null) !== (expectedMatcher.matcher ?? null)) {
+          return false;
+        }
+        if (!Array.isArray(actualMatcher?.hooks)) return false;
+        return expectedMatcher.hooks.every(expectedHook =>
+          actualMatcher.hooks.some(actualHook =>
+            actualHook?.type === expectedHook.type &&
+            actualHook?.command === expectedHook.command &&
+            actualHook?.timeout === expectedHook.timeout
+          )
+        );
+      });
+      if (!present) {
+        const command = expectedMatcher.hooks[0]?.command || event;
+        missingCommands.push(`${event}:${path.basename(command.split(' ').pop() || command)}`);
+      }
+    }
+  }
+  checks.push({
+    id: 'hooks_registered',
+    ok: missingCommands.length === 0,
+    detail: missingCommands.length === 0
+      ? 'all Claude Code hooks are registered'
+      : 'missing commands: ' + missingCommands.join(', '),
+  });
+
+  checks.push(verifyHookScriptCopies(hooksDir));
+
+  let hasMemorySection = false;
+  try {
+    hasMemorySection = fs.readFileSync(claudeMdPath, 'utf8').includes(EVOLVER_MARKER);
+  } catch { /* reported below */ }
+  checks.push({
+    id: 'claude_md_section',
+    ok: hasMemorySection,
+    detail: hasMemorySection
+      ? 'CLAUDE.md contains the managed evolution section'
+      : 'CLAUDE.md is missing the managed evolution section',
+  });
+
+  return {
+    ok: checks.every(check => check.ok),
+    platform: 'claude-code',
+    config_root: configRoot,
+    settings_path: settingsPath,
+    hooks_dir: hooksDir,
+    checks,
+  };
+}
+
+function printVerifyReport(report) {
+  console.log('[claude-code] Verify report');
+  for (const check of report.checks) {
+    console.log(`[claude-code]   ${check.ok ? '[OK]  ' : '[FAIL]'} ${check.id} -- ${check.detail}`);
+  }
+}
+
 function uninstall({ configRoot }) {
   const claudeDir = path.join(configRoot, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
@@ -191,4 +289,4 @@ function uninstall({ configRoot }) {
   return { ok: true, removed: changed };
 }
 
-module.exports = { install, uninstall, buildClaudeHooks };
+module.exports = { install, uninstall, verify, printVerifyReport, buildClaudeHooks };

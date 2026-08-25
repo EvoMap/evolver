@@ -147,6 +147,18 @@ Evolver integrates with major agent runtimes through `setup-hooks`. Run it once 
 | [opencode](https://opencode.ai) | `evolver setup-hooks --platform=opencode` | Plugin at `~/.opencode/plugins/evolver.js` + scripts in `~/.opencode/hooks/`. Restart opencode. |
 | [OpenClaw](https://openclaw.com) | No setup needed | OpenClaw natively interprets the `sessions_spawn(...)` stdout directives Evolver emits. Just run `evolver` from inside an OpenClaw session. |
 
+Desktop integrations and automation should pass an explicit config root instead
+of relying on the caller's current working directory:
+
+```bash
+evolver setup-hooks --platform=claude-code --root=/absolute/workspace
+evolver setup-hooks --platform=claude-code --root=/absolute/workspace --verify --json
+```
+
+`--runtime=<platform>` remains a compatibility alias for `--platform`. When
+`--verify --json` is used, stdout contains exactly one JSON health report so a
+host application can distinguish a configured integration from a working one.
+
 #### Codex caveats
 
 The Codex CLI exposes `SessionStart` / `Stop` / `PostToolUse` hooks (which is
