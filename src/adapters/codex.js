@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { mergeJsonFile, copyHookScripts, verifyHookScriptCopies, appendSectionToFile, removeHookScripts, removeMarkedSection, assertSafeConfigDir, isEvolverHookCommand } = require('./hookAdapter');
+const productBridgeMcp = require('./productBridgeMcp');
 
 const HOOK_SCRIPTS_DIR_NAME = 'hooks';
 const EVOLVER_MARKER = '<!-- evolver-evolution-memory -->';
@@ -209,8 +210,12 @@ function install({ configRoot, evolverRoot, force }) {
     try {
       const existing = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
       if (existing._evolver_managed) {
+        const mcp = productBridgeMcp.installCodexToml({ configRoot, evolverRoot, force });
+        if (mcp.changed) {
+          console.log('[codex] Wrote product-bridge MCP ' + mcp.path);
+        }
         console.log('[codex] Evolver hooks already installed. Use --force to overwrite.');
-        return { ok: true, skipped: true };
+        return { ok: true, skipped: true, files: mcp.changed ? [mcp.path] : [] };
       }
     } catch { /* proceed */ }
   }
@@ -232,6 +237,13 @@ function install({ configRoot, evolverRoot, force }) {
   const injected = appendSectionToFile(agentsMdPath, EVOLVER_MARKER, buildAgentsMdSection());
   if (injected) {
     console.log('[codex] Injected evolution section into ' + agentsMdPath);
+  }
+
+  const mcp = productBridgeMcp.installCodexToml({ configRoot, evolverRoot, force });
+  if (mcp.changed) {
+    console.log('[codex] Wrote product-bridge MCP ' + mcp.path);
+  } else if (mcp.skipped) {
+    console.log('[codex] Left a user-owned evox-product MCP table in place');
   }
 
   console.log('[codex] Installation complete.');
@@ -319,6 +331,7 @@ function verify({ configRoot }) {
       ? 'AGENTS.md contains the managed evolution section'
       : 'AGENTS.md is missing the managed evolution section',
   });
+  checks.push(...productBridgeMcp.verifyCodexToml({ configRoot }).checks);
 
   return {
     ok: checks.every(check => check.ok),
@@ -393,6 +406,10 @@ function uninstall({ configRoot }) {
 
   if (cleanConfigToml(codexDir)) {
     console.log('[codex] Removed codex_hooks flag from config.toml');
+    changed = true;
+  }
+
+  if (productBridgeMcp.uninstallCodexToml({ configRoot })) {
     changed = true;
   }
 

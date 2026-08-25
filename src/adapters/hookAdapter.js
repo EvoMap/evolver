@@ -360,7 +360,9 @@ function removeEvolverHooks(filePath, { markerKey = '_evolver_managed' } = {}) {
       if (Object.keys(data.hooks).length === 0) delete data.hooks;
     }
     if (data.mcpServers) {
-      // Claude Code / Codex: hooks in mcpServers sub-key -- not relevant, skip
+      // Product-bridge MCP is owned by productBridgeMcp.js, not this
+      // hooks cleaner. Leaving mcpServers untouched avoids deleting a
+      // user server just because the file also carries _evolver_managed.
     }
     delete data[markerKey];
     const tmp = filePath + '.tmp';
