@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { mergeJsonFile, copyHookScripts, verifyHookScriptCopies, appendSectionToFile, removeHookScripts, removeMarkedSection, assertSafeConfigDir, isEvolverHookCommand, buildSafeNodeHookCommand } = require('./hookAdapter');
+const productBridgeMcp = require('./productBridgeMcp');
 
 const HOOK_SCRIPTS_DIR_NAME = 'hooks';
 const EVOLVER_MARKER = '<!-- evolver-evolution-memory -->';
@@ -109,12 +110,19 @@ function install({ configRoot, evolverRoot, force }) {
     console.log('[claude-code] Injected evolution section into ' + claudeMdPath);
   }
 
+  const mcp = productBridgeMcp.installClaudeJson({ configRoot, evolverRoot, force });
+  if (mcp.changed) {
+    console.log('[claude-code] Wrote product-bridge MCP ' + mcp.path);
+  } else if (mcp.skipped) {
+    console.log('[claude-code] Left a user-owned evox-product MCP entry in place');
+  }
+
   console.log('[claude-code] Installation complete.');
 
   return {
     ok: true,
     platform: 'claude-code',
-    files: [settingsPath, claudeMdPath, ...copied],
+    files: [settingsPath, claudeMdPath, mcp.path, ...copied],
   };
 }
 
@@ -198,6 +206,7 @@ function verify({ configRoot }) {
       ? 'CLAUDE.md contains the managed evolution section'
       : 'CLAUDE.md is missing the managed evolution section',
   });
+  checks.push(...productBridgeMcp.verifyClaudeJson({ configRoot }).checks);
 
   return {
     ok: checks.every(check => check.ok),
@@ -279,6 +288,10 @@ function uninstall({ configRoot }) {
   } catch { /* best-effort */ }
 
   if (removeMarkedSection(claudeMdPath, EVOLVER_MARKER)) {
+    changed = true;
+  }
+
+  if (productBridgeMcp.uninstallClaudeJson({ configRoot })) {
     changed = true;
   }
 
