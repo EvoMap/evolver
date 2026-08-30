@@ -31,6 +31,8 @@ export interface SandboxOptions {
     unshareCheck?: () => boolean;
     /** Injected cgroup allocator (test seam). */
     resourceGroupFactory?: () => SandboxResourceGroup | null;
+    /** Cooperative cancellation for the current validation command. */
+    signal?: AbortSignal;
 }
 export interface SandboxResourceGroup {
     procsFile: string;

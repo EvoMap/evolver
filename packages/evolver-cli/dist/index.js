@@ -5,7 +5,7 @@ import { assetstore, algo, signals, material as materialNs } from '@evomap/evolv
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { makeInjectEmitter } from './autoexec.js';
-import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
+import { listApprovedGenes, pendingGeneReviewRecords, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
 import { draftGeneCandidate } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
@@ -17,6 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { applyImportV1Plan, planImportV1 } from './migrate/v1Import.js';
 import { explicitRecipeHomes } from './recipe.js';
 import { maybeAutoRestartProxyForSessionStart, sessionStartHookVerboseEnabled, dailyConnectionStatus, lifecyclePaths } from './lifecycle.js';
+import { maybeCleanupLegacyWindowsDaemonTasks } from './windowsLegacyTaskCleanup.js';
 import { formatAntiGeneEvidenceAction, formatAntiGeneEvidenceSummary, summarizeAntiGeneEvidence } from './antiGeneEvidence.js';
 import { buildRuntimeSessionMaterialSnapshot } from './materialSnapshot.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
@@ -1146,10 +1147,22 @@ export async function runReview(argv, store, review, deps = {}) {
         .map((e) => String(e.payload?.['assetId'] ?? ''))
         .filter(Boolean));
     const autoPending = [...autoDrafted].filter((a) => rev.get(a)?.state === 'quarantined').length;
-    const genes = await s.list('Gene', limit);
+    const pending = await pendingGeneReviewRecords(s, rev);
+    const pendingRows = [];
+    for (const record of pending) {
+        const gene = await s.get(record.assetId);
+        if (gene && gene.type === 'Gene')
+            pendingRows.push(gene);
+    }
+    const autoPendingRows = pendingRows.filter((gene) => autoDrafted.has(String(gene.asset_id))).length;
+    const manualPending = pendingRows.length - autoPendingRows;
+    const listed = await s.list('Gene', Math.max(limit, 1));
+    const pendingIds = new Set(pendingRows.map((gene) => String(gene.asset_id)));
+    const rest = listed.filter((gene) => !pendingIds.has(String(gene.asset_id)));
+    const genes = [...pendingRows, ...rest].slice(0, limit);
     if (genes.length === 0)
-        process.stdout.write('(no genes)\n'); // no early return: the auto-pending footer below is
-    for (const g of genes) { // computed from the full event set, so it must print
+        process.stdout.write('(no genes)\n'); // no early return: the pending footer below is
+    for (const g of genes) { // computed from the full ledger, so it must print
         const id = typeof g['id'] === 'string' ? String(g['id']) : String(g.asset_id);
         const view = await assetstore.aggregateLearningHistory(s, id);
         const cat = String(g['category'] ?? '?');
@@ -1162,8 +1175,10 @@ export async function runReview(argv, store, review, deps = {}) {
         const promote = state === 'quarantined' ? ` promote:${promoteHint(view)}` : '';
         process.stdout.write(`${id.padEnd(28)} ${cat.padEnd(10)} total=${view.total} succ=${rate} [${reviewStatus(view)}] {${state}}${promote}${auto}\n`);
     }
+    if (manualPending > 0)
+        process.stdout.write(`\n${manualPending} gene(s) awaiting review — approve with \`evolver review --approve <id>\`\n`);
     if (autoPending > 0)
-        process.stdout.write(`\n${autoPending} auto-drafted gene(s) awaiting review — approve with \`evolver review --approve <id>\`\n`);
+        process.stdout.write(`${manualPending > 0 ? '' : '\n'}${autoPending} auto-drafted gene(s) awaiting review — approve with \`evolver review --approve <id>\`\n`);
     const antiGenePending = (await listReviewVisibleAntiGenes(s, rev)).filter((asset) => rev.get(String(asset.asset_id))?.state === 'quarantined').length;
     if (antiGenePending > 0)
         process.stdout.write(`\n${antiGenePending} anti-gene(s) awaiting review - inspect with \`evolver review --anti-gene\`\n`);
@@ -1540,6 +1555,9 @@ export async function runInject(argv, deps = {}) {
                 process.stderr.write(`[evolver-session-start] proxy auto-restart failed: ${msg}\n`);
             }
         }
+        // NOTE: the legacy v1 Windows scheduled-task sweep (#956) deliberately runs AFTER the injection
+        // is written to stdout below — a worst-case sweep (probe + lock wait + cleanup ≈ 170s) must never
+        // delay the injection past the host SessionStart hook timeout (see the write-out point below).
         maybeEmitNonGitWorkspaceNotice(deps.nonGitNotice);
     }
     const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
@@ -1580,6 +1598,36 @@ export async function runInject(argv, deps = {}) {
     // them, but the preamble explicitly tells it not to narrate routine Evolver work to the user.
     if (inj.genes.length > 0 && inj.systemPrompt.trim().length > 0)
         process.stdout.write(inj.systemPrompt + '\n');
+    // Legacy v1 Windows scheduled-task sweep (#956): runs AFTER the injection is on stdout so a worst-case
+    // sweep (probe 20s + lock wait 3s + 2×(export 20s + mutation 40s) ≈ 143s) can never push the injection
+    // past the host SessionStart hook timeout and lose it — injection lands first, sweep is trailing.
+    // The owner-lock wait budget is tightened to 3s for the hook path: a held lock almost always means
+    // another evolver process is sweeping right now, and the negative backoff marker covers the retry.
+    // Throttled by a 24h cooldown marker (negative backoff on inconclusive/failed), opt-out via
+    // EVOLVER_SKIP_LEGACY_TASK_PROBE (read AFTER the env-file load so a pointer in the env file is
+    // honored), never throws, and never reports an unprobed host clean.
+    if (fromHookStdin) {
+        try {
+            (deps.legacyTaskSweep ?? (() => {
+                loadEnvFileFromEnv(process.env);
+                const result = maybeCleanupLegacyWindowsDaemonTasks({ env: process.env, lock: { maxTries: 30, waitMs: 100 } });
+                if (result && (result.status === 'cleaned' || result.status === 'failed' || result.status === 'inconclusive')
+                    && sessionStartHookVerboseEnabled(process.env)) {
+                    const names = result.tasks.filter((task) => task.outcome === 'removed').map((task) => task.name);
+                    const suffix = result.status === 'cleaned' && names.length > 0 ? `: removed ${names.join(', ')}` : result.detail ? `: ${result.detail}` : '';
+                    process.stderr.write(`[evolver-session-start] legacy v1 scheduled-task cleanup ${result.status}${suffix}\n`);
+                }
+            }))();
+        }
+        catch {
+            if (sessionStartHookVerboseEnabled(process.env)) {
+                // Do not surface raw PowerShell/OS errors here: they may contain lifecycle paths,
+                // usernames, or command arguments. The cleanup module already returns bounded detail
+                // for structured outcomes; an unexpected throw gets a generic diagnostic.
+                process.stderr.write('[evolver-session-start] legacy task sweep failed\n');
+            }
+        }
+    }
     return 0;
 }
 /** Fixed preamble for the SessionStart injection (the head block the recap + gene lines hang off of). */
@@ -1644,6 +1692,9 @@ export function formatDailyReport(report) {
     L.push('Queue');
     L.push(`  genes      ${q.genesApproved} approved  ${q.genesQuarantined} quarantined  ${q.genesRejected} rejected`);
     L.push(`  anti-gene  ${q.antiGeneApproved} approved  ${q.antiGeneQuarantined} quarantined  ${q.antiGeneUnreviewed} unreviewed`);
+    if (q.genesQuarantined > 0) {
+        L.push(`  → ${q.genesQuarantined} gene(s) awaiting review — evolver review --approve <id>`);
+    }
     return `${L.join('\n')}\n`;
 }
 export async function collectDailyReport(deps = {}) {
@@ -1675,37 +1726,53 @@ export async function collectDailyReport(deps = {}) {
     const reviewRecords = review.records();
     const geneReviewCounts = { approved: 0, quarantined: 0, rejected: 0 };
     const antiGeneReviewCounts = { approved: 0, quarantined: 0, unreviewed: 0 };
-    // Build asset ID to type mapping
-    const allGenes = await store.list('Gene', 10_000);
-    const allAntiGenes = await store.list('AntiGene', 10_000);
-    const antiGeneIds = new Set(allAntiGenes.map((a) => a.asset_id));
-    // Count review records by asset type
-    for (const r of reviewRecords) {
-        if (antiGeneIds.has(r.assetId)) {
-            // AntiGene review record
-            if (r.state === 'quarantined')
-                antiGeneReviewCounts.quarantined++;
-            else if (r.state === 'approved')
-                antiGeneReviewCounts.approved++;
-            // rejected anti-gene: not shown separately per existing design
-        }
+    // LocalJsonlProvider 可读取完整索引；其他 provider 使用有界 list，并对未解析记录回退到 get。
+    const localStore = store instanceof assetstore.LocalJsonlProvider;
+    const allGenes = localStore ? store.listAll('Gene') : await store.list('Gene', 10_000);
+    const allAntiGenes = localStore ? store.listAll('AntiGene') : await store.list('AntiGene', 10_000);
+    const geneIds = new Set(allGenes.map((asset) => asset.asset_id));
+    const antiGeneIds = new Set(allAntiGenes.map((asset) => asset.asset_id));
+    const geneReviewRecords = [];
+    const antiGeneReviewRecords = [];
+    // ReviewLedger 可能保留已删除资产或超出 provider list 窗口的资产；get 是这些记录的类型权威。
+    for (const record of reviewRecords) {
+        let kind;
+        if (geneIds.has(record.assetId))
+            kind = 'Gene';
+        else if (antiGeneIds.has(record.assetId))
+            kind = 'AntiGene';
         else {
-            // Gene review record (or unknown asset type)
-            if (r.state === 'quarantined')
-                geneReviewCounts.quarantined++;
-            else if (r.state === 'rejected')
-                geneReviewCounts.rejected++;
-            else if (r.state === 'approved')
-                geneReviewCounts.approved++;
+            const asset = await store.get(record.assetId);
+            kind = asset?.type;
         }
+        if (kind === 'Gene')
+            geneReviewRecords.push(record);
+        else if (kind === 'AntiGene')
+            antiGeneReviewRecords.push(record);
     }
-    // Genes without review records are default-approved
-    const reviewedIds = new Set(reviewRecords.map((r) => r.assetId));
-    const unreviewedGeneCount = allGenes.filter((g) => !reviewedIds.has(g.asset_id)).length;
+    // Count only review records whose asset still exists and has the matching type.
+    for (const record of geneReviewRecords) {
+        if (record.state === 'quarantined')
+            geneReviewCounts.quarantined++;
+        else if (record.state === 'rejected')
+            geneReviewCounts.rejected++;
+        else if (record.state === 'approved')
+            geneReviewCounts.approved++;
+    }
+    for (const record of antiGeneReviewRecords) {
+        if (record.state === 'quarantined')
+            antiGeneReviewCounts.quarantined++;
+        else if (record.state === 'approved')
+            antiGeneReviewCounts.approved++;
+    }
+    // Gene without a review record remains default-approved.
+    const reviewedGeneIds = new Set(geneReviewRecords.map((record) => record.assetId));
+    const antiGeneReviewById = new Map(antiGeneReviewRecords.map((record) => [record.assetId, record]));
+    const unreviewedGeneCount = allGenes.filter((gene) => !reviewedGeneIds.has(gene.asset_id)).length;
     geneReviewCounts.approved += unreviewedGeneCount;
     // AntiGenes without explicit approval are unreviewed (fail-closed)
     for (const ag of allAntiGenes) {
-        const r = review.get(ag.asset_id);
+        const r = antiGeneReviewById.get(ag.asset_id);
         if (!r || (r.state !== 'approved' && r.state !== 'quarantined')) {
             antiGeneReviewCounts.unreviewed++;
         }

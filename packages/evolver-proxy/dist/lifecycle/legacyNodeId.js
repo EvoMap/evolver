@@ -1,1 +1,178 @@
-const _0x1106e5=_0x4946;(function(_0x2a2673,_0x3cf24c){const _0x1ca5ce=_0x4946,_0x5204a6=_0x2a2673();while(!![]){try{const _0x2a57fb=parseInt(_0x1ca5ce(0xeb,'\x52\x39\x4d\x63'))/(-0xd7+-0xf5*-0xc+-0xaa4)*(parseInt(_0x1ca5ce(0x12d,'\x56\x67\x45\x34'))/(0x97+-0x1dff+-0x2f1*-0xa))+parseInt(_0x1ca5ce(0xe6,'\x29\x57\x7a\x6b'))/(0x26e4+-0x82+-0x2f*0xd1)+parseInt(_0x1ca5ce(0x127,'\x51\x32\x53\x73'))/(0x12ab+-0x1d67+-0x1*-0xac0)+parseInt(_0x1ca5ce(0x11b,'\x2a\x78\x36\x7a'))/(-0x22f3*0x1+0x1d*-0x11b+0x4307*0x1)*(parseInt(_0x1ca5ce(0xe3,'\x31\x21\x50\x25'))/(0x72+0x2d3+-0x1*0x33f))+-parseInt(_0x1ca5ce(0xf7,'\x34\x55\x26\x67'))/(-0x216d+0x3*-0x40f+0x2da1)+-parseInt(_0x1ca5ce(0xe4,'\x44\x69\x21\x65'))/(0x1ae1+-0xd80+0x3*-0x473)+parseInt(_0x1ca5ce(0x100,'\x34\x55\x26\x67'))/(-0x1901*-0x1+-0x6*0x66c+-0x10*-0xd9);if(_0x2a57fb===_0x3cf24c)break;else _0x5204a6['push'](_0x5204a6['shift']());}catch(_0x40c46b){_0x5204a6['push'](_0x5204a6['shift']());}}}(_0x3499,-0x1d896+0x78ef5*0x2+0x103b9));function _0x4946(_0x28fb91,_0x3a032e){_0x28fb91=_0x28fb91-(0xc1*0x29+0x2*0x12f7+-0x43f8);const _0x43dc85=_0x3499();let _0x1559ee=_0x43dc85[_0x28fb91];if(_0x4946['\x4e\x4f\x42\x43\x68\x68']===undefined){var _0x5e3dca=function(_0x1feed3){const _0x425074='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x1c56d1='',_0x5b6ba8='';for(let _0x22bea8=-0x24d8*0x1+-0x9d*-0x29+0x257*0x5,_0x532b4b,_0xaded3b,_0xc55a75=0x12*-0x1db+-0x1c37*0x1+0x3d9d;_0xaded3b=_0x1feed3['\x63\x68\x61\x72\x41\x74'](_0xc55a75++);~_0xaded3b&&(_0x532b4b=_0x22bea8%(0x8*0x475+-0x174e+-0x2*0x62b)?_0x532b4b*(0x2582+0x2*0x14b+-0x1e*0x154)+_0xaded3b:_0xaded3b,_0x22bea8++%(-0x1*-0x2327+-0x6*-0x1c3+-0x2db5*0x1))?_0x1c56d1+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](-0x1d1f+-0x1243+-0x3061*-0x1&_0x532b4b>>(-(0x19d1*-0x1+-0x1*0x48e+0x1e61)*_0x22bea8&0xa4c+-0x9d6*0x3+0x133c)):-0x72c+0xa52+0x193*-0x2){_0xaded3b=_0x425074['\x69\x6e\x64\x65\x78\x4f\x66'](_0xaded3b);}for(let _0x2d93f5=-0x26e+0x4c7*0x5+0x727*-0x3,_0x38660b=_0x1c56d1['\x6c\x65\x6e\x67\x74\x68'];_0x2d93f5<_0x38660b;_0x2d93f5++){_0x5b6ba8+='\x25'+('\x30\x30'+_0x1c56d1['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x2d93f5)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](-0x1530+-0x65*-0xb+0x10e9))['\x73\x6c\x69\x63\x65'](-(0x771+0x199d*0x1+-0x210c));}return decodeURIComponent(_0x5b6ba8);};const _0x2e822f=function(_0x55e92d,_0x1e359c){let _0x2db311=[],_0x5ee639=-0xfb+0x11b3*0x1+-0x1ac*0xa,_0x99c0bb,_0x1e5f10='';_0x55e92d=_0x5e3dca(_0x55e92d);let _0x4b8cc3;for(_0x4b8cc3=0x785+-0x11*0x33+-0x422;_0x4b8cc3<0x2ee*0x9+0x1*-0x164d+-0x311;_0x4b8cc3++){_0x2db311[_0x4b8cc3]=_0x4b8cc3;}for(_0x4b8cc3=-0x7*-0x45f+0x14e6+-0x337f;_0x4b8cc3<0xa4*0xf+-0x1623+0xd87*0x1;_0x4b8cc3++){_0x5ee639=(_0x5ee639+_0x2db311[_0x4b8cc3]+_0x1e359c['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x4b8cc3%_0x1e359c['\x6c\x65\x6e\x67\x74\x68']))%(-0x7*-0x4c7+-0x3b8+-0x1cb9),_0x99c0bb=_0x2db311[_0x4b8cc3],_0x2db311[_0x4b8cc3]=_0x2db311[_0x5ee639],_0x2db311[_0x5ee639]=_0x99c0bb;}_0x4b8cc3=0xbad+0x48+-0xbf5,_0x5ee639=-0x25d5+-0x996+0x2f6b;for(let _0x5eeb07=-0x1c*0xe2+0x1*0x2702+0x3e*-0x3b;_0x5eeb07<_0x55e92d['\x6c\x65\x6e\x67\x74\x68'];_0x5eeb07++){_0x4b8cc3=(_0x4b8cc3+(-0x224f+0x11e9+0x1067))%(-0x267+-0x211+-0x23*-0x28),_0x5ee639=(_0x5ee639+_0x2db311[_0x4b8cc3])%(-0x23e9+0x1ed3+-0x29*-0x26),_0x99c0bb=_0x2db311[_0x4b8cc3],_0x2db311[_0x4b8cc3]=_0x2db311[_0x5ee639],_0x2db311[_0x5ee639]=_0x99c0bb,_0x1e5f10+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x55e92d['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x5eeb07)^_0x2db311[(_0x2db311[_0x4b8cc3]+_0x2db311[_0x5ee639])%(-0x7b5+0x657+0x25e)]);}return _0x1e5f10;};_0x4946['\x4b\x4e\x7a\x6b\x4b\x65']=_0x2e822f,_0x4946['\x5a\x62\x62\x4c\x64\x53']={},_0x4946['\x4e\x4f\x42\x43\x68\x68']=!![];}const _0x3b0f2b=_0x43dc85[-0x21ec+-0x1a73+0x3c5f],_0x5827ef=_0x28fb91+_0x3b0f2b,_0x245f9b=_0x4946['\x5a\x62\x62\x4c\x64\x53'][_0x5827ef];return!_0x245f9b?(_0x4946['\x52\x51\x6a\x6c\x6f\x68']===undefined&&(_0x4946['\x52\x51\x6a\x6c\x6f\x68']=!![]),_0x1559ee=_0x4946['\x4b\x4e\x7a\x6b\x4b\x65'](_0x1559ee,_0x3a032e),_0x4946['\x5a\x62\x62\x4c\x64\x53'][_0x5827ef]=_0x1559ee):_0x1559ee=_0x245f9b,_0x1559ee;}import{existsSync,readFileSync}from'\x6e\x6f\x64\x65\x3a\x66\x73';import{homedir}from'\x6e\x6f\x64\x65\x3a\x6f\x73';import{dirname,isAbsolute,join}from'\x6e\x6f\x64\x65\x3a\x70\x61\x74\x68';import{fileURLToPath}from'\x6e\x6f\x64\x65\x3a\x75\x72\x6c';function _0x3499(){const _0x17e4d4=['\x57\x50\x70\x63\x4e\x67\x74\x63\x53\x53\x6b\x2f\x6f\x74\x71','\x43\x77\x37\x63\x49\x58\x43','\x57\x37\x56\x64\x56\x32\x46\x64\x4f\x53\x6f\x38','\x78\x74\x33\x63\x51\x53\x6f\x4e\x6c\x53\x6f\x44\x63\x47','\x57\x37\x6d\x43\x57\x35\x62\x50\x6e\x59\x79\x32','\x42\x76\x33\x63\x51\x63\x6a\x41\x68\x76\x6e\x5a\x6e\x53\x6f\x32\x79\x38\x6b\x4d\x57\x36\x61','\x6d\x59\x57\x68\x57\x35\x4f\x50\x57\x36\x6c\x63\x4d\x4b\x53','\x78\x38\x6b\x7a\x57\x51\x78\x63\x4f\x71','\x57\x50\x68\x63\x55\x59\x44\x51\x62\x53\x6b\x36','\x67\x48\x33\x64\x4c\x43\x6f\x5a\x57\x50\x56\x63\x4a\x5a\x57','\x57\x4f\x5a\x64\x50\x73\x58\x53','\x57\x35\x70\x64\x56\x74\x54\x5a\x6f\x53\x6b\x78\x41\x5a\x75','\x57\x51\x6e\x2b\x57\x34\x52\x64\x56\x43\x6b\x30\x57\x52\x4e\x63\x50\x57\x34','\x6d\x43\x6f\x4f\x57\x34\x6c\x63\x4b\x6d\x6f\x4d\x77\x6d\x6f\x4c\x57\x50\x5a\x63\x53\x48\x50\x4b\x79\x57','\x42\x66\x33\x63\x52\x63\x39\x46\x67\x74\x44\x6d\x6d\x43\x6f\x35\x75\x6d\x6b\x4a','\x71\x53\x6f\x6e\x57\x51\x2f\x64\x4e\x58\x61','\x57\x50\x4a\x63\x48\x77\x2f\x63\x55\x38\x6b\x77\x6e\x73\x69','\x78\x6d\x6f\x66\x61\x49\x4f','\x71\x61\x52\x64\x49\x53\x6f\x58','\x6f\x5a\x47\x69\x6c\x38\x6f\x69\x6e\x67\x4b\x58','\x44\x43\x6b\x59\x76\x68\x4c\x53\x57\x36\x6c\x64\x52\x57','\x6e\x62\x46\x63\x56\x63\x79','\x41\x78\x38\x69','\x57\x34\x58\x4e\x72\x66\x42\x63\x4a\x43\x6f\x30\x6d\x4c\x6d','\x57\x35\x6e\x70\x44\x53\x6b\x44\x44\x47','\x67\x53\x6f\x74\x57\x4f\x4c\x6b','\x71\x43\x6f\x71\x66\x57','\x72\x38\x6f\x45\x61\x68\x46\x63\x56\x38\x6f\x4a\x57\x4f\x79','\x43\x49\x43\x37\x57\x35\x43','\x6a\x71\x74\x63\x4f\x64\x39\x38\x43\x43\x6b\x50\x57\x4f\x75','\x42\x43\x6f\x61\x57\x4f\x78\x64\x50\x43\x6b\x6d\x57\x34\x74\x63\x4f\x65\x65','\x42\x43\x6f\x33\x6b\x65\x68\x63\x48\x61','\x44\x43\x6b\x38\x78\x78\x4b','\x46\x4a\x30\x34\x57\x34\x33\x64\x55\x53\x6f\x33','\x6b\x77\x78\x64\x52\x74\x50\x4d','\x57\x52\x47\x70\x57\x34\x4c\x52\x6f\x5a\x43\x6f\x57\x51\x4f','\x43\x33\x4a\x63\x47\x65\x4e\x64\x49\x4c\x6c\x64\x55\x71','\x57\x35\x46\x64\x4b\x66\x2f\x64\x54\x6d\x6f\x6e\x57\x36\x75','\x41\x49\x39\x61\x46\x43\x6b\x58','\x57\x34\x44\x53\x42\x4c\x5a\x63\x54\x53\x6f\x34\x68\x57','\x42\x38\x6b\x30\x57\x35\x69\x54\x57\x36\x6c\x64\x4c\x38\x6f\x71','\x57\x51\x53\x62\x46\x4b\x71\x52\x6e\x53\x6b\x50\x73\x71','\x57\x4f\x75\x34\x6a\x30\x6c\x64\x48\x58\x76\x34','\x41\x47\x7a\x61\x71\x61','\x57\x52\x76\x38\x57\x34\x52\x64\x4f\x53\x6b\x57\x57\x51\x33\x63\x52\x71\x47','\x6f\x53\x6b\x5a\x63\x4b\x33\x63\x50\x61','\x57\x37\x6d\x43\x57\x35\x62\x50\x6e\x59\x79\x32\x57\x50\x4f','\x57\x52\x46\x63\x4d\x65\x74\x63\x4c\x58\x6e\x4a\x57\x37\x6d','\x6d\x31\x75\x7a\x68\x43\x6f\x32\x57\x52\x56\x63\x48\x38\x6b\x53\x6e\x6d\x6b\x4c\x61\x53\x6f\x51','\x6f\x75\x34\x56\x69\x53\x6b\x49','\x57\x52\x2f\x64\x52\x4e\x4a\x64\x4d\x6d\x6b\x47\x57\x51\x4b\x35\x57\x50\x71','\x57\x4f\x33\x63\x4b\x4e\x6c\x63\x50\x6d\x6b\x66','\x57\x51\x42\x64\x47\x43\x6b\x6a\x71\x38\x6f\x66\x61\x64\x65','\x65\x6d\x6b\x64\x76\x73\x70\x64\x4d\x6d\x6b\x2b\x57\x52\x68\x64\x4c\x71\x6c\x63\x4b\x77\x64\x64\x4f\x61','\x71\x43\x6f\x6a\x57\x4f\x42\x64\x4b\x57','\x6f\x5a\x38\x53\x57\x35\x34\x36','\x44\x53\x6b\x38\x71\x61','\x71\x74\x46\x63\x52\x38\x6f\x4d\x70\x43\x6f\x72\x63\x43\x6f\x36','\x42\x61\x48\x61\x71\x6d\x6b\x62\x57\x36\x6c\x63\x55\x47','\x41\x64\x42\x64\x53\x74\x4c\x72\x75\x53\x6f\x38\x57\x51\x65','\x78\x6d\x6f\x43\x57\x50\x4e\x64\x4e\x57\x5a\x64\x51\x57','\x77\x53\x6f\x55\x57\x50\x54\x47\x61\x47','\x6e\x43\x6b\x4e\x68\x78\x64\x63\x54\x53\x6b\x77','\x41\x64\x75\x4d\x57\x34\x52\x64\x55\x47','\x45\x75\x52\x64\x55\x4d\x79\x52\x6e\x43\x6b\x59\x57\x51\x69\x39\x57\x35\x4e\x64\x4a\x76\x4b','\x75\x53\x6f\x39\x57\x52\x62\x4b\x65\x43\x6b\x4d\x57\x51\x53\x77','\x66\x59\x7a\x53\x57\x50\x70\x64\x4d\x4a\x4c\x69\x42\x71','\x78\x38\x6f\x44\x57\x50\x4a\x64\x4e\x47','\x72\x6d\x6b\x6d\x57\x51\x37\x64\x56\x61','\x57\x52\x65\x39\x6a\x5a\x65','\x57\x35\x78\x63\x54\x4e\x75\x58\x7a\x53\x6f\x74\x57\x4f\x70\x63\x50\x63\x4f\x4d\x74\x4c\x69','\x57\x36\x5a\x64\x47\x72\x68\x64\x47\x33\x47\x2b\x57\x51\x46\x64\x4e\x59\x4c\x59\x57\x34\x66\x46\x68\x57','\x57\x50\x5a\x64\x50\x67\x64\x64\x4b\x43\x6b\x4b\x57\x51\x38\x38\x57\x34\x4b','\x57\x50\x4e\x64\x4b\x6d\x6f\x58\x41\x77\x47\x64\x57\x4f\x5a\x63\x53\x53\x6f\x2f\x57\x36\x79\x6e\x6b\x5a\x4f','\x72\x38\x6b\x2b\x57\x34\x4b\x4e\x57\x34\x56\x64\x4e\x38\x6f\x73\x57\x52\x47','\x62\x30\x75\x77\x6b\x38\x6b\x58\x6d\x57','\x57\x50\x33\x63\x53\x77\x5a\x63\x4f\x73\x47','\x57\x35\x68\x64\x55\x77\x61\x30\x75\x43\x6b\x41\x74\x57\x53\x64\x57\x34\x47\x58','\x7a\x77\x58\x44\x57\x4f\x62\x58\x57\x35\x78\x63\x4e\x65\x58\x2b\x57\x34\x52\x63\x55\x47','\x45\x6d\x6f\x78\x57\x4f\x4e\x64\x4f\x53\x6b\x42\x57\x34\x42\x63\x54\x30\x69','\x57\x36\x66\x53\x77\x77\x69\x63\x57\x52\x54\x64\x57\x4f\x56\x63\x4e\x53\x6f\x4e\x76\x78\x6c\x64\x48\x71','\x57\x36\x78\x64\x47\x43\x6b\x37\x72\x43\x6f\x41','\x65\x73\x75\x77\x57\x37\x52\x63\x55\x65\x65\x6c\x77\x71\x42\x63\x47\x76\x6c\x64\x55\x65\x53','\x44\x74\x53\x57\x57\x34\x5a\x64\x53\x38\x6f\x47\x78\x47\x53','\x71\x53\x6f\x68\x57\x4f\x2f\x64\x47\x57\x37\x64\x51\x78\x52\x63\x55\x47'];_0x3499=function(){return _0x17e4d4;};return _0x3499();}const NODE_ID_RE=/^node_[a-f0-9]{12,32}$/,PROXY_PACKAGE_NAME=_0x1106e5(0xe7,'\x46\x44\x25\x58')+'\x65\x76\x6f\x6c\x76\x65\x72\x2d'+_0x1106e5(0x10a,'\x71\x40\x37\x64'),OUTER_INSTALL_PACKAGE_NAMES=new Set([_0x1106e5(0xe5,'\x72\x5a\x36\x39')+_0x1106e5(0x102,'\x40\x26\x28\x53'),_0x1106e5(0x110,'\x29\x4c\x21\x47')+'\x76\x32']),MAX_PACKAGE_ROOT_DEPTH=0x7c9*0x1+0xccb+-0x107*0x14,_moduleDir=dirname(fileURLToPath(import.meta.url));function cleanAbsolutePath(_0x32e14a){const _0x53fb5d=_0x1106e5,_0x1464d1=_0x32e14a?.[_0x53fb5d(0x104,'\x61\x6a\x37\x5a')]();if(!_0x1464d1)return undefined;return isAbsolute(_0x1464d1)?_0x1464d1:undefined;}function identityHomeCandidates(_0x2c9e60,_0x567e65){const _0x21611f=_0x1106e5,_0x52e3cb=cleanAbsolutePath(_0x2c9e60[_0x21611f(0x105,'\x43\x35\x40\x66')+_0x21611f(0x129,'\x52\x39\x4d\x63')]);if(_0x52e3cb!==undefined)return[_0x52e3cb];const _0x358888=[cleanAbsolutePath(process.env['EVOMAP_HOME']),cleanAbsolutePath(process.env['EVOLVER_HOME'])][_0x21611f(0x113,'\x77\x4b\x25\x32')](_0x4996d1=>_0x4996d1!==undefined);if(_0x358888[_0x21611f(0xe8,'\x78\x71\x6e\x69')]>-0x23ba+0x2*0x8cd+0x1220)return _0x358888;return _0x567e65===undefined?[]:[join(_0x567e65,_0x21611f(0x116,'\x30\x30\x26\x61'))];}function packageNameAt(_0x365255){const _0x14b01f=_0x1106e5,_0x3bcb09=join(_0x365255,'\x70\x61\x63\x6b\x61\x67\x65\x2e'+_0x14b01f(0x10b,'\x4c\x77\x49\x26'));if(!existsSync(_0x3bcb09))return undefined;try{const _0x53ffca=JSON[_0x14b01f(0x131,'\x77\x4b\x25\x32')](readFileSync(_0x3bcb09,'\x75\x74\x66\x38'));return typeof _0x53ffca[_0x14b01f(0x128,'\x79\x77\x55\x36')]===_0x14b01f(0xfa,'\x6c\x6a\x44\x40')?_0x53ffca[_0x14b01f(0xfc,'\x31\x21\x50\x25')]:undefined;}catch{if(_0x14b01f(0x11f,'\x5a\x25\x65\x59')!=='\x63\x71\x79\x5a\x66'){const _0x151129=_0x232366(_0x37fdf3[_0x14b01f(0x115,'\x26\x51\x25\x65')+_0x14b01f(0xee,'\x4f\x66\x34\x68')]);if(_0x151129!==_0x435caa)return[_0x151129];const _0x5071e1=[_0x4c56d4(_0x20fbb8.env['EVOMAP_HOME']),_0x5a9836(_0x3c9681.env['EVOLVER_HOME'])]['\x66\x69\x6c\x74\x65\x72'](_0x441925=>_0x441925!==_0xcdcdcf);if(_0x5071e1[_0x14b01f(0x130,'\x5a\x25\x65\x59')]>-0x2*-0x1297+0x36c+0x144d*-0x2)return _0x5071e1;return _0x25eeb2===_0x4b16f3?[]:[_0x251fe1(_0x35433f,_0x14b01f(0x126,'\x4f\x66\x34\x68'))];}else return undefined;}}function installRootNodeIdCandidates(_0x47dedf){const _0x126c01=_0x1106e5,_0x1b7bfa=[];let _0x387145=_0x47dedf,_0x4f3b7d=![];for(let _0x270cb6=0x952*0x1+0x6c1*-0x1+-0x49*0x9;_0x270cb6<MAX_PACKAGE_ROOT_DEPTH;_0x270cb6+=0x1*0x23f9+0x324+-0x271c){if(_0x126c01(0xf4,'\x23\x50\x39\x78')!==_0x126c01(0x123,'\x78\x71\x6e\x69')){const _0x1a1a89=packageNameAt(_0x387145);if(_0x1a1a89!==undefined){if(_0x1a1a89===PROXY_PACKAGE_NAME)_0x4f3b7d=!![];(_0x1a1a89===PROXY_PACKAGE_NAME||_0x4f3b7d&&OUTER_INSTALL_PACKAGE_NAMES[_0x126c01(0x10c,'\x51\x32\x53\x73')](_0x1a1a89))&&_0x1b7bfa[_0x126c01(0xe0,'\x79\x77\x55\x36')](join(_0x387145,_0x126c01(0x120,'\x26\x51\x25\x65')+'\x6e\x6f\x64\x65\x5f\x69\x64'));}const _0x112e0c=dirname(_0x387145);if(_0x112e0c===_0x387145)break;_0x387145=_0x112e0c;}else{const _0x51edff=_0x11855f(_0x5f4c6b[_0x126c01(0x11a,'\x46\x44\x25\x58')])??_0x385a17(_0x1d051b()),_0x472c00=_0x34b66e[_0x126c01(0xf0,'\x77\x4b\x25\x32')+'\x72']??_0x399bb6,_0x25ea7b=_0x364c6f(_0x4c6c48,_0x51edff),_0x3601b5=_0x5d107f(_0x458bc3[_0x126c01(0x10f,'\x24\x5d\x52\x26')+_0x126c01(0x12f,'\x78\x77\x28\x33')])??_0xf0cd5d(_0x4adc66.env['EVOMAP_HOME']),_0x58ca62=_0x22b884(_0x2cc202[_0x126c01(0x11e,'\x30\x39\x47\x76')+'\x72'])??_0x2d2adb(_0x222068.env['EVOMAP_DIR']);return[...new _0x18ea0e([..._0x3601b5===_0x3e65f0?[]:[_0x1845c6(_0x3601b5,_0x126c01(0xf2,'\x40\x26\x28\x53'))],..._0x58ca62===_0x3dbb14?[]:[_0x554fcb(_0x58ca62,_0x126c01(0x106,'\x32\x5d\x6e\x33'))],..._0x25ea7b[_0x126c01(0x117,'\x23\x50\x39\x78')](_0x1c9336=>_0x1c9336!==_0x3601b5)[_0x126c01(0x108,'\x31\x61\x21\x34')](_0x2ab213=>_0x26479f(_0x2ab213,_0x126c01(0x121,'\x44\x69\x21\x65'))),..._0x51edff===_0xd61285?[]:[_0x334438(_0x51edff,_0x126c01(0xfb,'\x61\x6a\x37\x5a'),_0x126c01(0x11c,'\x4a\x4f\x62\x48'))],..._0x1737c7(_0x472c00)])];}}return _0x1b7bfa;}export function legacyNodeIdCandidates(_0x10e30e={}){const _0x5160f4=_0x1106e5,_0x25f11f=cleanAbsolutePath(_0x10e30e[_0x5160f4(0x12c,'\x35\x77\x55\x54')])??cleanAbsolutePath(homedir()),_0x49a3d0=_0x10e30e[_0x5160f4(0xf1,'\x79\x77\x55\x36')+'\x72']??_moduleDir,_0x30719a=identityHomeCandidates(_0x10e30e,_0x25f11f),_0x773d8c=cleanAbsolutePath(_0x10e30e[_0x5160f4(0xf8,'\x52\x39\x4d\x63')+_0x5160f4(0x101,'\x79\x77\x55\x36')])??cleanAbsolutePath(process.env['EVOMAP_HOME']),_0x50b29d=cleanAbsolutePath(_0x10e30e[_0x5160f4(0x133,'\x78\x77\x28\x33')+'\x72'])??cleanAbsolutePath(process.env['EVOMAP_DIR']);return[...new Set([..._0x773d8c===undefined?[]:[join(_0x773d8c,_0x5160f4(0x119,'\x5b\x72\x61\x63'))],..._0x50b29d===undefined?[]:[join(_0x50b29d,_0x5160f4(0xf5,'\x49\x5d\x40\x66'))],..._0x30719a['\x66\x69\x6c\x74\x65\x72'](_0x17ffb4=>_0x17ffb4!==_0x773d8c)[_0x5160f4(0x12a,'\x32\x5d\x6e\x33')](_0xa97a50=>join(_0xa97a50,_0x5160f4(0x10d,'\x51\x32\x53\x73'))),..._0x25f11f===undefined?[]:[join(_0x25f11f,_0x5160f4(0xf6,'\x26\x51\x25\x65'),'\x6e\x6f\x64\x65\x5f\x69\x64')],...installRootNodeIdCandidates(_0x49a3d0)])];}export function readLegacyNodeId(_0x2e6781={}){const _0x3d91c0=_0x1106e5,_0x5c8dd6=_0x2e6781['\x63\x61\x6e\x64\x69\x64\x61\x74'+'\x65\x73']??legacyNodeIdCandidates(_0x2e6781);for(const _0x2f3b68 of _0x5c8dd6){if('\x46\x54\x57\x4b\x5a'===_0x3d91c0(0x118,'\x35\x77\x55\x54')){const _0x3decc1=_0x532632[_0x3d91c0(0x125,'\x40\x26\x28\x53')](_0x490e8a(_0x15d43b,_0x3d91c0(0x103,'\x51\x32\x53\x73')));return typeof _0x3decc1[_0x3d91c0(0xf9,'\x25\x48\x26\x55')]==='\x73\x74\x72\x69\x6e\x67'?_0x3decc1[_0x3d91c0(0x112,'\x32\x5d\x6e\x33')]:_0x34fc01;}else try{if(_0x3d91c0(0xe9,'\x44\x69\x21\x65')===_0x3d91c0(0x111,'\x51\x32\x53\x73')){if(!existsSync(_0x2f3b68))continue;const _0x4854e7=readFileSync(_0x2f3b68,'\x75\x74\x66\x38')['\x74\x72\x69\x6d']();if(NODE_ID_RE[_0x3d91c0(0x107,'\x24\x5d\x52\x26')](_0x4854e7))return _0x4854e7;}else{const _0x3120ca=_0x2b643d(_0xb5a9e6,_0x3d91c0(0xec,'\x29\x4c\x21\x47')+_0x3d91c0(0x10e,'\x77\x4b\x25\x32'));if(!_0x3c416c(_0x3120ca))return _0xbacf87;try{const _0xaf6f04=_0x26eff0[_0x3d91c0(0x114,'\x56\x67\x45\x34')](_0x3c48b3(_0x3120ca,_0x3d91c0(0xe1,'\x25\x48\x26\x55')));return typeof _0xaf6f04[_0x3d91c0(0xf9,'\x25\x48\x26\x55')]===_0x3d91c0(0x12e,'\x79\x77\x55\x36')?_0xaf6f04[_0x3d91c0(0x11d,'\x35\x77\x55\x54')]:_0x1553df;}catch{return _0x3f0280;}}}catch{}}return undefined;}export function resolveProxyNodeId(_0x51daf7){const _0x3e0414=_0x1106e5,_0x4ee4b9=_0x51daf7[_0x3e0414(0xfe,'\x30\x39\x47\x76')+_0x3e0414(0xe2,'\x57\x4c\x38\x21')]?.[_0x3e0414(0xf3,'\x6e\x25\x71\x79')]()||undefined,_0x1df6a8=_0x51daf7[_0x3e0414(0x124,'\x72\x5a\x36\x39')+_0x3e0414(0x109,'\x5b\x72\x61\x63')]?.['\x74\x72\x69\x6d']()||undefined;return _0x4ee4b9??_0x1df6a8??(_0x51daf7[_0x3e0414(0x12b,'\x49\x5d\x40\x66')+'\x63\x79']??readLegacyNodeId)();}
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+/**
+ * Hub nodeId shape; mirror of v1 `src/gep/a2aProtocol.js` NODE_ID_RE so a
+ * malformed legacy file can never feed garbage onto the hello wire.
+ */
+const NODE_ID_RE = /^node_[a-f0-9]{12,32}$/;
+const PROXY_PACKAGE_NAME = '@evomap/evolver-proxy';
+const OUTER_INSTALL_PACKAGE_NAMES = new Set(['@evomap/evolver', 'evolver-v2']);
+const MAX_PACKAGE_ROOT_DEPTH = 8;
+const _moduleDir = dirname(fileURLToPath(import.meta.url));
+function cleanAbsolutePath(value) {
+    const trimmed = value?.trim();
+    if (!trimmed)
+        return undefined;
+    return isAbsolute(trimmed) ? trimmed : undefined;
+}
+// Identity homes in probe order (#555 T2): the explicit test/caller override wins outright; otherwise
+// EVOMAP_HOME (THE identity home) outranks EVOLVER_HOME (the state root) so the evox agentDir split
+// (`--evomap-home <agentDir>/evomap` + `--home <agentDir>/evolver`) reads node files from the evomap dir.
+// legacyNodeIdCandidates() splices that explicit identity home ahead of EVOMAP_DIR so node_id and
+// node_secret cannot come from different halves of the split layout. Both homes stay in the candidate union,
+// so single-home setups resolve exactly as before.
+function identityHomeCandidates(opts, fallbackHomeDir) {
+    const fromOpts = cleanAbsolutePath(opts.evomapHomeDir);
+    if (fromOpts !== undefined)
+        return [fromOpts];
+    const homes = [
+        cleanAbsolutePath(process.env['EVOMAP_HOME']),
+        cleanAbsolutePath(process.env['EVOLVER_HOME']),
+    ].filter((value) => value !== undefined);
+    if (homes.length > 0)
+        return homes;
+    return fallbackHomeDir === undefined ? [] : [join(fallbackHomeDir, '.evomap')];
+}
+function packageNameAt(dir) {
+    const pkgPath = join(dir, 'package.json');
+    if (!existsSync(pkgPath))
+        return undefined;
+    try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+        return typeof pkg.name === 'string' ? pkg.name : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function installRootNodeIdCandidates(moduleDir) {
+    const candidates = [];
+    let dir = moduleDir;
+    let sawProxyPackage = false;
+    for (let depth = 0; depth < MAX_PACKAGE_ROOT_DEPTH; depth += 1) {
+        const name = packageNameAt(dir);
+        if (name !== undefined) {
+            if (name === PROXY_PACKAGE_NAME)
+                sawProxyPackage = true;
+            if (name === PROXY_PACKAGE_NAME || (sawProxyPackage && OUTER_INSTALL_PACKAGE_NAMES.has(name))) {
+                candidates.push(join(dir, '.evomap_node_id'));
+            }
+        }
+        const parent = dirname(dir);
+        if (parent === dir)
+            break;
+        dir = parent;
+    }
+    return candidates;
+}
+/**
+ * Legacy node_id file locations, in priority order. Mirror of v1
+ * `_loadPersistedNodeId`:
+ *
+ *  0. `<EVOMAP_HOME>/node_id` — when an explicit identity home is configured, it
+ *     must precede every state-root candidate. The legacy node_secret resolver uses
+ *     the same priority, keeping both credentials on one identity in split layouts.
+ *  1. `<EVOMAP_DIR>/node_id` — the explicit dir the CLI recipe / ATP / proxy
+ *     anti-abuse code write under (`recipeHomeCandidates` puts EVOMAP_DIR ahead
+ *     of EVOLVER_HOME/EVOMAP_HOME). `resolveEvomapHome` never consults EVOMAP_DIR,
+ *     so a deployment that pivots on it would otherwise send no node_id on hello
+ *     and let the hub mint a duplicate. It remains first when EVOMAP_HOME is not
+ *     configured, preserving the existing EVOMAP_DIR-only contract. Deduped.
+ *  2. `<EVOLVER_HOME>/node_id` — the state-home compatibility candidate, kept
+ *     after the identity roots so readers still walk every dir a writer may have used.
+ *  3. `~/.evomap/node_id` — the UNCONDITIONAL v1 location. v1's writer pivots on
+ *     `getEvomapDir` = `EVOLVER_HOME || ~/.evomap` and ignores EVOMAP_HOME
+ *     entirely, so unless EVOLVER_HOME was set a v1 file always physically lands
+ *     here. We probe it explicitly so a v2 install that sets only EVOMAP_HOME
+ *     (which steers candidate 1 away from `~/.evomap`) still recovers the v1
+ *     identity instead of letting the hub mint a duplicate orphan node. Deduped
+ *     against candidate 1 for the common no-override case where they coincide.
+ *  4. `<proxy package>/.evomap_node_id` — the install-root file the writer falls
+ *     back to when `~/.evomap/` isn't writable (read-only $HOME in
+ *     containers / restricted CI). Kept first for parity with the old v2
+ *     candidate.
+ *  5. `<outer package/workspace root>/.evomap_node_id` — the v1/outer install
+ *     root fallback. In v2's multi-package layout the proxy code lives below
+ *     `packages/evolver-proxy`, so only checking the proxy package root misses
+ *     a file written at the install/workspace root.
+ *
+ * Resolved on every call rather than cached at module load: env and `homedir()`
+ * are read at call time, so caching would freeze the home path and silently
+ * ignore a later EVOLVER_HOME/EVOMAP_HOME change (this is also how the tests
+ * point it at a tmp dir). The install-root paths use a bounded package.json walk
+ * from the module dir so source and dist layouts both work.
+ */
+export function legacyNodeIdCandidates(opts = {}) {
+    const home = cleanAbsolutePath(opts.homeDir) ?? cleanAbsolutePath(homedir());
+    const moduleDir = opts.moduleDir ?? _moduleDir;
+    const evomapHomes = identityHomeCandidates(opts, home);
+    const identityHome = cleanAbsolutePath(opts.evomapHomeDir)
+        ?? cleanAbsolutePath(process.env['EVOMAP_HOME']);
+    const evomapDir = cleanAbsolutePath(opts.evomapDir) ?? cleanAbsolutePath(process.env['EVOMAP_DIR']);
+    return [
+        ...new Set([
+            ...(identityHome === undefined ? [] : [join(identityHome, 'node_id')]),
+            ...(evomapDir === undefined ? [] : [join(evomapDir, 'node_id')]),
+            ...evomapHomes
+                .filter((dir) => dir !== identityHome)
+                .map((dir) => join(dir, 'node_id')),
+            ...(home === undefined ? [] : [join(home, '.evomap', 'node_id')]),
+            ...installRootNodeIdCandidates(moduleDir),
+        ]),
+    ];
+}
+/**
+ * Recover a node_id persisted by the legacy v1 GEP path. Returns the first
+ * candidate file whose trimmed contents match NODE_ID_RE, else `undefined`.
+ *
+ * Why this exists (PORT v1 #117): v2 resolves the wire node_id as
+ * `store.node_id ?? EVOMAP_NODE_ID/A2A_NODE_ID`. When BOTH are empty the
+ * `/a2a/hello` payload carries no `node_id` and the hub MINTS A FRESH A2ANode,
+ * which the lifecycle manager then persists. So any install whose mailbox
+ * store was created (or wiped) after a v1 `~/.evomap/node_id` already existed —
+ * an upgrade from a pre-lifecycle version, or a partial recovery flow —
+ * silently registers a brand-new node under the same owner on the very next
+ * daemon boot, abandoning the original record (with its stake / reputation /
+ * aliases) as an orphan in the web UI. Reading the legacy file between the
+ * store/env lookup and the hub mint keeps both code paths agreeing on a single
+ * identity.
+ */
+export function readLegacyNodeId(opts = {}) {
+    const candidates = opts.candidates ?? legacyNodeIdCandidates(opts);
+    for (const file of candidates) {
+        try {
+            if (!existsSync(file))
+                continue;
+            const raw = readFileSync(file, 'utf8').trim();
+            if (NODE_ID_RE.test(raw))
+                return raw;
+        }
+        catch {
+            // Unreadable / racing writer — try the next location.
+        }
+    }
+    return undefined;
+}
+/**
+ * Resolve the node_id the proxy presents on the wire, in priority order:
+ * persisted store value → operator env override → recovered legacy file →
+ * `undefined` (the hub mints a fresh id on hello). An explicit env override
+ * outranks the legacy file because the operator set it deliberately.
+ *
+ * The legacy read only fires while the store is unprimed AND no env override
+ * is set — the first-boot window before a successful hello persists an id.
+ * Already-registered nodes short-circuit on the store value and never touch
+ * the filesystem.
+ *
+ * Empty / whitespace store and env values are normalised to `undefined` first:
+ * `??` alone treats `''` as a present value, so a blank `EVOMAP_NODE_ID=` (or a
+ * store cleared to `''`) would otherwise suppress legacy recovery and put a
+ * blank id on the wire — the exact orphan-node failure this module prevents.
+ */
+export function resolveProxyNodeId(opts) {
+    const stored = opts.storedNodeId?.trim() || undefined;
+    const configured = opts.configuredNodeId?.trim() || undefined;
+    return stored ?? configured ?? (opts.readLegacy ?? readLegacyNodeId)();
+}

@@ -334,8 +334,8 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
             throw classified('safety', 'workflow validation profile is not configured');
         }
         const validate = validationCommands
-            ? async (_mutation, _decision, cwd) => {
-                const result = await runRequiredSandboxedValidation(validationCommands, cwd, {}, runValidation);
+            ? async (_mutation, _decision, cwd, signal) => {
+                const result = await runRequiredSandboxedValidation(validationCommands, cwd, signal ? { signal } : {}, runValidation);
                 return { passed: result.passed, score: result.score };
             }
             : undefined;

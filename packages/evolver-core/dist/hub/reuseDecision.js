@@ -1,1 +1,127 @@
-(function(_0x19111f,_0x43118e){const _0x1da291=_0x3c53,_0x5397fe=_0x19111f();while(!![]){try{const _0xf39715=parseInt(_0x1da291(0x1e8,'\x54\x41\x59\x77'))/(-0x5*0x38a+0x844+0x96f)+-parseInt(_0x1da291(0x1ca,'\x44\x55\x58\x5b'))/(-0x1cd1+0x4e*-0x73+0x3fdd)+parseInt(_0x1da291(0x1eb,'\x49\x70\x43\x4a'))/(-0x187b+-0x18ef+0x316d)+parseInt(_0x1da291(0x1d3,'\x6d\x24\x54\x6d'))/(-0x2400+-0x1d93+0x4197)*(parseInt(_0x1da291(0x20a,'\x6f\x34\x59\x4b'))/(-0x8f7*0x1+0x904*-0x2+0x1b04))+-parseInt(_0x1da291(0x207,'\x50\x77\x47\x36'))/(0x1*0x2d2+0x1e0a+-0x20d6)*(-parseInt(_0x1da291(0x1f3,'\x2a\x61\x6b\x70'))/(0x1b4d+0x175a+-0x32a0))+parseInt(_0x1da291(0x1d4,'\x55\x25\x7a\x29'))/(0xc91+0x22*0xbf+-0x25e7)*(parseInt(_0x1da291(0x1cc,'\x63\x38\x6e\x56'))/(-0x1*-0xe08+0x12c9+-0x20c8))+-parseInt(_0x1da291(0x1d9,'\x65\x30\x56\x6c'))/(0x1*-0x15bb+-0x25be+0x3b83);if(_0xf39715===_0x43118e)break;else _0x5397fe['push'](_0x5397fe['shift']());}catch(_0x529b11){_0x5397fe['push'](_0x5397fe['shift']());}}}(_0x1a4c,-0x4fe4+-0xe3759+0x1c41be));function _0x1a4c(){const _0x1dd13c=['\x57\x52\x4a\x63\x53\x57\x4e\x63\x55\x38\x6f\x63\x76\x38\x6b\x78\x6b\x61','\x57\x37\x34\x46\x63\x43\x6b\x38\x57\x52\x52\x63\x53\x38\x6f\x62\x57\x51\x47\x54\x57\x52\x57\x70\x63\x71\x70\x64\x50\x61','\x75\x53\x6b\x45\x57\x4f\x4b\x78\x57\x51\x57\x45\x57\x4f\x4f\x42','\x57\x51\x31\x2b\x57\x52\x76\x63\x6c\x30\x57\x2b\x57\x4f\x75','\x6a\x58\x42\x63\x51\x47\x34\x4c\x61\x53\x6f\x56\x6e\x71','\x57\x36\x4f\x55\x45\x30\x79\x52','\x57\x36\x43\x59\x42\x58\x69\x56\x62\x76\x34','\x63\x38\x6f\x64\x57\x35\x2f\x64\x4f\x73\x57\x70\x57\x51\x30','\x57\x52\x53\x52\x64\x48\x70\x63\x4d\x68\x61\x36\x57\x51\x4f','\x6b\x6d\x6f\x42\x57\x34\x33\x64\x4c\x4a\x42\x64\x4f\x62\x46\x63\x50\x47','\x67\x43\x6f\x74\x57\x34\x70\x64\x54\x4a\x30','\x6c\x38\x6f\x78\x57\x4f\x52\x64\x50\x57\x50\x35\x57\x52\x47','\x6d\x76\x37\x64\x4e\x4d\x33\x64\x52\x6d\x6f\x73\x66\x6d\x6f\x36','\x73\x4c\x37\x64\x47\x71\x52\x64\x52\x43\x6f\x36\x66\x58\x6d','\x57\x34\x46\x63\x50\x53\x6f\x59\x57\x51\x52\x64\x4f\x6d\x6b\x75','\x57\x36\x44\x38\x74\x4e\x2f\x63\x4b\x43\x6b\x6e\x57\x37\x37\x64\x53\x68\x2f\x64\x51\x47','\x57\x52\x52\x63\x54\x64\x62\x61\x66\x38\x6b\x77\x57\x52\x61\x6d','\x68\x71\x5a\x63\x47\x71\x34\x4e\x63\x53\x6f\x50\x6f\x71','\x45\x43\x6b\x6f\x57\x36\x52\x63\x54\x31\x57\x37\x57\x4f\x4e\x64\x4c\x53\x6f\x64\x57\x52\x66\x69\x57\x34\x38','\x71\x77\x56\x63\x56\x53\x6f\x63','\x65\x38\x6b\x30\x75\x75\x6e\x42\x57\x35\x64\x64\x50\x77\x4a\x64\x55\x6d\x6b\x51\x6c\x43\x6f\x78','\x42\x38\x6f\x2b\x57\x35\x46\x64\x4b\x57\x78\x64\x4b\x72\x37\x64\x4b\x61','\x57\x50\x7a\x2f\x57\x52\x38','\x57\x50\x70\x64\x4e\x63\x44\x36\x74\x6d\x6f\x37\x64\x53\x6f\x7a','\x45\x4b\x39\x2b\x61\x43\x6b\x53\x6b\x71','\x57\x36\x65\x4c\x44\x73\x71\x34\x69\x30\x47\x66','\x68\x38\x6b\x62\x57\x51\x7a\x74\x57\x51\x37\x64\x4e\x38\x6f\x57\x62\x57','\x6c\x74\x4f\x76\x77\x6d\x6f\x36\x69\x74\x47','\x57\x37\x35\x49\x78\x38\x6b\x7a\x6d\x75\x34\x51\x63\x6d\x6f\x65\x44\x38\x6b\x79\x6a\x61','\x46\x43\x6b\x5a\x57\x37\x71','\x57\x37\x6c\x63\x4e\x38\x6f\x52\x71\x53\x6f\x70\x57\x37\x43\x57','\x68\x71\x68\x63\x48\x38\x6b\x41\x57\x35\x70\x63\x56\x57','\x6f\x43\x6f\x7a\x57\x34\x68\x64\x52\x74\x71\x4e\x57\x52\x56\x64\x50\x57','\x6f\x43\x6b\x64\x57\x36\x65','\x57\x37\x37\x64\x4f\x68\x69\x61\x72\x6d\x6f\x4a\x57\x52\x57\x53\x57\x52\x74\x64\x4c\x6d\x6f\x78\x73\x57','\x57\x52\x71\x57\x61\x43\x6f\x6c\x7a\x47\x4f\x78\x62\x61','\x57\x52\x65\x75\x57\x37\x68\x64\x4b\x4d\x44\x7a\x73\x49\x50\x75\x57\x4f\x6a\x57','\x57\x50\x6c\x64\x4e\x64\x50\x55\x76\x53\x6f\x55\x65\x38\x6f\x74','\x68\x43\x6b\x75\x57\x52\x66\x45','\x67\x43\x6f\x66\x57\x34\x2f\x64\x50\x5a\x30\x31\x57\x52\x52\x64\x4e\x61','\x57\x50\x34\x56\x57\x51\x44\x38\x57\x34\x64\x63\x50\x43\x6b\x76','\x71\x65\x6d\x66\x74\x67\x43\x6a\x57\x50\x4e\x64\x53\x48\x58\x68\x57\x36\x74\x63\x47\x71','\x57\x35\x54\x74\x57\x36\x70\x63\x53\x74\x48\x4e\x74\x6d\x6b\x48','\x73\x74\x65\x72\x66\x64\x46\x63\x4e\x68\x69','\x63\x63\x56\x64\x56\x38\x6f\x62\x57\x50\x37\x64\x4d\x53\x6b\x5a\x57\x51\x65\x4b','\x57\x52\x53\x52\x62\x57','\x57\x52\x35\x67\x73\x43\x6f\x37','\x57\x4f\x53\x30\x57\x51\x7a\x38\x57\x34\x46\x63\x48\x6d\x6b\x45\x73\x57','\x57\x51\x6c\x63\x4f\x59\x64\x63\x4f\x6d\x6f\x6a','\x70\x64\x56\x63\x4e\x43\x6b\x70\x57\x35\x78\x63\x4f\x53\x6b\x78\x66\x67\x37\x64\x54\x6d\x6f\x52\x64\x38\x6b\x6d\x57\x50\x53','\x6b\x6d\x6b\x2f\x64\x6d\x6f\x76\x71\x71','\x62\x38\x6b\x6d\x57\x37\x75','\x6b\x5a\x38\x43\x76\x6d\x6f\x56\x6e\x49\x78\x64\x4d\x71','\x74\x4b\x5a\x64\x56\x57','\x46\x43\x6f\x4a\x57\x35\x70\x64\x4c\x71','\x67\x43\x6b\x79\x57\x36\x61\x64\x57\x51\x43\x51\x57\x35\x6d','\x57\x51\x68\x63\x4f\x47\x6e\x41\x68\x6d\x6b\x38\x57\x51\x53\x43','\x57\x50\x34\x4f\x57\x52\x65','\x76\x53\x6f\x4a\x64\x47\x47\x67','\x62\x61\x33\x63\x51\x61\x4f\x4d\x66\x38\x6f\x34\x6f\x61','\x57\x50\x69\x35\x57\x51\x62\x34\x57\x35\x64\x63\x4a\x43\x6b\x66\x72\x47','\x57\x36\x48\x46\x57\x52\x42\x63\x48\x63\x44\x58\x7a\x47','\x57\x51\x58\x41\x73\x6d\x6f\x51\x57\x37\x46\x64\x4a\x43\x6b\x72','\x43\x72\x66\x63\x46\x57\x6a\x2b\x57\x36\x61\x44\x57\x37\x52\x63\x4d\x73\x75\x78\x57\x36\x6d','\x57\x37\x53\x44\x63\x38\x6b\x32\x57\x52\x56\x63\x56\x43\x6b\x7a\x57\x37\x61\x4f\x57\x51\x30\x54\x6b\x47','\x57\x52\x31\x4b\x57\x52\x48\x68\x69\x31\x53\x4f\x57\x52\x47','\x6b\x43\x6f\x4d\x57\x52\x34','\x7a\x53\x6f\x73\x57\x52\x4e\x63\x55\x53\x6f\x41\x79\x43\x6f\x55\x57\x4f\x6c\x64\x49\x66\x68\x64\x4a\x38\x6b\x79\x57\x34\x30','\x6a\x38\x6b\x6a\x57\x36\x64\x64\x55\x43\x6b\x69','\x57\x51\x7a\x6d\x57\x35\x57\x31\x57\x4f\x74\x63\x56\x66\x46\x63\x56\x71','\x46\x72\x4e\x64\x56\x61','\x70\x4c\x74\x64\x4e\x4d\x5a\x64\x53\x43\x6f\x45','\x57\x34\x50\x71\x57\x36\x74\x63\x4d\x62\x4a\x63\x52\x38\x6b\x7a\x57\x35\x4b\x45\x57\x36\x69\x75','\x68\x6d\x6b\x48\x72\x53\x6b\x74\x57\x51\x4f','\x57\x52\x31\x67\x74\x61','\x57\x52\x6a\x59\x6b\x4b\x39\x53\x63\x33\x30\x4f\x57\x51\x68\x64\x4c\x43\x6f\x44','\x70\x43\x6b\x7a\x57\x34\x4e\x64\x4f\x53\x6b\x64\x6f\x6d\x6b\x53\x57\x50\x69','\x57\x50\x6d\x42\x57\x51\x70\x64\x4a\x4c\x4a\x63\x48\x38\x6b\x31','\x57\x4f\x54\x35\x57\x51\x38\x7a\x57\x36\x52\x64\x47\x67\x62\x62','\x68\x4b\x6d\x54\x45\x43\x6b\x55\x57\x50\x46\x63\x4e\x4c\x6e\x4e'];_0x1a4c=function(){return _0x1dd13c;};return _0x1a4c();}import{tagOverlapScore}from'\x2e\x2e\x2f\x73\x69\x67\x6e\x61\x6c\x73\x2f\x65\x78\x70\x61\x6e\x64\x2e\x6a\x73';export const DEFAULT_MIN_REUSE_SCORE=0x15dd+-0x1*0x1b1+-0x142c+0.72;function _0x3c53(_0xa6a0a3,_0x5e8c41){_0xa6a0a3=_0xa6a0a3-(-0x525+-0xcac*0x2+0x167*0x17);const _0x1d7f24=_0x1a4c();let _0x9c008b=_0x1d7f24[_0xa6a0a3];if(_0x3c53['\x61\x68\x70\x6c\x4f\x46']===undefined){var _0x33b707=function(_0x4610be){const _0x5f1e52='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x4482a9='',_0x2ffa89='';for(let _0x522122=-0x58e+0x37*-0x6a+0x1c54,_0x440328,_0x82138d,_0x20c9ef=0x1*0x1532+0x1372+-0x28a4;_0x82138d=_0x4610be['\x63\x68\x61\x72\x41\x74'](_0x20c9ef++);~_0x82138d&&(_0x440328=_0x522122%(-0x45d*0x4+0x2692*-0x1+0x9*0x63a)?_0x440328*(-0x1c10+-0x107*-0x25+0x9b3*-0x1)+_0x82138d:_0x82138d,_0x522122++%(0xd3*0x25+0xf9b+0x22*-0x15b))?_0x4482a9+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](-0x33*-0x71+0x773*0x1+-0x5cb*0x5&_0x440328>>(-(0x7*-0x4a2+0xa55+0x1*0x161b)*_0x522122&-0x1*0x895+0x859+-0x6*-0xb)):-0x1*0x155c+0x6*0x5a9+0x64d*-0x2){_0x82138d=_0x5f1e52['\x69\x6e\x64\x65\x78\x4f\x66'](_0x82138d);}for(let _0x3c83fb=-0x1e0+-0x22ae+0x248e,_0x556ff0=_0x4482a9['\x6c\x65\x6e\x67\x74\x68'];_0x3c83fb<_0x556ff0;_0x3c83fb++){_0x2ffa89+='\x25'+('\x30\x30'+_0x4482a9['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x3c83fb)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](0x106*0x3+-0x25e4*0x1+0x22e2))['\x73\x6c\x69\x63\x65'](-(-0x2447+-0xd1d+0x3166));}return decodeURIComponent(_0x2ffa89);};const _0x52e0db=function(_0x5b06a0,_0x3d98d2){let _0x35c00a=[],_0x550643=0x856+-0x2581*-0x1+-0x2dd7,_0x15498e,_0x1b27e0='';_0x5b06a0=_0x33b707(_0x5b06a0);let _0x43bc7c;for(_0x43bc7c=-0x2*-0x355+-0x1dfb+0x1751;_0x43bc7c<-0x462+0x3*-0xc6a+0x2aa0;_0x43bc7c++){_0x35c00a[_0x43bc7c]=_0x43bc7c;}for(_0x43bc7c=-0x1332+-0x1bbc+0x2eee;_0x43bc7c<-0x1b9a+-0x206a+0x3d04;_0x43bc7c++){_0x550643=(_0x550643+_0x35c00a[_0x43bc7c]+_0x3d98d2['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x43bc7c%_0x3d98d2['\x6c\x65\x6e\x67\x74\x68']))%(-0x3*-0x749+0x4f1*0x2+0x81*-0x3d),_0x15498e=_0x35c00a[_0x43bc7c],_0x35c00a[_0x43bc7c]=_0x35c00a[_0x550643],_0x35c00a[_0x550643]=_0x15498e;}_0x43bc7c=0x212f+-0x754*0x1+-0x19db,_0x550643=0x1*-0x8db+-0xc1*-0x27+-0x148c;for(let _0x230af2=0x3*0x40f+0xb4b+0x5de*-0x4;_0x230af2<_0x5b06a0['\x6c\x65\x6e\x67\x74\x68'];_0x230af2++){_0x43bc7c=(_0x43bc7c+(0x115c*0x1+-0x2*0x741+-0x2d9))%(-0x29*0x7e+0x1529*-0x1+0x1*0x2a57),_0x550643=(_0x550643+_0x35c00a[_0x43bc7c])%(-0x1dc0+0x364*0x8+0x3a0*0x1),_0x15498e=_0x35c00a[_0x43bc7c],_0x35c00a[_0x43bc7c]=_0x35c00a[_0x550643],_0x35c00a[_0x550643]=_0x15498e,_0x1b27e0+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x5b06a0['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x230af2)^_0x35c00a[(_0x35c00a[_0x43bc7c]+_0x35c00a[_0x550643])%(-0x277*-0xb+-0x2e7*0x9+0x1*0x2)]);}return _0x1b27e0;};_0x3c53['\x41\x66\x56\x62\x41\x70']=_0x52e0db,_0x3c53['\x6d\x56\x4a\x75\x53\x47']={},_0x3c53['\x61\x68\x70\x6c\x4f\x46']=!![];}const _0x3ed0df=_0x1d7f24[0x104e+0x15dd+-0x1*0x262b],_0xccca1e=_0xa6a0a3+_0x3ed0df,_0x260b99=_0x3c53['\x6d\x56\x4a\x75\x53\x47'][_0xccca1e];return!_0x260b99?(_0x3c53['\x41\x42\x72\x4d\x72\x78']===undefined&&(_0x3c53['\x41\x42\x72\x4d\x72\x78']=!![]),_0x9c008b=_0x3c53['\x41\x66\x56\x62\x41\x70'](_0x9c008b,_0x5e8c41),_0x3c53['\x6d\x56\x4a\x75\x53\x47'][_0xccca1e]=_0x9c008b):_0x9c008b=_0x260b99,_0x9c008b;}export const MAX_STREAK_CAP=0x2665+0xc*-0x13e+-0x1778;export const SEMANTIC_SIMILARITY_BONUS=-0x4a4*0x8+0x1*0x1cd5+0xb*0xc1+0.3;export const SIGNAL_MATCH_FLOOR=0x2069*-0x1+0x5*-0x271+0x2c9e*0x1+0.5;export const RECENCY_HALF_LIFE_DAYS=-0xd*0x1aa+-0x10d3+0x26cf;const MS_PER_DAY=(0x6fe+0x3db+-0x1*0xac1)*(-0x1*0x1b1b+-0x1*-0x19b1+0x1a6)*(0x6a5+0x13*0xb7+-0x13fe)*(0xf61+0x672*-0x2+0x16b);function clampStreak(_0x224c9c){const _0x20cd51=_0x3c53;return Math['\x6d\x69\x6e'](Math[_0x20cd51(0x1d5,'\x50\x77\x47\x36')](Number[_0x20cd51(0x209,'\x40\x5e\x5e\x4d')](_0x224c9c)?_0x224c9c:0x45*0x1+-0x782+0x73d,0x11fe+-0x316+-0xee7),MAX_STREAK_CAP);}function qualityScore(_0x1a601e){const _0x694cf2=_0x3c53,_0x489ef5=Number[_0x694cf2(0x1ed,'\x4f\x37\x39\x56')](Number(_0x1a601e[_0x694cf2(0x204,'\x4e\x48\x6d\x73')+'\x63\x65']))?Number(_0x1a601e[_0x694cf2(0x1fb,'\x53\x35\x56\x5e')+'\x63\x65']):-0x4b1*0x2+-0xe75+0x17d7,_0x2c630f=clampStreak(Number(_0x1a601e[_0x694cf2(0x1e9,'\x53\x35\x56\x5e')+_0x694cf2(0x1f1,'\x55\x69\x43\x45')])),_0x2832b5=Number[_0x694cf2(0x209,'\x40\x5e\x5e\x4d')](Number(_0x1a601e[_0x694cf2(0x20f,'\x4f\x4c\x56\x5a')+_0x694cf2(0x203,'\x6f\x34\x59\x4b')]))?Number(_0x1a601e[_0x694cf2(0x20f,'\x4f\x4c\x56\x5a')+'\x6f\x6e\x53\x63\x6f\x72\x65']):0x1*0x132f+-0x37c+0x31*-0x51;let _0x580b61=_0x489ef5*_0x2c630f*(_0x2832b5/(0x1*-0x2411+-0x4e0+-0x3*-0xdc7));if(Number[_0x694cf2(0x1f4,'\x49\x70\x43\x4a')](Number(_0x1a601e[_0x694cf2(0x200,'\x4b\x52\x68\x34')])))_0x580b61*=Math[_0x694cf2(0x1db,'\x51\x65\x74\x78')](Number(_0x1a601e[_0x694cf2(0x211,'\x2a\x61\x6b\x70')]),-0x22ba+0x88e+-0x1a2c*-0x1);if(Number['\x69\x73\x46\x69\x6e\x69\x74\x65'](Number(_0x1a601e[_0x694cf2(0x1cf,'\x41\x49\x50\x21')+_0x694cf2(0x1e1,'\x30\x4e\x25\x54')])))_0x580b61*=Math[_0x694cf2(0x1ea,'\x40\x50\x4e\x50')](Number(_0x1a601e['\x73\x75\x63\x63\x65\x73\x73\x52'+_0x694cf2(0x1ee,'\x33\x30\x48\x6b')]),0x34b*0xb+-0x1e97*0x1+-0x2*0x2d1);return _0x580b61;}function signalMatchFactor(_0x280832,_0x214a80){const _0x460e06=_0x3c53,_0x54c2fa=tagOverlapScore(_0x280832,{..._0x214a80[_0x460e06(0x20d,'\x66\x5d\x53\x21')+_0x460e06(0x1ce,'\x24\x47\x37\x53')]?{'\x73\x69\x67\x6e\x61\x6c\x73\x4d\x61\x74\x63\x68':_0x214a80[_0x460e06(0x1f6,'\x73\x21\x61\x25')+_0x460e06(0x1de,'\x66\x5d\x53\x21')]}:{},..._0x214a80['\x63\x61\x74\x65\x67\x6f\x72\x79']?{'\x63\x61\x74\x65\x67\x6f\x72\x79':_0x214a80[_0x460e06(0x212,'\x24\x47\x37\x53')]}:{},..._0x214a80[_0x460e06(0x1df,'\x51\x65\x74\x78')]?{'\x73\x75\x6d\x6d\x61\x72\x79':_0x214a80[_0x460e06(0x213,'\x43\x57\x5a\x79')]}:{}});return SIGNAL_MATCH_FLOOR+(-0xfb3+-0x183a+0x1*0x27ee-SIGNAL_MATCH_FLOOR)*Math[_0x460e06(0x1c9,'\x49\x70\x43\x4a')](Math[_0x460e06(0x1c5,'\x48\x41\x77\x73')](_0x54c2fa,0x11fc+0x7c9*-0x1+-0xa33),0x2279+0x7*0x1c9+-0x2ef7);}function recencyFactor(_0x4e54ba,_0x2bf714){const _0x148fa3=_0x3c53;if(!Number[_0x148fa3(0x1f8,'\x53\x63\x56\x52')](Number(_0x4e54ba[_0x148fa3(0x201,'\x6e\x31\x4e\x28')+'\x74']))||_0x2bf714===undefined)return 0x1f3e+0x16*0x169+-0x3e43;const _0x7afd9=_0x2bf714-Number(_0x4e54ba[_0x148fa3(0x1dc,'\x43\x57\x5a\x79')+'\x74']);if(_0x7afd9<=0x3*0x539+0x639+0xc*-0x1d3)return-0x21f5*-0x1+-0x9*-0x7+-0x203*0x11;const _0x466eef=_0x7afd9/MS_PER_DAY;return Math[_0x148fa3(0x1f2,'\x54\x41\x59\x77')](0x490*0x2+0x6*-0x303+0x8f2+0.5,_0x466eef/RECENCY_HALF_LIFE_DAYS);}function reuseFactor(_0x20849b){const _0x255143=_0x3c53,_0x17a40f=Number(_0x20849b[_0x255143(0x208,'\x44\x55\x58\x5b')+'\x6e\x74']);if(!Number[_0x255143(0x1e0,'\x44\x55\x58\x5b')](_0x17a40f)||_0x17a40f<=-0x129e+-0x80+0x131e)return 0x233*0x10+0x1fb*0x10+-0x42df*0x1;return 0x3*-0x15+0x1df4+-0x1db4*0x1+Math[_0x255143(0x1fd,'\x2a\x61\x6b\x70')](_0x17a40f)/(-0x194b+0x2422+-0xac3);}export function scoreSearchResults(_0x489dbd,_0x30c8aa,_0x23c5d4={}){const _0x20fe64=_0x3c53,_0x1b3cf0=_0x23c5d4[_0x20fe64(0x20e,'\x73\x21\x61\x25')],_0xf88bfd=[];for(const _0x26cf50 of _0x30c8aa){if(!_0x26cf50||typeof _0x26cf50[_0x20fe64(0x1d0,'\x30\x4e\x25\x54')]!==_0x20fe64(0x210,'\x69\x31\x61\x29')||_0x26cf50[_0x20fe64(0x1ff,'\x41\x49\x50\x21')]['\x6c\x65\x6e\x67\x74\x68']===0x2156+-0x2594+0x43e)continue;const _0x474e3a=qualityScore(_0x26cf50),_0x15ae99=signalMatchFactor(_0x489dbd,_0x26cf50),_0x36156e=recencyFactor(_0x26cf50,_0x1b3cf0),_0x1e907=reuseFactor(_0x26cf50),_0x813603=Number[_0x20fe64(0x205,'\x64\x2a\x30\x4d')](Number(_0x26cf50[_0x20fe64(0x1cb,'\x62\x6f\x64\x4e')+_0x20fe64(0x1c8,'\x41\x49\x50\x21')+'\x74\x79']))?Math[_0x20fe64(0x1dd,'\x64\x2a\x30\x4d')](Number(_0x26cf50[_0x20fe64(0x1cd,'\x4f\x4c\x56\x5a')+_0x20fe64(0x1fc,'\x40\x5e\x5e\x4d')+'\x74\x79']),-0x88f*-0x3+-0x16*0x146+-0x257*-0x1):0x7ca+-0x859*-0x1+-0x1023,_0x3fafaa=_0x813603*SEMANTIC_SIMILARITY_BONUS,_0x20ab3f=_0x474e3a*_0x15ae99*_0x36156e*_0x1e907+_0x3fafaa;_0xf88bfd[_0x20fe64(0x20b,'\x55\x25\x7a\x29')]({'\x61\x73\x73\x65\x74\x49\x64':_0x26cf50[_0x20fe64(0x1e5,'\x63\x38\x6e\x56')],'\x73\x63\x6f\x72\x65':Math['\x72\x6f\x75\x6e\x64'](_0x20ab3f*(-0x1*0x1799+-0xa*0x7f+-0x1*-0x2077))/(-0x361*0x3+0x1*0x1041+-0x236),'\x72\x65\x61\x73\x6f\x6e\x73':{'\x71\x75\x61\x6c\x69\x74\x79':_0x474e3a,'\x73\x69\x67\x6e\x61\x6c\x4d\x61\x74\x63\x68':_0x15ae99,'\x72\x65\x63\x65\x6e\x63\x79':_0x36156e,'\x73\x65\x6d\x61\x6e\x74\x69\x63\x42\x6f\x6e\x75\x73':_0x3fafaa,'\x72\x65\x75\x73\x65\x46\x61\x63\x74\x6f\x72':_0x1e907},'\x6d\x65\x74\x61\x64\x61\x74\x61':_0x26cf50});}return _0xf88bfd[_0x20fe64(0x1d6,'\x54\x41\x59\x77')]((_0x53354b,_0x5ebc8a)=>_0x5ebc8a[_0x20fe64(0x1d8,'\x53\x63\x56\x52')]-_0x53354b[_0x20fe64(0x1e2,'\x31\x71\x4b\x61')]||(_0x53354b[_0x20fe64(0x1fe,'\x2a\x61\x6b\x70')]<_0x5ebc8a[_0x20fe64(0x1e6,'\x54\x41\x59\x77')]?-(0x105c+-0x1467+0x40c):_0x53354b[_0x20fe64(0x1c6,'\x59\x38\x33\x66')]>_0x5ebc8a[_0x20fe64(0x1f5,'\x44\x4e\x5b\x66')]?-0x2*-0xa0f+-0xe38+-0x5e5*0x1:0x1*0x265b+-0xd0f+0x653*-0x4)),_0xf88bfd;}export function decideReuse(_0x2206b8,_0x3a8660={}){const _0x38209d=_0x3c53,_0x807c20=Number[_0x38209d(0x1d2,'\x4b\x34\x51\x36')](Number(_0x3a8660[_0x38209d(0x1d7,'\x30\x4e\x25\x54')+'\x64']))&&Number(_0x3a8660['\x74\x68\x72\x65\x73\x68\x6f\x6c'+'\x64'])>-0xc4*0x2b+0x17a2+0x2*0x4a5?Number(_0x3a8660['\x74\x68\x72\x65\x73\x68\x6f\x6c'+'\x64']):DEFAULT_MIN_REUSE_SCORE,_0x28af7f=_0x2206b8[_0x38209d(0x206,'\x29\x37\x69\x4b')](_0x22934f=>{const _0x5f3ada=_0x38209d,_0x4a3971=_0x22934f[_0x5f3ada(0x1e4,'\x30\x4e\x25\x54')][_0x5f3ada(0x1c7,'\x61\x65\x26\x51')];return!_0x4a3971||_0x4a3971===_0x5f3ada(0x1e3,'\x40\x5e\x5e\x4d');});let _0x51a81b;for(const _0x5ad4e8 of _0x28af7f)if(!_0x51a81b||_0x5ad4e8['\x73\x63\x6f\x72\x65']>_0x51a81b[_0x38209d(0x202,'\x41\x49\x50\x21')])_0x51a81b=_0x5ad4e8;if(!_0x51a81b||_0x51a81b[_0x38209d(0x1ec,'\x49\x70\x43\x4a')]<_0x807c20)return{'\x61\x63\x74\x69\x6f\x6e':_0x38209d(0x1fa,'\x6e\x33\x30\x6a')+'\x65\x73\x68','\x74\x68\x72\x65\x73\x68\x6f\x6c\x64':_0x807c20,'\x63\x6f\x6e\x73\x69\x64\x65\x72\x65\x64':_0x28af7f[_0x38209d(0x1ef,'\x4e\x48\x6d\x73')]};return{'\x61\x63\x74\x69\x6f\x6e':_0x38209d(0x1da,'\x39\x32\x62\x6b'),'\x63\x61\x6e\x64\x69\x64\x61\x74\x65':_0x51a81b,'\x74\x68\x72\x65\x73\x68\x6f\x6c\x64':_0x807c20,'\x63\x6f\x6e\x73\x69\x64\x65\x72\x65\x64':_0x28af7f['\x6c\x65\x6e\x67\x74\x68']};}
+// Reuse-before-solve DECISION CORE (#110) — pure, hub-agnostic ranking. Ported from v1 hubSearch.js
+// (scoreHubResult / pickBestMatch / getMinReuseScore). Given the local problem signals and the FREE
+// metadata of hub search candidates, this ranks "which candidate is worth getting" and decides whether
+// reusing one is better than solving fresh. It picks AT MOST ONE candidate to fetch.
+//
+// HARD BOUNDARY (acceptance criterion #110): the economic-ownership rule. This file ranks reuse QUALITY and
+// outputs "which asset is worth getting" — it never models the economic dimension of getting it. The paid
+// pull, the economic receipt, and the cache all live in the adapter. An acceptance test greps this file for
+// the economic vocabulary and expects zero hits — so even the comments here avoid those words deliberately.
+//
+// Determinism: scoring is a pure function of the inputs. Recency uses an injected `now` (no Date.now here)
+// so golden tests are reproducible.
+import { tagOverlapScore } from '../signals/expand.js';
+/** Default reuse threshold (ported from v1 DEFAULT_MIN_REUSE_SCORE). The adapter overrides via env. */
+export const DEFAULT_MIN_REUSE_SCORE = 0.72;
+/** Streak cap to prevent unbounded score inflation (ported from v1 MAX_STREAK_CAP). */
+export const MAX_STREAK_CAP = 5;
+/** Weight of the semantic-similarity bonus when the hub provided a vector similarity (ported from v1). */
+export const SEMANTIC_SIMILARITY_BONUS = 0.3;
+/** Weight of the signal-match multiplier: how much local↔candidate signal overlap shapes the rank. */
+export const SIGNAL_MATCH_FLOOR = 0.5;
+/** Recency half-life in days: a candidate that is HALF_LIFE_DAYS old keeps half its recency weight. */
+export const RECENCY_HALF_LIFE_DAYS = 90;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+function clampStreak(raw) {
+    return Math.min(Math.max(Number.isFinite(raw) ? raw : 0, 1), MAX_STREAK_CAP);
+}
+/**
+ * Base hub-quality score (ported faithfully from v1 scoreHubResult):
+ *   quality = confidence × cappedStreak × (reputation/100)
+ * Extended with the optional hub quality multipliers the v2 metadata can carry (gdi / successRate),
+ * each gated so an absent field is neutral (×1), never a penalty.
+ */
+function qualityScore(m) {
+    const confidence = Number.isFinite(Number(m.confidence)) ? Number(m.confidence) : 0;
+    const streak = clampStreak(Number(m.successStreak));
+    const reputation = Number.isFinite(Number(m.reputationScore)) ? Number(m.reputationScore) : 50;
+    let q = confidence * streak * (reputation / 100);
+    // Optional v2 hub quality metadata — multiply in only when present (absent = neutral).
+    if (Number.isFinite(Number(m.gdiScore)))
+        q *= Math.max(Number(m.gdiScore), 0);
+    if (Number.isFinite(Number(m.successRate)))
+        q *= Math.max(Number(m.successRate), 0);
+    return q;
+}
+/**
+ * Signal-match multiplier in [SIGNAL_MATCH_FLOOR..1]. Reuses signals/expand's three-layer matching
+ * (tagOverlapScore) so a '429' local signal still matches a candidate tagged for 'repair'. A zero overlap
+ * does not zero out the rank (the hub already recalled it as relevant) but discounts it to the floor.
+ */
+function signalMatchFactor(localSignals, m) {
+    const overlap = tagOverlapScore(localSignals, {
+        ...(m.signalsMatch ? { signalsMatch: m.signalsMatch } : {}),
+        ...(m.category ? { category: m.category } : {}),
+        ...(m.summary ? { summary: m.summary } : {}),
+    });
+    return SIGNAL_MATCH_FLOOR + (1 - SIGNAL_MATCH_FLOOR) * Math.min(Math.max(overlap, 0), 1);
+}
+/** Exponential time-decay recency multiplier in (0..1]. Absent updatedAt or now → neutral 1.0. */
+function recencyFactor(m, now) {
+    if (!Number.isFinite(Number(m.updatedAt)) || now === undefined)
+        return 1;
+    const ageMs = now - Number(m.updatedAt);
+    if (ageMs <= 0)
+        return 1;
+    const ageDays = ageMs / MS_PER_DAY;
+    return Math.pow(0.5, ageDays / RECENCY_HALF_LIFE_DAYS);
+}
+/** Popularity prior: a gently saturating multiplier from reuseCount (absent → neutral 1.0). */
+function reuseFactor(m) {
+    const n = Number(m.reuseCount);
+    if (!Number.isFinite(n) || n <= 0)
+        return 1;
+    // log1p saturates: 0→1.0, 9→~1.23, 99→~1.46 — popularity helps but never dominates quality.
+    return 1 + Math.log1p(n) / 20;
+}
+/**
+ * Rank free hub search candidates by reuse quality only. Deterministic given (signals, metadata, now).
+ * Returns a new array sorted high→low score; ties are broken by assetId for stable golden output.
+ */
+export function scoreSearchResults(localSignals, hubMetadata, opts = {}) {
+    const now = opts.now;
+    const ranked = [];
+    for (const m of hubMetadata) {
+        if (!m || typeof m.assetId !== 'string' || m.assetId.length === 0)
+            continue;
+        const quality = qualityScore(m);
+        const signalMatch = signalMatchFactor(localSignals, m);
+        const recency = recencyFactor(m, now);
+        const reuse = reuseFactor(m);
+        const sim = Number.isFinite(Number(m.semanticSimilarity)) ? Math.max(Number(m.semanticSimilarity), 0) : 0;
+        const semanticBonus = sim * SEMANTIC_SIMILARITY_BONUS;
+        const raw = quality * signalMatch * recency * reuse + semanticBonus;
+        ranked.push({
+            assetId: m.assetId,
+            score: Math.round(raw * 1000) / 1000,
+            reasons: { quality, signalMatch, recency, semanticBonus, reuseFactor: reuse },
+            metadata: m,
+        });
+    }
+    ranked.sort((a, b) => (b.score - a.score) || (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0));
+    return ranked;
+}
+/**
+ * Decide whether to reuse (port of v1 pickBestMatch): among the ranked candidates, keep only eligible ones
+ * (status promoted or unset), and pick the single highest scorer that clears the threshold. Below threshold
+ * → solve-fresh. Picks AT MOST ONE — the adapter pays to fetch only this winner (or nothing).
+ */
+export function decideReuse(ranked, opts = {}) {
+    const threshold = Number.isFinite(Number(opts.threshold)) && Number(opts.threshold) > 0
+        ? Number(opts.threshold)
+        : DEFAULT_MIN_REUSE_SCORE;
+    // Eligibility: an explicit non-promoted status disqualifies (untrusted/quarantined never auto-reused).
+    const eligible = ranked.filter((r) => {
+        const status = r.metadata.status;
+        return !status || status === 'promoted';
+    });
+    // Pick the max explicitly (don't rely on input order — robust to an unsorted `ranked`).
+    let winner;
+    for (const r of eligible)
+        if (!winner || r.score > winner.score)
+            winner = r;
+    if (!winner || winner.score < threshold) {
+        return { action: 'solve-fresh', threshold, considered: eligible.length };
+    }
+    return { action: 'fetch', candidate: winner, threshold, considered: eligible.length };
+}

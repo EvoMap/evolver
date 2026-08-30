@@ -194,7 +194,8 @@ function isAutoExecVerdict(value, taskId) {
             || candidate.status === 'skipped'
             || candidate.status === 'solidified'
             || candidate.status === 'failed'
-            || candidate.status === 'innovated');
+            || candidate.status === 'innovated'
+            || candidate.status === 'unsafe_to_replay');
 }
 function persistedClaimReceipt(dirs, claim, taskId) {
     try {
@@ -209,7 +210,7 @@ function persistedClaimReceipt(dirs, claim, taskId) {
             || (receipt.destination !== 'done' && receipt.destination !== 'refused')
             || !isAutoExecVerdict(receipt.verdict, taskId))
             return null;
-        const expectedDestination = receipt.verdict.status === 'refused' ? 'refused' : 'done';
+        const expectedDestination = receipt.verdict.status === 'refused' || receipt.verdict.status === 'unsafe_to_replay' ? 'refused' : 'done';
         if (receipt.destination !== expectedDestination)
             return null;
         return receipt;
@@ -329,7 +330,7 @@ export async function autoExecPass(dirs, runOne, options = {}) {
         const startedPath = join(dirs.inflight, startedName);
         renameSync(taskPath, startedPath);
         const v = await runOne(task).catch((e) => ({ taskId: task.id, status: 'failed', reason: e instanceof Error ? e.message : String(e) }));
-        const destination = v.status === 'refused' ? 'refused' : 'done';
+        const destination = v.status === 'refused' || v.status === 'unsafe_to_replay' ? 'refused' : 'done';
         const dest = destination === 'refused' ? dirs.refused : dirs.done;
         persistClaimReceipt(dirs, { claimName: startedName, destination, verdict: v });
         writeFileSync(join(dest, claim.originalName), JSON.stringify(v, null, 2));
@@ -628,7 +629,7 @@ const DISTILL_TICK_EXPLORATION_SIGNALS = ['stable_success_plateau', 'runtime_ses
  * refused/skipped ran no cycle — there is nothing to attribute, so no report.
  */
 export function verdictToOutcomeStatus(status) {
-    if (status === 'solidified' || status === 'innovated')
+    if (status === 'solidified')
         return 'success';
     if (status === 'failed')
         return 'failed';
@@ -1579,8 +1580,20 @@ export async function runAutoExec(argv) {
     const selectionFloor = selectionFloorFromEnv();
     // File-only and best-effort: tracing must never fail or slow a task.
     const learningTrace = resolveLearningTrace(process.env);
+    const executionBindingAuthority = {
+        claimLease: () => false,
+        acceptanceSpec: () => false,
+        budget: () => false,
+        consent: () => false,
+    };
     const deps = withAutoExecSelectionConfig({
         engine, store, provenance, review, personality: personalityStore, memoryGraph,
+        executionBinding: {
+            journal: new exec.ExecutionBindingJournal(ingestor),
+            authority: executionBindingAuthority,
+            now: () => Date.now(),
+            maxRuntimeMs: cfg.timeoutMs,
+        },
         ...(learningTrace.config ? { learningTrace: learningTrace.config } : {}),
         // Probation (#306, gated, default OFF via EVOLVER_GENE_PROBATION): try unproven auto-distilled genes (with their
         // strategy embedded) so the cross-AI loop self-closes — contained by the proven exec gates + worktree isolation.
@@ -1592,13 +1605,32 @@ export async function runAutoExec(argv) {
         // Validate through the hardened sandbox verifier so a validation command can't exfiltrate or phone home to game
         // the result. Validation is bounded by the sandbox's own per-command cap (NOT the agent exec timeout, a
         // different unit) so a long suite is not silently SIGKILL'd against the wrong budget.
-        validate: (task) => async (_m, _d, cwd) => {
+        validate: (task) => async (_m, _d, cwd, signal) => {
             const cmds = task.validationCmds ?? [];
-            const r = await runRequiredSandboxedValidation(cmds, cwd);
+            const bindingRuntimeMs = task.execution_binding?.resource_grant.max_runtime_ms;
+            const safetyRuntimeMs = cfg.timeoutMs;
+            const validationTimeoutMs = bindingRuntimeMs === undefined
+                ? safetyRuntimeMs
+                : Math.min(bindingRuntimeMs, safetyRuntimeMs);
+            const r = await runRequiredSandboxedValidation(cmds, cwd, { timeoutMs: validationTimeoutMs, ...(signal ? { signal } : {}) });
             const validationSummary = summarizeSandboxedValidation(r);
             if (validationSummary)
                 process.stdout.write(`  validation: ${validationSummary}\n`);
-            return { passed: r.passed, score: r.score };
+            return {
+                passed: r.passed,
+                score: r.score,
+                validator: {
+                    id: 'required_sandboxed_validation',
+                    version: 'sandboxed_validation.v1',
+                    status: 'ran',
+                    plan_digest: exec.computeValidationPlanDigest(cmds),
+                    passed: r.passed,
+                    score: r.score,
+                    results: r.results,
+                    skipped: r.skipped,
+                    isolated: r.isolated,
+                },
+            };
         },
     }, process.env);
     const safety = { allowedRoots: cfg.allowedRoots, timeoutMs: cfg.timeoutMs, runner: cfg.runner };

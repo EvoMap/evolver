@@ -28,8 +28,10 @@ interface GateSummary {
     schema?: 'pass' | 'fail';
     bundle?: 'pass' | 'fail';
     quality?: 'pass' | 'fail';
+    quality_evidence?: PublishQualityEvidenceSource;
     validation_command?: 'pass' | 'fail';
 }
+type PublishQualityEvidenceSource = 'local_history' | 'bundle_seed' | 'none' | 'unavailable';
 interface PublishAssetSummary {
     asset_id?: string;
     type?: assetstore.AssetKind;

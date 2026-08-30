@@ -14,6 +14,19 @@ export const MAX_STRATEGY_STEPS = 28;
 const SKILL2GEP_ID_PREFIX = 'gene_s2g_';
 /** Default max-files constraint for a distilled gene (v1 skillDistiller.DISTILLED_MAX_FILES). */
 const SKILL_MAX_FILES = 12;
+const WORKFLOW_SECTION_KEYWORDS = [
+    'workflow', 'strategy', 'steps', 'procedure', 'quick start', 'how to',
+    'human gate', 'output contract', 'release', 'rollback', 'promotion',
+    'process each', 'request process', 'request path',
+    '工作流', '流程', '步骤', '核心方法', '方法', '快速规则', '规则',
+    '输出门', '输出门槛', '人工确认', '人工门', '回滚', '发布', '晋级',
+];
+// 安全与请求章节属于策略，而不是可选说明；丢失它们会让蒸馏后的 Skill 缺少审批和信任边界契约。
+const GOVERNANCE_SECTION_KEYWORDS = [
+    'security', 'safety', 'credential', 'approval', 'adversarial',
+    'trust boundary', 'content isolation', 'untrusted content',
+    'protect x data', 'protect data', 'data protection', 'privacy', 'legal basis', 'consent',
+];
 function sectionHeadingMatches(heading, keyword) {
     if (/^[a-z0-9 ]+$/i.test(keyword)) {
         const forms = keyword === 'verify'
@@ -105,6 +118,49 @@ export function parseSkillMd(skillMd, opts = {}) {
         }
         return steps;
     };
+    /** 将只有 prose 的安全章节中的声明式防护规则保留为有界策略语句。 */
+    const extractGovernanceStatements = (blocks) => {
+        const statements = [];
+        for (const block of blocks) {
+            let fenceMarker;
+            for (const rawLine of String(block || '').split(/\n/)) {
+                const line = rawLine.trim();
+                if (fenceMarker !== undefined) {
+                    const closingFence = line.match(/^(`+|~+)$/);
+                    if (closingFence !== null
+                        && closingFence[1][0] === fenceMarker.char
+                        && closingFence[1].length >= fenceMarker.length) {
+                        fenceMarker = undefined;
+                    }
+                    continue;
+                }
+                const openingFence = line.match(/^(`{3,}|~{3,})(?:.*)?$/);
+                if (openingFence !== null) {
+                    fenceMarker = { char: openingFence[1][0], length: openingFence[1].length };
+                    continue;
+                }
+                if (!line || /^<\/?[A-Z0-9_-]+(?:>|\s)/.test(line))
+                    continue;
+                const listItem = line.match(/^(?:\d+\.|[-*])\s+(.+?)\s*$/);
+                const statement = (listItem ? listItem[1] : line).replace(/^>\s?/, '').trim();
+                if (statement.length >= 5 && statement.length <= 300 && !statements.includes(statement)) {
+                    statements.push(statement);
+                }
+            }
+        }
+        return statements;
+    };
+    const matchingGovernanceBlocks = sectionOccurrences
+        .filter(({ key }) => GOVERNANCE_SECTION_KEYWORDS.some((kw) => sectionHeadingMatches(key, kw)))
+        .map(({ lines: occurrenceLines }) => occurrenceLines.join('\n').trim());
+    const selectStrategySteps = (workflowSteps, governanceSteps) => {
+        const workflow = [...new Set(workflowSteps)];
+        const governance = [...new Set(governanceSteps)];
+        if (workflow.length + governance.length <= MAX_STRATEGY_STEPS)
+            return [...workflow, ...governance];
+        return [...governance.slice(0, MAX_STRATEGY_STEPS), ...workflow]
+            .slice(0, MAX_STRATEGY_STEPS);
+    };
     // --- signals: frontmatter.description + the trigger/when section, tokenized to [a-z0-9_] (3..40, has-letter) ---
     const signals = [];
     const signalSource = (frontmatter['description'] || '') + '\n' + pickSection([
@@ -117,12 +173,7 @@ export function parseSkillMd(skillMd, opts = {}) {
             signals.push(s);
     });
     // --- strategy: workflow + governance-tail sections; avoid: anti-pattern sections ---
-    const strategy = extractSteps(pickSectionsAll([
-        'workflow', 'strategy', 'steps', 'procedure', 'quick start', 'how to',
-        'human gate', 'output contract', 'release', 'rollback', 'promotion',
-        '工作流', '流程', '步骤', '核心方法', '方法', '快速规则', '规则',
-        '输出门', '输出门槛', '人工确认', '人工门', '回滚', '发布', '晋级',
-    ]));
+    const strategy = selectStrategySteps(extractSteps(pickSectionsAll(WORKFLOW_SECTION_KEYWORDS)), extractGovernanceStatements(matchingGovernanceBlocks));
     const avoid = extractSteps(pickSectionsAll([
         'avoid', 'pitfall', 'anti-pattern', 'common mistake', 'do not', 'forbidden', "don't",
         '不要做', '不要', '常见错误', '避免', '陷阱', '禁止',

@@ -4,6 +4,7 @@ import type { ExecutionResult } from '../algo/cycleEngine.js';
 import { type GeneStrategyInfo } from './prompt.js';
 import type { PersonalityStore } from '../personality/store.js';
 import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
+import type { PolicyDecision, ProofReference, ToolDecision, ValidatorEvidence } from './executionBinding.js';
 import { type AgentRunner, type AgentRunnerOptions, type AgentSessionResume, type RunnerName } from './runnerRegistry.js';
 export { resolveSpawnCommand, spawnCapture, DEFAULT_MAX_CAPTURE_BYTES, MAX_AGENT_SESSION_ID_CHARS, AgentSessionResumeError, validateAgentSessionResume, UnboundedSkipPermissionsError, UnsupportedCodexPermissionOptionsError, UnsupportedCursorAllowedToolsError, UnsupportedCursorSkipPermissionsError, UnsupportedCursorWorkspaceTrustError, UnsupportedGeminiPermissionOptionsError, claudeRunnerArgs, makeClaudeHeadlessRunner, claudeHeadlessRunner, codexRunnerArgs, makeCodexHeadlessRunner, cursorRunnerArgs, makeCursorHeadlessRunner, getRunnerSpec, hasBoundedClaudeFileAccess, CLAUDE_SAFE_AUTONOMOUS_TOOLS, geminiRunnerArgs, makeGeminiHeadlessRunner, classifyGeminiRunnerResult, } from './runnerRegistry.js';
 export type { AgentRunContext, AgentRunResult, AgentRunner, RunnerName, AgentRunnerOptions, ClaudeRunnerOptions, CodexRunnerOptions, AgentRunnerSpec, AgentSessionResume, } from './runnerRegistry.js';
@@ -18,13 +19,18 @@ onDestinationOpened?: () => void) => Promise<void>;
 /** Resolve the selected gene's learned strategy (for prompt enrichment). */
 export type GeneResolver = (geneId: string) => Promise<GeneStrategyInfo | null> | GeneStrategyInfo | null;
 /** Decide success from the post-run working tree (e.g. run the gene's validation plan). */
-export type ValidateHook = (mutation: Mutation, decision: GeneDecision, cwd: string) => Promise<{
+export interface ValidateHookResult {
     passed: boolean;
     score?: number;
-}> | {
-    passed: boolean;
-    score?: number;
-};
+    validator?: ValidatorEvidence;
+}
+export type ValidateHook = (mutation: Mutation, decision: GeneDecision, cwd: string, signal: AbortSignal) => Promise<ValidateHookResult> | ValidateHookResult;
+export interface ExecutionObserver {
+    onToolDecision?(decision: ToolDecision, signal?: AbortSignal): Promise<void> | void;
+    onPolicyDecision?(decision: PolicyDecision, signal?: AbortSignal): Promise<void> | void;
+    onValidatorDecision?(decision: ValidatorEvidence, signal?: AbortSignal): Promise<void> | void;
+    onProofReference?(reference: ProofReference, signal?: AbortSignal): Promise<void> | void;
+}
 export interface ExecBridgeOptions {
     /** Working directory the agent edits and git is measured in. */
     cwd: string;
@@ -74,12 +80,20 @@ export interface ExecBridgeOptions {
     timeoutMs?: number;
     /** Cooperative cancellation propagated to the runner process tree. */
     signal?: AbortSignal;
+    /** Binding hard limits are intersected with the existing policy/runner controls; never widen local safety. */
+    executionLimits?: {
+        maxRuntimeMs: number;
+        maxFiles: number;
+        maxLines: number;
+    };
     /** Optional: enrich the prompt with the selected gene's strategy. */
     resolveGene?: GeneResolver;
     /** Optional: validation commands surfaced in the prompt's done-criteria. */
     validationCmds?: readonly string[];
     /** Optional: authoritative success decision after the agent runs. Falls back to "agent ok + produced a diff". */
     validate?: ValidateHook;
+    /** Bound execution provenance observer. Failures are authoritative and fail the execution closed. */
+    executionObserver?: ExecutionObserver;
     /**
      * Optional evolvable personality (use-case ①): when set, the agent prompt gets a behavioral-style block
      * rendered from the store's CURRENT persisted state. CycleEngine's applySelectForRun has already run and
@@ -143,6 +157,14 @@ export declare function scrubAgentEnv(env: NodeJS.ProcessEnv, opts?: {
     allowKeys?: readonly string[];
     allowPrefixes?: readonly string[];
 }): NodeJS.ProcessEnv;
+/**
+ * 绑定执行不能接受无法收到权威截止时间取消信号的旧验证器或写入器。
+ * AbortSignal 本身是协作式的；先拒绝不暴露该信号的回调，避免旧 hook
+ * 被静默地当作无界工作运行。
+ */
+export declare class ExecBridgeCancellationContractError extends Error {
+    constructor(hook: 'validate' | 'gitPatchWriter');
+}
 /** Default git runner: every incomplete command result fails closed. */
 export declare const defaultGitRunner: GitRunner;
 export declare const defaultGitPatchWriter: GitPatchWriter;

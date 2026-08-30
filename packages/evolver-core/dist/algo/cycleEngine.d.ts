@@ -9,6 +9,7 @@ import { type EnvFingerprint } from '../bootstrap/envFingerprint.js';
 import type { PersonalityStore } from '../personality/store.js';
 import { type FailureEvidenceIdentityInput, type ResolutionStatus } from './solidify.js';
 import type { ProofOfWork } from '../schema/proofOfWork.js';
+import type { ExecutionTerminalDisposition, FrozenExecutionBinding, ImmutableExecutionProvenance } from '../exec/executionBinding.js';
 import { type ClassifyRecentEvent } from './cycleFailureClassifier.js';
 import type { MemoryGraphGeneEvidence } from './memoryGraph.js';
 import { type SelectionPolicy } from './ucb1.js';
@@ -24,6 +25,19 @@ export interface ExecutionResult {
         score: number;
         reason?: string;
     };
+    bindingCorrelation?: {
+        bindingDigest: `sha256:${string}`;
+        runId: string;
+    };
+    executionTerminal?: {
+        status: 'success' | 'failed';
+        disposition: ExecutionTerminalDisposition;
+    };
+    provenance?: ImmutableExecutionProvenance;
+    hubLifecycle?: {
+        state: 'not_submitted';
+    };
+    nativeSessionId?: string;
     proofOfWork?: ProofOfWork;
     strongEvidence?: boolean;
     /** Optional logical failure identity supplied by the runner; absent keeps the failure as legacy advisory evidence. */
@@ -43,6 +57,10 @@ export interface ExecutionResult {
 }
 export interface SolidifyPermitContext {
     cycleId: string;
+    bindingDigest?: `sha256:${string}`;
+    runId?: string;
+    executionTerminal?: ExecutionResult['executionTerminal'];
+    provenance?: ImmutableExecutionProvenance;
     geneId: string;
     signals: readonly string[];
     mutation: Mutation;
@@ -112,6 +130,8 @@ export interface CycleInput {
     summary: string;
     confidence: number;
     execute: (mutation: Mutation, decision: GeneDecision) => Promise<ExecutionResult> | ExecutionResult;
+    /** Immutable external execution binding; omitted for legacy local cycles. */
+    executionBinding?: FrozenExecutionBinding;
     /** Optional adapter/runtime permit gate. Runs after execute succeeds and before solidify writes assets. */
     solidifyPermit?: SolidifyPermitGate;
     /**
@@ -145,6 +165,10 @@ export interface CycleInput {
 }
 export interface CycleResult {
     cycleId: string;
+    bindingDigest?: `sha256:${string}`;
+    runId?: string;
+    terminalDisposition?: ExecutionTerminalDisposition;
+    execution?: ExecutionResult;
     triggered: boolean;
     finalStage: CycleStage;
     /** Real CycleEngine returns this on every path; optional keeps injected legacy engines source-compatible. */

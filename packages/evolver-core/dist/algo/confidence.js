@@ -1,1 +1,196 @@
-function _0x4064(){const _0x379354=['\x63\x77\x50\x4a\x57\x34\x4c\x78\x69\x59\x4f','\x41\x43\x6b\x72\x57\x34\x56\x64\x47\x76\x70\x64\x52\x32\x4f\x59\x57\x34\x57\x72\x57\x51\x46\x64\x52\x71','\x57\x37\x42\x63\x54\x76\x39\x7a\x46\x43\x6f\x44\x57\x50\x69','\x6d\x66\x6c\x64\x4f\x6d\x6b\x70\x45\x43\x6f\x43\x75\x38\x6b\x76\x6c\x31\x30','\x45\x58\x4f\x38\x57\x4f\x61\x6a\x57\x35\x33\x63\x50\x57','\x57\x34\x70\x64\x4c\x6d\x6b\x67\x6b\x61','\x57\x34\x68\x64\x4a\x71\x2f\x64\x4f\x6d\x6f\x73\x6c\x59\x6d','\x6a\x48\x76\x45\x57\x50\x64\x64\x4e\x53\x6b\x6c\x6e\x4e\x43','\x65\x33\x54\x4c\x57\x34\x72\x72\x6e\x71','\x7a\x61\x34\x53\x57\x50\x43\x54\x57\x35\x4f','\x79\x71\x74\x63\x56\x53\x6f\x73\x41\x43\x6f\x58','\x62\x49\x5a\x63\x4e\x58\x42\x63\x54\x64\x50\x6c\x77\x6d\x6b\x41\x57\x52\x64\x63\x48\x53\x6b\x45\x78\x57','\x61\x53\x6b\x51\x57\x52\x6a\x78\x6f\x6d\x6f\x65\x57\x51\x79','\x57\x37\x6d\x4b\x57\x52\x56\x64\x55\x53\x6b\x4e\x57\x4f\x69\x7a\x57\x50\x43','\x79\x71\x75\x56\x57\x34\x30\x4e\x57\x37\x47','\x57\x34\x70\x63\x4a\x33\x34\x71\x57\x35\x71\x78\x65\x38\x6b\x32','\x6e\x31\x74\x64\x4f\x6d\x6b\x6f\x75\x43\x6f\x7a\x78\x53\x6b\x74\x64\x75\x71','\x57\x36\x5a\x63\x52\x33\x4c\x66\x42\x53\x6f\x71\x57\x51\x31\x62','\x71\x53\x6f\x55\x57\x51\x34','\x57\x4f\x33\x63\x49\x6d\x6b\x59','\x79\x57\x34\x4d\x78\x5a\x74\x63\x4b\x4a\x44\x77','\x57\x51\x64\x64\x53\x6d\x6b\x62\x44\x38\x6f\x35\x70\x6d\x6f\x33\x7a\x47','\x57\x36\x78\x64\x50\x57\x76\x4a\x62\x62\x57','\x57\x34\x4a\x64\x4c\x38\x6f\x31\x7a\x4e\x52\x64\x4f\x43\x6b\x66\x69\x71','\x57\x4f\x4e\x64\x50\x38\x6f\x79\x65\x38\x6b\x50\x6a\x49\x76\x42','\x6a\x43\x6b\x6c\x75\x6d\x6b\x2f','\x68\x78\x50\x30','\x75\x38\x6b\x49\x57\x51\x4a\x64\x4c\x65\x37\x63\x50\x71','\x57\x52\x64\x64\x4f\x33\x30\x64\x64\x30\x38','\x57\x52\x37\x64\x4c\x38\x6b\x58\x72\x53\x6b\x74\x57\x52\x37\x64\x4a\x58\x33\x63\x4c\x38\x6f\x75\x72\x53\x6b\x63','\x57\x36\x31\x33\x57\x50\x6c\x64\x51\x72\x5a\x63\x4d\x57','\x57\x34\x35\x78\x68\x53\x6b\x4c\x6a\x4a\x58\x78\x57\x51\x53\x37\x42\x43\x6b\x56\x78\x77\x69','\x57\x36\x56\x64\x53\x73\x31\x56\x69\x58\x68\x63\x56\x73\x53','\x63\x43\x6b\x66\x57\x52\x2f\x64\x4c\x30\x64\x63\x4e\x76\x4f','\x7a\x71\x47\x6f\x71\x47','\x57\x52\x78\x63\x4b\x72\x39\x37\x57\x51\x38','\x57\x51\x2f\x63\x49\x58\x54\x39\x57\x51\x34\x47','\x70\x71\x76\x66','\x77\x6d\x6f\x56\x57\x52\x39\x65\x46\x47\x4b','\x57\x35\x4e\x63\x4d\x75\x57','\x57\x36\x37\x63\x47\x53\x6f\x71\x57\x52\x4e\x64\x4a\x53\x6f\x63\x57\x4f\x68\x64\x51\x71','\x57\x52\x78\x64\x55\x6d\x6b\x70\x44\x43\x6f\x42\x70\x38\x6f\x65\x79\x71','\x65\x49\x46\x63\x4d\x74\x4e\x63\x4d\x63\x71\x51\x70\x47','\x57\x52\x6a\x4c\x7a\x43\x6f\x6d\x42\x43\x6f\x71','\x69\x38\x6b\x6c\x76\x38\x6f\x5a\x57\x34\x56\x63\x53\x61','\x57\x36\x79\x53\x57\x52\x78\x64\x55\x6d\x6b\x66\x57\x4f\x65\x51\x57\x50\x61','\x42\x62\x57\x6a\x77\x4a\x2f\x63\x4e\x57','\x70\x38\x6f\x61\x57\x50\x47','\x57\x36\x56\x63\x4c\x53\x6f\x46\x57\x51\x2f\x64\x4a\x53\x6f\x63','\x6f\x57\x44\x79\x57\x4f\x68\x64\x49\x38\x6b\x6b\x6c\x66\x4f','\x57\x36\x48\x5a\x57\x4f\x2f\x64\x51\x72\x42\x63\x4b\x6d\x6f\x63\x7a\x61','\x57\x51\x4e\x64\x4a\x38\x6b\x66\x57\x36\x70\x63\x4b\x38\x6b\x62\x57\x34\x56\x64\x50\x53\x6f\x6a\x61\x38\x6f\x56\x6c\x4e\x4b','\x57\x35\x78\x63\x55\x64\x2f\x63\x54\x6d\x6f\x7a\x57\x50\x5a\x64\x51\x53\x6f\x36','\x57\x34\x48\x43\x67\x6d\x6b\x56\x6c\x4a\x72\x42\x57\x51\x71\x65\x43\x38\x6b\x2f\x43\x78\x65','\x71\x53\x6b\x6c\x6d\x43\x6f\x79\x6a\x4a\x31\x70\x57\x36\x72\x50\x78\x47','\x57\x52\x72\x35\x57\x36\x56\x63\x52\x43\x6f\x57\x57\x35\x58\x52\x57\x52\x42\x63\x49\x53\x6f\x4f\x57\x4f\x44\x71\x73\x57','\x6d\x71\x4c\x41\x57\x50\x42\x64\x49\x6d\x6b\x6d','\x57\x52\x56\x64\x4b\x43\x6b\x32\x72\x38\x6b\x77\x57\x52\x42\x63\x52\x63\x2f\x63\x48\x38\x6f\x50\x72\x6d\x6b\x48\x6c\x61','\x66\x71\x78\x63\x4f\x65\x35\x52\x6b\x47','\x57\x50\x4f\x66\x72\x38\x6f\x36\x43\x32\x61','\x57\x4f\x57\x6c\x77\x71','\x57\x50\x46\x63\x4e\x53\x6b\x61\x57\x51\x75\x77\x57\x50\x72\x36\x57\x35\x57','\x6c\x43\x6f\x71\x57\x50\x33\x63\x48\x58\x70\x63\x52\x61','\x57\x52\x56\x64\x4a\x64\x4c\x56\x6b\x63\x4e\x63\x47\x47','\x57\x36\x69\x2f\x6f\x43\x6b\x61\x75\x43\x6f\x52\x57\x51\x30\x75\x57\x36\x52\x63\x4d\x71','\x57\x50\x2f\x64\x50\x49\x4b','\x71\x78\x68\x64\x4a\x30\x68\x64\x4f\x32\x71\x35\x45\x71','\x57\x37\x52\x64\x56\x48\x44\x56\x45\x53\x6f\x72','\x57\x34\x65\x38\x57\x51\x42\x64\x4e\x53\x6b\x4e','\x68\x73\x42\x63\x53\x64\x30','\x76\x53\x6f\x55\x57\x52\x72\x70\x76\x61\x47','\x77\x6d\x6f\x4f\x57\x52\x65\x65','\x57\x4f\x47\x77\x72\x38\x6f\x37','\x57\x51\x31\x43\x57\x4f\x6d\x61\x43\x6d\x6b\x69','\x76\x43\x6b\x33\x68\x6d\x6f\x31\x79\x74\x61','\x6f\x30\x48\x72\x61\x77\x70\x64\x4a\x57\x4c\x78\x57\x34\x43\x50\x57\x37\x34\x4e','\x57\x50\x74\x64\x54\x6d\x6f\x43\x66\x43\x6b\x53\x6a\x57','\x6e\x53\x6f\x32\x57\x34\x31\x2f\x66\x6d\x6f\x56\x57\x51\x43\x30','\x57\x37\x52\x63\x4c\x53\x6f\x4e\x61\x6d\x6f\x74\x57\x37\x30','\x57\x36\x37\x63\x48\x38\x6f\x59','\x63\x78\x7a\x4e\x57\x34\x72\x74\x70\x62\x39\x51','\x57\x52\x6c\x64\x50\x77\x53\x66\x70\x4b\x4c\x4d\x57\x51\x43','\x78\x53\x6b\x68\x57\x51\x6a\x44','\x57\x51\x2f\x64\x54\x4d\x38\x64\x6f\x30\x47','\x57\x37\x52\x63\x4b\x53\x6f\x68','\x57\x34\x34\x42\x57\x4f\x69\x37\x57\x52\x75\x41\x61\x4e\x79','\x57\x50\x75\x6b\x73\x38\x6f\x4b\x79\x4b\x43\x6e\x57\x50\x30','\x42\x38\x6b\x75\x57\x34\x4e\x64\x47\x31\x70\x64\x51\x57\x54\x5a\x57\x36\x75\x55\x57\x50\x2f\x64\x4d\x6d\x6f\x4a\x43\x57','\x57\x36\x46\x64\x52\x76\x65','\x66\x74\x70\x63\x55\x49\x6c\x63\x48\x4a\x38\x33\x6e\x71','\x7a\x61\x47\x51\x57\x35\x53\x4e','\x57\x34\x6c\x64\x4f\x59\x4a\x63\x4d\x61','\x43\x6d\x6f\x36\x57\x51\x62\x47\x46\x61','\x57\x35\x4e\x63\x49\x76\x53\x41\x57\x35\x38\x6e\x66\x61','\x57\x35\x6d\x76\x57\x4f\x61\x4e\x57\x51\x71\x65\x6c\x78\x65','\x45\x72\x75\x62\x62\x67\x2f\x64\x4a\x71','\x77\x61\x70\x64\x4c\x31\x78\x64\x4b\x43\x6f\x4d\x6c\x31\x30','\x77\x38\x6b\x44\x57\x51\x76\x68'];_0x4064=function(){return _0x379354;};return _0x4064();}(function(_0x273865,_0x21e667){const _0x4d7702=_0x1392,_0x4394c4=_0x273865();while(!![]){try{const _0x2c321b=-parseInt(_0x4d7702(0xc9,'\x70\x63\x76\x25'))/(0xc14*0x1+-0x198a+0xd77)+parseInt(_0x4d7702(0x9b,'\x57\x5d\x4b\x64'))/(-0x11*0x106+-0x26a7*0x1+0x380f)+-parseInt(_0x4d7702(0x8e,'\x54\x6f\x76\x23'))/(-0xb09+0x97c+-0x1*-0x190)*(-parseInt(_0x4d7702(0xbe,'\x6f\x21\x30\x75'))/(0x158*0x5+0x1*-0x19+-0x69b))+parseInt(_0x4d7702(0xb7,'\x57\x5d\x4b\x64'))/(0xb*-0x255+0xb8f*-0x3+0x3c59)+-parseInt(_0x4d7702(0x8a,'\x74\x44\x4d\x24'))/(-0xe9*-0xd+-0x10f*0x20+0x1611)*(-parseInt(_0x4d7702(0xb1,'\x25\x40\x65\x25'))/(-0x736*0x4+0x1*-0x25cf+0x3*0x163a))+-parseInt(_0x4d7702(0x89,'\x58\x44\x21\x48'))/(-0x205*0xb+-0xb7b*-0x1+-0x34*-0x35)+parseInt(_0x4d7702(0xbd,'\x28\x2a\x6f\x49'))/(-0x1369+0xece+-0x4a4*-0x1)*(-parseInt(_0x4d7702(0xd5,'\x72\x34\x79\x71'))/(-0x2b*0x82+-0x204+-0x5f9*-0x4));if(_0x2c321b===_0x21e667)break;else _0x4394c4['push'](_0x4394c4['shift']());}catch(_0x5e9a6e){_0x4394c4['push'](_0x4394c4['shift']());}}}(_0x4064,0x4670a+-0x1*-0x4f805+-0x7*0x1af3));import{createHash}from'\x6e\x6f\x64\x65\x3a\x63\x72\x79\x70\x74\x6f';export const CONFIDENCE_HALF_LIFE_DAYS=-0x1031+-0x1828+0x2877;const MS_PER_DAY=(0x1298+0x9d4+-0x1c54)*(0x2463+-0x15eb+-0xe3c*0x1)*(-0x907+0x508+0x1*0x43b)*(0x1a95+0x18fe+-0x2fab);export function confidenceEdgeKey(_0x4958dc,_0x2e82b0){return _0x4958dc+'\x3a\x3a'+_0x2e82b0;}export function signalFingerprint(_0x29ed65){const _0x439a06=_0x1392,_0x30d292=(Array[_0x439a06(0xe2,'\x5b\x6f\x30\x45')](_0x29ed65)?_0x29ed65:[])[_0x439a06(0xd6,'\x66\x62\x52\x72')](_0x214ad8=>String(_0x214ad8??'')[_0x439a06(0xc6,'\x59\x75\x50\x7a')]())[_0x439a06(0xa9,'\x6f\x21\x30\x75')](_0x375843=>_0x375843['\x6c\x65\x6e\x67\x74\x68']>-0x1*-0x157d+0x22*-0x5e+-0x5*0x1cd),_0xb415cd=Array[_0x439a06(0xc3,'\x37\x25\x33\x72')](new Set(_0x30d292))[_0x439a06(0xd9,'\x6a\x49\x65\x5d')](),_0xaab6bb=_0xb415cd[_0x439a06(0x99,'\x48\x57\x55\x4e')]>0x475*0x1+0x215d+0xce*-0x2f?_0xb415cd[_0x439a06(0xd0,'\x74\x44\x4d\x24')]('\x7c'):_0x439a06(0xc1,'\x74\x7a\x38\x40');return createHash(_0x439a06(0xdd,'\x70\x63\x76\x25'))['\x75\x70\x64\x61\x74\x65'](_0xaab6bb,_0x439a06(0x97,'\x71\x36\x42\x62'))[_0x439a06(0xb6,'\x34\x6a\x4a\x64')](_0x439a06(0xa3,'\x34\x6a\x4a\x64'))[_0x439a06(0xd8,'\x57\x4e\x64\x61')](0x2*-0x1c5+0x1*0x169b+-0x1311*0x1,0x2*-0xbc0+-0x255f+0x13*0x335);}function laplaceSuccessRate(_0x4f844d,_0x21f816){const _0x59d194=_0x4f844d+_0x21f816;return(_0x4f844d+(-0x1c2f+-0xa3f+-0x1*-0x266f))/(_0x59d194+(-0x4*-0xe5+0xaef+-0xe81));}function _0x1392(_0x43f939,_0x3599de){_0x43f939=_0x43f939-(-0x1a*-0x17+-0x1*0x1376+-0xa*-0x1c4);const _0x67c409=_0x4064();let _0x4d3144=_0x67c409[_0x43f939];if(_0x1392['\x47\x68\x77\x69\x67\x50']===undefined){var _0x422f44=function(_0x38c28f){const _0x1a04cb='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x340e05='',_0x3d081b='';for(let _0x5af5a2=-0x9de+0x25d0+0x62*-0x49,_0x1a236f,_0x255a42,_0x1afabe=0x18aa+-0x1042+-0x868;_0x255a42=_0x38c28f['\x63\x68\x61\x72\x41\x74'](_0x1afabe++);~_0x255a42&&(_0x1a236f=_0x5af5a2%(0x123*0x21+-0x1*0x1f4+-0x238b)?_0x1a236f*(0x26a9+-0x58b+-0xe*0x259)+_0x255a42:_0x255a42,_0x5af5a2++%(0x26c5+0x13df+-0x3aa0))?_0x340e05+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](0xe38+0x137*-0x1d+0x1602*0x1&_0x1a236f>>(-(-0x64+-0x2e4+0x34a)*_0x5af5a2&0x1fef+-0x1e8a+-0x15f)):-0x209b+0x10ea+0xd*0x135){_0x255a42=_0x1a04cb['\x69\x6e\x64\x65\x78\x4f\x66'](_0x255a42);}for(let _0x281736=0x13cb+-0x6bf+-0xd0c,_0x1d68d2=_0x340e05['\x6c\x65\x6e\x67\x74\x68'];_0x281736<_0x1d68d2;_0x281736++){_0x3d081b+='\x25'+('\x30\x30'+_0x340e05['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x281736)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](0x266+0xc92*0x3+-0x280c))['\x73\x6c\x69\x63\x65'](-(0x207*-0x6+0x2013+-0x13e7));}return decodeURIComponent(_0x3d081b);};const _0x1d575=function(_0x2a4afd,_0x5a73bd){let _0x38c07b=[],_0x39d977=-0x25*0x40+0x1700+0x40*-0x37,_0x511ce2,_0x24e4d4='';_0x2a4afd=_0x422f44(_0x2a4afd);let _0x57365f;for(_0x57365f=0x427+0x21e8+-0x260f;_0x57365f<-0x1edd*0x1+-0x2526+-0x9*-0x7ab;_0x57365f++){_0x38c07b[_0x57365f]=_0x57365f;}for(_0x57365f=-0x1f66*0x1+0x21ba+-0x254;_0x57365f<0x1*-0x1ffb+-0x214d+0x4248;_0x57365f++){_0x39d977=(_0x39d977+_0x38c07b[_0x57365f]+_0x5a73bd['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x57365f%_0x5a73bd['\x6c\x65\x6e\x67\x74\x68']))%(0xe27+-0x26f5*0x1+0x19ce),_0x511ce2=_0x38c07b[_0x57365f],_0x38c07b[_0x57365f]=_0x38c07b[_0x39d977],_0x38c07b[_0x39d977]=_0x511ce2;}_0x57365f=-0x1828+-0x1ebf+0x5*0xafb,_0x39d977=-0x1f0b+-0x503*0x5+0x381a;for(let _0x1be44e=-0x1b9+0x2644+-0x5*0x74f;_0x1be44e<_0x2a4afd['\x6c\x65\x6e\x67\x74\x68'];_0x1be44e++){_0x57365f=(_0x57365f+(0x1e8*-0x14+-0x2*-0xbab+0xecb))%(-0xbe3+-0x1*-0x157d+0x3*-0x2de),_0x39d977=(_0x39d977+_0x38c07b[_0x57365f])%(0x1385*0x1+0xe45*-0x1+-0x440),_0x511ce2=_0x38c07b[_0x57365f],_0x38c07b[_0x57365f]=_0x38c07b[_0x39d977],_0x38c07b[_0x39d977]=_0x511ce2,_0x24e4d4+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x2a4afd['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x1be44e)^_0x38c07b[(_0x38c07b[_0x57365f]+_0x38c07b[_0x39d977])%(0xa97+0x5*0x569+0x46*-0x86)]);}return _0x24e4d4;};_0x1392['\x58\x59\x66\x7a\x41\x48']=_0x1d575,_0x1392['\x51\x78\x44\x41\x53\x4c']={},_0x1392['\x47\x68\x77\x69\x67\x50']=!![];}const _0xd499be=_0x67c409[0x507+0x105c+-0x1563],_0x232f02=_0x43f939+_0xd499be,_0x161fae=_0x1392['\x51\x78\x44\x41\x53\x4c'][_0x232f02];return!_0x161fae?(_0x1392['\x67\x5a\x41\x66\x55\x58']===undefined&&(_0x1392['\x67\x5a\x41\x66\x55\x58']=!![]),_0x4d3144=_0x1392['\x58\x59\x66\x7a\x41\x48'](_0x4d3144,_0x3599de),_0x1392['\x51\x78\x44\x41\x53\x4c'][_0x232f02]=_0x4d3144):_0x4d3144=_0x161fae,_0x4d3144;}export function decayWeight(_0x19c15a,_0x486df7,_0x252311=CONFIDENCE_HALF_LIFE_DAYS){const _0x3055ac=_0x1392;if(!Number[_0x3055ac(0x92,'\x70\x63\x76\x25')](_0x252311)||_0x252311<=-0x63a+0x6*-0x27f+0xec*0x17)return-0x8d8+-0xb89*0x3+0x2b74;if(!Number[_0x3055ac(0xbb,'\x66\x36\x74\x61')](_0x19c15a)||!Number[_0x3055ac(0x9e,'\x28\x2a\x6f\x49')](_0x486df7))return-0x493+-0x212e+0x25c2;const _0x1f7112=(_0x486df7-_0x19c15a)/MS_PER_DAY;if(!Number[_0x3055ac(0xa8,'\x37\x25\x33\x72')](_0x1f7112)||_0x1f7112<=-0x1852+0x16de+0x174)return 0xa34+-0x55d+-0x4d6;return Math[_0x3055ac(0xba,'\x59\x75\x50\x7a')](-0x2*0x88d+0xead+-0x45*-0x9+0.5,_0x1f7112/_0x252311);}export function deriveConfidenceEdges(_0x1a40e9){const _0x58b082=_0x1392,_0x118a34=new Map();for(const _0x146a89 of _0x1a40e9){if(!_0x146a89||!_0x146a89[_0x58b082(0x9c,'\x30\x4d\x41\x67')]||!_0x146a89[_0x58b082(0x8f,'\x5b\x6f\x30\x45')+'\x6e\x67\x65\x72\x70\x72\x69\x6e'+'\x74'])continue;if(_0x146a89['\x73\x74\x61\x74\x75\x73']!==_0x58b082(0xe0,'\x75\x30\x51\x69')&&_0x146a89[_0x58b082(0xd1,'\x74\x42\x42\x28')]!==_0x58b082(0xac,'\x70\x63\x76\x25')&&_0x146a89[_0x58b082(0xa2,'\x68\x6a\x78\x44')]!==_0x58b082(0xa1,'\x68\x6a\x78\x44'))continue;const _0x192a95=confidenceEdgeKey(_0x146a89[_0x58b082(0x8b,'\x25\x30\x49\x63')+_0x58b082(0xd3,'\x4f\x5e\x30\x39')+'\x74'],_0x146a89[_0x58b082(0x88,'\x54\x6f\x76\x23')]),_0x35010e=_0x118a34[_0x58b082(0xd2,'\x25\x40\x65\x25')](_0x192a95)??{'\x73\x69\x67\x6e\x61\x6c\x46\x69\x6e\x67\x65\x72\x70\x72\x69\x6e\x74':_0x146a89[_0x58b082(0xc0,'\x58\x44\x21\x48')+_0x58b082(0xcf,'\x74\x42\x42\x28')+'\x74'],'\x67\x65\x6e\x65\x49\x64':_0x146a89['\x67\x65\x6e\x65\x49\x64'],'\x73\x75\x63\x63\x65\x73\x73\x43\x6f\x75\x6e\x74':0x0,'\x66\x61\x69\x6c\x43\x6f\x75\x6e\x74':0x0,'\x69\x6e\x65\x72\x74\x43\x6f\x75\x6e\x74':0x0,'\x6c\x61\x73\x74\x41\x74':0x0,'\x62\x61\x73\x65\x43\x6f\x6e\x66\x69\x64\x65\x6e\x63\x65':0x0};if(_0x146a89[_0x58b082(0xcc,'\x57\x5d\x4b\x64')]===_0x58b082(0xdb,'\x56\x70\x33\x21'))_0x35010e[_0x58b082(0xe7,'\x34\x6a\x4a\x64')+_0x58b082(0xdf,'\x74\x44\x4d\x24')]+=0x1*0xe45+-0x132f*-0x1+-0x2173;else{if(_0x146a89[_0x58b082(0xca,'\x33\x5d\x4c\x70')]===_0x58b082(0xb9,'\x59\x75\x50\x7a'))_0x35010e[_0x58b082(0xab,'\x25\x30\x49\x63')+'\x74']+=-0xd71*0x1+-0xac*0x9+0x137e;else _0x35010e[_0x58b082(0xd4,'\x59\x75\x50\x7a')+'\x6e\x74']+=-0x165b+0xc14*0x2+-0x4*0x73;}const _0x1fe086=Number[_0x58b082(0x8d,'\x56\x70\x33\x21')](_0x146a89['\x61\x74'])?_0x146a89['\x61\x74']:0xf77+-0x11c*-0x1c+-0x2e87;if(_0x1fe086>_0x35010e[_0x58b082(0xb8,'\x68\x29\x46\x66')])_0x35010e[_0x58b082(0xe9,'\x79\x37\x52\x72')]=_0x1fe086;_0x118a34[_0x58b082(0x90,'\x78\x26\x46\x47')](_0x192a95,_0x35010e);}for(const _0x48ae77 of _0x118a34[_0x58b082(0x8c,'\x57\x4e\x64\x61')]()){_0x48ae77[_0x58b082(0xb0,'\x30\x4d\x41\x67')+_0x58b082(0xa4,'\x78\x26\x46\x47')]=laplaceSuccessRate(_0x48ae77[_0x58b082(0xde,'\x39\x32\x31\x73')+_0x58b082(0xe5,'\x24\x4a\x48\x61')],_0x48ae77[_0x58b082(0xa7,'\x33\x41\x26\x4b')+'\x74']);}return _0x118a34;}export function confidenceFor(_0x875eac,_0x48e934,_0x1c3351,_0xc89f5f,_0x3a79de=CONFIDENCE_HALF_LIFE_DAYS){const _0x1f67c2=_0x1392,_0xe03361=_0x875eac[_0x1f67c2(0xcd,'\x57\x5d\x4b\x64')](confidenceEdgeKey(_0x48e934,_0x1c3351));if(!_0xe03361)return 0x1*-0x6ad+0x78b+-0xde;if(_0xe03361[_0x1f67c2(0xa6,'\x25\x40\x65\x25')+_0x1f67c2(0xa0,'\x70\x63\x76\x25')]===-0x793*-0x3+-0x1*0x61b+-0x3*0x58a&&_0xe03361[_0x1f67c2(0xcb,'\x45\x73\x25\x40')+'\x74']===0x97f+-0x1749+0x6e5*0x2)return 0x28e+0x1f*-0x9e+-0x1*-0x1094;const _0x579107=decayWeight(_0xe03361[_0x1f67c2(0x9a,'\x74\x42\x42\x28')],_0xc89f5f,_0x3a79de),_0xf85fc0=_0xe03361[_0x1f67c2(0xb2,'\x51\x26\x36\x42')+_0x1f67c2(0xe8,'\x75\x30\x51\x69')]*_0x579107;return _0xf85fc0<-0x2ff*-0xd+0x179*0x11+-0x3ffc?0xb67+0x1f47+-0x25f*0x12:_0xf85fc0>0x13f6+0x2507+-0x412*0xe?-0x10fc+-0x199b+0x2a98:_0xf85fc0;}export const GENE_INERT_BAN_STREAK=0x1164+-0x2379+0x1*0x121d;export const INERT_BAN_OBSERVATION_WINDOW=-0x6a4b+0x2372+0x7d89*0x1;export function trailingInertByEdge(_0x4d3d78){const _0x3180f1=_0x1392,_0x5c9bec=new Map();for(const _0x33a47d of _0x4d3d78){if(_0x3180f1(0xda,'\x78\x26\x46\x47')!==_0x3180f1(0xc2,'\x25\x30\x49\x63'))return _0x32aea2+'\x3a\x3a'+_0x4a07e7;else{if(!_0x33a47d||!_0x33a47d[_0x3180f1(0xc7,'\x5e\x38\x62\x63')]||!_0x33a47d[_0x3180f1(0xce,'\x75\x30\x51\x69')+_0x3180f1(0x96,'\x33\x5d\x4c\x70')+'\x74'])continue;const _0x125bf3=confidenceEdgeKey(_0x33a47d[_0x3180f1(0xdc,'\x4f\x5e\x30\x39')+_0x3180f1(0xd7,'\x37\x25\x33\x72')+'\x74'],_0x33a47d['\x67\x65\x6e\x65\x49\x64']);if(_0x33a47d[_0x3180f1(0xaa,'\x71\x36\x42\x62')]==='\x69\x6e\x65\x72\x74')_0x5c9bec[_0x3180f1(0x91,'\x66\x36\x74\x61')](_0x125bf3,(_0x5c9bec[_0x3180f1(0x98,'\x75\x30\x51\x69')](_0x125bf3)??0x1*0xd01+-0x18c7*0x1+-0x2*-0x5e3)+(0x3*0x61f+-0x7b*-0xc+-0x304*0x8));else{if(_0x33a47d[_0x3180f1(0xbc,'\x72\x34\x79\x71')]===_0x3180f1(0xe4,'\x79\x37\x52\x72')||_0x33a47d[_0x3180f1(0xc8,'\x56\x59\x4e\x67')]==='\x66\x61\x69\x6c\x65\x64')_0x5c9bec[_0x3180f1(0xa5,'\x56\x70\x33\x21')](_0x125bf3,-0x1cc9+0x3c7+0x1902);}}}return _0x5c9bec;}export function inertBannedGeneIds(_0x5dad2f,_0x14b53d,_0x429247,_0x82e2ff=GENE_INERT_BAN_STREAK){const _0x3df0f7=_0x1392,_0x13e82a=trailingInertByEdge(_0x14b53d),_0x4989e7=new Set();for(const _0x4fbe1c of _0x5dad2f[_0x3df0f7(0xae,'\x25\x40\x65\x25')]()){if(_0x4fbe1c[_0x3df0f7(0x93,'\x33\x41\x26\x4b')+_0x3df0f7(0xaf,'\x34\x6a\x4a\x64')+'\x74']!==_0x429247)continue;if(_0x4fbe1c[_0x3df0f7(0x95,'\x43\x78\x68\x34')+_0x3df0f7(0xc5,'\x24\x24\x46\x69')]>0x1c06+0x1*0xf43+-0x62f*0x7)continue;const _0x3f7aeb=confidenceEdgeKey(_0x429247,_0x4fbe1c[_0x3df0f7(0xc4,'\x78\x26\x46\x47')]);if((_0x13e82a[_0x3df0f7(0xbf,'\x40\x4f\x77\x68')](_0x3f7aeb)??0x2f4+-0x296*0x3+0x4ce)>=_0x82e2ff)_0x4989e7[_0x3df0f7(0xad,'\x72\x34\x79\x71')](_0x4fbe1c[_0x3df0f7(0x94,'\x28\x2a\x6f\x49')]);}return _0x4989e7;}
+// Preferred-gene confidence edges (positive cross-cycle learning, ported from v1 src/gep/memoryGraph.js,
+// adapted to v2's derive-from-events model). The negative side (ban / epigenetic penalty) is already ported;
+// this is the missing POSITIVE half: a gene that keeps succeeding under a given signal fingerprint should be
+// nudged UP in ranking for that fingerprint — without ever resurrecting a gene that a hard gate excluded.
+//
+// Sidecar principle (same as epigenetics.ts): edges are DERIVED from the append-only root_events log at
+// selection time. We never mutate an asset, never add an asset field, never persist a separate store — so
+// asset_id stays stable and the edges can be replayed byte-for-byte from the events alone.
+//
+// Edge key: (signalFingerprint, geneId). Edge value: { successCount, failCount, inertCount, lastAt, confidence },
+// where confidence is a Laplace-smoothed, half-life-decayed expected success rate in [0, 1] (port of v1
+// edgeExpectedSuccess). The fingerprint is a stable, deterministic digest of the signal set (port of v1
+// computeSignalKey): sorted, de-duplicated, normalized — so the same signals always map to the same edge.
+//
+// This file also carries the negative #195 half of the same scoring data: an `inert` (zero-work) outcome
+// builds no confidence (tallied apart as inertCount), and `inertBannedGeneIds` bans a gene stuck producing only
+// inert cycles on a signal — so a sole-matching do-nothing gene can no longer dominate `--loop` selection.
+//
+// Purity: no Date.now(), no Math.random(). Time enters only through event timestamps and an injected `now`.
+import { createHash } from 'node:crypto';
+/** Default half-life for confidence decay (days). Aligned with v1 edgeExpectedSuccess half_life_days=30. */
+export const CONFIDENCE_HALF_LIFE_DAYS = 30;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/**
+ * Composite map key for an edge: `<fingerprint>::<geneId>`. The fingerprint is fixed-length hex (no `:`), so
+ * `::` is an unambiguous separator. Exported so callers/tests look edges up the same way they are stored,
+ * instead of hand-building the key string.
+ */
+export function confidenceEdgeKey(signalFingerprint, geneId) {
+    return `${signalFingerprint}::${geneId}`;
+}
+/**
+ * Stable signal fingerprint (port of v1 computeSignalKey): normalize → de-duplicate → sort → digest.
+ * Deterministic and order-independent, so the same signal SET always yields the same fingerprint.
+ * An empty set maps to a fixed sentinel digest so "no signals" is still a well-defined edge key.
+ */
+export function signalFingerprint(signals) {
+    const norm = (Array.isArray(signals) ? signals : [])
+        .map((s) => String(s ?? '').trim())
+        .filter((s) => s.length > 0);
+    const uniqSorted = Array.from(new Set(norm)).sort();
+    const canonical = uniqSorted.length > 0 ? uniqSorted.join('|') : '(none)';
+    // Short, collision-resistant, deterministic. 16 hex chars (64 bits) is ample for an edge key.
+    return createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 16);
+}
+/**
+ * Laplace-smoothed expected success rate (port of v1 edgeExpectedSuccess, smoothing only — decay is separate).
+ * p = (success + 1) / (success + fail + 2). With zero evidence this is 0.5 (a neutral prior), not 0 or 1.
+ */
+function laplaceSuccessRate(success, fail) {
+    const total = success + fail;
+    return (success + 1) / (total + 2);
+}
+/**
+ * Half-life decay weight in (0,1] (port of v1 decayWeight): 0.5^(ageDays / halfLife).
+ * Age is measured from the edge's lastAt to `now`. Future/zero/negative age → no decay (weight 1).
+ */
+export function decayWeight(lastAt, now, halfLifeDays = CONFIDENCE_HALF_LIFE_DAYS) {
+    if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0)
+        return 1;
+    if (!Number.isFinite(lastAt) || !Number.isFinite(now))
+        return 1;
+    const ageDays = (now - lastAt) / MS_PER_DAY;
+    if (!Number.isFinite(ageDays) || ageDays <= 0)
+        return 1;
+    return Math.pow(0.5, ageDays / halfLifeDays);
+}
+/**
+ * Derive confidence edges from a flat list of per-(fingerprint, gene) outcome observations.
+ * Pure and deterministic: the same observations (in any order — we track the max `at` for lastAt) always
+ * produce the same edges. This is the replay primitive — feed it the observations re-extracted from
+ * root_events and you get byte-identical edges back.
+ */
+export function deriveConfidenceEdges(observations) {
+    const map = new Map();
+    for (const o of observations) {
+        if (!o || !o.geneId || !o.signalFingerprint)
+            continue;
+        if (o.status !== 'success' && o.status !== 'failed' && o.status !== 'inert')
+            continue;
+        const k = confidenceEdgeKey(o.signalFingerprint, o.geneId);
+        const cur = map.get(k) ?? {
+            signalFingerprint: o.signalFingerprint,
+            geneId: o.geneId,
+            successCount: 0,
+            failCount: 0,
+            inertCount: 0,
+            lastAt: 0,
+            baseConfidence: 0,
+        };
+        // #195: inert (zero-work) outcomes are tallied apart — they must NOT raise success/fail counts, so they
+        // build no positive confidence. They still advance lastAt (the gene WAS exercised; freshness is real).
+        if (o.status === 'success')
+            cur.successCount += 1;
+        else if (o.status === 'failed')
+            cur.failCount += 1;
+        else
+            cur.inertCount += 1;
+        const at = Number.isFinite(o.at) ? o.at : 0;
+        if (at > cur.lastAt)
+            cur.lastAt = at;
+        map.set(k, cur);
+    }
+    // Finalize baseConfidence once counts are known. Inert outcomes are excluded from the smoothing inputs, so an
+    // all-inert edge has success=0/fail=0 → the neutral 0.5 prior (no climb toward 1.0). Order-independent: the
+    // result is a pure function of the observation SET (counts + max `at`), never their sequence.
+    for (const edge of map.values()) {
+        edge.baseConfidence = laplaceSuccessRate(edge.successCount, edge.failCount);
+    }
+    return map;
+}
+/**
+ * Query the confidence of `geneId` under `signalFingerprint` at time `now`, in [0,1].
+ * = baseConfidence (Laplace-smoothed success rate) × half-life decay weight.
+ * Returns 0 when there is no edge (no history) so a never-tried gene gets no positive nudge —
+ * absence of evidence is not evidence of success — and 0 for a purely-inert edge (only zero-work cycles),
+ * so a do-nothing gene gets the same zero nudge as a never-tried one (#195).
+ */
+export function confidenceFor(edges, signalFingerprint, geneId, now, halfLifeDays = CONFIDENCE_HALF_LIFE_DAYS) {
+    const edge = edges.get(confidenceEdgeKey(signalFingerprint, geneId));
+    if (!edge)
+        return 0;
+    // #195: a purely-inert edge (only zero-work cycles — no real success or failure) carries no positive evidence,
+    // so it must give the SAME zero nudge as a never-tried gene, not the neutral-prior 0.5 (which would leak a
+    // +CONFIDENCE_WEIGHT×0.5 boost and let a do-nothing gene out-rank an equal-health fresh candidate before the
+    // inert ban trips). Mirrors v1's hasPositiveEvidence (success>0) gate. A fail-only edge keeps its small Laplace
+    // nudge unchanged — that is pre-existing v2 behavior, out of #195's scope.
+    if (edge.successCount === 0 && edge.failCount === 0)
+        return 0;
+    const w = decayWeight(edge.lastAt, now, halfLifeDays);
+    const c = edge.baseConfidence * w;
+    return c < 0 ? 0 : c > 1 ? 1 : c;
+}
+/**
+ * Consecutive inert (zero-work) outcomes on a (fingerprint, gene) edge after which a gene with NO real success
+ * on that signal is banned, so `--loop` selection explores instead of re-running a do-nothing gene (#195).
+ * Port of v1 `GENE_INERT_BAN_STREAK` (env `EVOLVER_GENE_INERT_BAN_STREAK`, default 8); kept an inline const to
+ * match v2's algo-tunable convention (BAN_THRESHOLD / MIN_ENV_ATTEMPTS), not env-driven.
+ */
+export const GENE_INERT_BAN_STREAK = 8;
+/**
+ * Observation window (in raw events) over which the inert ban is derived — deliberately MUCH wider than the
+ * small recency window used for confidence SCORING. A banned gene runs as `ad-hoc` and accrues no new
+ * observation for itself, so its trailing inert run must be recomputed from a history wide enough that
+ * intervening innovate/ad-hoc cycles cannot evict it — and cannot evict an earlier real success that exempts
+ * the gene (`successCount > 0`). With a small window the run/exemption age out purely from unrelated cycles, so
+ * the ban flaps: the do-nothing gene resurfaces and the productive gene gets falsely banned (#195 regression).
+ * ~14000 events ≈ 2000 cycles, mirroring v1's multi-hundred-cycle memory-graph read horizon: far past any
+ * realistic flap window, yet still bounded (a long-idle gene's stale success eventually ages out, matching v1).
+ * `EventStore.tail()` reads the entire log regardless of window size, so a larger window costs no extra I/O.
+ */
+export const INERT_BAN_OBSERVATION_WINDOW = 14_000;
+/**
+ * Trailing consecutive-inert run per (fingerprint, gene), keyed by `confidenceEdgeKey`. Unlike
+ * `deriveConfidenceEdges` (a pure function of the observation SET), this is deliberately order-DEPENDENT: it
+ * counts inert outcomes from the most recent backward and ANY real success/failure resets the run to 0 — so a
+ * gene that ever does real work is never punished for older idle cycles. Input MUST be chronological
+ * (oldest→newest, i.e. the order `ingestor.tail` yields); the trailing run is the value left after the final
+ * observation per edge.
+ */
+export function trailingInertByEdge(observations) {
+    const run = new Map();
+    for (const o of observations) {
+        if (!o || !o.geneId || !o.signalFingerprint)
+            continue;
+        const k = confidenceEdgeKey(o.signalFingerprint, o.geneId);
+        if (o.status === 'inert')
+            run.set(k, (run.get(k) ?? 0) + 1);
+        else if (o.status === 'success' || o.status === 'failed')
+            run.set(k, 0); // any real outcome breaks the run
+    }
+    return run;
+}
+/**
+ * Gene ids to ban for the CURRENT signal fingerprint because they are stuck producing inert (zero-work)
+ * cycles (#195). A gene is banned iff, on this fingerprint's edge, its trailing inert run ≥ `streak` AND it has
+ * ZERO real success on this signal (double guard: the consecutive run is reset by any real outcome, and a gene
+ * that ever truly succeeded here keeps successCount > 0). Banning a sole-matching inert gene lets selection
+ * fall through to mutation (selected:null → fresh gene), restoring diversity — the failure-streak ban never
+ * fires on these because nothing "fails". Per-signal, mirroring v1's per-signal-key ban: a gene idle on THIS
+ * signal can still be tried on others.
+ */
+export function inertBannedGeneIds(edges, observations, fingerprint, streak = GENE_INERT_BAN_STREAK) {
+    const trailing = trailingInertByEdge(observations);
+    const banned = new Set();
+    for (const edge of edges.values()) {
+        if (edge.signalFingerprint !== fingerprint)
+            continue;
+        if (edge.successCount > 0)
+            continue; // ever did real work here → never banned for idle cycles
+        const k = confidenceEdgeKey(fingerprint, edge.geneId);
+        if ((trailing.get(k) ?? 0) >= streak)
+            banned.add(edge.geneId);
+    }
+    return banned;
+}

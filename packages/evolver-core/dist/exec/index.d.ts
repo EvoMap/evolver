@@ -5,5 +5,6 @@ export * from './openPrRegistry.js';
 export * from './claudeBridge.js';
 export * from './autonomousCycle.js';
 export * from './autoExec.js';
+export * from './executionBinding.js';
 export * from './selfPr.js';
 export * from './selfPrObfuscation.js';

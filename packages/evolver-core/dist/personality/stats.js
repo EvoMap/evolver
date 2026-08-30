@@ -1,1 +1,82 @@
-(function(_0x386b6c,_0xcd6f47){const _0x51711e=_0x63a7,_0x45ea41=_0x386b6c();while(!![]){try{const _0x15451b=parseInt(_0x51711e(0xd5,'\x4d\x76\x59\x32'))/(-0x1228+0x232e*0x1+-0x1105)+-parseInt(_0x51711e(0xc2,'\x6a\x49\x64\x38'))/(0xfb0+-0x658+-0x956)+-parseInt(_0x51711e(0xca,'\x6e\x56\x6c\x49'))/(-0xf9*0x25+-0x6*0x207+0x2ad*0x12)*(-parseInt(_0x51711e(0xc7,'\x51\x62\x62\x41'))/(-0x4*0x5ce+0xe08+-0x4c*-0x1f))+-parseInt(_0x51711e(0xd1,'\x4b\x67\x75\x75'))/(-0x14db*-0x1+0x403+-0x18d9)+-parseInt(_0x51711e(0xc9,'\x5b\x5b\x4e\x45'))/(0x33f*0x1+-0xd3a+0xa01)*(-parseInt(_0x51711e(0xb2,'\x37\x4b\x24\x66'))/(-0x3b*-0x61+0x1*0x9ac+-0x2000))+parseInt(_0x51711e(0xb4,'\x4b\x67\x75\x75'))/(-0x19e3+-0x9*-0x41d+0x3a*-0x31)+-parseInt(_0x51711e(0xd7,'\x5b\x35\x77\x53'))/(-0x17ad+0x26c3+-0xf0d);if(_0x15451b===_0xcd6f47)break;else _0x45ea41['push'](_0x45ea41['shift']());}catch(_0x7f12d5){_0x45ea41['push'](_0x45ea41['shift']());}}}(_0x5969,-0x1a399*0x5+0x9*-0x1b0bf+0x21dfcc));function _0x5969(){const _0x49cbea=['\x57\x50\x38\x4a\x57\x34\x68\x63\x52\x57','\x69\x75\x4b\x55\x57\x35\x35\x79\x74\x31\x42\x64\x56\x4d\x4b\x56\x57\x34\x68\x63\x4e\x4c\x53','\x6f\x64\x2f\x64\x4c\x5a\x68\x64\x52\x6d\x6b\x43\x57\x36\x70\x63\x4e\x47','\x57\x51\x4a\x64\x4f\x31\x39\x58','\x41\x5a\x4b\x68\x69\x65\x56\x64\x51\x78\x75\x67\x57\x51\x74\x63\x4e\x53\x6f\x36\x57\x52\x46\x64\x49\x47','\x70\x64\x37\x63\x49\x68\x68\x63\x4a\x53\x6f\x6b\x57\x34\x64\x63\x56\x53\x6b\x48\x57\x51\x78\x64\x47\x43\x6b\x61','\x57\x36\x72\x4f\x6b\x4b\x6c\x64\x50\x31\x30\x67\x78\x63\x68\x64\x4a\x6d\x6f\x32\x57\x35\x6c\x63\x50\x61','\x57\x52\x2f\x63\x55\x43\x6f\x6c\x78\x38\x6f\x76\x68\x74\x46\x63\x4e\x76\x42\x63\x56\x6d\x6f\x71\x70\x4e\x30','\x44\x38\x6b\x35\x63\x53\x6b\x33\x57\x4f\x2f\x64\x51\x32\x53','\x57\x34\x47\x6e\x57\x52\x4a\x63\x4d\x66\x33\x63\x4b\x38\x6b\x57\x57\x37\x69','\x57\x50\x74\x64\x4c\x49\x35\x37\x6b\x53\x6b\x66','\x57\x50\x54\x42\x75\x4a\x4c\x37\x69\x43\x6f\x35','\x57\x35\x4e\x64\x54\x53\x6f\x6a\x64\x57\x79','\x57\x37\x50\x6a\x75\x77\x4a\x63\x52\x43\x6b\x72\x57\x37\x58\x31','\x66\x4d\x56\x64\x50\x43\x6b\x4b\x57\x34\x6d\x6c\x57\x51\x4f','\x57\x36\x43\x2f\x78\x6d\x6f\x65\x57\x52\x4e\x64\x4f\x43\x6f\x59\x57\x52\x61','\x61\x4a\x70\x64\x56\x6d\x6f\x59\x78\x43\x6b\x65\x77\x57','\x46\x6d\x6b\x34\x63\x53\x6b\x47\x57\x50\x75','\x62\x63\x42\x63\x4e\x6d\x6f\x4c\x57\x52\x6c\x63\x56\x43\x6b\x33','\x57\x37\x2f\x63\x53\x47\x79\x55\x57\x51\x52\x63\x51\x58\x56\x64\x51\x43\x6f\x6a\x57\x52\x72\x31\x6a\x68\x48\x64','\x57\x50\x71\x43\x73\x31\x4e\x64\x52\x43\x6b\x4f\x57\x35\x65','\x57\x4f\x65\x69\x71\x76\x42\x64\x52\x43\x6b\x2f','\x6b\x31\x69\x57\x63\x53\x6b\x49\x44\x67\x33\x64\x4c\x43\x6f\x54\x57\x50\x75\x61','\x78\x43\x6b\x39\x42\x65\x72\x38','\x69\x4b\x38\x54\x57\x35\x31\x43\x74\x4c\x74\x63\x50\x31\x4b\x66\x57\x35\x56\x63\x4e\x76\x6a\x69','\x6a\x53\x6b\x79\x57\x50\x34\x38\x45\x74\x4a\x63\x50\x76\x6c\x64\x50\x43\x6f\x57\x7a\x71','\x57\x50\x56\x63\x54\x43\x6b\x43\x6c\x48\x38\x6b\x61\x4d\x69\x59','\x42\x43\x6b\x47\x57\x51\x6d','\x57\x37\x78\x64\x52\x53\x6b\x73\x67\x53\x6b\x63','\x41\x32\x2f\x64\x4b\x49\x71','\x44\x38\x6f\x76\x57\x35\x6d','\x79\x61\x58\x52\x75\x6d\x6f\x31','\x43\x47\x4c\x36\x57\x52\x30\x6a\x66\x48\x68\x64\x54\x61','\x57\x35\x71\x6f\x57\x50\x52\x63\x4b\x65\x46\x63\x4e\x38\x6b\x47\x57\x35\x79','\x57\x34\x66\x57\x57\x50\x52\x64\x55\x4b\x5a\x64\x4d\x4a\x62\x30\x75\x53\x6b\x68\x57\x36\x38','\x6e\x43\x6b\x4b\x77\x47\x37\x64\x56\x61','\x45\x58\x5a\x63\x49\x43\x6b\x6b\x57\x34\x61\x36\x73\x71','\x57\x34\x47\x74\x57\x52\x46\x63\x4c\x30\x42\x63\x47\x43\x6b\x36','\x57\x35\x46\x63\x49\x43\x6b\x66\x45\x43\x6b\x32\x57\x50\x31\x34\x57\x4f\x64\x64\x51\x43\x6b\x47\x41\x57','\x79\x32\x68\x64\x4a\x59\x33\x64\x49\x47','\x72\x43\x6f\x52\x57\x34\x72\x6c\x57\x34\x31\x67\x57\x34\x71\x48','\x57\x4f\x4b\x4e\x57\x35\x52\x63\x53\x62\x68\x64\x4d\x62\x76\x6b','\x57\x51\x78\x64\x48\x6d\x6f\x61\x44\x4e\x46\x64\x56\x49\x53','\x79\x5a\x4b\x63\x6a\x65\x4e\x64\x4f\x49\x43\x5a\x57\x50\x4a\x63\x4f\x6d\x6f\x6e\x57\x50\x4b','\x57\x52\x74\x63\x49\x43\x6b\x6b\x46\x43\x6f\x47','\x46\x67\x62\x43\x57\x4f\x35\x55\x57\x34\x64\x63\x52\x43\x6f\x58\x43\x61','\x57\x51\x46\x63\x4c\x74\x75\x79\x65\x43\x6b\x69\x6c\x49\x75','\x57\x36\x4a\x63\x55\x47\x68\x63\x47\x58\x44\x5a\x57\x36\x61','\x57\x52\x64\x63\x4a\x6d\x6f\x43','\x46\x4e\x52\x64\x4d\x4a\x5a\x64\x49\x47','\x57\x51\x7a\x78\x6d\x71\x4b\x35\x43\x38\x6f\x35\x70\x47','\x57\x35\x78\x64\x56\x43\x6b\x4d\x46\x4e\x6e\x68\x63\x53\x6b\x78\x77\x38\x6f\x37\x57\x51\x6c\x64\x4e\x47'];_0x5969=function(){return _0x49cbea;};return _0x5969();}function _0x63a7(_0x5b9515,_0x454eeb){_0x5b9515=_0x5b9515-(-0x1261*-0x1+0x104a+-0x21fc);const _0x240173=_0x5969();let _0x4b2044=_0x240173[_0x5b9515];if(_0x63a7['\x42\x51\x4d\x57\x67\x76']===undefined){var _0x566c29=function(_0x34f1ae){const _0x254e2b='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x4387d4='',_0x16c7db='';for(let _0x37b2ed=0x299+-0x4d8*-0x7+-0x2481,_0x48001d,_0x1f4e8e,_0x2250f1=0xa4f+-0x5f*-0x6+-0xc89;_0x1f4e8e=_0x34f1ae['\x63\x68\x61\x72\x41\x74'](_0x2250f1++);~_0x1f4e8e&&(_0x48001d=_0x37b2ed%(-0x1b*0xc7+-0x1e5c+0x335d)?_0x48001d*(-0x33b+-0x2df*0x3+-0x183*-0x8)+_0x1f4e8e:_0x1f4e8e,_0x37b2ed++%(0x129*-0x9+-0x1*-0x24a1+-0x1a2c))?_0x4387d4+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](-0x5*0x331+0xa0+-0xdc*-0x13&_0x48001d>>(-(-0x9*0x3a6+-0x204d*0x1+0x4125)*_0x37b2ed&0xb31+0xb3f*0x1+-0x166a)):-0x1a1d+0xab2+0xf6b){_0x1f4e8e=_0x254e2b['\x69\x6e\x64\x65\x78\x4f\x66'](_0x1f4e8e);}for(let _0x204da5=-0x3c2*-0xa+-0x1*0x21c1+-0x3d3,_0x3b67df=_0x4387d4['\x6c\x65\x6e\x67\x74\x68'];_0x204da5<_0x3b67df;_0x204da5++){_0x16c7db+='\x25'+('\x30\x30'+_0x4387d4['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x204da5)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](-0x4ca+-0x4c2+0xf6*0xa))['\x73\x6c\x69\x63\x65'](-(-0x321+-0x1f*-0x89+-0xd74));}return decodeURIComponent(_0x16c7db);};const _0x5d1df6=function(_0x6fc8ac,_0x4c55fe){let _0x21f581=[],_0x23e95a=0xbe4*-0x1+0x2*0xf1d+-0x1256,_0x3491eb,_0x10c622='';_0x6fc8ac=_0x566c29(_0x6fc8ac);let _0x57f7f3;for(_0x57f7f3=-0x1*0xb57+0x1e23+-0x12cc;_0x57f7f3<-0x1716*0x1+-0xe2d+-0xcc1*-0x3;_0x57f7f3++){_0x21f581[_0x57f7f3]=_0x57f7f3;}for(_0x57f7f3=-0x102f+-0x161+0x1190;_0x57f7f3<-0xc5b+0x1b4b+-0xdf0;_0x57f7f3++){_0x23e95a=(_0x23e95a+_0x21f581[_0x57f7f3]+_0x4c55fe['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x57f7f3%_0x4c55fe['\x6c\x65\x6e\x67\x74\x68']))%(-0x16da+-0x34f*-0x5+0x74f),_0x3491eb=_0x21f581[_0x57f7f3],_0x21f581[_0x57f7f3]=_0x21f581[_0x23e95a],_0x21f581[_0x23e95a]=_0x3491eb;}_0x57f7f3=0x7f*0x44+0x1669+-0x1*0x3825,_0x23e95a=0x2687*-0x1+-0x20b*-0x5+-0x30*-0x97;for(let _0x330320=-0xf*-0x23f+0x18eb+-0x3a9c;_0x330320<_0x6fc8ac['\x6c\x65\x6e\x67\x74\x68'];_0x330320++){_0x57f7f3=(_0x57f7f3+(-0x1c*-0xa4+0x125f*-0x1+0x70))%(0x92*-0x26+-0x24e7+0x3b93),_0x23e95a=(_0x23e95a+_0x21f581[_0x57f7f3])%(-0xe75+-0x18ae+-0x3*-0xd61),_0x3491eb=_0x21f581[_0x57f7f3],_0x21f581[_0x57f7f3]=_0x21f581[_0x23e95a],_0x21f581[_0x23e95a]=_0x3491eb,_0x10c622+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x6fc8ac['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x330320)^_0x21f581[(_0x21f581[_0x57f7f3]+_0x21f581[_0x23e95a])%(-0xdd2+0xc46*-0x1+0x242*0xc)]);}return _0x10c622;};_0x63a7['\x5a\x6a\x79\x56\x48\x63']=_0x5d1df6,_0x63a7['\x67\x76\x72\x6e\x4d\x71']={},_0x63a7['\x42\x51\x4d\x57\x67\x76']=!![];}const _0xc3d117=_0x240173[-0x58*-0x44+-0x1136*0x1+0x3*-0x20e],_0x3bc381=_0x5b9515+_0xc3d117,_0x127506=_0x63a7['\x67\x76\x72\x6e\x4d\x71'][_0x3bc381];return!_0x127506?(_0x63a7['\x68\x43\x54\x6c\x76\x78']===undefined&&(_0x63a7['\x68\x43\x54\x6c\x76\x78']=!![]),_0x4b2044=_0x63a7['\x5a\x6a\x79\x56\x48\x63'](_0x4b2044,_0x454eeb),_0x63a7['\x67\x76\x72\x6e\x4d\x71'][_0x3bc381]=_0x4b2044):_0x4b2044=_0x127506,_0x4b2044;}import{clamp01,normalizePersonalityState,personalityKey}from'\x2e\x2f\x73\x63\x68\x65\x6d\x61\x2e\x6a\x73';export const MIN_SAMPLES_FOR_BEST=-0x1*0xa6f+-0xc5b+0x16cd;export const SAMPLE_WEIGHT_FULL_AT=-0x16da+-0x34f*-0x5+0x657;export function personalityScore(_0x1da9c2){const _0x5c9174=_0x63a7,_0x440004=Number(_0x1da9c2?.[_0x5c9174(0xdb,'\x67\x49\x73\x68')])||0x7f*0x44+0x1669+-0x1*0x3825,_0x36d6f1=Number(_0x1da9c2?.[_0x5c9174(0xd0,'\x4b\x4c\x51\x28')])||0x2687*-0x1+-0x20b*-0x5+-0x30*-0x97,_0x1b79a7=_0x440004+_0x36d6f1,_0x222eed=(_0x440004+(-0xf*-0x23f+0x18eb+-0x3a9b))/(_0x1b79a7+(-0x1c*-0xa4+0x125f*-0x1+0x71)),_0x59bfce=Math[_0x5c9174(0xcc,'\x29\x6f\x71\x21')](0x92*-0x26+-0x24e7+0x3a94,_0x1b79a7/SAMPLE_WEIGHT_FULL_AT),_0x4e3950=_0x1da9c2?.[_0x5c9174(0xbc,'\x4b\x67\x75\x75')],_0x2ca784=Number[_0x5c9174(0xbd,'\x52\x72\x73\x73')](Number(_0x4e3950))?clamp01(Number(_0x4e3950)):-0xe75+-0x18ae+-0x1*-0x2723+0.5;return _0x222eed*(-0xdd2+0xc46*-0x1+0x343*0x8+0.75)+_0x2ca784*(-0x58*-0x44+-0x1136*0x1+0x3*-0x20e+0.25)*_0x59bfce;}export function chooseBestKnownPersonality(_0x12f013){const _0x763471=_0x63a7;let _0x92581d=null;for(const [_0x3ae115,_0x93ccb3]of Object[_0x763471(0xd8,'\x6f\x21\x51\x39')](_0x12f013??{})){const _0x5a54b4=(Number(_0x93ccb3?.[_0x763471(0xc6,'\x4b\x31\x75\x35')])||0x23f7+0x11b7*0x1+-0x35ae)+(Number(_0x93ccb3?.[_0x763471(0xb9,'\x4d\x76\x59\x32')])||0x1*0x9e5+-0x17f3+-0x101*-0xe);if(_0x5a54b4<MIN_SAMPLES_FOR_BEST)continue;const _0x4476fe=personalityScore(_0x93ccb3);if(!_0x92581d||_0x4476fe>_0x92581d[_0x763471(0xb3,'\x57\x75\x47\x75')])_0x92581d={'\x6b\x65\x79':_0x3ae115,'\x73\x63\x6f\x72\x65':_0x4476fe,'\x65\x6e\x74\x72\x79':_0x93ccb3};}return _0x92581d;}export function updatePersonalityStats(_0x62570f,_0x119c3e,_0x2332a6){const _0x372994=_0x63a7,_0x41a3b1=normalizePersonalityState(_0x119c3e[_0x372994(0xc5,'\x4b\x4c\x51\x28')+_0x372994(0xba,'\x65\x21\x32\x43')]??_0x62570f[_0x372994(0xe0,'\x21\x59\x54\x54')]),_0x787ef9=personalityKey(_0x41a3b1),_0x55aeb8=_0x62570f[_0x372994(0xcd,'\x4d\x76\x59\x32')][_0x787ef9],_0x3ccc38=_0x55aeb8?{..._0x55aeb8}:{'\x73\x75\x63\x63\x65\x73\x73':0x0,'\x66\x61\x69\x6c':0x0,'\x61\x76\x67\x53\x63\x6f\x72\x65':0.5,'\x6e':0x0,'\x75\x70\x64\x61\x74\x65\x64\x41\x74':null},_0x1a5139=String(_0x119c3e[_0x372994(0xe2,'\x23\x70\x52\x28')]??'')['\x74\x6f\x4c\x6f\x77\x65\x72\x43'+_0x372994(0xb7,'\x5e\x56\x4f\x36')]();if(_0x1a5139===_0x372994(0xc0,'\x5e\x70\x34\x34'))_0x3ccc38[_0x372994(0xb0,'\x36\x38\x24\x36')]+=0x690+0x13eb+-0x1a7a;else{if(_0x1a5139===_0x372994(0xda,'\x43\x77\x44\x31'))_0x3ccc38[_0x372994(0xd3,'\x41\x28\x72\x4d')]+=-0x2*-0x4cd+-0x2159+-0xbe*-0x20;}const _0x1f5b23=_0x119c3e[_0x372994(0xbf,'\x71\x64\x63\x52')]==null?null:Number[_0x372994(0xce,'\x59\x62\x40\x6b')](Number(_0x119c3e[_0x372994(0xc8,'\x45\x75\x64\x6b')]))?clamp01(Number(_0x119c3e[_0x372994(0xb8,'\x5b\x35\x77\x53')])):null;if(_0x1f5b23!=null){const _0x4bf186=_0x3ccc38['\x6e']+(0x2101+0x2b9+-0x23b9);_0x3ccc38[_0x372994(0xc4,'\x65\x7a\x4d\x62')]=_0x3ccc38[_0x372994(0xdd,'\x64\x59\x6d\x38')]+(_0x1f5b23-_0x3ccc38[_0x372994(0xdf,'\x6f\x6b\x74\x43')])/_0x4bf186,_0x3ccc38['\x6e']=_0x4bf186;}_0x3ccc38[_0x372994(0xd9,'\x52\x72\x73\x73')+'\x74']=_0x2332a6;const _0x293080={..._0x62570f[_0x372994(0xdc,'\x55\x4b\x4e\x58')],[_0x787ef9]:_0x3ccc38},_0x3c69e8={'\x61\x74':_0x2332a6,'\x6b\x65\x79':_0x787ef9,'\x6f\x75\x74\x63\x6f\x6d\x65':_0x1a5139===_0x372994(0xde,'\x70\x67\x26\x74')||_0x1a5139===_0x372994(0xb1,'\x36\x38\x24\x36')?_0x1a5139:_0x372994(0xc1,'\x52\x72\x73\x73'),'\x73\x63\x6f\x72\x65':_0x1f5b23,'\x6e\x6f\x74\x65\x73':_0x119c3e[_0x372994(0xe1,'\x6f\x21\x51\x39')]?String(_0x119c3e[_0x372994(0xc3,'\x4d\x76\x59\x32')])[_0x372994(0xbb,'\x37\x4b\x24\x66')](-0x62f*-0x5+-0x15*0x4d+-0x86*0x2f,-0x1091+0x671*-0x5+0x31a2):null},_0x3b488d={..._0x62570f,'\x73\x74\x61\x74\x73':_0x293080,'\x68\x69\x73\x74\x6f\x72\x79':[..._0x62570f[_0x372994(0xcb,'\x55\x51\x36\x21')],_0x3c69e8]};return{'\x6d\x6f\x64\x65\x6c':_0x3b488d,'\x6b\x65\x79':_0x787ef9,'\x65\x6e\x74\x72\x79':_0x3ccc38};}
+import { clamp01, normalizePersonalityState, personalityKey, } from './schema.js';
+/**
+ * 人格适应度 + 统计回写 (v1 personalityScore / chooseBestKnownPersonality / updatePersonalityStats 端口).
+ * 自然选择的"适者"由这里的分数决定; 每轮结果回写到对应人格桶, 供下一轮选择.
+ */
+/** 一个桶要参与"最佳已知"竞争的最小样本数 (v1: total<3 不计). */
+export const MIN_SAMPLES_FOR_BEST = 3;
+/** 样本权重饱和点 (v1: min(1, total/8)). */
+export const SAMPLE_WEIGHT_FULL_AT = 8;
+/**
+ * 桶适应度分数 (v1 personalityScore):
+ *  - Laplace 平滑成功率 p = (succ+1)/(total+2)  → 主导 (权重 0.75)
+ *  - 质量代理 q = avgScore, 但乘 sampleWeight 惩罚小样本过度自信 (权重 0.25)
+ */
+export function personalityScore(entry) {
+    const succ = Number(entry?.success) || 0;
+    const fail = Number(entry?.fail) || 0;
+    const total = succ + fail;
+    const p = (succ + 1) / (total + 2);
+    const sampleWeight = Math.min(1, total / SAMPLE_WEIGHT_FULL_AT);
+    const avg = entry?.avgScore;
+    const q = Number.isFinite(Number(avg)) ? clamp01(Number(avg)) : 0.5;
+    return p * 0.75 + q * 0.25 * sampleWeight;
+}
+/**
+ * 选出"最佳已知"人格桶 (v1 chooseBestKnownPersonality): 只在样本≥MIN_SAMPLES_FOR_BEST 的桶里比 personalityScore.
+ * 没有够样本的桶 ⇒ null (选择阶段就不做自然选择微调).
+ */
+export function chooseBestKnownPersonality(stats) {
+    let best = null;
+    for (const [key, entry] of Object.entries(stats ?? {})) {
+        const total = (Number(entry?.success) || 0) + (Number(entry?.fail) || 0);
+        if (total < MIN_SAMPLES_FOR_BEST)
+            continue;
+        const score = personalityScore(entry);
+        if (!best || score > best.score)
+            best = { key, score, entry };
+    }
+    return best;
+}
+/**
+ * 把一轮结果回写到对应人格桶 (v1 updatePersonalityStats 的纯函数版):
+ *  - success/fail 计数 +1
+ *  - avgScore 增量更新 (仅当给了 score): avg += (s-avg)/n
+ *  - history 追加一条 (含 outcome/score/notes)
+ * 返回新 model (不落盘 —— 调用方用 store.save 持久化, 或 applyStatsUpdate 一步到位).
+ */
+export function updatePersonalityStats(model, input, at) {
+    const st = normalizePersonalityState(input.personality ?? model.current);
+    const key = personalityKey(st);
+    const prev = model.stats[key];
+    const entry = prev
+        ? { ...prev }
+        : { success: 0, fail: 0, avgScore: 0.5, n: 0, updatedAt: null };
+    const outcome = String(input.outcome ?? '').toLowerCase();
+    if (outcome === 'success')
+        entry.success += 1;
+    else if (outcome === 'failed')
+        entry.fail += 1;
+    const sc = input.score == null ? null : (Number.isFinite(Number(input.score)) ? clamp01(Number(input.score)) : null);
+    if (sc != null) {
+        const n = entry.n + 1;
+        entry.avgScore = entry.avgScore + (sc - entry.avgScore) / n;
+        entry.n = n;
+    }
+    entry.updatedAt = at;
+    const nextStats = { ...model.stats, [key]: entry };
+    const historyEntry = {
+        at,
+        key,
+        outcome: outcome === 'success' || outcome === 'failed' ? outcome : 'unknown',
+        score: sc,
+        notes: input.notes ? String(input.notes).slice(0, 220) : null,
+    };
+    // v1 parity: 回写只动 stats + history, 不改 model.current —— current 由 select/pivot 决定, 记账不该挪它.
+    const nextModel = {
+        ...model,
+        stats: nextStats,
+        history: [...model.history, historyEntry],
+    };
+    return { model: nextModel, key, entry };
+}

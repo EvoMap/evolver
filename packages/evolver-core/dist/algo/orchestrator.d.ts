@@ -9,6 +9,7 @@ import { type PendingSignalsContext } from '../assetstore/pendingSignals.js';
 import { type ReuseOutcomeSummary, type ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
 import type { MemoryGraphAdvice } from './memoryGraph.js';
 import type { SelectionPolicy } from './ucb1.js';
+import type { FrozenExecutionBinding } from '../exec/executionBinding.js';
 import type { CompatibilityEvidenceIndex } from '../modelCompatibility.js';
 export interface RunCycleOptions {
     cycleId: string;
@@ -32,6 +33,8 @@ export interface RunCycleOptions {
     forcedGeneId?: string;
     /** The agent runtime's work: run the mutation, return the outcome. */
     execute: CycleInput['execute'];
+    /** Immutable external execution binding; omitted for legacy local cycles. */
+    executionBinding?: FrozenExecutionBinding;
     /** Optional triage context forwarded to CycleEngine for cycle.failed classification. */
     failureContext?: CycleInput['failureContext'];
     /** Optional adapter/runtime permit gate. Runs after execute succeeds and before solidify writes assets. */

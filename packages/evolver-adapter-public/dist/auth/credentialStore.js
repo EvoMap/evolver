@@ -19,6 +19,7 @@ export class CredentialStore {
     darwinAclReader;
     windowsParentStateReader;
     linkFile;
+    renameFile;
     // ctime detects in-place ACL drift while dev/ino detects entry replacement.
     securedDirectoryState = null;
     securedCredentialState = null;
@@ -33,6 +34,7 @@ export class CredentialStore {
         this.darwinAclReader = options.darwinAclReader ?? readDarwinAcl;
         this.windowsParentStateReader = options.windowsParentStateReader ?? parentSecurityStates;
         this.linkFile = options.linkFile ?? linkSync;
+        this.renameFile = options.renameFile ?? renameSync;
     }
     load() {
         if (!this.prepareDirectory(false))
@@ -153,7 +155,7 @@ export class CredentialStore {
             this.assertDirectoryIdentity(directory, directoryIdentity);
             if (replaceExisting) {
                 this.assertSafeDestination();
-                renameSync(temporaryPath, this.path);
+                this.renameFile(temporaryPath, this.path);
             }
             else if (!this.publishIfAbsent(temporaryPath)) {
                 const incumbentFd = this.openCredentialFile();

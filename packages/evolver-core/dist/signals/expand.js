@@ -1,1 +1,293 @@
-const _0x3ef7f1=_0x2eff;(function(_0x290151,_0x1058d3){const _0x3f7af5=_0x2eff,_0x29cba9=_0x290151();while(!![]){try{const _0x39a95b=-parseInt(_0x3f7af5(0x170,'\x78\x4f\x63\x6c'))/(0x10*-0x1b6+-0xee8+0x2a49)*(parseInt(_0x3f7af5(0x15a,'\x79\x4e\x35\x31'))/(0xee0+0xe2c+0x4d7*-0x6))+parseInt(_0x3f7af5(0x125,'\x34\x40\x64\x4c'))/(0x7*-0x560+-0x744+0x2ce7)*(parseInt(_0x3f7af5(0xaa,'\x4c\x61\x33\x4d'))/(0x5f1+-0x86*0x3+-0x45b))+parseInt(_0x3f7af5(0x11b,'\x40\x24\x36\x39'))/(-0x25b4+-0x5b5*0x5+0x4242)+parseInt(_0x3f7af5(0x156,'\x48\x41\x62\x4f'))/(0x1962+0x17d6+0x833*-0x6)*(parseInt(_0x3f7af5(0xdc,'\x7a\x45\x24\x54'))/(0xd83*-0x1+0x14b1*-0x1+0x223b))+-parseInt(_0x3f7af5(0xc5,'\x57\x58\x6d\x74'))/(-0x4*-0x835+-0x123b+-0x71*0x21)+parseInt(_0x3f7af5(0x126,'\x55\x21\x49\x54'))/(-0x17a5*-0x1+-0x1ba1+0x405)+parseInt(_0x3f7af5(0x114,'\x36\x4f\x37\x6c'))/(-0xc39+0x1*0x259d+0x195a*-0x1);if(_0x39a95b===_0x1058d3)break;else _0x29cba9['push'](_0x29cba9['shift']());}catch(_0x8ad177){_0x29cba9['push'](_0x29cba9['shift']());}}}(_0x5212,-0x6ab1c+0x1*-0x145289+0x274990));import{createHash}from'\x6e\x6f\x64\x65\x3a\x63\x72\x79\x70\x74\x6f';const SUCCESS_OUTCOME_TAGS=[_0x3ef7f1(0xc3,'\x7a\x29\x5b\x63')+_0x3ef7f1(0x13e,'\x47\x24\x38\x34'),_0x3ef7f1(0x13d,'\x69\x45\x21\x53')+_0x3ef7f1(0x9e,'\x35\x26\x6f\x32'),_0x3ef7f1(0xa5,'\x61\x54\x21\x63')+_0x3ef7f1(0x14e,'\x40\x24\x36\x39')],EXPLICIT_SUCCESS_SIGNALS=new Set([_0x3ef7f1(0x11c,'\x78\x62\x55\x2a')+_0x3ef7f1(0x99,'\x48\x41\x62\x4f')+_0x3ef7f1(0x13a,'\x55\x21\x49\x54'),_0x3ef7f1(0x16b,'\x40\x24\x36\x39')+_0x3ef7f1(0xac,'\x40\x24\x36\x39'),_0x3ef7f1(0xf6,'\x28\x79\x52\x30')+_0x3ef7f1(0x12a,'\x34\x40\x64\x4c')+_0x3ef7f1(0x140,'\x23\x50\x29\x45'),_0x3ef7f1(0xf7,'\x28\x77\x5e\x58'),'\x73\x65\x6c\x66\x5f\x68\x65\x61'+_0x3ef7f1(0xba,'\x55\x21\x49\x54'),_0x3ef7f1(0x154,'\x47\x24\x38\x34')+_0x3ef7f1(0xe7,'\x21\x57\x4c\x6a')+_0x3ef7f1(0xcb,'\x78\x62\x55\x2a'),_0x3ef7f1(0x11a,'\x51\x5a\x2a\x4c')+_0x3ef7f1(0x12f,'\x35\x23\x6f\x33'),_0x3ef7f1(0x106,'\x7a\x45\x24\x54')+_0x3ef7f1(0x123,'\x79\x4b\x62\x63'),_0x3ef7f1(0x148,'\x69\x45\x21\x53')+_0x3ef7f1(0xd3,'\x28\x79\x52\x30')]),EXPANSION_RULES=[{'\x72\x65':/(error|exception|failed|unstable|log_error|runtime|429|错误|异常|エラー|오류|例外|예외|失败|失敗|실패|不稳定|不安定|불안정)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x9f,'\x69\x45\x21\x53')+'\x72\x65\x6c\x69\x61\x62\x69\x6c'+_0x3ef7f1(0xee,'\x30\x6a\x33\x31'),_0x3ef7f1(0xde,'\x48\x41\x62\x4f')+'\x65\x70\x61\x69\x72']},{'\x72\x65':/(protocol|prompt|audit|gep|schema|drift|reusable|协议|プロトコル|프로토콜|提示词|プロンプト|프롬프트|审计|監査|可复用|再利用|재사용|감사로그|감사추적|감사 로그|감사 추적|코드 감사)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x129,'\x48\x4b\x21\x50')+_0x3ef7f1(0xbb,'\x78\x62\x55\x2a'),_0x3ef7f1(0xc6,'\x30\x6a\x33\x31')+_0x3ef7f1(0xa9,'\x2a\x4a\x53\x4d'),'\x61\x72\x65\x61\x3a\x70\x72\x6f'+_0x3ef7f1(0xd8,'\x71\x6c\x38\x2a')]},{'\x72\x65':/(perf|performance|bottleneck|latency|slow|throughput|性能|瓶颈|パフォーマンス|성능|병목)/,'\x74\x61\x67\x73':[_0x3ef7f1(0xad,'\x33\x5b\x72\x61')+_0x3ef7f1(0x109,'\x30\x6a\x33\x31')+'\x6e\x63\x65',_0x3ef7f1(0x98,'\x79\x4e\x35\x31')+'\x70\x74\x69\x6d\x69\x7a\x65']},{'\x72\x65':/(feature|capability_gap|user_feature_request|external_opportunity|stagnation recommendation|功能请求|機能リクエスト|기능요청|能力缺口|機能ギャップ|역량공백|改进建议|改善提案|개선제안|外部机会|外部機会|외부기회)/,'\x74\x61\x67\x73':['\x70\x72\x6f\x62\x6c\x65\x6d\x3a'+_0x3ef7f1(0xe5,'\x35\x26\x6f\x32')+'\x74\x79',_0x3ef7f1(0xff,'\x52\x4c\x6d\x6d')+_0x3ef7f1(0xdd,'\x4b\x76\x79\x4d')]},{'\x72\x65':/(stagnation|(?<!success_)plateau|steady_state|saturation|empty_cycle_loop|loop_detected|recurring)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x177,'\x39\x45\x62\x51')+_0x3ef7f1(0x100,'\x51\x5a\x2a\x4c')+'\x6f\x6e',_0x3ef7f1(0x173,'\x28\x69\x68\x74')+_0x3ef7f1(0xe1,'\x30\x6a\x33\x31')]},{'\x72\x65':/(task|worker|heartbeat|hub|commitment|assignment|orchestration)/,'\x74\x61\x67\x73':[_0x3ef7f1(0xf0,'\x52\x6d\x67\x48')+_0x3ef7f1(0x134,'\x71\x6c\x38\x2a')+'\x6f\x6e']},{'\x72\x65':/(tool_bypass|tool_loop|工具绕过|工具循环|ツール迂回|ツールループ|도구우회|도구반복)/,'\x74\x61\x67\x73':[_0x3ef7f1(0xe2,'\x61\x54\x21\x63')+_0x3ef7f1(0x95,'\x69\x45\x21\x53')+'\x6f\x6e',_0x3ef7f1(0xb8,'\x39\x45\x62\x51')+_0x3ef7f1(0x14a,'\x51\x5a\x2a\x4c')]},{'\x72\x65':/(memory|narrative|reflection)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x96,'\x7a\x29\x5b\x63')+'\x6f\x72\x79']},{'\x72\x65':/(skill|dashboard)/,'\x74\x61\x67\x73':['\x61\x72\x65\x61\x3a\x73\x6b\x69'+_0x3ef7f1(0x165,'\x79\x4b\x62\x63')]},{'\x72\x65':/(context_bloat|context_explosion|context window|token_budget|prompt_budget|上下文爆|上下文预算|token 超限|token超限)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x16a,'\x30\x6a\x33\x31')+_0x3ef7f1(0xca,'\x34\x40\x64\x4c')+_0x3ef7f1(0x9c,'\x21\x57\x4c\x6a'),_0x3ef7f1(0x97,'\x65\x5a\x26\x4b')+_0x3ef7f1(0xd2,'\x44\x7a\x26\x5e'),_0x3ef7f1(0x133,'\x48\x41\x62\x4f')+_0x3ef7f1(0xf3,'\x51\x5a\x2a\x4c')]},{'\x72\x65':/(tool_schema|schema_bloat|mcp_tool_schema|lazy_load_schema|just-in-time schema|工具 schema|工具schema)/,'\x74\x61\x67\x73':[_0x3ef7f1(0xf5,'\x4c\x2a\x53\x36')+_0x3ef7f1(0x101,'\x4c\x61\x33\x4d')+_0x3ef7f1(0x119,'\x35\x26\x6f\x32'),'\x61\x63\x74\x69\x6f\x6e\x3a\x6f'+_0x3ef7f1(0xa9,'\x2a\x4a\x53\x4d'),_0x3ef7f1(0x162,'\x79\x4e\x35\x31')+_0x3ef7f1(0xb3,'\x44\x7a\x26\x5e'),_0x3ef7f1(0x12c,'\x79\x4e\x35\x31')+_0x3ef7f1(0xa4,'\x70\x63\x32\x4a')+'\x6f\x6e']},{'\x72\x65':/(skill_list_bloat|skill_manual_bloat|agent type description|mcp server instructions|skill 列表太长|技能列表太长)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x102,'\x7a\x45\x24\x54')+_0x3ef7f1(0x118,'\x55\x21\x49\x54')+_0x3ef7f1(0x152,'\x47\x24\x38\x34'),_0x3ef7f1(0xed,'\x23\x68\x61\x63')+_0x3ef7f1(0x137,'\x23\x50\x29\x45'),_0x3ef7f1(0x159,'\x35\x23\x6f\x33')+_0x3ef7f1(0xcf,'\x6c\x70\x25\x38'),'\x61\x72\x65\x61\x3a\x70\x72\x6f'+_0x3ef7f1(0x179,'\x36\x4f\x37\x6c')]},{'\x72\x65':/(transcript_bloat|transcript_context_bloat|conversation_handoff|session handoff|pasted transcript|会话上下文就爆|完整转录)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x102,'\x7a\x45\x24\x54')+_0x3ef7f1(0xf2,'\x6a\x43\x23\x64')+_0x3ef7f1(0x121,'\x57\x58\x6d\x74'),_0x3ef7f1(0x105,'\x28\x77\x5e\x58')+_0x3ef7f1(0x122,'\x52\x6d\x67\x48'),_0x3ef7f1(0x136,'\x57\x58\x6d\x74')+_0x3ef7f1(0x135,'\x7a\x45\x24\x54')]},{'\x72\x65':/(validation|canary|rollback|constraint|blast radius|destructive)/,'\x74\x61\x67\x73':[_0x3ef7f1(0x169,'\x61\x54\x21\x63')+_0x3ef7f1(0x128,'\x40\x24\x36\x39')]}];export function expandSignals(_0x489e41,_0x4b8832=''){const _0x1e693e=_0x3ef7f1,_0x576d9f=new Set();for(const _0x442308 of _0x489e41){const _0x44ed65=String(_0x442308);_0x576d9f[_0x1e693e(0x131,'\x78\x62\x55\x2a')](_0x44ed65);const _0x166ce6=_0x44ed65[_0x1e693e(0x150,'\x78\x4f\x63\x6c')]('\x3a')[0x2f*0x6b+-0xf69+-0x43c];if(_0x166ce6&&_0x166ce6!==_0x44ed65)_0x576d9f[_0x1e693e(0x15e,'\x51\x5a\x2a\x4c')](_0x166ce6);}if(_0x489e41[_0x1e693e(0x172,'\x36\x4f\x37\x6c')](_0x174125=>EXPLICIT_SUCCESS_SIGNALS[_0x1e693e(0xfc,'\x71\x6c\x38\x2a')](String(_0x174125)[_0x1e693e(0x13b,'\x6a\x43\x23\x64')]()[_0x1e693e(0x149,'\x42\x47\x78\x4f')+_0x1e693e(0xd5,'\x52\x4c\x6d\x6d')]()['\x6e\x6f\x72\x6d\x61\x6c\x69\x7a'+'\x65'](_0x1e693e(0x141,'\x23\x50\x29\x45'))))){for(const _0x58a829 of SUCCESS_OUTCOME_TAGS)_0x576d9f[_0x1e693e(0xc8,'\x23\x68\x61\x63')](_0x58a829);}const _0x366319=(_0x489e41[_0x1e693e(0xb9,'\x42\x47\x78\x4f')]('\x20')+'\x20'+_0x4b8832)[_0x1e693e(0xa0,'\x57\x58\x6d\x74')+_0x1e693e(0x16e,'\x52\x6d\x67\x48')]()[_0x1e693e(0xab,'\x6a\x43\x23\x64')+'\x65']('\x4e\x46\x4b\x43');for(const _0x37cc97 of EXPANSION_RULES){if(_0x1e693e(0x116,'\x4a\x52\x45\x74')===_0x1e693e(0x168,'\x71\x6c\x38\x2a')){if(_0x37cc97['\x72\x65'][_0x1e693e(0xb2,'\x48\x41\x62\x4f')](_0x366319)){for(const _0x408fdd of _0x37cc97[_0x1e693e(0x112,'\x35\x23\x6f\x33')])_0x576d9f[_0x1e693e(0xd6,'\x52\x4c\x6d\x6d')](_0x408fdd);}}else{const _0x2170ab=new _0x53dea3();for(const _0x505915 of _0x4ccb0a){for(const _0x22d03e of _0x505915)_0x2170ab['\x61\x64\x64'](_0x22d03e);}return new _0x31a128([..._0x2170ab][_0x1e693e(0xfa,'\x44\x7a\x26\x5e')](_0x4e5e89)[_0x1e693e(0x107,'\x23\x68\x61\x63')](0xb66+-0x1*0x4c1+-0x6a5,_0x3ff9fd));}}return[..._0x576d9f];}function tokenize(_0xe4dfc9){const _0xfea1bc=_0x3ef7f1;return _0xe4dfc9[_0xfea1bc(0xf4,'\x47\x24\x38\x34')+_0xfea1bc(0xbc,'\x28\x69\x68\x74')]()[_0xfea1bc(0xeb,'\x4a\x52\x45\x74')+'\x65'](_0xfea1bc(0x16f,'\x79\x4e\x35\x31'))[_0xfea1bc(0x15b,'\x6b\x21\x47\x49')](/[^\p{L}\p{N}]+/u)['\x66\x69\x6c\x74\x65\x72'](_0x6e082c=>_0x6e082c[_0xfea1bc(0x16c,'\x48\x53\x5d\x39')]>=-0x1f5*-0xa+-0x4*0x579+-0x4*-0x95);}export function bagCosine(_0x4c0473,_0x5026cb){const _0x541ca5=_0x3ef7f1,_0x1144ad=new Map(),_0x112f4a=new Map();for(const _0x527def of tokenize(_0x4c0473))_0x1144ad[_0x541ca5(0x103,'\x23\x68\x61\x63')](_0x527def,(_0x1144ad['\x67\x65\x74'](_0x527def)??0xec*-0x1a+0x2*-0x2a5+0x1*0x1d42)+(0xe4c+-0x1e7*-0x9+-0x1f6a));for(const _0x12d764 of tokenize(_0x5026cb))_0x112f4a[_0x541ca5(0x12e,'\x21\x57\x4c\x6a')](_0x12d764,(_0x112f4a[_0x541ca5(0xb6,'\x51\x5a\x2a\x4c')](_0x12d764)??0x40*-0xf+-0x91c+-0xcdc*-0x1)+(0x9*0x24b+-0x7ce+0x1*-0xcd4));if(_0x1144ad[_0x541ca5(0xc7,'\x78\x62\x55\x2a')]===-0x13af+0x1214+-0x3*-0x89||_0x112f4a[_0x541ca5(0x9a,'\x70\x63\x32\x4a')]===0x1*0x85f+0x1210+-0x43*0x65)return-0x1a4a+0x89*-0x4+0x97a*0x3;let _0x5db12d=-0x26ac+0x1de1+0x8cb;for(const [_0x4ba325,_0x475e7c]of _0x1144ad)_0x5db12d+=_0x475e7c*(_0x112f4a[_0x541ca5(0x117,'\x52\x4c\x6d\x6d')](_0x4ba325)??0x2576+-0x1*0x24e1+-0x1*0x95);if(_0x5db12d===-0x3*0x8d9+0xafc+-0x239*-0x7)return-0x774+0x1959+-0x11e5;const _0x3a93dc=_0x51149c=>Math[_0x541ca5(0x160,'\x78\x62\x55\x2a')]([..._0x51149c[_0x541ca5(0x171,'\x78\x62\x55\x2a')]()]['\x72\x65\x64\x75\x63\x65']((_0x195bfc,_0x5a61a9)=>_0x195bfc+_0x5a61a9*_0x5a61a9,-0x19*-0xa3+0x36*-0x6+-0xea7));return _0x5db12d/(_0x3a93dc(_0x1144ad)*_0x3a93dc(_0x112f4a));}export function geneTags(_0x1e1c1f){const _0x47d015=_0x3ef7f1,_0x324060=[];if(_0x1e1c1f[_0x47d015(0x15d,'\x40\x24\x36\x39')])_0x324060[_0x47d015(0xcc,'\x55\x21\x49\x54')](_0x47d015(0xdb,'\x48\x53\x5d\x39')+_0x1e1c1f[_0x47d015(0x10c,'\x6a\x43\x23\x64')][_0x47d015(0xf4,'\x47\x24\x38\x34')+_0x47d015(0x14c,'\x48\x41\x62\x4f')]());if(_0x1e1c1f[_0x47d015(0xe8,'\x6b\x21\x47\x49')+_0x47d015(0x11e,'\x39\x45\x62\x51')])_0x324060[_0x47d015(0xc9,'\x2a\x4a\x53\x4d')](..._0x1e1c1f['\x73\x69\x67\x6e\x61\x6c\x73\x4d'+_0x47d015(0xb5,'\x55\x21\x49\x54')]);if(_0x1e1c1f[_0x47d015(0xf1,'\x42\x47\x78\x4f')])_0x324060[_0x47d015(0xe6,'\x6b\x21\x47\x49')](_0x1e1c1f['\x67\x65\x6e\x65\x49\x64']);if(_0x1e1c1f[_0x47d015(0x12b,'\x35\x26\x6f\x32')])_0x324060['\x70\x75\x73\x68'](_0x1e1c1f[_0x47d015(0x145,'\x40\x24\x36\x39')]);return expandSignals(_0x324060,'');}export function tagOverlapScore(_0x279684,_0x29e40e){const _0x42d687=_0x3ef7f1,_0x2e18a2=expandSignals(_0x279684);if(_0x2e18a2[_0x42d687(0x147,'\x21\x57\x4c\x6a')]===0x25c7+-0x1ad1+0x3d*-0x2e)return 0x2f4+-0x2*0xbbe+0x1488;const _0x18856a=new Set(geneTags(_0x29e40e));if(_0x18856a[_0x42d687(0xc7,'\x78\x62\x55\x2a')]===0x11d0+-0x13c8+0x1f8)return 0x24a1+-0x642+-0x1e5f;let _0x5d19ee=-0x380+-0x591+-0xd3*-0xb;for(const _0x5c9662 of _0x2e18a2)if(_0x18856a[_0x42d687(0x12d,'\x23\x68\x61\x63')](_0x5c9662))_0x5d19ee++;return _0x5d19ee/_0x2e18a2[_0x42d687(0x110,'\x4b\x76\x79\x4d')];}const SEMANTIC_IDF_DOCUMENT_LIMIT=0x15ea+0x82c+-0x1a2e,SEMANTIC_IDF_TEXT_CHARS_PER_DOCUMENT=0x20aa+-0x1f9e+0xae*0x16,SEMANTIC_IDF_TAG_INPUTS_PER_DOCUMENT=-0xe81+0x1906*-0x1+0x19f*0x19,SEMANTIC_IDF_TAG_CHARS=0x1*-0x1a15+0xbf9*-0x1+-0x1507*-0x2,SEMANTIC_IDF_TAGS_PER_DOCUMENT=0x25ba+-0x2172+0x56*-0xc,SEMANTIC_IDF_TOKENS_PER_DOCUMENT=-0x11ee+0x936+0x938,SEMANTIC_IDF_TAG_VOCABULARY_LIMIT=0x1778+0x1e80+0x94*-0x26,SEMANTIC_IDF_TOKEN_VOCABULARY_LIMIT=0xa643*-0x1+-0x38b*-0x1e+-0x1*-0xbbf9;function normalizeSemanticTag(_0x349cd2){const _0x5234f2=_0x3ef7f1;return _0x349cd2[_0x5234f2(0xec,'\x4c\x2a\x53\x36')+'\x65'](_0x5234f2(0x166,'\x36\x4f\x37\x6c'))[_0x5234f2(0x174,'\x23\x50\x29\x45')]()[_0x5234f2(0xea,'\x33\x5b\x72\x61')+_0x5234f2(0x16e,'\x52\x6d\x67\x48')]();}function inverseDocumentFrequency(_0xc9f09f,_0x26f3c3){const _0x4d0993=_0x3ef7f1;return Math[_0x4d0993(0x111,'\x43\x70\x45\x32')](_0xc9f09f/_0x26f3c3);}function tokenFrequency(_0x65ca56){const _0x1bd47b=_0x3ef7f1,_0x2f3228=new Map();for(const _0x13c463 of tokenize(_0x65ca56)){if(_0x1bd47b(0x9b,'\x28\x79\x52\x30')!==_0x1bd47b(0xa1,'\x40\x24\x36\x39')){if(_0x56c7d9['\x72\x65'][_0x1bd47b(0x10a,'\x4b\x76\x79\x4d')](_0x1c6887)){for(const _0x422e3a of _0x1a35b2['\x74\x61\x67\x73'])_0x32dc43['\x61\x64\x64'](_0x422e3a);}}else _0x2f3228[_0x1bd47b(0x146,'\x6b\x21\x47\x49')](_0x13c463,(_0x2f3228[_0x1bd47b(0xa7,'\x4c\x73\x74\x52')](_0x13c463)??-0xa36*0x3+-0x2f5+0x2197*0x1)+(0x1153+0x13de+0x88*-0x46));}return _0x2f3228;}function compareCodeUnits(_0xfdc44a,_0x30a67a){return _0xfdc44a<_0x30a67a?-(-0x1*-0x53+-0xd*0x1d0+0x173e):_0xfdc44a>_0x30a67a?0x76d+-0x99+-0x6d3:0xbbb+-0x10b*0x11+0x600*0x1;}function boundedUnique(_0x5a3013,_0xc8e8ae){const _0x414299=_0x3ef7f1;return[...new Set(_0x5a3013[_0x414299(0xbe,'\x21\x57\x4c\x6a')](Boolean))][_0x414299(0xc0,'\x21\x57\x4c\x6a')](compareCodeUnits)[_0x414299(0x175,'\x4c\x73\x74\x52')](-0x86+0xf0d+-0xe87,_0xc8e8ae);}function boundedVocabulary(_0x533141,_0x4938ea){const _0x8d4cfd=_0x3ef7f1,_0xbec9e1=new Set();for(const _0x27b23f of _0x533141){if(_0x8d4cfd(0x142,'\x47\x24\x38\x34')!==_0x8d4cfd(0xce,'\x28\x79\x52\x30'))_0x3c199b[_0x8d4cfd(0xe3,'\x30\x6a\x33\x31')](_0x8d4cfd(0x143,'\x6a\x43\x23\x64')+_0x3eda75[_0x8d4cfd(0x153,'\x78\x62\x55\x2a')]+'\x3a'+_0x1335b7+'\x3a'+_0x33dcbf+'\x3b',_0x8d4cfd(0xb4,'\x69\x45\x21\x53'));else{for(const _0xfd19c1 of _0x27b23f)_0xbec9e1[_0x8d4cfd(0xc4,'\x2a\x4a\x53\x4d')](_0xfd19c1);}}return new Set([..._0xbec9e1][_0x8d4cfd(0x115,'\x48\x4b\x21\x50')](compareCodeUnits)[_0x8d4cfd(0xd7,'\x6c\x70\x25\x38')](0x235c+-0x2705+0x3a9,_0x4938ea));}function semanticProfileVersion(_0x45eb0e,_0x1a5889,_0xcf8245){const _0x47b9d9=_0x3ef7f1,_0x39befa=createHash(_0x47b9d9(0x14b,'\x43\x70\x45\x32'));_0x39befa[_0x47b9d9(0x138,'\x29\x35\x62\x71')](_0x47b9d9(0x13c,'\x33\x5b\x72\x61')+'\x73\x3a'+_0x45eb0e+'\x3b','\x75\x74\x66\x38');for(const [_0x5c115b,_0x2d2517]of[..._0x1a5889][_0x47b9d9(0xfe,'\x55\x21\x49\x54')](([_0x17f6f6],[_0x2cebfe])=>compareCodeUnits(_0x17f6f6,_0x2cebfe))){_0x39befa['\x75\x70\x64\x61\x74\x65'](_0x47b9d9(0x120,'\x79\x4e\x35\x31')+_0x5c115b[_0x47b9d9(0x110,'\x4b\x76\x79\x4d')]+'\x3a'+_0x5c115b+'\x3a'+_0x2d2517+'\x3b',_0x47b9d9(0xb0,'\x51\x5a\x2a\x4c'));}for(const [_0x33b512,_0x35db69]of[..._0xcf8245][_0x47b9d9(0xc0,'\x21\x57\x4c\x6a')](([_0x5e6baf],[_0x385f84])=>compareCodeUnits(_0x5e6baf,_0x385f84))){if(_0x47b9d9(0xe4,'\x29\x35\x62\x71')===_0x47b9d9(0x144,'\x4b\x76\x79\x4d'))return _0x30299a[_0x47b9d9(0xe0,'\x7a\x45\x24\x54')+'\x65'](_0x47b9d9(0x16d,'\x35\x23\x6f\x33'))[_0x47b9d9(0xae,'\x69\x45\x21\x53')]()[_0x47b9d9(0x15f,'\x6c\x70\x25\x38')+_0x47b9d9(0x139,'\x35\x23\x6f\x33')]();else _0x39befa['\x75\x70\x64\x61\x74\x65'](_0x47b9d9(0x10d,'\x57\x58\x6d\x74')+_0x33b512[_0x47b9d9(0xa6,'\x4c\x61\x33\x4d')]+'\x3a'+_0x33b512+'\x3a'+_0x35db69+'\x3b','\x75\x74\x66\x38');}return _0x47b9d9(0xd9,'\x44\x7a\x26\x5e')+_0x45eb0e+'\x3b\x74\x61\x67\x73\x3d'+_0x1a5889[_0x47b9d9(0xbf,'\x42\x47\x78\x4f')]+_0x47b9d9(0x104,'\x28\x79\x52\x30')+_0xcf8245['\x73\x69\x7a\x65']+_0x47b9d9(0x163,'\x40\x24\x36\x39')+_0x39befa['\x64\x69\x67\x65\x73\x74']('\x68\x65\x78')[_0x47b9d9(0xda,'\x35\x23\x6f\x33')](-0x2404+0x236d*-0x1+-0x1*-0x4771,-0x21c5*-0x1+0x9de*-0x1+-0x17c7);}function _0x2eff(_0x1f65d5,_0x2850ce){_0x1f65d5=_0x1f65d5-(-0x1*-0xe16+-0x17*-0xfe+-0x223*0x11);const _0x4767e5=_0x5212();let _0x5303ed=_0x4767e5[_0x1f65d5];if(_0x2eff['\x4e\x47\x54\x52\x68\x6a']===undefined){var _0x54bfd9=function(_0x3ea003){const _0xa4e52d='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x4321e3='',_0xd44e3f='';for(let _0x19cdc6=0x160f+-0x25d8+0xfc9,_0x19fa93,_0x4cafe8,_0x5ddde2=-0x13b8+-0xac8+0xf4*0x20;_0x4cafe8=_0x3ea003['\x63\x68\x61\x72\x41\x74'](_0x5ddde2++);~_0x4cafe8&&(_0x19fa93=_0x19cdc6%(-0x1*0x122+-0x1*-0x17c9+-0x16a3)?_0x19fa93*(0x70c+-0x11d9*0x1+0x17*0x7b)+_0x4cafe8:_0x4cafe8,_0x19cdc6++%(-0x34+-0x744+0x2*0x3be))?_0x4321e3+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](-0x1087+-0x1cf6+0x7*0x6a4&_0x19fa93>>(-(0x2*0xd3d+0x125f*0x2+-0x6*0xa89)*_0x19cdc6&-0x1c34+-0x1c8e+0x38c8)):0x4cd*-0x5+-0x1b*0xcf+-0x1*-0x2dd6){_0x4cafe8=_0xa4e52d['\x69\x6e\x64\x65\x78\x4f\x66'](_0x4cafe8);}for(let _0x4aed19=-0x1*-0x2329+0x1*-0xc75+-0x16b4,_0x53dea3=_0x4321e3['\x6c\x65\x6e\x67\x74\x68'];_0x4aed19<_0x53dea3;_0x4aed19++){_0xd44e3f+='\x25'+('\x30\x30'+_0x4321e3['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x4aed19)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](0x299+-0x1d6b+0x1ae2))['\x73\x6c\x69\x63\x65'](-(-0xf91+-0x1b83+0x2b16*0x1));}return decodeURIComponent(_0xd44e3f);};const _0xf0e13e=function(_0x4b4b8e,_0x31a128){let _0x4e5e89=[],_0x3ff9fd=-0x9b0*0x4+0x8d*-0x45+0x4cc1,_0x4ccb0a,_0x7e5d17='';_0x4b4b8e=_0x54bfd9(_0x4b4b8e);let _0xc6f0ce;for(_0xc6f0ce=0x2*-0xc02+-0x1a*0x140+0x3884;_0xc6f0ce<-0x22b1+-0x978+0x2d29;_0xc6f0ce++){_0x4e5e89[_0xc6f0ce]=_0xc6f0ce;}for(_0xc6f0ce=-0xcc*0x2+0x2043+-0x1eab;_0xc6f0ce<0x63*-0x1+0x79d+-0x1*0x63a;_0xc6f0ce++){_0x3ff9fd=(_0x3ff9fd+_0x4e5e89[_0xc6f0ce]+_0x31a128['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0xc6f0ce%_0x31a128['\x6c\x65\x6e\x67\x74\x68']))%(0x26cb+0x1*-0x56b+-0x2060),_0x4ccb0a=_0x4e5e89[_0xc6f0ce],_0x4e5e89[_0xc6f0ce]=_0x4e5e89[_0x3ff9fd],_0x4e5e89[_0x3ff9fd]=_0x4ccb0a;}_0xc6f0ce=0x259*0x9+0x28c*0x6+0x2cd*-0xd,_0x3ff9fd=0x1*0x1e62+-0xa4f+-0x1413;for(let _0x25c694=-0xa73+-0x5f8+0x106b;_0x25c694<_0x4b4b8e['\x6c\x65\x6e\x67\x74\x68'];_0x25c694++){_0xc6f0ce=(_0xc6f0ce+(-0x1*0xd8b+-0x1*-0x63+0xd29))%(0x1*0xf2b+0x1334+-0x215f),_0x3ff9fd=(_0x3ff9fd+_0x4e5e89[_0xc6f0ce])%(-0x1abd*-0x1+-0xf21+-0xa9c),_0x4ccb0a=_0x4e5e89[_0xc6f0ce],_0x4e5e89[_0xc6f0ce]=_0x4e5e89[_0x3ff9fd],_0x4e5e89[_0x3ff9fd]=_0x4ccb0a,_0x7e5d17+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x4b4b8e['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x25c694)^_0x4e5e89[(_0x4e5e89[_0xc6f0ce]+_0x4e5e89[_0x3ff9fd])%(0x559+-0xf17+0xabe)]);}return _0x7e5d17;};_0x2eff['\x69\x70\x6e\x54\x52\x4f']=_0xf0e13e,_0x2eff['\x4f\x7a\x77\x57\x76\x79']={},_0x2eff['\x4e\x47\x54\x52\x68\x6a']=!![];}const _0x5ae9ad=_0x4767e5[0x9d1+-0xe*-0xd5+0x9d*-0x23],_0x31476c=_0x1f65d5+_0x5ae9ad,_0x223b2b=_0x2eff['\x4f\x7a\x77\x57\x76\x79'][_0x31476c];return!_0x223b2b?(_0x2eff['\x65\x51\x53\x43\x61\x66']===undefined&&(_0x2eff['\x65\x51\x53\x43\x61\x66']=!![]),_0x5303ed=_0x2eff['\x69\x70\x6e\x54\x52\x4f'](_0x5303ed,_0x2850ce),_0x2eff['\x4f\x7a\x77\x57\x76\x79'][_0x31476c]=_0x5303ed):_0x5303ed=_0x223b2b,_0x5303ed;}function _0x5212(){const _0x3bf0e7=['\x63\x38\x6b\x38\x62\x53\x6f\x42\x66\x57','\x57\x35\x35\x52\x57\x37\x75','\x57\x4f\x70\x64\x4b\x38\x6b\x5a\x57\x52\x61\x42\x45\x72\x64\x63\x52\x71','\x71\x77\x76\x66','\x67\x6d\x6f\x6e\x57\x37\x31\x42\x43\x67\x62\x6c\x6f\x47','\x77\x6d\x6f\x42\x79\x65\x47','\x74\x67\x72\x70\x57\x36\x62\x61\x57\x4f\x69','\x67\x78\x68\x63\x47\x71\x6c\x63\x4e\x6d\x6f\x68\x57\x34\x68\x64\x53\x47','\x57\x35\x56\x64\x47\x43\x6b\x56\x57\x52\x72\x6f\x69\x31\x74\x64\x51\x71','\x63\x43\x6f\x61\x57\x35\x71','\x57\x35\x65\x33\x46\x61','\x6a\x38\x6b\x33\x57\x34\x37\x64\x4d\x47','\x57\x36\x69\x69\x46\x57\x52\x63\x47\x57','\x57\x34\x39\x4e\x57\x35\x4c\x4e\x41\x57','\x57\x50\x4e\x63\x50\x77\x53\x6c\x57\x4f\x56\x64\x4f\x43\x6b\x58\x72\x61','\x57\x50\x48\x48\x57\x34\x44\x6d\x57\x4f\x6c\x64\x55\x67\x4a\x64\x4a\x47','\x57\x4f\x4e\x64\x47\x43\x6b\x30\x57\x51\x61\x7a\x73\x72\x64\x63\x53\x71','\x63\x43\x6b\x4a\x57\x52\x68\x63\x4d\x73\x79\x67','\x57\x36\x7a\x76\x57\x51\x2f\x64\x52\x71','\x57\x35\x68\x64\x52\x30\x61','\x6e\x4b\x78\x63\x52\x59\x61','\x57\x34\x7a\x73\x57\x51\x31\x76\x6e\x6d\x6f\x37\x57\x34\x46\x64\x4f\x43\x6b\x75\x69\x76\x62\x6f','\x78\x43\x6f\x6c\x46\x4b\x4e\x64\x55\x43\x6b\x38','\x67\x53\x6b\x45\x57\x36\x4a\x64\x56\x61','\x73\x31\x78\x64\x55\x53\x6b\x4a\x57\x50\x50\x71\x66\x38\x6b\x77','\x57\x52\x52\x63\x4a\x78\x4c\x79','\x57\x52\x74\x64\x53\x57\x78\x64\x4a\x68\x53','\x78\x38\x6f\x66\x45\x76\x4e\x64\x53\x53\x6b\x67\x57\x50\x43\x66','\x57\x35\x54\x51\x57\x35\x6e\x52\x65\x4b\x5a\x63\x54\x31\x69','\x74\x5a\x48\x64\x57\x35\x71','\x62\x6d\x6b\x62\x57\x37\x65','\x68\x43\x6f\x41\x57\x35\x30\x4d\x42\x4d\x35\x63\x57\x4f\x53','\x57\x51\x30\x73\x62\x65\x2f\x64\x4b\x73\x4f\x73\x57\x50\x79','\x46\x38\x6f\x4b\x57\x35\x33\x63\x53\x43\x6f\x61\x57\x51\x76\x48\x57\x4f\x4b','\x67\x77\x64\x63\x4b\x61\x52\x64\x49\x43\x6f\x7a\x57\x4f\x4e\x64\x53\x47','\x6f\x6d\x6f\x2b\x57\x50\x56\x63\x54\x77\x58\x31\x57\x4f\x42\x63\x4d\x71','\x66\x74\x58\x49\x57\x37\x53','\x57\x36\x4b\x6b\x6d\x43\x6f\x4e\x66\x57','\x57\x37\x4e\x63\x4b\x61\x65\x47\x64\x67\x4f','\x71\x67\x76\x72\x57\x51\x43','\x57\x35\x33\x64\x49\x38\x6b\x47\x66\x53\x6b\x2b\x57\x4f\x74\x63\x49\x57','\x62\x43\x6f\x6e\x57\x34\x65\x57\x43\x67\x50\x42\x57\x35\x47','\x64\x53\x6f\x6b\x57\x36\x58\x6f\x57\x50\x52\x64\x50\x38\x6b\x74\x70\x47','\x57\x52\x78\x64\x53\x38\x6b\x50\x57\x50\x53\x32','\x57\x37\x78\x63\x51\x66\x52\x63\x4d\x59\x56\x63\x50\x6d\x6f\x43\x57\x36\x4e\x64\x50\x4c\x74\x63\x51\x6d\x6f\x68','\x57\x50\x69\x51\x46\x71\x34','\x64\x4a\x62\x52\x57\x36\x52\x64\x49\x75\x46\x64\x55\x6d\x6f\x61','\x57\x4f\x52\x63\x52\x32\x57\x6a\x57\x35\x37\x64\x55\x43\x6f\x51\x71\x71','\x57\x51\x70\x64\x52\x49\x53\x73\x57\x36\x6c\x63\x51\x61','\x57\x51\x64\x64\x55\x48\x47','\x74\x32\x4f\x41','\x57\x52\x31\x56\x57\x50\x75\x4e\x6d\x67\x6c\x64\x54\x71','\x57\x37\x56\x64\x51\x47\x71\x4a\x57\x35\x68\x63\x54\x30\x6d','\x57\x36\x61\x2f\x74\x49\x37\x64\x55\x43\x6b\x75\x57\x35\x46\x63\x4f\x57','\x57\x50\x70\x64\x4e\x43\x6b\x52\x57\x51\x6d\x7a\x43\x47','\x57\x35\x79\x66\x57\x37\x57\x38\x69\x4c\x50\x42\x6a\x47','\x61\x43\x6f\x6e\x57\x34\x43\x2f','\x72\x38\x6b\x6f\x57\x50\x6d','\x76\x78\x76\x68\x57\x52\x38','\x69\x66\x4e\x63\x48\x57\x33\x64\x56\x57','\x70\x53\x6f\x2b\x57\x4f\x4e\x63\x50\x71','\x71\x6d\x6b\x4a\x6e\x61','\x61\x6d\x6f\x6c\x57\x34\x48\x51','\x61\x57\x64\x63\x4e\x38\x6f\x44','\x72\x32\x72\x76','\x57\x34\x4b\x2b\x44\x38\x6f\x7a','\x57\x35\x4c\x58\x57\x34\x39\x49\x72\x66\x2f\x63\x55\x57\x71','\x57\x36\x2f\x63\x4e\x6d\x6b\x64\x57\x34\x47','\x64\x48\x68\x63\x4d\x61','\x77\x38\x6f\x79\x46\x75\x4a\x64\x53\x38\x6b\x53\x57\x50\x57\x70','\x73\x30\x78\x64\x51\x57','\x57\x4f\x33\x63\x4b\x67\x76\x42\x43\x57','\x57\x37\x33\x63\x4a\x61\x4b\x5a\x64\x67\x57','\x57\x37\x42\x63\x4d\x53\x6b\x71\x57\x34\x6d','\x57\x36\x4a\x63\x49\x48\x43\x5a','\x57\x50\x2f\x63\x52\x78\x38\x74','\x57\x36\x53\x39\x73\x4a\x53','\x57\x52\x38\x6a\x62\x4b\x64\x63\x49\x49\x54\x6e\x57\x4f\x47','\x57\x51\x58\x2f\x57\x50\x47','\x73\x38\x6b\x78\x57\x50\x79\x74\x57\x35\x56\x63\x54\x43\x6f\x75\x74\x32\x74\x64\x54\x59\x39\x61\x70\x43\x6f\x5a','\x57\x4f\x4c\x57\x57\x35\x58\x68\x57\x4f\x68\x64\x53\x5a\x2f\x63\x4d\x57','\x77\x6d\x6f\x64\x41\x66\x4b','\x77\x4a\x31\x61','\x57\x52\x31\x55\x57\x4f\x38\x49','\x71\x38\x6b\x65\x57\x4f\x4c\x6b\x6d\x62\x5a\x63\x4b\x43\x6b\x49','\x72\x38\x6f\x6c\x7a\x4c\x4e\x64\x56\x43\x6b\x36','\x65\x47\x68\x63\x4a\x38\x6f\x44','\x57\x37\x57\x4a\x77\x5a\x52\x63\x48\x38\x6b\x4d\x45\x48\x65','\x57\x35\x43\x38\x65\x6d\x6f\x69\x6b\x71','\x61\x6d\x6f\x6f\x57\x34\x69','\x57\x51\x4c\x39\x63\x4e\x5a\x64\x4e\x38\x6f\x5a\x6c\x66\x75\x34\x57\x52\x30\x4d\x46\x72\x2f\x64\x49\x57','\x63\x4d\x53\x73\x57\x50\x76\x59\x44\x66\x69\x6c\x78\x43\x6f\x47\x57\x52\x78\x63\x51\x43\x6b\x77\x74\x61','\x78\x43\x6b\x4e\x6b\x43\x6f\x6c\x57\x37\x58\x6d\x57\x34\x47','\x57\x36\x6d\x34\x6b\x53\x6f\x6b\x70\x48\x6c\x63\x55\x43\x6b\x68','\x73\x38\x6b\x43\x57\x50\x47\x7a\x57\x35\x56\x63\x54\x6d\x6f\x71\x62\x67\x68\x64\x54\x74\x48\x6a\x6a\x61','\x57\x52\x6d\x44\x57\x37\x30','\x57\x52\x6d\x6b\x57\x37\x57','\x68\x38\x6f\x6f\x57\x35\x48\x78\x79\x47','\x57\x35\x6a\x2f\x57\x36\x75','\x72\x6d\x6b\x33\x6a\x53\x6b\x6c\x57\x51\x43\x6d\x57\x34\x70\x63\x48\x47','\x57\x35\x54\x2f\x57\x4f\x33\x64\x4a\x75\x71','\x62\x6d\x6b\x4c\x57\x51\x56\x63\x4c\x5a\x30\x61\x63\x57','\x72\x38\x6b\x6c\x6f\x75\x42\x64\x48\x6d\x6f\x4e\x44\x57\x53\x6f\x57\x34\x46\x64\x56\x4a\x4b','\x57\x37\x79\x49\x76\x5a\x4e\x63\x49\x38\x6b\x33\x43\x71','\x6b\x38\x6f\x34\x57\x4f\x37\x63\x55\x68\x50\x65\x57\x34\x37\x63\x4a\x47','\x72\x4d\x38\x6e','\x67\x38\x6f\x74\x46\x72\x2f\x63\x4b\x6d\x6b\x5a\x75\x62\x6d','\x57\x4f\x7a\x39\x57\x34\x44\x79\x57\x4f\x2f\x64\x51\x77\x61','\x57\x4f\x52\x63\x56\x4e\x30\x62\x57\x4f\x56\x64\x55\x6d\x6b\x49\x73\x57','\x57\x50\x31\x4a\x57\x34\x58\x70\x57\x50\x52\x64\x55\x61','\x77\x67\x74\x63\x53\x75\x46\x63\x54\x47','\x57\x34\x37\x64\x4e\x53\x6b\x35\x67\x53\x6b\x31\x57\x50\x46\x63\x47\x53\x6b\x64','\x63\x6d\x6b\x35\x67\x43\x6f\x41','\x57\x36\x37\x63\x48\x47\x79\x49\x67\x4d\x33\x64\x53\x6d\x6b\x41','\x63\x38\x6b\x4c\x64\x43\x6f\x43\x61\x47\x2f\x64\x50\x6d\x6f\x64','\x57\x4f\x42\x63\x52\x77\x47','\x57\x35\x69\x79\x57\x35\x38\x58\x6f\x76\x50\x65\x78\x57','\x69\x49\x37\x63\x4b\x53\x6b\x54\x6b\x66\x38\x46\x57\x34\x34','\x57\x52\x72\x42\x57\x35\x31\x36\x78\x32\x4f\x30\x57\x35\x53','\x77\x4a\x50\x71\x57\x34\x34\x52\x6c\x76\x31\x77','\x57\x4f\x66\x4e\x57\x35\x65','\x61\x57\x46\x63\x4d\x71','\x57\x35\x68\x64\x52\x4b\x64\x64\x51\x33\x65\x65\x78\x71\x47','\x57\x36\x6c\x63\x4c\x53\x6b\x65\x57\x34\x6d\x2f\x73\x47','\x57\x36\x30\x2f\x75\x4a\x46\x64\x56\x43\x6b\x61\x57\x34\x52\x63\x48\x47','\x74\x78\x66\x76','\x45\x4b\x58\x77\x57\x4f\x54\x75\x42\x4a\x74\x64\x4c\x61','\x57\x51\x50\x67\x57\x34\x62\x31\x75\x4d\x6d\x57\x57\x50\x53','\x57\x35\x6d\x37\x6f\x53\x6f\x68\x70\x48\x56\x63\x51\x38\x6b\x64','\x76\x77\x34\x41\x57\x52\x52\x63\x4b\x43\x6b\x52\x62\x43\x6b\x36','\x63\x6d\x6f\x6e\x57\x35\x6a\x62\x41\x4d\x62\x78\x64\x71','\x75\x32\x31\x69\x57\x36\x72\x72','\x78\x53\x6b\x38\x6d\x53\x6f\x73','\x57\x50\x6a\x58\x57\x52\x56\x63\x51\x73\x42\x64\x54\x53\x6f\x71','\x57\x35\x44\x55\x57\x36\x69','\x57\x50\x69\x2b\x45\x57','\x65\x72\x56\x63\x4a\x53\x6f\x62','\x57\x52\x6d\x6e\x57\x36\x5a\x64\x49\x61\x37\x63\x50\x38\x6b\x56\x68\x61','\x75\x33\x76\x61\x57\x36\x62\x41\x57\x4f\x56\x63\x52\x53\x6b\x72','\x57\x51\x5a\x64\x50\x63\x53\x62\x57\x37\x70\x63\x55\x68\x61\x72','\x62\x43\x6f\x6f\x79\x62\x64\x63\x4e\x43\x6b\x36\x76\x66\x6d','\x73\x64\x58\x71','\x57\x4f\x43\x2f\x6d\x6d\x6f\x63\x6f\x62\x4e\x63\x55\x43\x6f\x6a','\x72\x4d\x47\x44\x57\x52\x5a\x63\x4b\x53\x6b\x5a\x77\x53\x6b\x58','\x61\x38\x6f\x7a\x46\x72\x56\x63\x4c\x38\x6b\x32\x78\x61\x30','\x73\x64\x76\x6e\x57\x34\x71\x48','\x67\x6d\x6f\x44\x46\x57','\x57\x50\x48\x32\x57\x35\x50\x69\x57\x4f\x68\x64\x52\x32\x4a\x63\x4c\x71','\x57\x36\x57\x50\x73\x5a\x53','\x65\x74\x42\x64\x52\x58\x2f\x64\x55\x38\x6b\x31\x42\x58\x64\x63\x52\x53\x6b\x74\x57\x36\x4b','\x57\x36\x30\x58\x73\x63\x42\x64\x56\x38\x6b\x78\x57\x34\x5a\x63\x4f\x61','\x64\x53\x6f\x6b\x57\x34\x54\x65\x57\x4f\x70\x63\x55\x61','\x57\x4f\x46\x64\x4c\x38\x6b\x5a','\x57\x50\x53\x46\x73\x64\x2f\x63\x51\x47','\x57\x37\x71\x50\x76\x49\x4a\x63\x4e\x53\x6b\x52','\x43\x43\x6f\x55\x57\x50\x71','\x57\x35\x58\x59\x57\x4f\x70\x64\x4e\x71','\x57\x36\x48\x33\x57\x34\x4c\x4e\x63\x47','\x77\x6d\x6f\x61\x57\x52\x46\x63\x51\x53\x6f\x44\x69\x49\x34\x4b\x57\x4f\x48\x6d\x43\x43\x6f\x35\x57\x37\x79\x36','\x57\x4f\x42\x63\x48\x43\x6b\x57\x61\x57','\x70\x63\x4e\x63\x51\x6d\x6b\x4b\x69\x47','\x57\x52\x75\x6c\x57\x36\x57','\x61\x72\x56\x63\x4b\x53\x6f\x62\x7a\x63\x31\x49\x57\x37\x6d','\x57\x34\x2f\x64\x49\x53\x6b\x54\x68\x6d\x6b\x59\x57\x4f\x4f','\x75\x33\x72\x63\x57\x36\x72\x72\x57\x50\x4e\x63\x51\x43\x6b\x4e','\x57\x35\x68\x63\x47\x38\x6f\x5a\x57\x36\x76\x6a\x7a\x4a\x4a\x63\x50\x53\x6b\x73\x57\x35\x56\x64\x4a\x47','\x71\x53\x6f\x7a\x79\x75\x4e\x64\x55\x43\x6b\x71\x57\x50\x69\x70','\x57\x35\x75\x36\x74\x49\x5a\x63\x48\x68\x6c\x63\x4f\x61','\x57\x34\x50\x53\x57\x35\x39\x48','\x45\x66\x54\x63\x57\x36\x4c\x54','\x64\x67\x6c\x63\x47\x31\x4b','\x67\x6d\x6f\x71\x57\x34\x72\x67\x57\x4f\x4a\x64\x54\x47','\x57\x34\x64\x64\x51\x65\x5a\x64\x50\x59\x69\x72\x73\x47','\x57\x50\x61\x4f\x45\x53\x6f\x6f\x57\x51\x50\x4d\x69\x43\x6f\x35','\x44\x47\x35\x62\x57\x34\x71\x6a','\x65\x43\x6f\x73\x57\x35\x38\x67\x79\x31\x6c\x64\x4c\x6d\x6b\x65\x74\x38\x6b\x50\x79\x38\x6f\x6f\x57\x35\x4f','\x76\x65\x33\x64\x4a\x53\x6b\x67\x6e\x77\x30\x49\x57\x36\x4a\x64\x55\x67\x74\x64\x54\x6d\x6b\x77\x57\x50\x4b','\x66\x53\x6f\x73\x57\x35\x75\x6e\x79\x76\x5a\x64\x4b\x43\x6b\x35\x73\x6d\x6b\x65\x7a\x6d\x6f\x6b\x57\x35\x34','\x57\x4f\x4e\x64\x4c\x53\x6b\x4d\x57\x51\x65\x76\x45\x71\x57','\x57\x4f\x78\x63\x4d\x6d\x6b\x54\x66\x43\x6b\x34\x57\x36\x43\x33\x57\x34\x34','\x46\x38\x6b\x79\x57\x4f\x6a\x73\x6d\x5a\x56\x63\x4a\x43\x6b\x79','\x57\x35\x37\x64\x49\x53\x6b\x4b\x66\x53\x6b\x32\x57\x4f\x5a\x63\x4c\x57','\x67\x78\x68\x63\x47\x71\x6c\x63\x4e\x6d\x6f\x79\x57\x34\x68\x64\x56\x47','\x75\x5a\x48\x78','\x57\x36\x4a\x63\x47\x62\x65','\x57\x35\x48\x48\x57\x4f\x56\x64\x4e\x75\x71','\x57\x35\x4f\x49\x6d\x38\x6f\x44\x6f\x61\x75','\x73\x53\x6f\x6f\x44\x47','\x65\x53\x6f\x7a\x45\x57','\x6b\x38\x6f\x50\x57\x50\x2f\x63\x53\x63\x39\x41\x57\x4f\x42\x63\x4b\x57','\x57\x35\x44\x51\x57\x36\x6a\x33\x43\x4a\x70\x63\x53\x53\x6f\x43','\x67\x53\x6f\x6f\x44\x47','\x67\x38\x6f\x78\x57\x34\x76\x61\x57\x35\x46\x64\x52\x38\x6b\x65\x65\x61','\x57\x52\x37\x63\x49\x33\x4c\x79\x42\x48\x39\x53','\x76\x78\x46\x63\x56\x30\x37\x63\x55\x53\x6b\x47','\x57\x34\x4c\x47\x57\x4f\x65','\x65\x72\x56\x63\x4b\x6d\x6f\x64\x7a\x64\x65','\x57\x37\x4f\x49\x76\x73\x34','\x57\x34\x69\x79\x57\x37\x61\x52\x69\x31\x50\x79\x41\x61','\x66\x6d\x6f\x43\x57\x35\x4f\x37\x43\x32\x65\x6d\x57\x4f\x30','\x45\x30\x62\x35\x57\x4f\x66\x71\x45\x61','\x57\x34\x38\x37\x6d\x38\x6f\x61\x6b\x71','\x57\x51\x2f\x63\x4b\x33\x76\x72','\x57\x4f\x64\x63\x55\x76\x54\x32','\x7a\x76\x72\x76\x57\x4f\x76\x78','\x57\x37\x4f\x58\x77\x33\x4b','\x57\x35\x6d\x6f\x46\x57\x33\x63\x52\x61','\x57\x50\x70\x64\x48\x38\x6b\x51\x57\x52\x47\x44\x7a\x62\x53','\x63\x38\x6b\x50\x68\x47','\x57\x37\x46\x63\x47\x61\x53\x47\x68\x78\x79','\x61\x38\x6f\x41\x57\x35\x57\x37\x45\x4d\x7a\x74\x57\x4f\x79','\x57\x37\x68\x63\x4e\x6d\x6b\x4d\x57\x34\x4b\x62\x73\x38\x6f\x55\x43\x71','\x73\x77\x76\x61\x57\x37\x6e\x44\x57\x4f\x78\x63\x54\x61','\x42\x53\x6f\x50\x57\x50\x69\x46\x57\x50\x35\x77','\x6b\x38\x6f\x4f\x57\x50\x38','\x57\x52\x74\x64\x55\x48\x47','\x57\x4f\x37\x64\x4e\x6d\x6b\x4f\x57\x51\x6d\x44\x79\x47\x43','\x71\x6d\x6b\x59\x6d\x61','\x57\x4f\x61\x75\x57\x37\x4b\x6b\x45\x61','\x74\x43\x6b\x6b\x57\x50\x43','\x42\x66\x7a\x2b\x57\x4f\x6e\x67\x46\x57','\x72\x38\x6f\x70\x46\x66\x56\x64\x51\x6d\x6b\x4e','\x46\x76\x44\x37\x57\x4f\x7a\x70\x42\x48\x4e\x64\x50\x61','\x57\x52\x31\x72\x57\x35\x53','\x46\x6d\x6b\x52\x57\x50\x4a\x63\x4e\x67\x7a\x43\x57\x52\x37\x63\x4d\x61','\x66\x53\x6b\x4a\x57\x51\x53','\x57\x34\x7a\x35\x57\x34\x57','\x57\x34\x4c\x48\x57\x4f\x68\x64\x4a\x58\x56\x64\x51\x65\x4c\x64','\x73\x4e\x6c\x63\x4b\x71\x5a\x64\x49\x6d\x6f\x49\x57\x37\x30'];_0x5212=function(){return _0x3bf0e7;};return _0x5212();}export function buildSemanticIdfProfile(_0x55cb58){const _0x1a172b=_0x3ef7f1,_0x277b4e=_0x55cb58[_0x1a172b(0xf9,'\x51\x5a\x2a\x4c')](-0x341+-0x2*0x278+-0x831*-0x1,SEMANTIC_IDF_DOCUMENT_LIMIT)['\x6d\x61\x70'](_0x12a8f5=>({'\x74\x61\x67\x73':boundedUnique(_0x12a8f5[_0x1a172b(0x178,'\x23\x68\x61\x63')][_0x1a172b(0x107,'\x23\x68\x61\x63')](0x1ddf+-0x1e65+0x86,SEMANTIC_IDF_TAG_INPUTS_PER_DOCUMENT)[_0x1a172b(0x158,'\x39\x45\x62\x51')](_0x1f3c47=>normalizeSemanticTag(_0x1f3c47['\x73\x6c\x69\x63\x65'](0x27f+0xa93+-0x2*0x689,SEMANTIC_IDF_TAG_CHARS))),SEMANTIC_IDF_TAGS_PER_DOCUMENT),'\x74\x6f\x6b\x65\x6e\x73':boundedUnique(tokenize(_0x12a8f5[_0x1a172b(0xb7,'\x79\x4b\x62\x63')]['\x73\x6c\x69\x63\x65'](-0x16e4+0x1ac1+-0x3dd,SEMANTIC_IDF_TEXT_CHARS_PER_DOCUMENT)),SEMANTIC_IDF_TOKENS_PER_DOCUMENT)})),_0x5e5eb4=boundedVocabulary(_0x277b4e[_0x1a172b(0x151,'\x34\x40\x64\x4c')](_0x5daa1b=>_0x5daa1b['\x74\x61\x67\x73']),SEMANTIC_IDF_TAG_VOCABULARY_LIMIT),_0x42e661=boundedVocabulary(_0x277b4e[_0x1a172b(0xe9,'\x61\x54\x21\x63')](_0x3caf7c=>_0x3caf7c['\x74\x6f\x6b\x65\x6e\x73']),SEMANTIC_IDF_TOKEN_VOCABULARY_LIMIT),_0x31f1d0=new Map(),_0x378f27=new Map();for(const _0x5999fd of _0x277b4e){for(const _0x3b48cc of _0x5999fd[_0x1a172b(0xc1,'\x61\x54\x21\x63')]){if('\x59\x52\x45\x63\x6d'!==_0x1a172b(0x124,'\x23\x68\x61\x63')){if(!_0x5e5eb4[_0x1a172b(0xa8,'\x28\x77\x5e\x58')](_0x3b48cc))continue;_0x31f1d0[_0x1a172b(0x157,'\x48\x53\x5d\x39')](_0x3b48cc,(_0x31f1d0['\x67\x65\x74'](_0x3b48cc)??-0x1526+0x75*-0x5+0x176f)+(-0x9*-0x2e3+-0x23d5+-0x1*-0x9db));}else return _0x4532c7['\x74\x6f\x4c\x6f\x77\x65\x72\x43'+_0x1a172b(0xef,'\x55\x21\x49\x54')]()['\x6e\x6f\x72\x6d\x61\x6c\x69\x7a'+'\x65'](_0x1a172b(0x9d,'\x47\x24\x38\x34'))['\x73\x70\x6c\x69\x74'](/[^\p{L}\p{N}]+/u)[_0x1a172b(0x130,'\x28\x79\x52\x30')](_0x537252=>_0x537252[_0x1a172b(0x161,'\x51\x5a\x2a\x4c')]>=-0x1d99*0x1+0x1143+0xc58);}for(const _0x3fada2 of _0x5999fd['\x74\x6f\x6b\x65\x6e\x73']){if(!_0x42e661['\x68\x61\x73'](_0x3fada2))continue;_0x378f27[_0x1a172b(0x164,'\x57\x58\x6d\x74')](_0x3fada2,(_0x378f27[_0x1a172b(0x10e,'\x40\x24\x36\x39')](_0x3fada2)??0x10*-0xa3+-0x2140+0x2b70)+(-0x1220*-0x1+0xebf+0x4b2*-0x7));}}const _0x5c5bd1=_0x277b4e['\x6c\x65\x6e\x67\x74\x68'],_0x57bbcd=new Map(),_0x5e7509=new Map();for(const [_0x4dc86b,_0x1f4ce5]of _0x31f1d0){if(_0x1a172b(0x167,'\x4b\x76\x79\x4d')===_0x1a172b(0x10f,'\x48\x5d\x21\x47'))_0x57bbcd[_0x1a172b(0xfd,'\x48\x5d\x21\x47')](_0x4dc86b,inverseDocumentFrequency(_0x5c5bd1,_0x1f4ce5));else{for(const _0x1328b6 of _0x1eff7b)_0x12ed36[_0x1a172b(0x15c,'\x71\x6c\x38\x2a')](_0x1328b6);}}for(const [_0x2587a8,_0x302c48]of _0x378f27){if(_0x1a172b(0xb1,'\x79\x4e\x35\x31')===_0x1a172b(0x11f,'\x51\x5a\x2a\x4c'))_0x5e7509[_0x1a172b(0x14d,'\x4c\x73\x74\x52')](_0x2587a8,inverseDocumentFrequency(_0x5c5bd1,_0x302c48));else{const _0x392774=_0x49ef3b(_0x28af98);_0xd43d9b[_0x1a172b(0xdf,'\x28\x77\x5e\x58')](_0x392774);const _0x4481d3=_0x392774[_0x1a172b(0x13f,'\x28\x79\x52\x30')]('\x3a')[0x1664+-0xafe+-0x2*0x5b3];if(_0x4481d3&&_0x4481d3!==_0x392774)_0xcd63f7['\x61\x64\x64'](_0x4481d3);}}return{'\x64\x6f\x63\x75\x6d\x65\x6e\x74\x43\x6f\x75\x6e\x74':_0x5c5bd1,'\x74\x61\x67\x49\x64\x66':_0x57bbcd,'\x74\x6f\x6b\x65\x6e\x49\x64\x66':_0x5e7509,'\x76\x65\x72\x73\x69\x6f\x6e':semanticProfileVersion(_0x5c5bd1,_0x31f1d0,_0x378f27)};}export function idfTagOverlapScore(_0x3e77a9,_0x1fe678,_0xf77ef5){const _0x4cd963=_0x3ef7f1;if(_0xf77ef5[_0x4cd963(0xcd,'\x4b\x76\x79\x4d')+_0x4cd963(0x113,'\x39\x45\x62\x51')]<=0x59d+0x1adc+-0x2078)return tagOverlapScore(_0x3e77a9,_0x1fe678);const _0x104230=[...new Set(expandSignals(_0x3e77a9)[_0x4cd963(0x108,'\x7a\x45\x24\x54')](normalizeSemanticTag))],_0x322c7c=new Set(geneTags(_0x1fe678)[_0x4cd963(0x14f,'\x44\x7a\x26\x5e')](normalizeSemanticTag));let _0x51c13e=0x10fc+-0x43*0x2f+0xb*-0x6d,_0x569675=-0xa3*0x2c+0x1*0xca2+0xb3*0x16;for(const _0x527824 of _0x104230){const _0x543370=_0xf77ef5['\x74\x61\x67\x49\x64\x66'][_0x4cd963(0x155,'\x4c\x2a\x53\x36')](_0x527824);if(_0x543370===undefined)continue;_0x569675+=_0x543370;if(_0x322c7c['\x68\x61\x73'](_0x527824))_0x51c13e+=_0x543370;}return _0x569675>0xe12+-0x19c9+0xbb7*0x1?_0x51c13e/_0x569675:0x263*0xf+-0xa3*0x2d+0x726*-0x1;}export function idfBagCosine(_0x291805,_0x59b26a,_0x1688ee){const _0x2468a7=_0x3ef7f1;if(_0x1688ee[_0x2468a7(0xf8,'\x6c\x70\x25\x38')+_0x2468a7(0xbd,'\x23\x50\x29\x45')]<=-0x17e*-0x13+-0x2*0xe72+0x8b)return bagCosine(_0x291805,_0x59b26a);const _0x3d9615=tokenFrequency(_0x291805),_0x185a8c=tokenFrequency(_0x59b26a);let _0x49bca3=0x9*-0x32f+-0x19c*0x14+0x59*0xaf,_0x29987f=-0xcb9+-0x1104+0x1dbd,_0x4e40a3=0x2*0x41b+0x1f*-0x11+-0x627;for(const [_0x23d73a,_0x7dd723]of _0x3d9615){const _0x34a4df=_0x1688ee[_0x2468a7(0x176,'\x78\x62\x55\x2a')][_0x2468a7(0xaf,'\x34\x40\x64\x4c')](_0x23d73a);if(_0x34a4df===undefined)continue;const _0x37a79a=_0x7dd723*_0x34a4df;_0x29987f+=_0x37a79a*_0x37a79a;const _0x1e8e41=_0x185a8c['\x67\x65\x74'](_0x23d73a);if(_0x1e8e41!==undefined)_0x49bca3+=_0x37a79a*_0x1e8e41*_0x34a4df;}for(const [_0x41fe2b,_0x1019ef]of _0x185a8c){const _0xfc5c0e=_0x1688ee[_0x2468a7(0x176,'\x78\x62\x55\x2a')][_0x2468a7(0x132,'\x7a\x45\x24\x54')](_0x41fe2b);if(_0xfc5c0e===undefined)continue;const _0x2399ef=_0x1019ef*_0xfc5c0e;_0x4e40a3+=_0x2399ef*_0x2399ef;}if(_0x29987f===-0x1fd6+-0x6b*0x3f+-0x3a2b*-0x1||_0x4e40a3===0xf4*0x16+-0x210e+0xc16)return 0x364+-0xdc9+0x3*0x377;return _0x49bca3/(Math[_0x2468a7(0xc2,'\x4b\x76\x79\x4d')](_0x29987f)*Math[_0x2468a7(0xa3,'\x48\x5d\x21\x47')](_0x4e40a3));}
+import { createHash } from 'node:crypto';
+// Signal expansion & tag classification (ported from v1 src/gep/learningSignals.js).
+// Raw signals (e.g. '429') are expanded into broader semantic tags (e.g. 'problem:reliability',
+// 'action:repair') so gene selection can match by MEANING, not just literal string intersection —
+// closing the recall gap where a '429' signal could not reach a gene tagged for 'repair'.
+// Regex → semantic tags. A rule fires if its pattern matches anywhere in the lowercased signal text.
+// The reliability / protocol / performance / capability families also carry CN/JA/KO synonyms so a
+// non-Latin signal ('错误' / 'エラー' / '오류') expands to the same tags an English one would and can
+// reach an English-keyworded gene through tagOverlapScore. This is the v2-native port of v1 #99's
+// multilingual signals_match aliases: v1 attached `|`-pipe synonyms to shipped seed genes, but v2 has
+// no seed-gene catalog and no pipe-alias parsing — its expansion rules ARE the shared signal vocabulary.
+const SUCCESS_OUTCOME_TAGS = ['signal:success', 'action:optimize', 'action:innovate'];
+const EXPLICIT_SUCCESS_SIGNALS = new Set([
+    'issue_already_resolved',
+    'issue_resolved',
+    'openclaw_self_healed',
+    'resolved',
+    'self_healed',
+    'stable_success_plateau',
+    'success_prose',
+    'verified-success',
+    'verified_success',
+]);
+const EXPANSION_RULES = [
+    { re: /(error|exception|failed|unstable|log_error|runtime|429|错误|异常|エラー|오류|例外|예외|失败|失敗|실패|不稳定|不安定|불안정)/, tags: ['problem:reliability', 'action:repair'] },
+    // Korean 감사 alone is a homograph (audit == "thank you"), so it is matched only via compounds / audit-context
+    // phrases (감사로그 / 감사추적 / 감사 로그 / 감사 추적 / 코드 감사) — never bare 감사, so benign gratitude text like
+    // '감사합니다' cannot fire. Bare CN 提示 (= hint/notice) is likewise omitted; only the unambiguous 提示词 (= prompt)
+    // is matched. The 'reusable' cluster (可复用 / 再利用 / 재사용) recalls the optimize/protocol family (v1 #99).
+    { re: /(protocol|prompt|audit|gep|schema|drift|reusable|协议|プロトコル|프로토콜|提示词|プロンプト|프롬프트|审计|監査|可复用|再利用|재사용|감사로그|감사추적|감사 로그|감사 추적|코드 감사)/, tags: ['problem:protocol', 'action:optimize', 'area:prompt'] },
+    { re: /(perf|performance|bottleneck|latency|slow|throughput|性能|瓶颈|パフォーマンス|성능|병목)/, tags: ['problem:performance', 'action:optimize'] },
+    // 功能/機能/기능 alone are too broad: as unanchored substrings they match the malfunction vocabulary
+    // (機能不全 / 기능장애 / 功能障碍), which are reliability problems — use the v1 #99 feature-request compounds.
+    { re: /(feature|capability_gap|user_feature_request|external_opportunity|stagnation recommendation|功能请求|機能リクエスト|기능요청|能力缺口|機能ギャップ|역량공백|改进建议|改善提案|개선제안|外部机会|外部機会|외부기회)/, tags: ['problem:capability', 'action:innovate'] },
+    // Negative lookbehind on `plateau`: `stable_success_plateau` contains the substring `plateau`, but it is a
+    // SUCCESS signal (#578), not a stagnation signal. Without (?<!success_) the stagnation rule would fire on it,
+    // producing contradictory tags (problem:stagnation + signal:success) in a single expandSignals pass.
+    { re: /(stagnation|(?<!success_)plateau|steady_state|saturation|empty_cycle_loop|loop_detected|recurring)/, tags: ['problem:stagnation', 'action:innovate'] },
+    { re: /(task|worker|heartbeat|hub|commitment|assignment|orchestration)/, tags: ['area:orchestration'] },
+    // Tool-integrity (ported from v1 #99 gene_tool_integrity): bypassing a registered tool or looping on raw
+    // shell is an orchestration-discipline / validation risk. CN/JA/KO aliases included for recall parity.
+    { re: /(tool_bypass|tool_loop|工具绕过|工具循环|ツール迂回|ツールループ|도구우회|도구반복)/, tags: ['area:orchestration', 'risk:validation'] },
+    { re: /(memory|narrative|reflection)/, tags: ['area:memory'] },
+    { re: /(skill|dashboard)/, tags: ['area:skills'] },
+    // Harness context budget (v1 context-compression gene family port): an agent harness that injects large
+    // tool/MCP schemas, long skill manuals, agent-type descriptions, a memory index, or a pasted transcript can
+    // exhaust the model's context window before the task starts. That is a prompt-assembly (area:prompt) cost
+    // problem, and shrinking it is an optimize action — NOT a reliability failure. v2 has no seed-gene catalog,
+    // so these rules ARE the shared vocabulary that lets a context-bloat signal reach a compression strategy.
+    { re: /(context_bloat|context_explosion|context window|token_budget|prompt_budget|上下文爆|上下文预算|token 超限|token超限)/, tags: ['problem:context_budget', 'action:optimize', 'area:prompt'] },
+    // Tool/MCP schema weight is the always-on half of the budget; lazy-loading it is the corrective action.
+    { re: /(tool_schema|schema_bloat|mcp_tool_schema|lazy_load_schema|just-in-time schema|工具 schema|工具schema)/, tags: ['problem:context_budget', 'action:optimize', 'area:prompt', 'area:orchestration'] },
+    // Skill manuals / agent-type descriptions are the other always-on half (area:skills already exists above).
+    { re: /(skill_list_bloat|skill_manual_bloat|agent type description|mcp server instructions|skill 列表太长|技能列表太长)/, tags: ['problem:context_budget', 'action:optimize', 'area:skills', 'area:prompt'] },
+    // A pasted transcript / session handoff is the caller-supplied half — compressing it is a memory-shaped concern.
+    { re: /(transcript_bloat|transcript_context_bloat|conversation_handoff|session handoff|pasted transcript|会话上下文就爆|完整转录)/, tags: ['problem:context_budget', 'action:optimize', 'area:memory'] },
+    { re: /(validation|canary|rollback|constraint|blast radius|destructive)/, tags: ['risk:validation'] },
+];
+/**
+ * Expand a signal list into literal signals + namespace prefixes + semantic category tags.
+ * e.g. ['429', 'auth:token'] → ['429', 'auth:token', 'auth', 'problem:reliability', 'action:repair'].
+ */
+export function expandSignals(signals, extraText = '') {
+    const tags = new Set();
+    for (const s of signals) {
+        const str = String(s);
+        tags.add(str);
+        const base = str.split(':')[0];
+        if (base && base !== str)
+            tags.add(base); // namespace prefix (e.g. 'auth:token' → 'auth')
+    }
+    // #578 success markers are structured signals; prose inference accepts negated forms too easily.
+    if (signals.some((signal) => EXPLICIT_SUCCESS_SIGNALS.has(String(signal).trim().toLowerCase().normalize('NFKC')))) {
+        for (const tag of SUCCESS_OUTCOME_TAGS)
+            tags.add(tag);
+    }
+    const text = (signals.join(' ') + ' ' + extraText).toLowerCase().normalize('NFKC');
+    for (const rule of EXPANSION_RULES) {
+        if (rule.re.test(text))
+            for (const t of rule.tags)
+                tags.add(t);
+    }
+    return [...tags];
+}
+/**
+ * Tokenize free text into a lowercased bag of words (letter/number runs of length >= 2).
+ * Unicode-aware (`\p{L}\p{N}`): a Latin-only `[^a-z0-9]+` split silently dropped CJK / Cyrillic /
+ * Arabic content, so CN/JA/KO signals like '错误' / 'タスク失敗' / '오류' tokenized to [] and the
+ * {@link bagCosine} recall path scored 0 on every cycle for non-Latin users (ported from v1 #99,
+ * which fixed the same Latin-only regex in selector.tokenize). Lowercased then NFKC-normalized before splitting (the established house idiom in
+ * signatures.ts), so full-width / half-width IME forms ('４２９' / 'ＥＲＲＯＲ' / 'ｴﾗｰ') fold to the
+ * normal forms the rules and gene text already use, and punctuation/symbols are stripped so
+ * 'error.' and 'error' tokenize identically.
+ */
+function tokenize(text) {
+    return text.toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2);
+}
+/**
+ * Bag-of-words cosine similarity (0..1) between two free-text strings (ported from v1 scoreGeneSemantic).
+ * Term-frequency vectors, cosine of the angle. Returns 0 when either side has no tokens or they share none.
+ * This is the lexical-similarity recall path that complements {@link tagOverlapScore}'s curated tags:
+ * a signal 'timeout_slow' and a gene summarized "fix the slow timeout" share the 'timeout'/'slow' tokens
+ * even when neither the literal signal nor the expansion rules connect them.
+ */
+export function bagCosine(a, b) {
+    const av = new Map();
+    const bv = new Map();
+    for (const t of tokenize(a))
+        av.set(t, (av.get(t) ?? 0) + 1);
+    for (const t of tokenize(b))
+        bv.set(t, (bv.get(t) ?? 0) + 1);
+    if (av.size === 0 || bv.size === 0)
+        return 0;
+    let dot = 0;
+    for (const [t, c] of av)
+        dot += c * (bv.get(t) ?? 0);
+    if (dot === 0)
+        return 0;
+    const mag = (m) => Math.sqrt([...m.values()].reduce((s, c) => s + c * c, 0));
+    return dot / (mag(av) * mag(bv));
+}
+/** Expand a gene's category + signals_match + id + summary into its semantic tag set. */
+export function geneTags(gene) {
+    const inputs = [];
+    if (gene.category)
+        inputs.push('action:' + gene.category.toLowerCase());
+    if (gene.signalsMatch)
+        inputs.push(...gene.signalsMatch);
+    if (gene.geneId)
+        inputs.push(gene.geneId);
+    if (gene.summary)
+        inputs.push(gene.summary);
+    return expandSignals(inputs, '');
+}
+/**
+ * Semantic tag overlap (0..1): fraction of the expanded SIGNAL tags that the gene's expanded tags cover.
+ * Normalized on the signal (query) side so a gene with a long id/summary is not penalized by noise.
+ * This is the recall component: '429' and a gene tagged 'error'/'repair' both expand to
+ * 'problem:reliability'/'action:repair', so they overlap even with zero literal string match.
+ *
+ * Known v1→v2 fidelity delta: a lone non-Latin signal caps near ~2/3 here — its raw token ('错误') is in the
+ * signal tag-set but never on the English-keyworded gene side, while an exact English signal short-circuits to
+ * literal=1.0 upstream in expandedMatchScore. v1 #99 gave CJK full literal credit via pipe-aliases; v2 reaches
+ * the right gene at ~2/3 strength. Lifting this to parity is a scoring-design change beyond this signal port.
+ */
+export function tagOverlapScore(signals, gene) {
+    const sigTags = expandSignals(signals);
+    if (sigTags.length === 0)
+        return 0;
+    const geneTagSet = new Set(geneTags(gene));
+    if (geneTagSet.size === 0)
+        return 0;
+    let hits = 0;
+    for (const t of sigTags)
+        if (geneTagSet.has(t))
+            hits++;
+    return hits / sigTags.length;
+}
+const SEMANTIC_IDF_DOCUMENT_LIMIT = 1_000;
+const SEMANTIC_IDF_TEXT_CHARS_PER_DOCUMENT = 4_096;
+const SEMANTIC_IDF_TAG_INPUTS_PER_DOCUMENT = 256;
+const SEMANTIC_IDF_TAG_CHARS = 1_024;
+const SEMANTIC_IDF_TAGS_PER_DOCUMENT = 64;
+const SEMANTIC_IDF_TOKENS_PER_DOCUMENT = 128;
+const SEMANTIC_IDF_TAG_VOCABULARY_LIMIT = 8_192;
+const SEMANTIC_IDF_TOKEN_VOCABULARY_LIMIT = 32_768;
+function normalizeSemanticTag(tag) {
+    return tag.normalize('NFKC').trim().toLowerCase();
+}
+function inverseDocumentFrequency(documentCount, documentFrequency) {
+    return Math.log(documentCount / documentFrequency);
+}
+function tokenFrequency(text) {
+    const frequencies = new Map();
+    for (const token of tokenize(text)) {
+        frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    }
+    return frequencies;
+}
+function compareCodeUnits(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+function boundedUnique(values, limit) {
+    return [...new Set(values.filter(Boolean))].sort(compareCodeUnits).slice(0, limit);
+}
+function boundedVocabulary(valuesByDocument, limit) {
+    const vocabulary = new Set();
+    for (const values of valuesByDocument) {
+        for (const value of values)
+            vocabulary.add(value);
+    }
+    // Selecting by code-unit order makes the cap independent of corpus/document order. The source set is itself
+    // bounded by the per-document and document-count limits above, so this sort cannot grow without bound.
+    return new Set([...vocabulary].sort(compareCodeUnits).slice(0, limit));
+}
+function semanticProfileVersion(documentCount, tagDocumentFrequency, tokenDocumentFrequency) {
+    // Hash only normalized document-frequency entries so decision telemetry never contains plaintext corpus data.
+    // A 128-bit SHA-256 prefix keeps the identifier compact while avoiding the collision rate of a 32-bit checksum.
+    const hash = createHash('sha256');
+    hash.update(`documents:${documentCount};`, 'utf8');
+    for (const [tag, frequency] of [...tagDocumentFrequency].sort(([left], [right]) => compareCodeUnits(left, right))) {
+        hash.update(`tag:${tag.length}:${tag}:${frequency};`, 'utf8');
+    }
+    for (const [token, frequency] of [...tokenDocumentFrequency].sort(([left], [right]) => compareCodeUnits(left, right))) {
+        hash.update(`token:${token.length}:${token}:${frequency};`, 'utf8');
+    }
+    return `idf-2:n=${documentCount};tags=${tagDocumentFrequency.size};tokens=${tokenDocumentFrequency.size};sha256=${hash.digest('hex').slice(0, 32)}`;
+}
+export function buildSemanticIdfProfile(documents) {
+    const boundedDocuments = documents.slice(0, SEMANTIC_IDF_DOCUMENT_LIMIT).map((document) => ({
+        tags: boundedUnique(document.tags
+            .slice(0, SEMANTIC_IDF_TAG_INPUTS_PER_DOCUMENT)
+            .map((tag) => normalizeSemanticTag(tag.slice(0, SEMANTIC_IDF_TAG_CHARS))), SEMANTIC_IDF_TAGS_PER_DOCUMENT),
+        tokens: boundedUnique(tokenize(document.text.slice(0, SEMANTIC_IDF_TEXT_CHARS_PER_DOCUMENT)), SEMANTIC_IDF_TOKENS_PER_DOCUMENT),
+    }));
+    const tagVocabulary = boundedVocabulary(boundedDocuments.map((document) => document.tags), SEMANTIC_IDF_TAG_VOCABULARY_LIMIT);
+    const tokenVocabulary = boundedVocabulary(boundedDocuments.map((document) => document.tokens), SEMANTIC_IDF_TOKEN_VOCABULARY_LIMIT);
+    const tagDocumentFrequency = new Map();
+    const tokenDocumentFrequency = new Map();
+    for (const document of boundedDocuments) {
+        for (const tag of document.tags) {
+            if (!tagVocabulary.has(tag))
+                continue;
+            tagDocumentFrequency.set(tag, (tagDocumentFrequency.get(tag) ?? 0) + 1);
+        }
+        for (const token of document.tokens) {
+            if (!tokenVocabulary.has(token))
+                continue;
+            tokenDocumentFrequency.set(token, (tokenDocumentFrequency.get(token) ?? 0) + 1);
+        }
+    }
+    const documentCount = boundedDocuments.length;
+    const tagIdf = new Map();
+    const tokenIdf = new Map();
+    for (const [tag, frequency] of tagDocumentFrequency) {
+        tagIdf.set(tag, inverseDocumentFrequency(documentCount, frequency));
+    }
+    for (const [token, frequency] of tokenDocumentFrequency) {
+        tokenIdf.set(token, inverseDocumentFrequency(documentCount, frequency));
+    }
+    return {
+        documentCount,
+        tagIdf,
+        tokenIdf,
+        version: semanticProfileVersion(documentCount, tagDocumentFrequency, tokenDocumentFrequency),
+    };
+}
+export function idfTagOverlapScore(signals, gene, profile) {
+    if (profile.documentCount <= 1)
+        return tagOverlapScore(signals, gene);
+    const signalTags = [...new Set(expandSignals(signals).map(normalizeSemanticTag))];
+    const geneTagSet = new Set(geneTags(gene).map(normalizeSemanticTag));
+    let matchedWeight = 0;
+    let totalWeight = 0;
+    for (const tag of signalTags) {
+        const weight = profile.tagIdf.get(tag);
+        if (weight === undefined)
+            continue;
+        totalWeight += weight;
+        if (geneTagSet.has(tag))
+            matchedWeight += weight;
+    }
+    return totalWeight > 0 ? matchedWeight / totalWeight : 0;
+}
+export function idfBagCosine(a, b, profile) {
+    if (profile.documentCount <= 1)
+        return bagCosine(a, b);
+    const bagA = tokenFrequency(a);
+    const bagB = tokenFrequency(b);
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (const [token, count] of bagA) {
+        const weight = profile.tokenIdf.get(token);
+        if (weight === undefined)
+            continue;
+        const weightedCount = count * weight;
+        normA += weightedCount * weightedCount;
+        const otherCount = bagB.get(token);
+        if (otherCount !== undefined)
+            dot += weightedCount * otherCount * weight;
+    }
+    for (const [token, count] of bagB) {
+        const weight = profile.tokenIdf.get(token);
+        if (weight === undefined)
+            continue;
+        const weightedCount = count * weight;
+        normB += weightedCount * weightedCount;
+    }
+    if (normA === 0 || normB === 0)
+        return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}

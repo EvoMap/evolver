@@ -8,10 +8,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isNodeExecutable, nodeFlagViolation, SHELL_METACHARS } from './validation.js';
+import { classifyNodeValidationInvocation, isNodeExecutable, nodeFlagViolation, SHELL_METACHARS, tokenizeValidationCommand, } from './validation.js';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 4000;
+const PROCESS_TREE_KILL_TIMEOUT_MS = 5_000;
+const PROCESS_TREE_EXIT_WAIT_MS = 5_000;
 const CGROUP_ROOT = '/sys/fs/cgroup';
 const TRUSTED_SYSTEM_PATH = '/usr/sbin:/usr/bin:/sbin:/bin';
 const SYSTEM_SH = '/bin/sh';
@@ -212,7 +214,9 @@ export function unshareNetAvailable() {
     return unshareCache;
 }
 function parse(cmd) {
-    const tokens = cmd.trim().split(/\s+/).filter(Boolean);
+    const tokens = tokenizeValidationCommand(cmd);
+    if (!tokens)
+        return null;
     return { executable: tokens[0] ?? '', args: tokens.slice(1) };
 }
 function scrubEnv(allow) {
@@ -225,22 +229,118 @@ function scrubEnv(allow) {
     return out;
 }
 /**
+ * 终止完整的验证进程树，而不只是启动器。POSIX 启动器会独立成组，
+ * 可以安全地按进程组寻址；Windows 没有可移植的 Node API，因此使用受信任的
+ * System32 taskkill，并在该工具不可用时保留直接子进程兜底。
+ */
+function terminateProcessTree(child) {
+    const pid = child.pid;
+    if (pid === undefined)
+        return;
+    if (process.platform === 'win32') {
+        const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+        const taskkill = systemRoot && isAbsolute(systemRoot)
+            ? join(systemRoot, 'System32', 'taskkill.exe')
+            : undefined;
+        if (taskkill && existsSync(taskkill)) {
+            try {
+                const result = spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], {
+                    shell: false,
+                    windowsHide: true,
+                    stdio: 'ignore',
+                    timeout: PROCESS_TREE_KILL_TIMEOUT_MS,
+                });
+                if (result.status === 0)
+                    return;
+            }
+            catch {
+                // 回退到下面的直接子进程终止；命令结果仍保持 fail-closed。
+            }
+        }
+        try {
+            child.kill('SIGKILL');
+        }
+        catch { /* 尽力终止；最终失败状态仍由 close/error 决定 */ }
+        return;
+    }
+    // 负 PID 指向 detached 进程组；若子进程未能成为组长，下面的直接终止仍是兜底。
+    try {
+        process.kill(-pid, 'SIGKILL');
+    }
+    catch { /* 进程组不存在或已退出 */ }
+    try {
+        if (!child.killed)
+            child.kill('SIGKILL');
+    }
+    catch { /* 尽力终止 */ }
+}
+function processTreeExists(pid) {
+    try {
+        process.kill(process.platform === 'win32' ? pid : -pid, 0);
+        return true;
+    }
+    catch (error) {
+        // EPERM 说明进程仍存在但当前用户暂时没有查询权限；不能把它当成已退出，
+        // 否则取消结果可能在后代仍运行时提前返回。
+        return error?.code === 'EPERM';
+    }
+}
+/** 取消后短暂等待，确保后代进程不会在 runner 返回成功解析后继续存活。 */
+async function waitForProcessTreeExit(pid) {
+    if (pid === undefined)
+        return;
+    const deadline = Date.now() + PROCESS_TREE_EXIT_WAIT_MS;
+    while (Date.now() < deadline && processTreeExists(pid)) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+}
+/**
  * Build a hardened CommandRunner. The executable allowlist is the ValidationPlan's job (runValidation);
  * this only hardens how an allowed command runs.
  */
 export function makeSandboxRunner(opts = {}) {
     const timeout = Math.min(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
     const envAllow = opts.envAllowKeys ?? DEFAULT_ENV_ALLOW;
-    return (cmd) => new Promise((resolve) => {
-        const deny = (msg, code = 126) => resolve({ exitCode: code, stdout: `[sandbox] ${msg}` });
-        const { executable, args } = parse(cmd);
+    return (cmd, signal) => new Promise((resolve) => {
+        const activeSignal = signal ?? opts.signal;
+        let settled = false;
+        let aborted = false;
+        let timedOut = false;
+        let terminationStarted = false;
+        let timeoutTimer;
+        let removeAbortListener = () => { };
+        const finish = (result) => {
+            if (settled)
+                return;
+            settled = true;
+            removeAbortListener();
+            resolve(result);
+        };
+        const deny = (msg, code = 126) => finish({ exitCode: code, stdout: `[sandbox] ${msg}` });
+        if (activeSignal?.aborted)
+            return deny('cancelled', 130);
+        const parsed = parse(cmd);
+        if (!parsed)
+            return deny('invalid command syntax', 1);
+        const { executable, args } = parsed;
         if (!executable)
             return deny('empty command', 1);
+        if (isNodeExecutable(executable) && (args.length === 0 || (args.length === 1 && args[0] === '--'))) {
+            return deny('rejected: node script is required');
+        }
         if (SHELL_METACHARS.test(cmd))
             return deny('rejected: shell metacharacter (no shell is provided; split compound commands)');
         const badFlag = nodeFlagViolation(executable, args);
         if (badFlag)
             return deny(`rejected: blocked node flag ${badFlag}`);
+        if (isNodeExecutable(executable)) {
+            const invocation = classifyNodeValidationInvocation(executable, args);
+            if (invocation.kind === 'invalid') {
+                return invocation.option
+                    ? deny(`rejected: unsupported node option ${invocation.option}`)
+                    : deny('rejected: node script is required');
+            }
+        }
         // Isolation (#26): fail-safe — if we can't actually create the namespaces, refuse rather than run un-isolated.
         if ((opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem) && !(opts.unshareCheck ?? unshareNetAvailable)()) {
             return deny('rejected: requested namespace isolation is unavailable');
@@ -264,6 +364,9 @@ export function makeSandboxRunner(opts = {}) {
             if (cleaned)
                 return;
             cleaned = true;
+            if (timeoutTimer !== undefined)
+                clearTimeout(timeoutTimer);
+            removeAbortListener();
             resourceGroup?.cleanup();
             if (ownTemp) {
                 try {
@@ -295,21 +398,62 @@ export function makeSandboxRunner(opts = {}) {
                 shell: false,
                 cwd,
                 env,
-                timeout,
-                killSignal: 'SIGKILL',
+                // POSIX 依靠 detached 进程组执行整树终止；Windows 的 taskkill 直接沿父子树追踪，保持启动器附着可
+                // 避免兜底终止时产生孤儿进程。
+                detached: process.platform !== 'win32',
+                windowsHide: true,
                 stdio: [opts.readOnlyFilesystem ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             });
+            let childClosed = false;
             let out = '';
             const cap = (d) => { if (out.length < MAX_OUTPUT_CHARS)
                 out += String(d); };
             child.stdout?.on('data', cap);
             child.stderr?.on('data', cap);
-            child.on('error', (err) => { cleanup(); resolve({ exitCode: 127, stdout: `[sandbox] spawn error: ${err.message}` }); });
-            child.on('close', (code, signal) => { cleanup(); resolve({ exitCode: code ?? (signal ? 137 : 1), stdout: out.slice(0, MAX_OUTPUT_CHARS) }); });
+            const complete = async (result) => {
+                if (terminationStarted)
+                    await waitForProcessTreeExit(child.pid);
+                cleanup();
+                finish(result);
+            };
+            // 先注册生命周期处理器，再暴露 AbortSignal 监听器，堵住快速命令退出后 runner 尚未观察 close
+            // 事件、调用方却已经 abort 的竞态窗口。
+            child.on('error', (err) => {
+                childClosed = true;
+                void complete({ exitCode: aborted ? 130 : timedOut ? 137 : 127, stdout: `[sandbox] spawn error: ${err.message}` });
+            });
+            child.on('close', (code, childSignal) => {
+                childClosed = true;
+                void complete({
+                    exitCode: aborted ? 130 : timedOut ? 137 : code ?? (childSignal ? 137 : 1),
+                    stdout: out.slice(0, MAX_OUTPUT_CHARS),
+                });
+            });
+            const terminate = (reason) => {
+                // close 事件等待继承的 stdio 句柄时，exitCode 可能已经设置。必须持续启用整树终止直到观察到
+                // close，否则快速退出的启动器可能留下仍在运行的后代进程。
+                if (terminationStarted || childClosed)
+                    return;
+                terminationStarted = true;
+                aborted = reason === 'abort';
+                timedOut = reason === 'timeout';
+                resourceGroup?.cleanup();
+                terminateProcessTree(child);
+            };
+            const onAbort = () => terminate('abort');
+            if (activeSignal) {
+                removeAbortListener = () => activeSignal.removeEventListener('abort', onAbort);
+                if (activeSignal.aborted)
+                    onAbort();
+                else
+                    activeSignal.addEventListener('abort', onAbort, { once: true });
+            }
+            timeoutTimer = timeout > 0 ? setTimeout(() => terminate('timeout'), timeout) : undefined;
+            timeoutTimer?.unref?.();
         }
         catch (e) {
             cleanup();
-            resolve({ exitCode: 127, stdout: `[sandbox] spawn failed: ${e instanceof Error ? e.message : 'err'}` });
+            finish({ exitCode: 127, stdout: `[sandbox] spawn failed: ${e instanceof Error ? e.message : 'err'}` });
         }
     });
 }

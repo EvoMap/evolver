@@ -167,14 +167,16 @@ async function collectDistillInput(store, maxCapsules, minSuccessScore) {
     const successCapsules = capsules.filter((record) => isSuccessCapsule(record, minSuccessScore)).slice(-maxCapsules);
     return { dataHash: hashCapsules(successCapsules), successCapsules, existingGenes };
 }
-function buildDistillPrompt(input) {
-    const capsules = hub.redactDeep(input.successCapsules.map(capsuleDigestView));
-    const genes = hub.redactDeep(input.existingGenes.map((gene) => ({
+function buildDistillPrompt(input, redact = true) {
+    const rawCapsules = input.successCapsules.map(capsuleDigestView);
+    const rawGenes = input.existingGenes.map((gene) => ({
         id: gene['id'],
         category: gene['category'],
         signals_match: gene['signals_match'],
         summary: gene['summary'],
-    })));
+    }));
+    const capsules = redact ? hub.redactDeep(rawCapsules) : rawCapsules;
+    const genes = redact ? hub.redactDeep(rawGenes) : rawGenes;
     // Scope-language alignment (review ②): show the model the signals the store ACTUALLY uses BEFORE it chooses a
     // scope facet. The autonomous-scope experiment (result-recovery-autoscope-joint-metric.json) isolated the
     // failure as structural, not a model weakness — the distiller reads solved source code and never observes the
@@ -537,16 +539,12 @@ export async function autoDistillLlm(options) {
     }
     const runner = options.runner ?? resolveDistillRunner(env);
     const timeoutMs = envInt(env, 'EVOLVE_DISTILL_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
-    const prompt = buildDistillPrompt(input);
-    // Egress-floor parity: buildDistillPrompt already pattern-redacts via hub.redactDeep, but the Hub publish path
-    // additionally runs a REVERSE env-value scan (hub.detectEnvValueLeaks) that flags any process-env value
-    // appearing verbatim in the payload — catching custom-format secrets no pattern matches. The prompt is an
-    // off-box egress (stdin to a spawned `claude`), so hold it to the same floor the repo enforces on publish: if a
-    // daemon env secret leaked into a capsule, fail CLOSED and never send it. This is a data-hygiene block, not a
-    // deterministic claude failure, so — like a transient exit below — it does NOT bump failed_attempts.
-    if (hub.detectEnvValueLeaks(prompt, env).length > 0) {
+    // LLM prompt 属于外部输出边界。先对脱敏前的同构内容执行反向环境变量扫描，
+    // 避免高熵模式先替换秘密后让泄漏检查误判为安全；该阻断不计入确定性失败次数。
+    if (hub.detectEnvValueLeaks(buildDistillPrompt(input, false), env).length > 0) {
         return { ok: false, mode, reason: 'prompt_env_leak_blocked', dataHash: input.dataHash };
     }
+    const prompt = buildDistillPrompt(input);
     const llm = await runner(prompt, { cwd, timeoutMs, env });
     if (llm.exitCode !== 0) {
         // V1 parity: a PROCESS-level claude failure — spawn error/ENOENT or timeout→SIGKILL (exitCode === null), OR a

@@ -283,6 +283,7 @@ export async function runPublishCommand(args, deps = {}) {
                 ...(bundleId ? { bundle_id: bundleId } : {}),
                 ...(recipeId ? { recipe_id: recipeId } : {}),
                 ...(safetyCandidate ? { hub_reason: hubReason } : {}),
+                gates: bundle.gates,
                 // What the Hub actually holds — after a repair that is the mended record, not the one first submitted.
                 assets: repairApplied?.applied === true ? summarizePublishAssets(effectiveAssets) : bundle.assets,
                 ...(publishCredits ? { credits: publishCredits } : {}),
@@ -582,6 +583,7 @@ export async function buildPublishBundle(refs, deps = {}) {
         schema: 'pass',
         bundle: 'pass',
         quality: geneProven ? 'pass' : 'fail',
+        quality_evidence: geneEvidence?.source ?? 'unavailable',
         validation_command: validationCommandResult.allowed ? 'pass' : 'fail',
     };
     const blockReasons = [];
@@ -606,10 +608,9 @@ export async function buildPublishBundle(refs, deps = {}) {
         assets: summarizePublishAssets(sanitized),
     };
 }
-// Assess whether the bundle's Gene has proven success in the local capsule
-// history. Fail-open (returns null) when there is no gene id or the store read
-// throws — the pre-check only ADDS a local gate; the Hub still gates, so an
-// infra hiccup must not block an otherwise-valid publish.
+// 评估 bundle 中 Gene 的成功证据。历史记录来自本地 Capsule store；显式提交的、
+// 通过完整校验的成功 Capsule 也可作为首次发布的 seed。没有 gene id 或 store
+// 读取失败时保持 fail-open，因为这道预检只增加本地门槛，最终质量判定仍由 Hub 负责。
 async function assessPublishGeneEvidence(original, deps) {
     const gene = original.find((asset) => asset.type === 'Gene');
     if (!gene)
@@ -619,6 +620,8 @@ async function assessPublishGeneEvidence(original, deps) {
     const geneId = businessId ?? assetId;
     if (!geneId)
         return null;
+    const geneIds = new Set([businessId, assetId].filter((id) => Boolean(id)));
+    const hasBundleSeed = hasVerifiedSuccessfulBundleCapsule(original, geneIds);
     try {
         const store = deps.assetStore ?? new assetstore.LocalJsonlProvider(contractAssetsDir(deps));
         const primary = await algo.assessGenePublishEvidence(store, geneId);
@@ -627,27 +630,42 @@ async function assessPublishGeneEvidence(original, deps) {
         // contain failures under the business id and a success under asset_id, so
         // both aliases must contribute to the gate rather than only falling back
         // when the primary alias has no rows at all.
-        if (assetId && assetId !== geneId) {
-            const byAssetId = await algo.assessGenePublishEvidence(store, assetId);
-            const combined = {
-                success: primary.success + byAssetId.success,
-                failed: primary.failed + byAssetId.failed,
-                inert: primary.inert + byAssetId.inert,
-                total: primary.total + byAssetId.total,
-            };
-            const eligible = algo.isGenePublishEligible(combined);
-            return {
-                geneId,
-                ...combined,
-                eligible,
-                reason: eligible ? 'eligible' : 'no_proven_success',
-            };
-        }
-        return primary;
+        const byAssetId = assetId && assetId !== geneId
+            ? await algo.assessGenePublishEvidence(store, assetId)
+            : undefined;
+        const localEvidence = {
+            success: primary.success + (byAssetId?.success ?? 0),
+            inert: primary.inert + (byAssetId?.inert ?? 0),
+        };
+        if (algo.isGenePublishEligible(localEvidence))
+            return { eligible: true, source: 'local_history' };
+        if (hasBundleSeed)
+            return { eligible: true, source: 'bundle_seed' };
+        return { eligible: false, source: 'none' };
     }
     catch {
+        // 本地 store 不可用时保持历史 fail-open 行为。显式 Capsule 只有在上面的
+        // content hash 和 wire schema 校验都通过后才会计入，非法文件不会变成证据。
+        if (hasBundleSeed)
+            return { eligible: true, source: 'bundle_seed' };
         return null;
     }
+}
+/**
+ * 首次发布可以把已经生成的成功 Capsule 作为同一 bundle 的证据提交。
+ * 之前这里只读取本地 capsules.jsonl，导致 `--gene file --capsule file`
+ * 即使带有成功 Capsule 也在到达 Hub 前被 `gene_unproven` 拦截。
+ *
+ * 外部文件不是本地历史，必须先通过完整 wire schema 和 content hash 校验；
+ * 失败或缺少成功 outcome 的 Capsule 不会解锁 quality gate。该证据只用于
+ * 本地预检，Hub 仍然负责最终质量判定和持久化。
+ */
+function hasVerifiedSuccessfulBundleCapsule(original, geneIds) {
+    const capsule = original.find((asset) => (asset.type === 'Capsule' && geneIds.has(stringField(asset, 'gene') ?? '')));
+    if (!capsule || !wire.validateWireDeep(capsule).ok || !wire.verifyAssetId(capsule)) {
+        return false;
+    }
+    return stringField(asRecord(capsule['outcome']), 'status') === 'success';
 }
 /**
  * 检查 Gene 资产中的验证命令是否安全。

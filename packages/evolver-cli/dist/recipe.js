@@ -16,9 +16,23 @@ const MAX_RECIPE_INPUT_BYTES = 1024 * 1024;
 const MAX_ID_LENGTH = 200;
 const SENSITIVE_ERROR_KEYS = new Set(['authorization', 'node_secret', 'nodesecret', 'token', 'access_token', 'refresh_token', 'secret']);
 const STALE_NODE_SECRET_ERRORS = new Set(['node_secret_invalid', 'node_secret_not_set']);
+const RECIPE_SEARCH_VALUE_OPTIONS = new Set(['--q', '--query', '--limit']);
+const RECIPE_REUSE_COMMAND = 'evolver recipe reuse --id <recipe_id>';
 function recipeIdempotencyKey(operation, value) {
     const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex');
     return `evolver-recipe-${operation}-${digest}`;
+}
+function terminalSafeText(value) {
+    return String(value ?? '').replace(/\p{Cc}/gu, '');
+}
+function terminalSafeJson(value, space) {
+    const json = JSON.stringify(value === undefined ? {} : value, null, space);
+    return json.replace(/\p{Cc}/gu, (char) => {
+        const codePoint = char.codePointAt(0);
+        if (codePoint === undefined || codePoint < 0x7f)
+            return char;
+        return `\\u${codePoint.toString(16).padStart(4, '0')}`;
+    });
 }
 const recipeIdentityBootstraps = new WeakMap();
 export async function runRecipeCommand(argv, deps = {}) {
@@ -77,15 +91,16 @@ async function runRecipeBuildDryRun(opts, store, io) {
 }
 function runRecipeSearchDryRun(opts, io) {
     const action = opts.q ? 'search_recipe' : 'list_recipe';
-    io.log(`[recipe search] dry-run: would ${opts.q ? `search recipes q=${JSON.stringify(opts.q)}` : 'list published recipes'}.`);
+    const displayQuery = terminalSafeText(opts.q);
+    io.log(`[recipe search] dry-run: would ${opts.q ? `search recipes q=${JSON.stringify(displayQuery)}` : 'list published recipes'}.`);
     if (opts.jsonOut) {
-        io.log(JSON.stringify({
+        io.log(terminalSafeJson({
             dry_run: true,
             would: action,
             ...(opts.q ? { q: opts.q } : {}),
             ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
             recipes: [],
-        }, null, 2));
+        }, 2));
     }
     return 0;
 }
@@ -102,9 +117,9 @@ async function runRecipeSearch(opts, hub, io) {
     const receipt = opts.q
         ? await callRecipeWithAuthRetry(hub, 'recipe search', () => recipes.search(request), io)
         : await callRecipeWithAuthRetry(hub, 'recipe search', () => recipes.list(request), io);
-    io.log(`[recipe search] ${receipt.recipes.length} recipe(s).`);
+    io.log(`[recipe search] ${receipt.recipes.length} recipe(s). Express with: ${RECIPE_REUSE_COMMAND}`);
     if (opts.jsonOut) {
-        io.log(JSON.stringify(receipt.raw ?? receipt, null, 2));
+        io.log(terminalSafeJson(receipt.raw ?? receipt, 2));
         return 0;
     }
     for (const recipe of receipt.recipes) {
@@ -114,20 +129,23 @@ async function runRecipeSearch(opts, hub, io) {
                 : typeof row['recipeId'] === 'string' ? row['recipeId']
                     : undefined;
         const title = typeof row['title'] === 'string' ? row['title'] : undefined;
-        io.log(id && title ? `  ${id}  ${title}` : id ? `  ${id}` : `  ${JSON.stringify(recipe)}`);
+        const displayId = id ? terminalSafeText(id) : undefined;
+        const displayTitle = title ? terminalSafeText(title) : undefined;
+        io.log(displayId && displayTitle ? `  ${displayId}  ${displayTitle}` : displayId ? `  ${displayId}` : `  ${terminalSafeJson(recipe)}`);
     }
     return 0;
 }
 function runRecipeReuseDryRun(opts, io) {
-    io.log(`[recipe reuse] dry-run: would fetch recipe ${opts.recipeId}.`);
-    io.log(`[recipe reuse] dry-run: would express recipe ${opts.recipeId}.`);
+    const displayRecipeId = terminalSafeText(opts.recipeId);
+    io.log(`[recipe reuse] dry-run: would fetch recipe ${displayRecipeId}.`);
+    io.log(`[recipe reuse] dry-run: would express recipe ${displayRecipeId}.`);
     if (opts.jsonOut) {
-        io.log(JSON.stringify({
+        io.log(terminalSafeJson({
             dry_run: true,
             would: 'express_recipe',
             recipe_id: opts.recipeId,
             input_payload: opts.inputPayload,
-        }, null, 2));
+        }, 2));
     }
     return 0;
 }
@@ -435,9 +453,9 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
 async function runRecipeReuse(opts, hub, io) {
     await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.get(opts.recipeId), io);
     const receipt = await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.express(opts.recipeId, { inputPayload: opts.inputPayload }), io);
-    io.log(`[recipe reuse] Expressed recipe ${opts.recipeId}.`);
+    io.log(`[recipe reuse] Expressed recipe ${terminalSafeText(opts.recipeId)}.`);
     if (opts.jsonOut)
-        io.log(JSON.stringify(receipt.raw, null, 2));
+        io.log(terminalSafeJson(receipt.raw, 2));
     return 0;
 }
 async function recipeStepsFromLocalAssets(assetIds, store) {
@@ -495,8 +513,8 @@ async function verifyRecipeFromSkillsSteps(steps, runValidation) {
             };
         }
         if (validation.skipped.length > 0) {
-            const skipped = validation.skipped.map((item) => item.script).join(', ');
-            return { ok: false, error: `recipe from-skills step ${i + 1} validation incomplete: missing ${skipped}` };
+            const skipped = validation.skipped.map((item) => `${item.script} (${item.reason})`).join(', ');
+            return { ok: false, error: `recipe from-skills step ${i + 1} validation incomplete: skipped or rejected ${skipped}` };
         }
         if (!validation.passed) {
             return { ok: false, error: `recipe from-skills step ${i + 1} validation failed` };
@@ -932,7 +950,7 @@ function parseFromSkillsArgs(args) {
     };
 }
 function parseSearchArgs(args) {
-    const q = flagValue(args, '--q') ?? flagValue(args, '--query') ?? firstPositional(args) ?? undefined;
+    const q = flagValue(args, '--q') ?? flagValue(args, '--query') ?? firstSearchPositional(args) ?? undefined;
     const limitRaw = flagValue(args, '--limit');
     const limit = limitRaw === null ? undefined : Number(limitRaw);
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
@@ -979,6 +997,21 @@ function flagValue(args, flag) {
 }
 function firstPositional(args) {
     return args.find((a) => typeof a === 'string' && !a.startsWith('--')) ?? null;
+}
+function firstSearchPositional(args) {
+    for (let i = 0; i < args.length; i += 1) {
+        const token = args[i];
+        if (token === undefined)
+            continue;
+        if (!token.startsWith('--'))
+            return token;
+        if (!token.includes('=') && RECIPE_SEARCH_VALUE_OPTIONS.has(token)) {
+            const next = args[i + 1];
+            if (next !== undefined && !next.startsWith('--'))
+                i += 1;
+        }
+    }
+    return null;
 }
 function parseJsonObject(raw) {
     try {
@@ -1346,6 +1379,6 @@ function recipeUsage() {
         '      Distills ordered SKILL.md steps with execution evidence, then creates a recipe.',
         '  evolver recipe reuse --id <recipe_id> [--input <json-object>] [--json]',
         '  evolver recipe search [--q <text>] [--limit <n>] [--json]',
-        '      Default agent lookup. Express a hit with `evolver recipe reuse`. Gene/Capsule search is fallback.',
+        `      Default agent lookup. Express a hit with \`${RECIPE_REUSE_COMMAND}\`. Gene/Capsule search is fallback.`,
     ].join('\n');
 }

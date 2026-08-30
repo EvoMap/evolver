@@ -6,6 +6,7 @@ import type { AtpOrderConsentGate } from './atpConsent.js';
 import { type PublishRecallVerifierPort } from './publishRecallVerifier.js';
 type HubCapability = hubNs.HubCapability;
 type AssetStoreProvider = assetstore.AssetStoreProvider;
+type ConversationDistillExecutionVerifier = (input: hubNs.ConversationDistillInput, signal: AbortSignal) => Promise<hubNs.ConversationDistillVerifiedExecution | null>;
 export declare const DEFAULT_IPC_PORT = 19820;
 export interface ProxyDaemonDeps {
     hub: HubCapability;
@@ -75,6 +76,12 @@ export interface ProxyDaemonDeps {
     publishRecallVerifier?: PublishRecallVerifierPort;
     /** Optional deterministic sanitizer environment for composition tests. Production omits this to scan process.env. */
     publishSanitizeEnv?: Record<string, string | undefined>;
+    /**
+     * 宿主专属的真实执行验证器。缺失时，conversation distill 只能返回草稿，绝不持久化或排队发布。
+     */
+    publishExecutionVerifier?: ConversationDistillExecutionVerifier;
+    /** 验证器响应的硬超时，防止发布请求因宿主执行器挂起而永久占用连接。 */
+    publishExecutionVerifierTimeoutMs?: number;
 }
 export interface ProxyTickReport {
     outbound: OutboundResult;
@@ -180,6 +187,8 @@ export declare class ProxyDaemon {
     private scheduledForceUpdateKey;
     private traceBackfillDraining;
     private loopWakeHandler;
+    /** 守护进程停止时取消宿主验证。 */
+    private publishAbortController;
     constructor(deps: ProxyDaemonDeps);
     /**
      * core handler(确定性, 不经 agent): 目前只接 force_update(#108). 其他 core 类型(asset_publish_result/

@@ -1,4 +1,4 @@
-import { linkSync } from 'node:fs';
+import { linkSync, renameSync } from 'node:fs';
 import type { hub } from '@evomap/evolver-core';
 export interface CredentialStoreOptions {
     /**
@@ -15,6 +15,8 @@ export interface CredentialStoreOptions {
     windowsParentStateReader?: (path: string) => readonly PathSecurityState[];
     /** Injectable filesystem primitive for deterministic no-clobber publication tests. */
     linkFile?: typeof linkSync;
+    /** Injectable filesystem primitive for deterministic atomic replacement tests. */
+    renameFile?: typeof renameSync;
 }
 export interface WindowsCredentialAclOps {
     assertTrustedParent(path: string, strictCreate: boolean): void;
@@ -44,6 +46,7 @@ export declare class CredentialStore {
     private readonly darwinAclReader;
     private readonly windowsParentStateReader;
     private readonly linkFile;
+    private readonly renameFile;
     private securedDirectoryState;
     private securedCredentialState;
     private readonly securedAncestorStates;

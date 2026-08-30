@@ -38,6 +38,17 @@ export interface DoctorDeps {
     profile?: DoctorProfile;
     label?: string;
     memoryGraphStatus?: (env: Record<string, string | undefined>) => MemoryGraphOperatorStatus;
+    /** Runtime platform override (tests). Defaults to process.platform. */
+    platform?: NodeJS.Platform;
+    /** Test seam for the read-only legacy v1 Windows scheduled-task probe (#956). */
+    legacyWindowsTasks?: (options: {
+        env: NodeJS.ProcessEnv;
+        platform?: NodeJS.Platform;
+    }) => {
+        conclusive: boolean;
+        legacy: string[];
+        detail: string;
+    };
 }
 export interface EnvCatalogResult {
     profile: DoctorProfile;

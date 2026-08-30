@@ -5,10 +5,12 @@
 // gene.distilled. It reuses the exact same `draftGeneCandidate` as `evolver ingest --distill`, so the one-shot and
 // the auto path never drift.
 //
-// WIRING (#117 / #106): this composition is ready to register on the resident daemon's ObserverBus, but the
-// PRODUCER of material.batch_ready (a daemon ingesting session dirs onto the same bus Ingestor) is a #106 item.
-// Until that lands, the composition is verified by its integration test (real bus + Ingestor dispatch) but not yet
-// wired into autoexec — a tracked dependency, not dead code. See distillObserver.test.ts.
+// WIRING (#117 / #106): LIVE. `autoexec.ts` imports `resolveDistillObserver`, builds it inside
+// `resolveDistillProducer`, registers it on the daemon's ObserverBus, drives `distill.tick()` every beat, and
+// `kick()`s it on boot to drain any backlog left un-acked by a prior run. The `material.batch_ready` producer is
+// the session-ingest tick on the same Ingestor. See distillObserver.test.ts for the isolated proof.
+// (This said "not yet wired into autoexec" long after it was wired. A stale WIRING note is worse than none: it
+// reads as a real gap, and a 2026-08 audit did misreport this composition as unwired on the strength of it.)
 import { assetstore, events, observers, signals, algo } from '@evomap/evolver-core';
 import { readFileSync } from 'node:fs';
 import { draftGeneCandidate } from './distillPrimitives.js';

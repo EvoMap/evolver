@@ -1,1 +1,239 @@
-const _0x12bec7=_0x2549;(function(_0x1c5b13,_0x58477b){const _0x3dd6a9=_0x2549,_0x3cbfcc=_0x1c5b13();while(!![]){try{const _0x4a36e5=-parseInt(_0x3dd6a9(0x24d,'\x34\x36\x42\x25'))/(0x1830+0x414*-0x5+-0x3cb)*(-parseInt(_0x3dd6a9(0x23e,'\x5a\x32\x70\x57'))/(0x65b*-0x4+-0x4*0x363+0x1*0x26fa))+parseInt(_0x3dd6a9(0x227,'\x34\x56\x6c\x66'))/(-0x6cd+-0x4*-0x926+-0x1dc8)*(-parseInt(_0x3dd6a9(0x1f1,'\x23\x67\x64\x66'))/(0x17a5*0x1+0x24b6+-0x3c57))+-parseInt(_0x3dd6a9(0x1bf,'\x73\x75\x51\x48'))/(0x1*-0x55+-0x15ea*0x1+0x1644)+parseInt(_0x3dd6a9(0x1dc,'\x69\x36\x62\x4b'))/(0xd61+-0xad*0x2f+0x1268)*(-parseInt(_0x3dd6a9(0x226,'\x2a\x29\x4b\x25'))/(-0x2*0x84b+-0x197b+0x2a18))+parseInt(_0x3dd6a9(0x247,'\x53\x52\x75\x58'))/(-0xc10+0x1*0x10e4+0x133*-0x4)+parseInt(_0x3dd6a9(0x1d1,'\x57\x73\x77\x41'))/(-0x20*-0x101+-0x15a3+-0xa74)+parseInt(_0x3dd6a9(0x1f2,'\x24\x67\x4d\x23'))/(0x3dc*0x5+-0x4f4+-0x1*0xe4e)*(-parseInt(_0x3dd6a9(0x1c8,'\x75\x34\x21\x32'))/(0x9*-0x25f+-0x6d8+0x1c3a));if(_0x4a36e5===_0x58477b)break;else _0x3cbfcc['push'](_0x3cbfcc['shift']());}catch(_0x10c23a){_0x3cbfcc['push'](_0x3cbfcc['shift']());}}}(_0x1294,0xd15*0x11+-0x8da34+0x6*0x2702c));import{detectModelName}from'\x2e\x2e\x2f\x62\x6f\x6f\x74\x73\x74\x72\x61\x70\x2f\x65\x6e\x76\x46\x69\x6e\x67\x65\x72\x70\x72\x69\x6e\x74\x2e\x6a\x73';import{computeAssetId,validateWire,SCHEMA_VERSION,normalizeRoutingHint,normalizeToolPolicy,normalizeGenerationMeta,normalizeClaims,normalizeGeneScope,normalizeRuntimeProfile,normalizeVerifierProfile,stripGeneHints,ENV_CLASSES}from'\x2e\x2e\x2f\x77\x69\x72\x65\x2f\x69\x6e\x64\x65\x78\x2e\x6a\x73';function _0x2549(_0x4f7c80,_0x49f83e){_0x4f7c80=_0x4f7c80-(-0x50e+0x1604+0x2*-0x7a9);const _0x43a1b7=_0x1294();let _0x32b842=_0x43a1b7[_0x4f7c80];if(_0x2549['\x4b\x79\x77\x74\x66\x52']===undefined){var _0x5ab8ac=function(_0x36b494){const _0x5131ee='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x1debfb='',_0x558e5e='';for(let _0x13aafe=0x3c6+0x16*0xb5+-0x1354,_0x3ab48e,_0x4db3a8,_0xdf1260=0x1829+-0x266e+0xe45;_0x4db3a8=_0x36b494['\x63\x68\x61\x72\x41\x74'](_0xdf1260++);~_0x4db3a8&&(_0x3ab48e=_0x13aafe%(-0x1f*0x30+0x1211+-0xc3d)?_0x3ab48e*(-0x3*0xc4+0x2*0xc83+-0x167a)+_0x4db3a8:_0x4db3a8,_0x13aafe++%(-0x3*-0x2cd+0xb06*-0x1+0x2a3))?_0x1debfb+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](-0x1e0a+0x1*0x1dc2+0x147&_0x3ab48e>>(-(-0x7c7*-0x1+0x17d7*0x1+-0x242*0xe)*_0x13aafe&0x431*0x1+-0x235f+0x1f34*0x1)):-0xfd3+0x11cc+0x1*-0x1f9){_0x4db3a8=_0x5131ee['\x69\x6e\x64\x65\x78\x4f\x66'](_0x4db3a8);}for(let _0x15e295=0x17a9+-0x177*0x1+0x3*-0x766,_0x3b9e5c=_0x1debfb['\x6c\x65\x6e\x67\x74\x68'];_0x15e295<_0x3b9e5c;_0x15e295++){_0x558e5e+='\x25'+('\x30\x30'+_0x1debfb['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x15e295)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](-0x1*0xccd+-0x6*0x17b+0x1*0x15bf))['\x73\x6c\x69\x63\x65'](-(-0xab*0x2d+-0x125f+-0x7c*-0x64));}return decodeURIComponent(_0x558e5e);};const _0xc94b76=function(_0x1a2de1,_0x4a4161){let _0x1c22ce=[],_0x353188=-0x10e8+-0x65f*0x4+0x2a64,_0x2b333b,_0x4e1b82='';_0x1a2de1=_0x5ab8ac(_0x1a2de1);let _0x4acd1f;for(_0x4acd1f=-0x79*-0x47+-0x19e4+-0x7ab;_0x4acd1f<0x361+0x1f98+-0x21f9;_0x4acd1f++){_0x1c22ce[_0x4acd1f]=_0x4acd1f;}for(_0x4acd1f=-0x179c*0x1+0x45*-0x7a+0xe*0x409;_0x4acd1f<-0x1bbc+0x36*0x73+0x1*0x47a;_0x4acd1f++){_0x353188=(_0x353188+_0x1c22ce[_0x4acd1f]+_0x4a4161['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x4acd1f%_0x4a4161['\x6c\x65\x6e\x67\x74\x68']))%(0x1444+0x5*0x29b+0x1*-0x204b),_0x2b333b=_0x1c22ce[_0x4acd1f],_0x1c22ce[_0x4acd1f]=_0x1c22ce[_0x353188],_0x1c22ce[_0x353188]=_0x2b333b;}_0x4acd1f=0x2*-0x1a1+-0xa95+0xdd7,_0x353188=-0x1df8+0x21c6+-0x3ce;for(let _0x3c95ab=-0x1a16+0x224a+-0x834;_0x3c95ab<_0x1a2de1['\x6c\x65\x6e\x67\x74\x68'];_0x3c95ab++){_0x4acd1f=(_0x4acd1f+(0x12bd+0x1262+-0x2*0x128f))%(0x779*0x1+0x26d4+0x1*-0x2d4d),_0x353188=(_0x353188+_0x1c22ce[_0x4acd1f])%(0x1c68+0xc*0x24f+-0x4*0xdc7),_0x2b333b=_0x1c22ce[_0x4acd1f],_0x1c22ce[_0x4acd1f]=_0x1c22ce[_0x353188],_0x1c22ce[_0x353188]=_0x2b333b,_0x4e1b82+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x1a2de1['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x3c95ab)^_0x1c22ce[(_0x1c22ce[_0x4acd1f]+_0x1c22ce[_0x353188])%(0x26c4+0x205+-0x1*0x27c9)]);}return _0x4e1b82;};_0x2549['\x50\x4a\x4b\x64\x69\x4b']=_0xc94b76,_0x2549['\x53\x6c\x6c\x42\x7a\x68']={},_0x2549['\x4b\x79\x77\x74\x66\x52']=!![];}const _0x5655a8=_0x43a1b7[-0x11*-0x1a6+-0x169*0x4+-0x1662],_0x2fc6b8=_0x4f7c80+_0x5655a8,_0x11a4ff=_0x2549['\x53\x6c\x6c\x42\x7a\x68'][_0x2fc6b8];return!_0x11a4ff?(_0x2549['\x42\x7a\x73\x4a\x44\x5a']===undefined&&(_0x2549['\x42\x7a\x73\x4a\x44\x5a']=!![]),_0x32b842=_0x2549['\x50\x4a\x4b\x64\x69\x4b'](_0x32b842,_0x49f83e),_0x2549['\x53\x6c\x6c\x42\x7a\x68'][_0x2fc6b8]=_0x32b842):_0x32b842=_0x11a4ff,_0x32b842;}const VALID_CATEGORIES=[_0x12bec7(0x1b8,'\x57\x73\x77\x41'),_0x12bec7(0x243,'\x36\x6d\x5e\x37'),_0x12bec7(0x1ac,'\x40\x78\x46\x5e'),_0x12bec7(0x22d,'\x53\x42\x68\x37')],DEFAULT_FORBIDDEN_PATHS=['\x2e\x67\x69\x74',_0x12bec7(0x233,'\x58\x40\x75\x76')+_0x12bec7(0x1f7,'\x43\x30\x65\x72')],DEFAULT_MAX_FILES=-0x27*-0x24+-0x5ff*0x3+-0x99*-0x15,DISTILLED_ID_PREFIX='\x67\x65\x6e\x65\x5f\x64\x69\x73'+_0x12bec7(0x1db,'\x75\x58\x25\x6e');export function isDistilledGeneId(_0x5ab1d1){const _0x4caf4f=_0x12bec7;return typeof _0x5ab1d1===_0x4caf4f(0x238,'\x37\x47\x45\x41')&&_0x5ab1d1[_0x4caf4f(0x21f,'\x75\x58\x25\x6e')+'\x74\x68'](DISTILLED_ID_PREFIX);}export function geneGenerationSource(_0x5a4d6a,_0x58cdcd){const _0x4f52a7=_0x12bec7,_0x4ed645=_0x5a4d6a?.[_0x4f52a7(0x205,'\x55\x64\x4a\x70')+_0x4f52a7(0x23c,'\x75\x34\x4c\x4e')];if(_0x4ed645&&typeof _0x4ed645===_0x4f52a7(0x25b,'\x48\x4e\x69\x6e')){const _0x1d560b=_0x4ed645[_0x4f52a7(0x223,'\x6f\x26\x50\x54')];if(typeof _0x1d560b===_0x4f52a7(0x1e2,'\x26\x4d\x76\x21')&&(_0x1d560b===_0x4f52a7(0x1a8,'\x36\x71\x6b\x55')||_0x1d560b==='\x64\x69\x73\x74\x69\x6c\x6c\x65'+'\x64'||_0x1d560b===_0x4f52a7(0x1ec,'\x47\x44\x52\x69')))return _0x1d560b;}const _0x3d5c91=_0x58cdcd??(typeof _0x5a4d6a?.['\x69\x64']===_0x4f52a7(0x1c3,'\x57\x73\x77\x41')?String(_0x5a4d6a['\x69\x64']):null);if(_0x3d5c91&&isDistilledGeneId(_0x3d5c91))return _0x4f52a7(0x251,'\x30\x78\x30\x6e')+'\x64';if(_0x3d5c91)return'\x6d\x61\x6e\x75\x61\x6c';return null;}function fnv1a(_0x185728){const _0x14928e=_0x12bec7;let _0x25f024=-0x4abef2*-0xa3+-0x19207324+0x6aa57cd3;for(let _0x399b43=0xf2+0x7*0x4e5+-0x1*0x2335;_0x399b43<_0x185728[_0x14928e(0x20f,'\x31\x62\x43\x42')];_0x399b43++){_0x25f024^=_0x185728[_0x14928e(0x1fe,'\x41\x43\x53\x57')+'\x41\x74'](_0x399b43),_0x25f024=Math['\x69\x6d\x75\x6c'](_0x25f024,0x5e07e3+-0x16b0368+0x20cfd18);}return(_0x25f024>>>-0x69+0x1*0x97f+-0x916)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](-0x104f+-0x2*0x33d+0x16d9)[_0x14928e(0x22e,'\x40\x45\x37\x38')](0x1*0x1c27+0x472*0x3+-0x2975,'\x30');}const nonEmptyModel=_0x3c1cae=>{const _0x21905f=_0x12bec7,_0x3c75e5=(_0x3c1cae??'')[_0x21905f(0x1e5,'\x70\x70\x52\x4f')]();return _0x3c75e5[_0x21905f(0x1ca,'\x28\x44\x46\x6f')]>-0xe71*0x2+0x161a+0x364*0x2?_0x3c75e5[_0x21905f(0x1ff,'\x6f\x26\x50\x54')](0x254f+0xcf0+-0x323f,-0x1187*0x1+0x2b3*-0x2+0x1751):undefined;},clean=_0x417386=>(_0x417386??[])[_0x12bec7(0x1d8,'\x73\x75\x51\x48')](_0x34f489=>String(_0x34f489)[_0x12bec7(0x1a4,'\x26\x5e\x4c\x36')]())[_0x12bec7(0x1b2,'\x70\x28\x32\x43')](_0x259bb3=>_0x259bb3['\x6c\x65\x6e\x67\x74\x68']>0x1b0e+0xec4+-0x29d2),NAMESPACED_SCOPE=/^(?:repo|lineage|pkg|lang|framework|capability|tool|model|time|env):[A-Za-z0-9._@/:-]+$/,VERSION_INTERVAL_SCOPE=/^[A-Za-z0-9._-]+@(?:[><=^~]{1,2})?\d[\w.*-]*(?:\s*-\s*\d[\w.*-]*)?$/,PLACEHOLDER_VERIFIER=/^(?:node|python3?|ruby|deno|bun|go|java|npm|pnpm|yarn)\s+(?:--?v(?:ersion)?|-V)\s*$/i,TRIVIAL_VERIFIER=/^(?:true|:|echo\b.*|exit\s+0)\s*$/i;export function namespaceScopeSignals(_0x402fc5){const _0x395789=_0x12bec7,_0x14453b=[];for(const _0x3d2ee4 of _0x402fc5){const _0x486b35=String(_0x3d2ee4??'')[_0x395789(0x1a6,'\x47\x44\x52\x69')]();if(!_0x486b35)continue;const _0x52c1fd=_0x486b35[_0x395789(0x24a,'\x46\x4d\x49\x45')+'\x74\x68'](_0x395789(0x258,'\x70\x28\x32\x43')+'\x3a'),_0x297b98=_0x52c1fd?_0x486b35[_0x395789(0x207,'\x55\x64\x4a\x70')]((_0x395789(0x1eb,'\x28\x44\x46\x6f')+'\x3a')[_0x395789(0x22b,'\x5a\x32\x70\x57')])[_0x395789(0x1e1,'\x73\x75\x51\x48')]():_0x486b35;if(!_0x297b98)continue;const _0x3503f6=NAMESPACED_SCOPE[_0x395789(0x22c,'\x53\x59\x5d\x48')](_0x297b98)||VERSION_INTERVAL_SCOPE[_0x395789(0x215,'\x70\x28\x32\x43')](_0x297b98)?_0x297b98:_0x395789(0x1cc,'\x75\x34\x21\x32')+'\x74\x79\x3a'+_0x297b98[_0x395789(0x1d0,'\x69\x44\x23\x32')](/[^A-Za-z0-9._@/-]+/g,'\x2d')[_0x395789(0x1b6,'\x53\x59\x5d\x48')](/^-+|-+$/g,'')['\x73\x6c\x69\x63\x65'](-0x41b*-0x3+0x824+-0x1475,0x64*0x5d+0x1cb3*0x1+0x40b7*-0x1);if(!_0x3503f6||_0x3503f6===_0x395789(0x1c0,'\x31\x62\x43\x42')+_0x395789(0x229,'\x34\x56\x6c\x66'))continue;_0x14453b[_0x395789(0x1e3,'\x76\x70\x2a\x53')](_0x52c1fd?'\x72\x65\x71\x75\x69\x72\x65\x64'+'\x3a'+_0x3503f6:_0x3503f6);}return _0x14453b;}export function detectEnvClass(_0x3d9ad0=process.env){const _0xce5a77=_0x12bec7,_0x322c5e=_0x4602b3=>{const _0x103f61=_0x2549,_0x317df3=(_0x4602b3??'')['\x74\x72\x69\x6d']()[_0x103f61(0x214,'\x63\x59\x24\x2a')+_0x103f61(0x25d,'\x36\x71\x6b\x55')]();return _0x317df3!==''&&_0x317df3!=='\x30'&&_0x317df3!==_0x103f61(0x21a,'\x75\x34\x4c\x4e')&&_0x317df3!=='\x6e\x6f';};if(_0x322c5e(_0x3d9ad0['\x43\x49'])||_0x322c5e(_0x3d9ad0['\x47\x49\x54\x48\x55\x42\x5f\x41'+_0xce5a77(0x1be,'\x34\x36\x42\x25')])||_0x322c5e(_0x3d9ad0[_0xce5a77(0x1c9,'\x4c\x49\x57\x59')+'\x49'])||_0x322c5e(_0x3d9ad0['\x42\x55\x49\x4c\x44\x4b\x49\x54'+'\x45'])||_0x322c5e(_0x3d9ad0[_0xce5a77(0x1f8,'\x76\x70\x2a\x53')])||_0x322c5e(_0x3d9ad0[_0xce5a77(0x1e9,'\x47\x4c\x61\x37')]))return'\x63\x69';if(_0x322c5e(_0x3d9ad0[_0xce5a77(0x231,'\x53\x52\x75\x58')+_0xce5a77(0x1f6,'\x5d\x69\x72\x29')+'\x53'])){if(_0xce5a77(0x20b,'\x75\x58\x25\x6e')===_0xce5a77(0x1d9,'\x34\x56\x6c\x66')){const _0x1cefbe=_0x2624b4?.[_0xce5a77(0x1ab,'\x31\x76\x65\x70')+'\x6f\x6e\x5f\x6d\x65\x74\x61'];if(_0x1cefbe&&typeof _0x1cefbe==='\x6f\x62\x6a\x65\x63\x74'){const _0x24731e=_0x1cefbe[_0xce5a77(0x246,'\x70\x28\x32\x43')];if(typeof _0x24731e===_0xce5a77(0x1cf,'\x31\x76\x65\x70')&&(_0x24731e===_0xce5a77(0x219,'\x75\x34\x4c\x4e')||_0x24731e===_0xce5a77(0x236,'\x31\x62\x43\x42')+'\x64'||_0x24731e===_0xce5a77(0x1e0,'\x73\x75\x51\x48')))return _0x24731e;}const _0x250903=_0x2ce2be??(typeof _0x4e3b11?.['\x69\x64']===_0xce5a77(0x204,'\x26\x5e\x4c\x36')?_0x3f36f2(_0x285d3b['\x69\x64']):null);if(_0x250903&&_0x3191f0(_0x250903))return _0xce5a77(0x1ce,'\x28\x44\x46\x6f')+'\x64';if(_0x250903)return _0xce5a77(0x1a5,'\x55\x64\x4a\x70');return null;}else{const _0x501f50=String(_0x3d9ad0['\x45\x56\x4f\x4c\x56\x45\x52\x5f'+_0xce5a77(0x255,'\x26\x4d\x76\x21')+'\x53'])[_0xce5a77(0x25c,'\x65\x28\x65\x35')]()[_0xce5a77(0x1c7,'\x69\x36\x62\x4b')+_0xce5a77(0x1f0,'\x53\x36\x6e\x35')]();if(ENV_CLASSES[_0xce5a77(0x20c,'\x53\x42\x68\x37')](_0x501f50))return _0x501f50;}}return'\x6c\x6f\x63\x61\x6c';}export function deriveDefaultKautoCoordinates(_0x80a2cd){const _0x9b0854=_0x12bec7,_0x1cadf5=_0x80a2cd[_0x9b0854(0x1b4,'\x4c\x49\x57\x59')]??(_0x80a2cd[_0x9b0854(0x1b5,'\x53\x52\x75\x58')][_0x9b0854(0x211,'\x63\x59\x24\x2a')]>-0x25*-0xe9+0x1b9f+0xf53*-0x4?[{'\x70\x72\x65\x64\x69\x63\x61\x74\x65':_0x9b0854(0x1aa,'\x25\x49\x52\x21')+'\x6f\x6e\x74\x72\x61\x63\x74','\x6b\x69\x6e\x64':_0x9b0854(0x209,'\x75\x34\x21\x32')+'\x61\x6c'}]:null),_0x4874b2=_0x80a2cd[_0x9b0854(0x24f,'\x5a\x32\x70\x57')]??((()=>{const _0x3e344e=_0x9b0854,_0xb833d4=namespaceScopeSignals(_0x80a2cd[_0x3e344e(0x22f,'\x65\x28\x65\x35')]);return _0xb833d4[_0x3e344e(0x1ea,'\x42\x38\x41\x75')]>-0x33*-0x6b+0x26cd+-0x3c1e?{'\x73\x69\x67\x6e\x61\x6c\x73':_0xb833d4}:null;})()),_0x46851b=_0x80a2cd[_0x9b0854(0x1fd,'\x24\x67\x4d\x23')+_0x9b0854(0x1bd,'\x26\x4d\x76\x21')]??(_0x80a2cd[_0x9b0854(0x250,'\x4c\x49\x57\x59')+'\x65']?{'\x72\x75\x6e\x74\x69\x6d\x65':_0x80a2cd[_0x9b0854(0x1ba,'\x5a\x32\x70\x57')+'\x65'],'\x65\x6e\x76\x5f\x63\x6c\x61\x73\x73':detectEnvClass(_0x80a2cd[_0x9b0854(0x220,'\x37\x47\x45\x41')])}:null),_0x43046c=_0x80a2cd[_0x9b0854(0x21e,'\x48\x4e\x69\x6e')+'\x5f\x70\x72\x6f\x66\x69\x6c\x65']??((()=>{const _0x54354d=_0x9b0854,_0x542b57=_0x80a2cd['\x76\x61\x6c\x69\x64\x61\x74\x69'+'\x6f\x6e'][_0x54354d(0x1b7,'\x53\x42\x68\x37')](_0x117e66=>String(_0x117e66)[_0x54354d(0x235,'\x53\x52\x75\x58')]())[_0x54354d(0x225,'\x55\x64\x4a\x70')](Boolean);if(_0x542b57[_0x54354d(0x224,'\x34\x36\x42\x25')]===0x7*0x4b1+-0x23d0+0x2f9)return null;const _0x4cc8ad=_0x542b57['\x66\x69\x6e\x64'](_0x5d97fa=>!PLACEHOLDER_VERIFIER[_0x54354d(0x1c2,'\x42\x38\x41\x75')](_0x5d97fa)&&!TRIVIAL_VERIFIER['\x74\x65\x73\x74'](_0x5d97fa));return{'\x76\x65\x72\x69\x66\x69\x65\x72':_0x4cc8ad??_0x54354d(0x1cb,'\x4c\x49\x57\x59')+_0x54354d(0x212,'\x40\x45\x37\x38')+_0x54354d(0x222,'\x65\x28\x65\x35')+_0x54354d(0x21c,'\x31\x62\x43\x42'),'\x64\x65\x63\x69\x73\x69\x6f\x6e':_0x54354d(0x25f,'\x73\x75\x51\x48')};})());return{'\x63\x6c\x61\x69\x6d\x73':_0x1cadf5,'\x73\x63\x6f\x70\x65':_0x4874b2,'\x72\x75\x6e\x74\x69\x6d\x65\x5f\x70\x72\x6f\x66\x69\x6c\x65':_0x46851b,'\x76\x65\x72\x69\x66\x69\x65\x72\x5f\x70\x72\x6f\x66\x69\x6c\x65':_0x43046c};}function fullyOverlaps(_0x160543,_0x5bc902){const _0x52bfa5=_0x12bec7,_0x42d25d=_0x160543[_0x52bfa5(0x218,'\x54\x75\x26\x51')](_0x595fa2=>_0x595fa2[_0x52bfa5(0x208,'\x48\x4e\x69\x6e')+_0x52bfa5(0x1cd,'\x69\x44\x23\x32')]());for(const _0x442cf5 of _0x5bc902){if(_0x52bfa5(0x1d7,'\x6f\x26\x50\x54')!==_0x52bfa5(0x244,'\x48\x4e\x69\x6e')){const _0x5bae8b=_0x3226fe[_0x52bfa5(0x1e8,'\x23\x67\x64\x66')+'\x6f\x6e'][_0x52bfa5(0x23b,'\x48\x4e\x69\x6e')](_0x3efe22=>_0x51e439(_0x3efe22)[_0x52bfa5(0x232,'\x70\x28\x32\x43')]())[_0x52bfa5(0x1d6,'\x26\x4d\x76\x21')](_0x1d60fc);if(_0x5bae8b['\x6c\x65\x6e\x67\x74\x68']===-0x1b*-0x163+0x1a90+-0x4001)return null;const _0x229eb5=_0x5bae8b[_0x52bfa5(0x1ae,'\x75\x58\x25\x6e')](_0x114e0a=>!_0x28ce4c[_0x52bfa5(0x1a7,'\x37\x47\x45\x41')](_0x114e0a)&&!_0x4c5b37['\x74\x65\x73\x74'](_0x114e0a));return{'\x76\x65\x72\x69\x66\x69\x65\x72':_0x229eb5??_0x52bfa5(0x1a9,'\x40\x45\x37\x38')+'\x73\x61\x6e\x64\x62\x6f\x78\x65'+'\x64\x2d\x76\x61\x6c\x69\x64\x61'+_0x52bfa5(0x1bc,'\x53\x42\x68\x37'),'\x64\x65\x63\x69\x73\x69\x6f\x6e':_0x52bfa5(0x1f4,'\x48\x4e\x69\x6e')};}else{const _0x5d430b=new Set((_0x442cf5[_0x52bfa5(0x239,'\x46\x4d\x49\x45')+_0x52bfa5(0x248,'\x46\x4d\x49\x45')]??[])[_0x52bfa5(0x23a,'\x31\x62\x43\x42')](_0x3187cf=>String(_0x3187cf)[_0x52bfa5(0x259,'\x23\x67\x64\x66')+'\x61\x73\x65']()));if(_0x5d430b[_0x52bfa5(0x237,'\x63\x59\x24\x2a')]===0x2c5*0x1+0xb29*0x3+-0x2440)continue;if(_0x42d25d[_0x52bfa5(0x1d3,'\x23\x67\x64\x66')](_0x19e135=>_0x5d430b['\x68\x61\x73'](_0x19e135)))return _0x442cf5['\x69\x64']??'\x3f';}}return null;}export function intakeGene(_0x364700,_0x81f4af=[]){const _0x560279=_0x12bec7,_0x3fa089=[],_0x12b0fc=clean(_0x364700['\x73\x69\x67\x6e\x61\x6c\x73\x5f'+_0x560279(0x1f3,'\x48\x4e\x69\x6e')]),_0x26bf5a=clean(_0x364700[_0x560279(0x217,'\x48\x5b\x70\x31')]);if(_0x12b0fc['\x6c\x65\x6e\x67\x74\x68']===0xa65+0x1*-0xd2a+-0x2c5*-0x1)_0x3fa089['\x70\x75\x73\x68']('\x73\x69\x67\x6e\x61\x6c\x73\x5f'+_0x560279(0x254,'\x6b\x76\x59\x71')+_0x560279(0x1c5,'\x2a\x29\x4b\x25'));if(_0x26bf5a[_0x560279(0x25a,'\x48\x5b\x70\x31')]===0x749+-0x421*0x4+0x11*0x8b)_0x3fa089[_0x560279(0x1c1,'\x70\x28\x32\x43')](_0x560279(0x253,'\x36\x71\x6b\x55')+'\x20\x69\x73\x20\x65\x6d\x70\x74'+'\x79');if(_0x12b0fc['\x6c\x65\x6e\x67\x74\x68']>0x17f4+0x1*-0x1495+-0x35f){if(_0x560279(0x25e,'\x5d\x69\x72\x29')===_0x560279(0x201,'\x25\x49\x52\x21')){const _0x5246cf=_0x1e7948(_0x33d07e[_0x560279(0x1c4,'\x2a\x29\x4b\x25')+_0x560279(0x252,'\x65\x28\x65\x35')+'\x53'])['\x74\x72\x69\x6d']()[_0x560279(0x22a,'\x4c\x49\x57\x59')+_0x560279(0x21b,'\x47\x4c\x61\x37')]();if(_0x563fc1[_0x560279(0x213,'\x47\x4c\x61\x37')](_0x5246cf))return _0x5246cf;}else{const _0x183a30=fullyOverlaps(_0x12b0fc,_0x81f4af);if(_0x183a30)_0x3fa089[_0x560279(0x1e3,'\x76\x70\x2a\x53')](_0x560279(0x256,'\x31\x62\x43\x42')+_0x560279(0x1ed,'\x58\x40\x75\x76')+_0x560279(0x24e,'\x26\x4d\x76\x21')+_0x560279(0x21d,'\x2a\x29\x4b\x25')+'\x73\x74\x69\x6e\x67\x20\x67\x65'+_0x560279(0x24b,'\x53\x42\x68\x37')+_0x183a30);}}if(_0x3fa089['\x6c\x65\x6e\x67\x74\x68']>-0x12e3+-0x145f+0x2742)return{'\x6f\x6b':![],'\x65\x72\x72\x6f\x72\x73':_0x3fa089};const _0x3643fd=VALID_CATEGORIES[_0x560279(0x230,'\x34\x56\x6c\x66')](_0x364700[_0x560279(0x257,'\x40\x78\x46\x5e')])?_0x364700['\x63\x61\x74\x65\x67\x6f\x72\x79']:'\x6f\x70\x74\x69\x6d\x69\x7a\x65',_0x3ee6b6=_0x364700['\x69\x64']&&_0x364700['\x69\x64'][_0x560279(0x1df,'\x47\x4c\x61\x37')+'\x74\x68'](DISTILLED_ID_PREFIX)?_0x364700['\x69\x64']:''+DISTILLED_ID_PREFIX+fnv1a(_0x12b0fc['\x6a\x6f\x69\x6e']('\x7c')),_0xd81c48=normalizeRoutingHint(_0x364700[_0x560279(0x221,'\x42\x38\x41\x75')+_0x560279(0x200,'\x24\x67\x4d\x23')]),_0x535c8a=normalizeToolPolicy(_0x364700[_0x560279(0x228,'\x47\x44\x52\x69')+_0x560279(0x23d,'\x47\x44\x52\x69')]),_0x3aa3db=normalizeGenerationMeta(_0x364700['\x67\x65\x6e\x65\x72\x61\x74\x69'+_0x560279(0x245,'\x53\x52\x75\x58')]),_0x1d58fb=nonEmptyModel(_0x364700[_0x560279(0x1b3,'\x30\x78\x30\x6e')+'\x6d\x65'])??nonEmptyModel(detectModelName()),_0x46b95d=_0x1d58fb===_0x560279(0x203,'\x69\x36\x62\x4b')?undefined:_0x1d58fb,_0x4a9cfe=_0x364700['\x76\x61\x6c\x69\x64\x61\x74\x69'+'\x6f\x6e']?[..._0x364700[_0x560279(0x1b9,'\x63\x59\x24\x2a')+'\x6f\x6e']]:[],_0x290792=deriveDefaultKautoCoordinates({'\x73\x69\x67\x6e\x61\x6c\x73':_0x12b0fc,..._0x46b95d?{'\x6d\x6f\x64\x65\x6c\x4e\x61\x6d\x65':_0x46b95d}:{},'\x76\x61\x6c\x69\x64\x61\x74\x69\x6f\x6e':_0x4a9cfe,'\x63\x6c\x61\x69\x6d\x73':normalizeClaims(_0x364700['\x63\x6c\x61\x69\x6d\x73']),'\x73\x63\x6f\x70\x65':normalizeGeneScope(_0x364700[_0x560279(0x1bb,'\x25\x49\x52\x21')]),'\x72\x75\x6e\x74\x69\x6d\x65\x5f\x70\x72\x6f\x66\x69\x6c\x65':normalizeRuntimeProfile(_0x364700['\x72\x75\x6e\x74\x69\x6d\x65\x5f'+_0x560279(0x23f,'\x25\x49\x52\x21')]),'\x76\x65\x72\x69\x66\x69\x65\x72\x5f\x70\x72\x6f\x66\x69\x6c\x65':normalizeVerifierProfile(_0x364700[_0x560279(0x242,'\x6b\x76\x59\x71')+_0x560279(0x1fc,'\x31\x62\x43\x42')])}),_0x523dd3=_0x290792[_0x560279(0x1e6,'\x2a\x29\x4b\x25')],_0x36efa6=_0x290792[_0x560279(0x210,'\x5d\x69\x72\x29')],_0xf18e7d=_0x290792[_0x560279(0x1fd,'\x24\x67\x4d\x23')+_0x560279(0x241,'\x37\x47\x45\x41')],_0x315793=_0x290792[_0x560279(0x240,'\x46\x4d\x49\x45')+_0x560279(0x202,'\x36\x71\x6b\x55')],_0x34ec08={'\x74\x79\x70\x65':_0x560279(0x20e,'\x70\x70\x52\x4f'),'\x73\x63\x68\x65\x6d\x61\x5f\x76\x65\x72\x73\x69\x6f\x6e':SCHEMA_VERSION,'\x69\x64':_0x3ee6b6,'\x63\x61\x74\x65\x67\x6f\x72\x79':_0x3643fd,'\x73\x69\x67\x6e\x61\x6c\x73\x5f\x6d\x61\x74\x63\x68':_0x12b0fc,'\x73\x74\x72\x61\x74\x65\x67\x79':_0x26bf5a,'\x63\x6f\x6e\x73\x74\x72\x61\x69\x6e\x74\x73':{'\x6d\x61\x78\x5f\x66\x69\x6c\x65\x73':_0x364700['\x63\x6f\x6e\x73\x74\x72\x61\x69'+_0x560279(0x1af,'\x5a\x32\x70\x57')]?.[_0x560279(0x1f5,'\x46\x4d\x49\x45')+'\x73']??DEFAULT_MAX_FILES,'\x66\x6f\x72\x62\x69\x64\x64\x65\x6e\x5f\x70\x61\x74\x68\x73':[..._0x364700[_0x560279(0x1d4,'\x47\x4c\x61\x37')+_0x560279(0x1ee,'\x70\x70\x52\x4f')]?.[_0x560279(0x20d,'\x28\x44\x46\x6f')+_0x560279(0x1fa,'\x41\x43\x53\x57')]??DEFAULT_FORBIDDEN_PATHS]},'\x76\x61\x6c\x69\x64\x61\x74\x69\x6f\x6e':_0x4a9cfe,'\x73\x75\x6d\x6d\x61\x72\x79':_0x364700[_0x560279(0x1b1,'\x5a\x32\x70\x57')]??_0x560279(0x24c,'\x70\x28\x32\x43')+_0x560279(0x1b0,'\x31\x76\x65\x70')+_0x12b0fc[_0x560279(0x1da,'\x40\x78\x46\x5e')](0x249f*-0x1+-0x67+0x1*0x2506,-0x89a+0xb*0x1cf+-0xb48)[_0x560279(0x20a,'\x34\x36\x42\x25')]('\x2c\x20'),..._0x46b95d?{'\x6d\x6f\x64\x65\x6c\x5f\x6e\x61\x6d\x65':_0x46b95d}:{},..._0x364700[_0x560279(0x1c6,'\x42\x38\x41\x75')+_0x560279(0x1e4,'\x25\x49\x52\x21')]?{'\x70\x72\x65\x63\x6f\x6e\x64\x69\x74\x69\x6f\x6e\x73':[..._0x364700['\x70\x72\x65\x63\x6f\x6e\x64\x69'+_0x560279(0x1e7,'\x28\x44\x46\x6f')]]}:{},..._0xd81c48?{'\x72\x6f\x75\x74\x69\x6e\x67\x5f\x68\x69\x6e\x74':_0xd81c48}:{},..._0x535c8a?{'\x74\x6f\x6f\x6c\x5f\x70\x6f\x6c\x69\x63\x79':_0x535c8a}:{},..._0x3aa3db?{'\x67\x65\x6e\x65\x72\x61\x74\x69\x6f\x6e\x5f\x6d\x65\x74\x61':_0x3aa3db}:{},..._0x523dd3?{'\x63\x6c\x61\x69\x6d\x73':_0x523dd3}:{},..._0x36efa6?{'\x73\x63\x6f\x70\x65':_0x36efa6}:{},..._0xf18e7d?{'\x72\x75\x6e\x74\x69\x6d\x65\x5f\x70\x72\x6f\x66\x69\x6c\x65':_0xf18e7d}:{},..._0x315793?{'\x76\x65\x72\x69\x66\x69\x65\x72\x5f\x70\x72\x6f\x66\x69\x6c\x65':_0x315793}:{},'\x61\x73\x73\x65\x74\x5f\x69\x64':''};_0x34ec08[_0x560279(0x234,'\x53\x36\x6e\x35')]=computeAssetId(_0x34ec08)??'';const _0x5075a1=validateWire(stripGeneHints(_0x34ec08));if(!_0x5075a1['\x6f\x6b'])return{'\x6f\x6b':![],'\x65\x72\x72\x6f\x72\x73':_0x5075a1[_0x560279(0x1dd,'\x69\x44\x23\x32')]};return{'\x6f\x6b':!![],'\x67\x65\x6e\x65':_0x34ec08,'\x65\x72\x72\x6f\x72\x73':[]};}function _0x1294(){const _0xa6f6a=['\x57\x52\x4a\x64\x4d\x6d\x6f\x4a\x68\x57','\x43\x38\x6b\x45\x73\x48\x75\x5a\x57\x36\x6d\x31\x70\x57','\x76\x43\x6b\x4a\x68\x6d\x6b\x32','\x41\x53\x6b\x66\x57\x35\x70\x63\x4f\x72\x4b\x46','\x41\x53\x6f\x58\x79\x43\x6f\x50\x57\x51\x68\x63\x4c\x43\x6f\x34\x57\x34\x69','\x45\x53\x6b\x77\x73\x71','\x7a\x43\x6b\x32\x68\x71','\x57\x52\x33\x63\x53\x78\x4e\x63\x52\x38\x6b\x52\x57\x52\x58\x6e','\x57\x36\x50\x42\x57\x50\x53','\x72\x71\x6d\x65\x41\x58\x2f\x64\x49\x43\x6b\x4e\x43\x53\x6f\x46\x57\x37\x4a\x63\x47\x53\x6f\x4d\x57\x34\x75','\x72\x31\x42\x64\x56\x38\x6b\x52\x57\x35\x42\x64\x51\x38\x6b\x74','\x42\x38\x6f\x39\x44\x6d\x6f\x55\x57\x51\x42\x63\x4b\x6d\x6f\x55\x57\x36\x38','\x41\x43\x6b\x64\x57\x34\x37\x63\x52\x48\x34\x75\x75\x71','\x79\x58\x78\x64\x4d\x38\x6f\x50\x70\x77\x7a\x46\x57\x51\x4b','\x73\x59\x72\x61\x57\x34\x5a\x63\x48\x43\x6b\x4d\x57\x50\x53\x49','\x77\x53\x6b\x4b\x66\x43\x6b\x55\x57\x51\x65','\x57\x51\x70\x64\x48\x6d\x6f\x76\x68\x32\x54\x53\x68\x57','\x62\x31\x66\x74\x69\x43\x6b\x4f\x44\x71','\x57\x37\x4e\x63\x4b\x38\x6b\x35\x72\x64\x53\x50\x74\x6d\x6b\x50\x64\x6d\x6f\x38\x65\x4d\x68\x64\x55\x47','\x44\x6d\x6f\x35\x43\x53\x6f\x4b\x57\x51\x47','\x67\x43\x6b\x35\x67\x63\x47\x42\x57\x51\x54\x66\x6c\x38\x6f\x76\x57\x4f\x48\x61\x57\x35\x42\x64\x4c\x57','\x41\x53\x6f\x53\x7a\x38\x6f\x31\x57\x52\x74\x63\x49\x53\x6f\x43\x57\x37\x71','\x6c\x4e\x42\x63\x52\x6d\x6f\x6b','\x6a\x30\x50\x75\x6d\x53\x6b\x2f\x44\x43\x6f\x4b\x57\x36\x57','\x41\x53\x6f\x67\x57\x4f\x66\x61\x57\x34\x6d\x77\x57\x52\x61','\x57\x4f\x4f\x48\x57\x51\x39\x4d\x57\x52\x35\x71\x45\x57\x79','\x62\x31\x7a\x74\x6c\x65\x30','\x57\x4f\x31\x72\x57\x37\x54\x52\x57\x34\x6a\x44\x74\x32\x57','\x74\x6d\x6f\x4d\x75\x32\x54\x66\x57\x37\x65\x72\x69\x61','\x76\x6d\x6b\x68\x77\x6d\x6b\x4c\x57\x35\x52\x63\x51\x48\x69\x54','\x66\x4e\x6c\x64\x51\x4b\x4b\x52\x73\x53\x6b\x79\x78\x47','\x45\x62\x68\x64\x4e\x43\x6f\x4a\x6d\x59\x39\x74\x57\x51\x47','\x57\x51\x6d\x64\x57\x4f\x61\x7a\x57\x50\x6a\x51\x78\x59\x43','\x7a\x6d\x6b\x45\x78\x47\x38\x37\x57\x36\x6d\x51\x62\x71','\x57\x34\x72\x5a\x57\x34\x46\x64\x48\x30\x71\x6a\x62\x43\x6b\x43','\x62\x4c\x54\x78\x6a\x53\x6b\x49\x79\x53\x6f\x4d\x57\x37\x65','\x57\x4f\x4e\x63\x52\x71\x65\x58\x42\x33\x34\x4e\x63\x57','\x57\x4f\x6e\x6d\x61\x43\x6f\x41\x57\x36\x6c\x64\x49\x71','\x7a\x38\x6b\x31\x62\x38\x6b\x2b\x57\x52\x47\x6b','\x7a\x43\x6b\x37\x7a\x38\x6b\x78','\x62\x68\x78\x64\x56\x71','\x57\x4f\x68\x63\x4e\x73\x52\x64\x48\x32\x57','\x57\x51\x4e\x63\x50\x43\x6f\x47\x57\x37\x47','\x57\x51\x6e\x6a\x79\x48\x47','\x57\x37\x37\x64\x4d\x71\x57\x4c\x57\x36\x68\x63\x51\x57','\x57\x37\x44\x6b\x57\x4f\x56\x64\x54\x47','\x42\x43\x6b\x75\x57\x35\x6c\x63\x56\x61','\x61\x68\x64\x64\x54\x30\x71\x50\x73\x53\x6b\x42','\x57\x36\x62\x35\x57\x36\x54\x51\x57\x50\x69\x51\x41\x72\x4f','\x77\x66\x68\x64\x50\x6d\x6b\x39\x57\x34\x52\x64\x53\x38\x6b\x50\x57\x36\x57','\x45\x4b\x6c\x63\x50\x78\x70\x63\x48\x30\x71\x48\x6b\x71','\x57\x34\x35\x38\x57\x35\x33\x64\x4a\x76\x75\x68\x61\x38\x6b\x61','\x6d\x43\x6f\x63\x57\x36\x4f\x6c\x6f\x53\x6b\x51\x57\x4f\x54\x71','\x57\x34\x75\x4d\x57\x34\x52\x63\x51\x71','\x67\x4b\x66\x70','\x70\x75\x68\x63\x50\x67\x74\x64\x4a\x57\x75','\x62\x30\x62\x72\x6d\x75\x4e\x63\x4a\x43\x6f\x4d','\x65\x4c\x44\x6b\x6a\x38\x6b\x55\x79\x47','\x72\x43\x6f\x47\x72\x68\x50\x61\x57\x34\x69\x74\x6a\x61','\x57\x4f\x6e\x73\x57\x37\x35\x4e\x57\x34\x6e\x47','\x57\x52\x2f\x64\x47\x38\x6f\x54\x68\x67\x39\x30\x64\x71','\x57\x35\x46\x64\x49\x43\x6b\x2b\x57\x34\x30\x52\x57\x37\x43\x77','\x6c\x78\x6c\x64\x50\x47','\x6a\x6d\x6f\x79\x57\x4f\x38\x51\x6c\x6d\x6b\x67','\x75\x6d\x6b\x52\x63\x53\x6b\x36\x7a\x6d\x6f\x37\x7a\x38\x6f\x43','\x67\x76\x50\x79\x6f\x75\x74\x63\x53\x43\x6f\x2b\x44\x71','\x72\x65\x46\x64\x56\x38\x6b\x39\x57\x35\x4f','\x6e\x68\x52\x64\x55\x43\x6b\x65','\x57\x50\x79\x2f\x57\x52\x4b\x47\x57\x52\x48\x6b\x45\x57','\x67\x6d\x6f\x74\x57\x51\x44\x79\x57\x34\x71\x48','\x57\x36\x56\x64\x56\x43\x6b\x47\x57\x52\x53\x38\x6e\x74\x37\x64\x53\x30\x68\x63\x4d\x73\x56\x63\x53\x43\x6b\x70','\x44\x6d\x6b\x77\x73\x71\x61\x34\x57\x36\x79\x31\x6d\x57','\x62\x65\x54\x76\x6f\x57','\x57\x50\x66\x4d\x57\x51\x37\x64\x4e\x71','\x6a\x43\x6f\x6a\x57\x4f\x30\x49\x6b\x38\x6b\x74','\x57\x35\x44\x35\x57\x35\x78\x63\x49\x53\x6b\x56\x57\x52\x62\x72\x57\x34\x38','\x57\x52\x6a\x6b\x57\x37\x46\x63\x54\x53\x6b\x6e\x57\x4f\x57','\x57\x50\x76\x58\x57\x52\x4a\x64\x49\x53\x6b\x37\x73\x38\x6f\x42\x57\x4f\x75','\x66\x38\x6f\x35\x57\x35\x6c\x63\x51\x53\x6f\x71\x72\x43\x6b\x32\x79\x47','\x57\x36\x4f\x5a\x57\x50\x50\x2f\x44\x58\x47\x32\x73\x57','\x57\x51\x44\x33\x57\x34\x54\x63\x57\x36\x39\x72\x43\x75\x69','\x6a\x59\x53\x57\x57\x52\x6d\x4f\x57\x51\x57','\x57\x4f\x76\x69\x57\x37\x62\x49\x57\x35\x48\x32\x78\x63\x57','\x57\x52\x48\x4a\x57\x51\x4c\x58\x75\x63\x75\x6e\x76\x71','\x66\x71\x57\x33','\x6c\x59\x43\x54\x57\x51\x61\x31\x57\x51\x4a\x63\x50\x68\x57','\x42\x4c\x70\x63\x55\x78\x2f\x63\x4d\x30\x69','\x62\x48\x4f\x49\x57\x4f\x76\x59\x66\x6d\x6b\x70','\x79\x53\x6b\x6e\x57\x34\x48\x36\x43\x43\x6f\x61\x57\x4f\x33\x63\x55\x6d\x6b\x2b\x68\x38\x6b\x76\x46\x6d\x6f\x6f','\x57\x36\x6d\x32\x57\x36\x38\x49\x62\x78\x4f\x51\x77\x31\x4e\x64\x50\x38\x6b\x62\x57\x37\x47','\x57\x50\x4a\x63\x54\x63\x47\x53\x79\x71','\x6a\x72\x52\x63\x4e\x48\x6c\x63\x4f\x38\x6f\x4a\x57\x35\x50\x4a','\x57\x52\x69\x6a\x57\x51\x68\x64\x54\x6d\x6b\x2b\x57\x52\x66\x47\x43\x71','\x57\x4f\x61\x4b\x57\x52\x4f\x59\x57\x52\x72\x75','\x6e\x53\x6f\x59\x42\x73\x6c\x63\x53\x71','\x57\x52\x74\x63\x50\x43\x6f\x4a','\x42\x6d\x6b\x65\x70\x53\x6f\x59\x57\x36\x79','\x57\x35\x72\x2b\x57\x35\x52\x64\x47\x75\x79','\x57\x35\x43\x4d\x57\x34\x4a\x63\x4f\x43\x6b\x68\x44\x58\x30','\x77\x38\x6b\x49\x57\x51\x4a\x64\x54\x38\x6b\x71\x66\x53\x6b\x70\x72\x49\x2f\x63\x4d\x72\x4e\x63\x4f\x47','\x65\x71\x30\x47\x57\x4f\x7a\x48\x62\x61','\x57\x34\x2f\x64\x4a\x78\x30\x35\x41\x6d\x6b\x35\x64\x38\x6b\x58\x6a\x61\x5a\x64\x4a\x6d\x6b\x4f','\x6e\x71\x68\x63\x4b\x72\x70\x63\x4f\x38\x6f\x49\x57\x36\x58\x4a','\x57\x52\x74\x63\x50\x43\x6f\x39\x57\x37\x35\x54\x41\x61','\x57\x51\x33\x63\x54\x53\x6f\x36\x57\x36\x79','\x57\x50\x75\x35\x57\x51\x71\x56\x57\x52\x39\x62','\x57\x4f\x37\x63\x49\x74\x58\x49','\x71\x30\x33\x64\x56\x38\x6b\x4a\x57\x34\x57','\x6a\x43\x6f\x6f\x57\x37\x4e\x64\x51\x47','\x57\x37\x66\x64\x57\x37\x56\x63\x52\x38\x6b\x75\x57\x4f\x79','\x70\x59\x43\x58\x57\x52\x4f\x56','\x57\x4f\x56\x63\x4f\x59\x65\x33\x46\x68\x4f\x48\x69\x71','\x65\x49\x46\x63\x53\x74\x46\x63\x4e\x53\x6f\x63','\x57\x4f\x4c\x4d\x57\x52\x70\x64\x4a\x53\x6b\x47\x74\x71','\x6f\x73\x53\x56\x57\x51\x65\x31\x57\x52\x42\x63\x52\x78\x30','\x57\x36\x35\x7a\x57\x4f\x5a\x64\x52\x53\x6b\x41\x57\x4f\x4b','\x57\x51\x57\x6c\x57\x35\x37\x64\x48\x53\x6b\x43\x57\x37\x4c\x77\x77\x47','\x70\x38\x6f\x69\x57\x36\x6d','\x57\x50\x44\x2f\x57\x50\x70\x64\x56\x6d\x6f\x77\x6a\x33\x78\x64\x52\x43\x6b\x32\x78\x6d\x6b\x6e\x7a\x67\x30','\x79\x43\x6b\x65\x57\x34\x71','\x57\x34\x5a\x64\x53\x33\x39\x54\x6b\x63\x53\x30\x67\x78\x69\x35\x57\x36\x4b\x48','\x69\x43\x6b\x53\x57\x37\x54\x4d\x77\x43\x6b\x53\x57\x4f\x52\x63\x4d\x43\x6f\x68\x57\x37\x4e\x63\x56\x43\x6f\x59\x73\x47','\x7a\x43\x6b\x32\x67\x43\x6b\x34\x57\x52\x6d','\x45\x6d\x6b\x32\x68\x53\x6b\x4f','\x44\x6d\x6f\x35\x46\x53\x6f\x79\x57\x51\x42\x63\x4b\x6d\x6f\x4e\x57\x37\x47','\x57\x52\x74\x63\x4b\x61\x4a\x64\x54\x66\x75\x4e\x57\x37\x6c\x63\x4f\x61','\x69\x30\x42\x64\x4d\x58\x79','\x57\x52\x33\x63\x54\x72\x31\x6a\x66\x6d\x6f\x6d\x6c\x43\x6b\x50','\x6b\x6d\x6b\x57\x57\x34\x37\x63\x4e\x5a\x34\x43\x78\x71','\x57\x36\x4f\x75\x6d\x67\x30\x7a\x43\x38\x6b\x75','\x57\x36\x64\x64\x50\x30\x6c\x63\x4a\x43\x6b\x79\x57\x4f\x39\x50\x74\x57','\x73\x6d\x6b\x68\x73\x57\x34\x38\x57\x36\x79\x31\x70\x57','\x79\x6d\x6f\x4f\x57\x51\x43\x47\x62\x43\x6f\x32\x57\x35\x2f\x63\x48\x61','\x57\x36\x43\x4a\x69\x78\x34\x55\x44\x6d\x6b\x64\x79\x71','\x66\x38\x6f\x54\x46\x64\x74\x63\x52\x47','\x45\x53\x6f\x30\x57\x51\x43\x47','\x79\x65\x56\x64\x56\x43\x6b\x6f\x57\x36\x38','\x6f\x4e\x42\x64\x51\x4b\x43\x35\x72\x53\x6b\x74\x71\x47','\x66\x53\x6f\x34\x57\x37\x78\x63\x51\x38\x6f\x69\x76\x38\x6b\x51','\x57\x51\x72\x70\x45\x72\x57\x6e\x57\x51\x71','\x57\x37\x74\x64\x4e\x71\x57\x31\x57\x37\x6c\x63\x50\x53\x6b\x62\x77\x61','\x57\x34\x6c\x64\x52\x32\x5a\x63\x4d\x73\x6e\x43\x57\x4f\x70\x63\x53\x76\x6d\x76\x57\x36\x42\x63\x4a\x6d\x6f\x54','\x57\x36\x64\x64\x4c\x61\x53\x5a\x57\x36\x75','\x46\x6d\x6b\x34\x69\x43\x6b\x30\x57\x51\x57\x42\x76\x38\x6b\x5a','\x57\x52\x4c\x4e\x57\x52\x66\x58\x72\x63\x75\x6f\x74\x47','\x6d\x43\x6f\x4f\x57\x4f\x44\x35','\x57\x35\x71\x35\x57\x35\x33\x63\x56\x43\x6b\x52','\x6b\x78\x33\x64\x54\x43\x6b\x67\x57\x4f\x5a\x63\x52\x71\x53\x4d','\x6c\x73\x65\x53\x57\x52\x79\x31\x57\x51\x64\x63\x52\x68\x57','\x66\x53\x6f\x7a\x57\x37\x37\x64\x4f\x47','\x45\x38\x6b\x73\x76\x57\x79\x55\x57\x36\x43','\x57\x4f\x6c\x63\x56\x74\x68\x64\x4d\x33\x6d','\x73\x53\x6b\x56\x63\x6d\x6b\x30\x44\x6d\x6f\x59','\x57\x37\x7a\x55\x57\x36\x50\x49\x57\x4f\x79\x47\x79\x31\x69','\x6c\x58\x56\x63\x4b\x57\x33\x63\x4f\x53\x6f\x31\x57\x35\x35\x35','\x75\x53\x6b\x4c\x6b\x53\x6b\x38\x44\x38\x6f\x2f\x79\x43\x6f\x32','\x61\x66\x54\x76\x6a\x57','\x76\x5a\x2f\x63\x51\x58\x48\x56\x68\x53\x6f\x70\x73\x38\x6b\x50\x62\x73\x6d\x43\x63\x57','\x57\x50\x58\x44\x68\x43\x6f\x43\x57\x36\x6c\x64\x48\x65\x46\x63\x4a\x61','\x65\x6d\x6b\x6d\x57\x37\x38','\x57\x52\x46\x63\x51\x75\x4e\x63\x52\x53\x6b\x34\x57\x51\x31\x69','\x57\x52\x74\x63\x56\x4b\x52\x63\x53\x43\x6b\x52','\x6a\x57\x42\x63\x4c\x71','\x79\x38\x6b\x45\x76\x47\x38','\x57\x37\x35\x6f\x57\x36\x52\x63\x54\x43\x6f\x7a\x57\x50\x62\x37\x57\x37\x4b','\x46\x53\x6b\x59\x68\x38\x6b\x59\x57\x52\x30\x78\x71\x6d\x6b\x63','\x57\x35\x61\x37\x57\x34\x78\x63\x56\x38\x6b\x77\x79\x62\x78\x64\x50\x47','\x46\x6d\x6b\x46\x57\x35\x43','\x57\x50\x44\x53\x57\x51\x4a\x64\x4e\x43\x6b\x39\x73\x38\x6f\x79\x57\x52\x6d','\x44\x43\x6f\x4b\x45\x6d\x6b\x42\x57\x37\x78\x63\x4a\x5a\x43\x46','\x66\x38\x6f\x55\x79\x63\x78\x63\x51\x64\x57','\x6e\x38\x6f\x49\x57\x4f\x62\x57\x57\x37\x34\x41','\x57\x37\x78\x64\x4b\x71\x34\x4b\x57\x36\x78\x63\x54\x71','\x57\x51\x61\x78\x57\x37\x37\x63\x49\x43\x6b\x56\x57\x52\x6a\x67\x57\x36\x79','\x65\x38\x6f\x50\x62\x43\x6f\x37\x57\x34\x66\x74\x7a\x73\x47','\x57\x37\x44\x78\x57\x4f\x33\x64\x54\x38\x6b\x4b\x57\x50\x76\x79\x41\x47','\x76\x53\x6b\x4c\x44\x61','\x57\x50\x72\x72\x57\x35\x6e\x48\x57\x35\x4c\x32\x78\x65\x69','\x67\x66\x62\x73\x6f\x31\x5a\x63\x4c\x57','\x57\x35\x68\x64\x49\x43\x6b\x39\x57\x35\x75','\x6a\x77\x56\x64\x50\x53\x6b\x67\x57\x50\x42\x63\x55\x57\x53','\x57\x37\x76\x55\x57\x36\x62\x76\x57\x50\x61\x55\x41\x75\x6d','\x79\x53\x6b\x47\x41\x43\x6b\x75\x57\x37\x4a\x63\x49\x49\x61','\x73\x38\x6b\x59\x6c\x43\x6f\x76\x57\x34\x76\x4b\x76\x5a\x47','\x57\x4f\x4e\x64\x56\x6d\x6f\x66\x70\x4c\x48\x44\x6c\x6d\x6b\x64','\x61\x65\x58\x70\x70\x47','\x57\x51\x38\x66\x57\x34\x37\x64\x47\x6d\x6b\x52\x57\x52\x72\x46\x73\x57','\x79\x43\x6b\x65\x57\x35\x69\x53\x70\x38\x6b\x4d\x57\x52\x76\x78'];_0x1294=function(){return _0xa6f6a;};return _0x1294();}
+// Gene intake — the structural part of skill distillation (ported from v1 src/gep/skillDistiller.js).
+// v2's solidify produces Capsules but never Genes, so the reusable gene pool is otherwise static (only
+// seeded/imported). This is the safe INTAKE gate for a distilled/proposed gene before it joins the pool:
+// normalize defaults, validate structure + the gep-sdk schema, recompute asset_id, and reject a gene whose
+// signals fully overlap an existing one (dedup, so the pool does not grow redundant). The gene's CONTENT
+// is generated upstream (the agent runtime / a distillation prompt — generative, out of core scope); this
+// slice is the structural gate. Pairs with capabilityCandidates (which proposes what to distill).
+import { detectModelName } from '../bootstrap/envFingerprint.js';
+import { computeAssetId, validateWire, SCHEMA_VERSION, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, normalizeClaims, normalizeGeneScope, normalizeRuntimeProfile, normalizeVerifierProfile, stripGeneHints, ENV_CLASSES, } from '../wire/index.js';
+const VALID_CATEGORIES = ['repair', 'optimize', 'innovate', 'explore'];
+const DEFAULT_FORBIDDEN_PATHS = ['.git', 'node_modules'];
+const DEFAULT_MAX_FILES = 12;
+/** Id prefix every distilled (skill-derived) gene carries. Recognised via {@link isDistilledGeneId}. */
+const DISTILLED_ID_PREFIX = 'gene_distilled_';
+const LEGACY_CONVERSATION_ID_PREFIX = 'gene_conversation_';
+/**
+ * True when a gene id is in the `gene_distilled_` namespace. NB this prefix is now a NAMESPACE marker, NOT a
+ * provenance tag: v1 used it to mean "skill-derived" (auto-evolved genes were `gene_auto_`), but v2's intakeGene
+ * tags EVERY intaken gene this way regardless of origin. The authoritative provenance is {@link geneGenerationSource};
+ * this prefix check remains as a back-compat fallback for legacy pooled genes that predate generation_meta, and for
+ * call sites that only have a gene id (not the full record).
+ */
+export function isDistilledGeneId(id) {
+    return typeof id === 'string' && id.startsWith(DISTILLED_ID_PREFIX);
+}
+/**
+ * The authoritative gene-generation source: read `generation_meta.source` from a gene-shaped record (V1 #302). Falls
+ * back to the id-prefix namespace when the record carries no generation_meta (legacy pooled genes predate the field),
+ * returning 'distilled' for a `gene_distilled_` id and 'manual' otherwise — so the fallback never claims a higher
+ * provenance tier than the prefix can vouch for. `null` means "undetermined" (no record, no recognizable id).
+ */
+export function geneGenerationSource(gene, geneId) {
+    const meta = gene?.['generation_meta'];
+    if (meta && typeof meta === 'object') {
+        const src = meta['source'];
+        if (typeof src === 'string' && (src === 'evolved' || src === 'distilled' || src === 'manual'))
+            return src;
+    }
+    // Legacy fallback: a `gene_distilled_` id is at best a distilled gene (v2 minted it for ALL intake sources, so it
+    // cannot be trusted as "evolved"); any other id is treated as manual (human-authored / externally seeded).
+    const id = geneId ?? (typeof gene?.['id'] === 'string' ? String(gene['id']) : null);
+    if (id && isDistilledGeneId(id))
+        return 'distilled';
+    if (id)
+        return 'manual';
+    return null;
+}
+function fnv1a(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16).padStart(8, '0');
+}
+const nonEmptyModel = (v) => {
+    const t = (v ?? '').trim();
+    return t.length > 0 ? t.slice(0, 100) : undefined;
+};
+const clean = (xs) => (xs ?? []).map((s) => String(s).trim()).filter((s) => s.length > 0);
+/** Already-namespaced closed-constraint scope terms (kautoValidator.SCOPE_TERM prefixes). */
+const NAMESPACED_SCOPE = /^(?:repo|lineage|pkg|lang|framework|capability|tool|model|time|env):[A-Za-z0-9._@/:-]+$/;
+const VERSION_INTERVAL_SCOPE = /^[A-Za-z0-9._-]+@(?:[><=^~]{1,2})?\d[\w.*-]*(?:\s*-\s*\d[\w.*-]*)?$/;
+const PLACEHOLDER_VERIFIER = /^(?:node|python3?|ruby|deno|bun|go|java|npm|pnpm|yarn)\s+(?:--?v(?:ersion)?|-V)\s*$/i;
+const TRIVIAL_VERIFIER = /^(?:true|:|echo\b.*|exit\s+0)\s*$/i;
+/**
+ * Map free-text retrieval signals into the closed constraint language so scope containment is decidable.
+ * Already-namespaced terms and version intervals pass through; bare tokens become `capability:<token>`.
+ * Hard facets (`required:…`) keep the marker around the namespaced term.
+ */
+export function namespaceScopeSignals(signals) {
+    const out = [];
+    for (const raw of signals) {
+        const t = String(raw ?? '').trim();
+        if (!t)
+            continue;
+        const required = t.startsWith('required:');
+        const bare = required ? t.slice('required:'.length).trim() : t;
+        if (!bare)
+            continue;
+        const namespaced = (NAMESPACED_SCOPE.test(bare) || VERSION_INTERVAL_SCOPE.test(bare))
+            ? bare
+            : `capability:${bare.replace(/[^A-Za-z0-9._@/-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)}`;
+        if (!namespaced || namespaced === 'capability:')
+            continue;
+        out.push(required ? `required:${namespaced}` : namespaced);
+    }
+    return out;
+}
+/** Detect a coarse env_class for runtime_profile from process env (CI → ci, else local). */
+export function detectEnvClass(env = process.env) {
+    const truthy = (v) => {
+        const t = (v ?? '').trim().toLowerCase();
+        return t !== '' && t !== '0' && t !== 'false' && t !== 'no';
+    };
+    if (truthy(env['CI']) || truthy(env['GITHUB_ACTIONS']) || truthy(env['GITLAB_CI'])
+        || truthy(env['BUILDKITE']) || truthy(env['CIRCLECI']) || truthy(env['TRAVIS'])) {
+        return 'ci';
+    }
+    if (truthy(env['EVOLVER_ENV_CLASS'])) {
+        const v = String(env['EVOLVER_ENV_CLASS']).trim().toLowerCase();
+        if (ENV_CLASSES.includes(v))
+            return v;
+    }
+    return 'local';
+}
+/**
+ * Honest defaults for K_auto coordinates the producer did not state. Never invents a coordinate from
+ * nothing: each default is grounded in fields the gene already carries (signals, model, validation).
+ */
+export function deriveDefaultKautoCoordinates(input) {
+    const claims = input.claims ?? (input.signals.length > 0
+        ? [{ predicate: 'output_contract', kind: 'behavioral' }]
+        : null);
+    const scope = input.scope ?? (() => {
+        const namespaced = namespaceScopeSignals(input.signals);
+        return namespaced.length > 0 ? { signals: namespaced } : null;
+    })();
+    const runtime_profile = input.runtime_profile ?? (input.modelName
+        ? { runtime: input.modelName, env_class: detectEnvClass(input.env) }
+        : null);
+    const verifier_profile = input.verifier_profile ?? (() => {
+        const cmds = input.validation.map((c) => String(c).trim()).filter(Boolean);
+        if (cmds.length === 0)
+            return null;
+        const substantive = cmds.find((c) => !PLACEHOLDER_VERIFIER.test(c) && !TRIVIAL_VERIFIER.test(c));
+        // Light distill validation deliberately keeps `node --version` for sandbox safety; the gene still
+        // passed through evolver's sandboxed validation gate, which is a real verifier identity (not a
+        // shell placeholder). Prefer a substantive command when present; else name the gate.
+        return { verifier: substantive ?? 'evolver-sandboxed-validation', decision: 'pass' };
+    })();
+    return { claims, scope, runtime_profile, verifier_profile };
+}
+/** Returns the id of an existing gene whose signals are a superset of `signals` (i.e. the candidate is redundant), else null. */
+function fullyOverlaps(signals, existing) {
+    const newSet = signals.map((s) => s.toLowerCase());
+    for (const eg of existing) {
+        const egSet = new Set((eg.signals_match ?? []).map((s) => String(s).toLowerCase()));
+        if (egSet.size === 0)
+            continue;
+        if (newSet.every((s) => egSet.has(s)))
+            return eg.id ?? '?';
+    }
+    return null;
+}
+/**
+ * Validate + normalize a distilled/proposed gene for pool insertion. On success returns the canonical Gene
+ * (defaults filled, asset_id computed); otherwise the structural / dedup / schema errors.
+ */
+export function intakeGene(candidate, existing = []) {
+    const errors = [];
+    const signals = clean(candidate.signals_match);
+    const strategy = clean(candidate.strategy);
+    if (signals.length === 0)
+        errors.push('signals_match is empty');
+    if (strategy.length === 0)
+        errors.push('strategy is empty');
+    if (signals.length > 0) {
+        const dup = fullyOverlaps(signals, existing);
+        if (dup)
+            errors.push(`signals_match fully overlaps existing gene: ${dup}`);
+    }
+    if (errors.length > 0)
+        return { ok: false, errors };
+    const category = VALID_CATEGORIES.includes(candidate.category) ? candidate.category : 'optimize';
+    // First-class EvoX hints (v1 PR #93): normalized so a candidate carrying them lands canonical, not dropped, and
+    // absent when malformed/empty. The router / tool-gate reads absent === "no opinion".
+    const routingHint = normalizeRoutingHint(candidate.routing_hint);
+    const toolPolicy = normalizeToolPolicy(candidate.tool_policy);
+    // Local provenance + quality metadata (v1 #302): normalized so a candidate carrying it lands canonical,
+    // dropped to absent when malformed/no-recognized-source.
+    const generationMeta = normalizeGenerationMeta(candidate.generation_meta);
+    // 只有调用方明确证明记录来自蒸馏时，才保留 intake 之前的会话命名空间。
+    // 这样既兼容重试和下游逻辑 ID 查询，也不允许任意调用方 ID 绕过 intake 的命名空间所有权规则。
+    const preservesLegacyConversationId = generationMeta?.source === 'distilled'
+        && typeof candidate.id === 'string'
+        && candidate.id.startsWith(LEGACY_CONVERSATION_ID_PREFIX);
+    const id = candidate.id && (candidate.id.startsWith(DISTILLED_ID_PREFIX) || preservesLegacyConversationId)
+        ? candidate.id : `${DISTILLED_ID_PREFIX}${fnv1a(signals.join('|'))}`;
+    // K_auto runtime coordinate. Explicit caller value wins; otherwise detect from the environment using the same
+    // producer the env fingerprint uses. 'unknown' means undetectable, so it is dropped rather than recorded (see
+    // GeneCandidate.model_name) — absent keeps meaning "not recorded", never "runtime is literally unknown".
+    const detectedModel = nonEmptyModel(candidate.model_name) ?? nonEmptyModel(detectModelName());
+    const modelName = detectedModel === 'unknown' ? undefined : detectedModel;
+    // First-class K_auto projection-key coordinates. Producer-supplied values win when they normalize; otherwise
+    // derive honest defaults grounded in signals/model/validation so forward intake can clear strict K_auto
+    // without fabricating coordinates from nothing. Still ride along in asset_id and strip before validateWire.
+    const validation = candidate.validation ? [...candidate.validation] : [];
+    const derived = deriveDefaultKautoCoordinates({
+        signals,
+        ...(modelName ? { modelName } : {}),
+        validation,
+        claims: normalizeClaims(candidate.claims),
+        scope: normalizeGeneScope(candidate.scope),
+        runtime_profile: normalizeRuntimeProfile(candidate.runtime_profile),
+        verifier_profile: normalizeVerifierProfile(candidate.verifier_profile),
+    });
+    const claims = derived.claims;
+    const scope = derived.scope;
+    const runtimeProfile = derived.runtime_profile;
+    const verifierProfile = derived.verifier_profile;
+    const gene = {
+        type: 'Gene',
+        schema_version: SCHEMA_VERSION,
+        id,
+        category,
+        signals_match: signals,
+        strategy,
+        constraints: {
+            max_files: candidate.constraints?.max_files ?? DEFAULT_MAX_FILES,
+            forbidden_paths: [...(candidate.constraints?.forbidden_paths ?? DEFAULT_FORBIDDEN_PATHS)],
+        },
+        validation,
+        summary: candidate.summary ?? `Strategy for: ${signals.slice(0, 3).join(', ')}`,
+        ...(modelName ? { model_name: modelName } : {}),
+        ...(candidate.preconditions ? { preconditions: [...candidate.preconditions] } : {}),
+        ...(routingHint ? { routing_hint: routingHint } : {}),
+        ...(toolPolicy ? { tool_policy: toolPolicy } : {}),
+        ...(generationMeta ? { generation_meta: generationMeta } : {}),
+        ...(claims ? { claims } : {}),
+        ...(scope ? { scope } : {}),
+        ...(runtimeProfile ? { runtime_profile: runtimeProfile } : {}),
+        ...(verifierProfile ? { verifier_profile: verifierProfile } : {}),
+        asset_id: '',
+    };
+    // asset_id folds in the hints + generation_meta (intake's own canonical shape — gep-sdk canonicalize hashes every
+    // own key). NB: this is NOT byte-equal to what v1's createGene would hash for the same logical gene — v1 always emits
+    // routing_hint/tool_policy:null plus empty epigenetic_marks/learning_history/anti_patterns/preconditions that
+    // v2 intake omits, so the canonical shapes differ. Self-consistent here; not a cross-impl parity guarantee.
+    gene.asset_id = computeAssetId(gene) ?? '';
+    // Structural gate validates the gep-sdk-known Gene shape. gep-sdk 1.13.0 made routing_hint/tool_policy plus the
+    // K_auto coordinates first-class, so stripGeneHints removes only local annotations (generation_meta/model_name)
+    // before the check. That keeps SDK constraints active for every first-class field while preserving local-only
+    // metadata in asset_id and in the returned gene.
+    const v = validateWire(stripGeneHints(gene));
+    if (!v.ok)
+        return { ok: false, errors: v.errors };
+    return { ok: true, gene, errors: [] };
+}

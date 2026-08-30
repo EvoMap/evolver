@@ -221,7 +221,7 @@ export function digestShouldSend(summary) {
  * caller then delivers nothing — no empty digest, ever). measured and estimated stay on separate lines. Pure:
  * the window label + the period string are passed in so the digest is deterministic.
  */
-export function buildValueDigest(summary, period) {
+export function buildValueDigest(summary, period, extras = {}) {
     if (!digestShouldSend(summary))
         return null;
     const L = [];
@@ -237,6 +237,10 @@ export function buildValueDigest(summary, period) {
         L.push('Most reused this week:');
         for (const g of summary.topGenes.slice(0, 5))
             L.push(`- ${g.assetId} — reused ×${g.reuses}`);
+    }
+    if ((extras.pendingReviewCount ?? 0) > 0) {
+        L.push('');
+        L.push(`${extras.pendingReviewCount} gene(s) still awaiting review — run \`evolver review\` so they can enter SessionStart.`);
     }
     L.push('');
     L.push('_Run `evolver value` any time for the full breakdown. Turn this digest off with `EVOLVER_VALUE_DIGEST=0`._');

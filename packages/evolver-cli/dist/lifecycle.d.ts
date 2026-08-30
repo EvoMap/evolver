@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { bootstrap as coreBootstrap, util as coreUtil } from '@evomap/evolver-core';
 import { type BootstrapTransactionJournal, type BootstrapArtifactIdentity, type LegacyBootstrapMarkerRead } from './lifecycleBootstrapTransaction.js';
+import { type LegacyTaskCleanupResult, type LegacyTaskRun } from './windowsLegacyTaskCleanup.js';
 export declare function selectExistingPosixCommand(candidates: readonly string[], exists?: (path: string) => boolean): string;
 export type ServiceTarget = 'launchd' | 'systemd' | 'windows';
 export interface DaemonCommand {
@@ -59,6 +60,25 @@ interface RunLifecycleDeps {
     loadUnixRecoveryController?: LoadUnixRecoveryController;
     removeAutoexecService?: (target: ServiceTarget, dryRun: boolean) => LifecycleResult;
     bootstrap?: BootstrapServiceDeps;
+    /** Test seam for the legacy v1 Windows scheduled-task cleanup subcommand (#956). */
+    cleanupLegacyTasks?: (options: {
+        env: NodeJS.ProcessEnv;
+        stateDir?: string;
+        dryRun?: boolean;
+        platform?: NodeJS.Platform;
+        run?: LegacyTaskRun;
+    }) => LegacyTaskCleanupResult;
+    /** Test seam for the legacy v1 task preimage restore subcommand (#956). */
+    restoreLegacyTaskPreimage?: (preimagePath: string, options: {
+        env: NodeJS.ProcessEnv;
+        platform?: NodeJS.Platform;
+        run?: LegacyTaskRun;
+        stateDir?: string;
+    }) => {
+        status: 'restored' | 'failed';
+        task?: string;
+        detail: string;
+    };
     stdout?: (text: string) => void;
     stderr?: (text: string) => void;
 }
@@ -78,6 +98,8 @@ export interface BootstrapServiceDeps {
     install?: (target: ServiceTarget, flags: Record<string, string | true>, env: NodeJS.ProcessEnv, argv1: string | undefined, loadUnixRecoveryController?: LoadUnixRecoveryController, options?: InstallServiceOptions) => Promise<LifecycleResult>;
     writeMarker?: (path: string, marker: coreBootstrap.LifecycleBootstrapMarker) => void;
     inspectSelfUpdate?: InspectDurableSelfUpdate;
+    /** Test seam for the post-activation legacy v1 Windows task sweep (#956). */
+    legacyTaskCleanupRun?: LegacyTaskRun;
 }
 interface ServiceControlResult {
     status: number | null;
@@ -180,6 +202,7 @@ interface LegacyWindowsInstallerProof {
 }
 declare function parseLegacyWindowsInstallerDefaults(source: string): LegacyWindowsInstallerProof;
 export declare const _parseLegacyWindowsInstallerDefaultsForTest: typeof parseLegacyWindowsInstallerDefaults;
+export declare function trustedWindowsPowerShell(): string;
 declare function renderWindowsProxyLauncherBytes(defaults: WindowsInstallerDefaults): Buffer;
 declare function renderLegacyWindowsProxyLauncherBytes(proof: LegacyWindowsInstallerProof): Buffer;
 export declare const _renderWindowsProxyLauncherBytesForTest: typeof renderWindowsProxyLauncherBytes;

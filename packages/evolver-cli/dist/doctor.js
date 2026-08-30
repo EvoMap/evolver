@@ -7,6 +7,7 @@ import { isAbsolute, join } from 'node:path';
 import { bootstrap, events, issueReporter } from '@evomap/evolver-core';
 import { expandHomePath, parseEnvFile } from '@evomap/evolver-mcp';
 import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
+import { LEGACY_TASK_SKIP_ENV, probeLegacyWindowsDaemonTasks } from './windowsLegacyTaskCleanup.js';
 // Secrets that must live ONLY behind the EVOLVER_ENV_FILE pointer — never inlined into a runtime config (#217).
 const SECRET_KEYS = [
     'A2A_NODE_SECRET',
@@ -695,6 +696,29 @@ export function runDoctorChecks(deps = {}) {
     }
     catch {
         checks.push({ name: 'memory-graph', status: 'warn', detail: 'state=degraded corrupt=1 oversized_lines=0 oversized_files=0 archives=0' });
+    }
+    // 5. windows-legacy-tasks (#956): read-only probe for legacy V1 scheduled-task residue
+    //    (win32 only). A detected residue warns with the manual fix; an INCONCLUSIVE probe
+    //    also warns — it must never be reported as a confirmed-negative pass.
+    if ((deps.platform ?? process.platform) === 'win32') {
+        try {
+            const probe = (deps.legacyWindowsTasks ?? probeLegacyWindowsDaemonTasks)({
+                env: effectiveEnv,
+                platform: 'win32',
+            });
+            if (!probe.conclusive) {
+                checks.push({ name: 'windows-legacy-tasks', status: 'warn', detail: `probe inconclusive (${probe.detail}); legacy v1 residue cannot be ruled out — run evolver lifecycle cleanup-legacy-tasks --dry-run, or set ${LEGACY_TASK_SKIP_ENV}=1 to silence the automatic probes on restricted hosts` });
+            }
+            else if (probe.legacy.length > 0) {
+                checks.push({ name: 'windows-legacy-tasks', status: 'warn', detail: `detected legacy v1 scheduled task(s): ${probe.legacy.join(', ')} — run evolver lifecycle cleanup-legacy-tasks` });
+            }
+            else {
+                checks.push({ name: 'windows-legacy-tasks', status: 'pass', detail: 'no legacy v1-style scheduled tasks registered' });
+            }
+        }
+        catch {
+            checks.push({ name: 'windows-legacy-tasks', status: 'warn', detail: `probe inconclusive (internal error); legacy v1 residue cannot be ruled out — run evolver lifecycle cleanup-legacy-tasks --dry-run, or set ${LEGACY_TASK_SKIP_ENV}=1 to silence the automatic probes on restricted hosts` });
+        }
     }
     return checks;
 }

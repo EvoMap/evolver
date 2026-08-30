@@ -1,5 +1,5 @@
 import type { AssetStoreProvider, AssetRecord } from './provider.js';
-import { ReviewLedger } from './reviewLedger.js';
+import { ReviewLedger, type ReviewRecord } from './reviewLedger.js';
 import { ProvenanceStore } from './provenance.js';
 /**
  * The ReviewLedger CO-LOCATED with a store — its quarantine/approve records live in the SAME dir as the genes.
@@ -17,4 +17,22 @@ export declare function provenanceStoreForStore(store: AssetStoreProvider): Prov
  * quarantined or rejected draft is withheld. A gene with NO provenance record is trusted; hub-ingested genes are
  * withheld until promotion. This mirrors candidateAssembly's trust-first + review-first filters.
  */
+/**
+ * Authoritative pending-review queue: quarantined ledger records, oldest first.
+ * Callers that display a human queue MUST start here instead of `store.list`, or a
+ * draft sitting past the newest-N cutoff is invisible even though it is still blocked.
+ */
+export declare function pendingReviewRecords(review: ReviewLedger, excludeAssetIds?: ReadonlySet<string>): ReviewRecord[];
+/**
+ * Pending Gene queue with the asset store as the type/existence authority.
+ *
+ * ReviewLedger is intentionally generic because the same sidecar also records
+ * AntiGene decisions. A quarantined row can also outlive its asset after a
+ * repair or a truncated migration. Human Gene queues must therefore resolve
+ * every row through the provider instead of treating the ledger alone as a
+ * complete inventory. The lookups are deliberately sequential so a malformed
+ * or unexpectedly large ledger cannot fan out an unbounded request burst to a
+ * remote provider.
+ */
+export declare function pendingGeneReviewRecords(store: AssetStoreProvider, review: ReviewLedger): Promise<ReviewRecord[]>;
 export declare function listApprovedGenes(store: AssetStoreProvider, review: ReviewLedger, maxGenes: number, provenance?: ProvenanceStore): Promise<AssetRecord[]>;

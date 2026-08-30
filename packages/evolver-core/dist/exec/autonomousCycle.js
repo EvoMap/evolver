@@ -117,6 +117,8 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         ...(opts.agent ? { agent: opts.agent } : {}),
         ...(opts.git ? { git: opts.git } : {}),
         ...(opts.traceRecorder ? { traceRecorder: opts.traceRecorder } : {}),
+        ...(opts.executionObserver ? { executionObserver: opts.executionObserver } : {}),
+        ...(opts.executionLimits ? { executionLimits: opts.executionLimits } : {}),
         allowedRoots: safety.allowedRoots,
         ...(runner ? { runner } : {}),
         ...(safety.resume ? { resume: safety.resume } : {}),

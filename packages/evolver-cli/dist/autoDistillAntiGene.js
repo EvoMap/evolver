@@ -197,8 +197,8 @@ function slug(value) {
     const out = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
     return out || 'recurring-failure-guardrail';
 }
-function buildAntiGenePrompt(input) {
-    const clusters = hub.redactDeep(input.failureClusters.map((cluster) => ({
+function buildAntiGenePrompt(input, redact = true) {
+    const rawClusters = input.failureClusters.map((cluster) => ({
         clusterId: cluster.clusterId,
         trigger: cluster.trigger,
         sharedTrigger: cluster.sharedTrigger,
@@ -212,7 +212,8 @@ function buildAntiGenePrompt(input) {
             outcome: capsule.outcome,
             proofOfWork: capsule.proofOfWork,
         })),
-    })));
+    }));
+    const clusters = redact ? hub.redactDeep(rawClusters) : rawClusters;
     return [
         'You are synthesizing one EvoMap AntiGene from recurring failed Capsules.',
         'An AntiGene is a guardrail: it says what to avoid or check before repeating a known failure pattern.',
@@ -343,10 +344,11 @@ export async function autoDistillAntiGene(options) {
     if (!patchState(statePath, input.dataHash, { last_attempt_at: new Date(now).toISOString() }, hashCap)) {
         return { ok: false, mode, reason: 'state_write_failed', dataHash: input.dataHash };
     }
-    const prompt = buildAntiGenePrompt(input);
-    if (hub.detectEnvValueLeaks(prompt, env).length > 0) {
+    // 先扫描脱敏前的同构 prompt，防止新增的模式脱敏掩盖反向环境变量泄漏证据。
+    if (hub.detectEnvValueLeaks(buildAntiGenePrompt(input, false), env).length > 0) {
         return { ok: false, mode, reason: 'prompt_env_leak_blocked', dataHash: input.dataHash };
     }
+    const prompt = buildAntiGenePrompt(input);
     const runner = options.runner ?? resolveDistillRunner(env);
     const timeoutMs = envInt(env, 'EVOLVE_DISTILL_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
     const llm = await runner(prompt, { cwd: options.cwd ?? process.cwd(), timeoutMs, env });

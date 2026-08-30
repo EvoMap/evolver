@@ -23,6 +23,7 @@ import { installCodex, uninstallCodex } from './codexInstaller.js';
 // cursor injection is a different mechanism again (a project rules file, not a config/MCP writer): it renders
 // top genes into .cursor/rules/evolver.mdc. It plugs into the same install/uninstall dispatch below.
 import { installCursorRules, uninstallCursorRules } from './cursorRulesInstaller.js';
+import { withClaudeProductBridge, isOwnedProductBridge, restoreProductBridgeEntry, PRODUCT_BRIDGE_SERVER_ID } from './productBridge.js';
 import { installAntigravity, uninstallAntigravity } from './antigravityInstaller.js';
 import { installOpenCode, uninstallOpenCode } from './opencodeInstaller.js';
 import { installKiro, uninstallKiro } from './kiroInstaller.js';
@@ -389,12 +390,22 @@ export function stripManaged(data) {
             delete out['hooks'];
         }
     }
-    // remove evolver MCP server registration
+    // remove evolver MCP server registration and a managed evox-product entry
     const mcp = out['mcpServers'];
-    if (isObj(mcp) && 'evolver' in mcp) {
+    if (isObj(mcp)) {
         const next = { ...mcp };
-        delete next['evolver'];
-        changed = true;
+        if ('evolver' in next) {
+            delete next['evolver'];
+            changed = true;
+        }
+        if (PRODUCT_BRIDGE_SERVER_ID in next && isOwnedProductBridge(next[PRODUCT_BRIDGE_SERVER_ID])) {
+            const restored = restoreProductBridgeEntry(next[PRODUCT_BRIDGE_SERVER_ID]);
+            if (restored.restored)
+                next[PRODUCT_BRIDGE_SERVER_ID] = restored.entry;
+            else
+                delete next[PRODUCT_BRIDGE_SERVER_ID];
+            changed = true;
+        }
         if (Object.keys(next).length > 0)
             out['mcpServers'] = next;
         else {
@@ -444,11 +455,11 @@ function hasEvolverMcpRegistration(config) {
  * silently do nothing outside $HOME). The SessionStart hook lands in ~/.claude/settings.json (already user-level).
  * PROJECT scope keeps the legacy paths under configRoot.
  */
-function claudeCodeTargets(scope, configRoot) {
+function claudeCodeTargets(scope, configRoot, homeDir = homedir()) {
     if (scope === 'user') {
-        const claudeDir = join(homedir(), '.claude');
+        const claudeDir = join(homeDir, '.claude');
         return {
-            mcpConfigPath: join(homedir(), '.claude.json'),
+            mcpConfigPath: join(homeDir, '.claude.json'),
             mcpIsSharedUserConfig: true,
             claudeDir,
             settingsPath: join(claudeDir, 'settings.json'),
@@ -500,7 +511,7 @@ export function installInjection(plan, opts) {
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
     const promptRecallHookCommand = opts.promptRecallHookCommand ?? DEFAULT_PROMPT_RECALL_HOOK_COMMAND;
     const scope = opts.scope ?? 'project';
-    const { mcpConfigPath, mcpIsSharedUserConfig, claudeDir, settingsPath } = claudeCodeTargets(scope, opts.configRoot);
+    const { mcpConfigPath, mcpIsSharedUserConfig, claudeDir, settingsPath } = claudeCodeTargets(scope, opts.configRoot, opts.homeDir);
     const mcpLabel = mcpIsSharedUserConfig ? '~/.claude.json' : '.mcp.json';
     const settingsLabel = mcpIsSharedUserConfig ? '~/.claude/settings.json' : '.claude/settings.json';
     // project scope owns configRoot; user scope writes only home-anchored paths, so configRoot is irrelevant there.
@@ -527,22 +538,27 @@ export function installInjection(plan, opts) {
         && hasEvolverMcpRegistration(existingMcp)
         && hasExactHookCommand(existingSettings, 'SessionStart', hookCommand)
         && hasExactHookCommand(existingSettings, 'UserPromptSubmit', promptRecallHookCommand)) {
+        const product = withClaudeProductBridge(existingMcp, false);
+        if (product.changed) {
+            writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => withClaudeProductBridge(current, false));
+            return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [mcpConfigPath], alreadyInstalled: true };
+        }
         return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [], alreadyInstalled: true };
     }
     // MCP server registration. project → <root>/.mcp.json (stamped _evolver_managed). user → ~/.claude.json's
     // top-level mcpServers (Claude Code's real user scope); we do NOT stamp the marker into ~/.claude.json because
     // it's Claude Code's own shared config, so uninstall keys off the mcpServers.evolver entry there instead.
     if (mcpIsSharedUserConfig) {
-        writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => ({
-            changed: true,
-            data: deepMerge(current, plan.config),
-        }));
+        writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
+            const merged = withClaudeProductBridge(deepMerge(current, plan.config), opts.force === true);
+            return { changed: true, data: merged.data };
+        });
     }
     else {
         writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
             const mcpMerged = deepMerge(current, plan.config);
             mcpMerged[MANAGED_MARKER] = true;
-            return { changed: true, data: mcpMerged };
+            return { changed: true, data: withClaudeProductBridge(mcpMerged, opts.force === true).data };
         });
     }
     // .claude/settings.json ← SessionStart hook (hooks-union preserves the user's own hooks). For user scope this
@@ -591,7 +607,7 @@ export function uninstallInjection(runtime, opts) {
         return { ok: false, runtime, mode: 'n/a', files: [], error: `uninstall not implemented for ${runtime}` };
     }
     const scope = opts.scope ?? 'project';
-    const { mcpConfigPath, mcpIsSharedUserConfig, settingsPath } = claudeCodeTargets(scope, opts.configRoot);
+    const { mcpConfigPath, mcpIsSharedUserConfig, settingsPath } = claudeCodeTargets(scope, opts.configRoot, opts.homeDir);
     const cleaned = [];
     const targets = [
         [mcpConfigPath, mcpIsSharedUserConfig ? '~/.claude.json' : '.mcp.json'],

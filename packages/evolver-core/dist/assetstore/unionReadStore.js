@@ -47,6 +47,7 @@ export class UnionReadStore {
     // undeclared-exception failure those probes exist to prevent. Assigning only when the primary has it
     // keeps the union exactly as capable as the pool it writes to.
     putConditional;
+    putBundle;
     putFrozen;
     putFrozenConditional;
     // Conditional for the same reason, on the read side: cliContracts.findLogicalAsset and
@@ -65,7 +66,9 @@ export class UnionReadStore {
         if ([primary, ...readOnly].every((source) => source.findByLogicalId)) {
             this.findByLogicalId = (id, limit = DEFAULT_LIMIT, kind) => this.merged((source) => source.findByLogicalId(id, limit, kind), limit);
         }
-        const { putConditional, putFrozen, putFrozenConditional } = primary;
+        const { putBundle, putConditional, putFrozen, putFrozenConditional } = primary;
+        if (putBundle)
+            this.putBundle = (assets) => putBundle.call(primary, assets);
         if (putConditional)
             this.putConditional = (asset, options) => putConditional.call(primary, asset, options);
         if (putFrozen)

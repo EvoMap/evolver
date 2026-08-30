@@ -14,3 +14,4 @@ export * from './jsonMcpInstaller.js';
 export * from './opencodeInstaller.js';
 export * from './kiroInstaller.js';
 export * from './envFile.js';
+export * from './productBridge.js';

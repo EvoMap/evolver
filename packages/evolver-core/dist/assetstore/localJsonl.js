@@ -1,6 +1,7 @@
+import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
-import { appendUtf8Durable, assertAssetStoreDirectory, assertOptionalRegularFile, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
+import { appendUtf8Durable, assertAssetStoreDirectory, assertOptionalRegularFile, ensureAssetStoreDirectory, fsyncDirectoryBestEffort, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { FrozenAssetIdCollisionError, frozenAssetRecordsEqual, normalizeForPut, } from './provider.js';
 function resultLogicalId(logicalId) {
@@ -8,6 +9,10 @@ function resultLogicalId(logicalId) {
         ? logicalId
         : undefined;
 }
+const BUNDLE_JOURNAL_FILE = '.assetstore-bundle.json';
+const BUNDLE_JOURNAL_SCHEMA = 'evolver.assetstore-bundle.v1';
+const MAX_BUNDLE_ASSETS = 64;
+const MAX_BUNDLE_JOURNAL_BYTES = 4 * 1024 * 1024;
 /** Signal names a record advertises, across the four key spellings the pool uses. */
 export function signalsOf(a) {
     const out = [];
@@ -30,6 +35,7 @@ export class LocalJsonlProvider {
     baseDir;
     index = new Map();
     lockPath;
+    bundleJournalPath;
     fileState = new Map();
     loaded = false;
     // `baseDir` is public-readonly so callers that inject a store (e.g. the CLI under test) can co-locate sidecars
@@ -38,6 +44,7 @@ export class LocalJsonlProvider {
         this.baseDir = baseDir;
         ensureAssetStoreDirectory(baseDir);
         this.lockPath = join(baseDir, '.assetstore.lock');
+        this.bundleJournalPath = join(baseDir, BUNDLE_JOURNAL_FILE);
     }
     captureFileState() {
         assertAssetStoreDirectory(this.baseDir);
@@ -87,11 +94,12 @@ export class LocalJsonlProvider {
     }
     ensureFresh() {
         const state = this.captureFileState();
-        if (!this.stateChanged(state))
+        if (!this.hasPendingBundle() && !this.stateChanged(state))
             return;
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
+            this.recoverPendingBundleUnderLock();
             this.refreshUnderLock();
         }
         finally {
@@ -101,6 +109,63 @@ export class LocalJsonlProvider {
     updateFileStateAfterWrite() {
         this.fileState = this.captureFileState();
         this.loaded = true;
+    }
+    readPendingBundle() {
+        if (assertOptionalRegularFile(this.bundleJournalPath, 'temp_file') === null)
+            return undefined;
+        const raw = readUtf8Regular(this.bundleJournalPath, MAX_BUNDLE_JOURNAL_BYTES);
+        if (raw === null)
+            return undefined;
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        }
+        catch {
+            throw new Error('asset store bundle journal is malformed');
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('asset store bundle journal is malformed');
+        }
+        const journal = parsed;
+        const assets = journal['assets'];
+        if (journal['schema'] !== BUNDLE_JOURNAL_SCHEMA || !Array.isArray(assets) || assets.length === 0 || assets.length > MAX_BUNDLE_ASSETS) {
+            throw new Error('asset store bundle journal is invalid');
+        }
+        return assets.map((asset) => {
+            if (!asset || typeof asset !== 'object' || Array.isArray(asset))
+                throw new Error('asset store bundle journal is invalid');
+            const record = asset;
+            if (typeof record.type !== 'string' || !Object.prototype.hasOwnProperty.call(LOCAL_ASSET_FILES, record.type)
+                || typeof record.asset_id !== 'string' || record.asset_id.length === 0) {
+                throw new Error('asset store bundle journal is invalid');
+            }
+            return record;
+        });
+    }
+    recoverPendingBundleUnderLock() {
+        const pending = this.readPendingBundle();
+        if (!pending)
+            return;
+        this.refreshUnderLock();
+        for (const pendingRecord of pending) {
+            const { record } = normalizeForPut(pendingRecord);
+            if (record.asset_id !== pendingRecord.asset_id)
+                throw new Error('asset store bundle journal asset_id mismatch');
+            const existing = this.index.get(record.asset_id);
+            if (existing) {
+                if (!frozenAssetRecordsEqual(existing, record))
+                    throw new FrozenAssetIdCollisionError(record.asset_id);
+                continue;
+            }
+            appendUtf8Durable(join(this.baseDir, LOCAL_ASSET_FILES[record.type]), `${JSON.stringify(record)}\n`);
+            this.index.set(record.asset_id, record);
+        }
+        unlinkSync(this.bundleJournalPath);
+        fsyncDirectoryBestEffort(this.baseDir);
+        this.updateFileStateAfterWrite();
+    }
+    hasPendingBundle() {
+        return assertOptionalRegularFile(this.bundleJournalPath, 'temp_file') !== null;
     }
     async put(asset) {
         return this.putConditional(asset, { allowLogicalCollision: true });
@@ -113,6 +178,7 @@ export class LocalJsonlProvider {
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
+            this.recoverPendingBundleUnderLock();
             // Refresh under the shared lock so another process cannot append between reload and dedupe.
             this.refreshUnderLock();
             const existing = this.index.get(record.asset_id);
@@ -160,6 +226,59 @@ export class LocalJsonlProvider {
             } : {}),
         };
     }
+    async putBundle(assets) {
+        if (assets.length === 0)
+            return [];
+        if (assets.length > MAX_BUNDLE_ASSETS)
+            throw new Error('asset store bundle is too large');
+        const normalized = assets.map((asset) => normalizeForPut(asset));
+        const seen = new Map();
+        for (const normalizedRecord of normalized) {
+            const { record } = normalizedRecord;
+            const previous = seen.get(record.asset_id);
+            if (previous && !frozenAssetRecordsEqual(previous.record, record))
+                throw new FrozenAssetIdCollisionError(record.asset_id);
+            if (!previous)
+                seen.set(record.asset_id, normalizedRecord);
+        }
+        const results = [];
+        assertOptionalRegularFile(this.lockPath, 'lock_file');
+        acquireLock(this.lockPath);
+        try {
+            this.recoverPendingBundleUnderLock();
+            this.refreshUnderLock();
+            const pending = [];
+            for (const { record, verified } of seen.values()) {
+                const existing = this.index.get(record.asset_id);
+                if (existing) {
+                    if (!frozenAssetRecordsEqual(existing, record))
+                        throw new FrozenAssetIdCollisionError(record.asset_id);
+                    results.push({ asset_id: record.asset_id, stored: false, verified });
+                    continue;
+                }
+                pending.push(record);
+                results.push({ asset_id: record.asset_id, stored: true, verified });
+            }
+            if (pending.length === 0)
+                return results;
+            const journal = `${JSON.stringify({ schema: BUNDLE_JOURNAL_SCHEMA, assets: pending })}\n`;
+            if (Buffer.byteLength(journal, 'utf8') > MAX_BUNDLE_JOURNAL_BYTES) {
+                throw new Error('asset store bundle is too large');
+            }
+            replaceUtf8Durable(this.bundleJournalPath, journal);
+            for (const record of pending) {
+                appendUtf8Durable(join(this.baseDir, LOCAL_ASSET_FILES[record.type]), `${JSON.stringify(record)}\n`);
+                this.index.set(record.asset_id, record);
+            }
+            unlinkSync(this.bundleJournalPath);
+            fsyncDirectoryBestEffort(this.baseDir);
+            this.updateFileStateAfterWrite();
+        }
+        finally {
+            releaseLock(this.lockPath);
+        }
+        return results;
+    }
     /**
      * 迁移专用(M8-2): 以**冻结 asset_id** 原样写入, 不经 normalizeForPut 重算/校验.
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.
@@ -176,6 +295,7 @@ export class LocalJsonlProvider {
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
+            this.recoverPendingBundleUnderLock();
             this.refreshUnderLock();
             const existing = this.index.get(record.asset_id);
             if (existing) {

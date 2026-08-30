@@ -19,6 +19,27 @@ export class InMemoryDigestState {
     markDelivered(at) { this.last = at; }
 }
 export const DEFAULT_DIGEST_CADENCE_MS = 7 * 24 * 60 * 60 * 1000; // weekly
+export const DEFAULT_DIGEST_EXTRAS_TIMEOUT_MS = 1_000;
+const DIGEST_EXTRAS_MAX_OBSERVER_BUDGET = 0.5;
+/** 可选 enrichment 不得抑制有实测价值的 digest，也不得导致 observer 被隔离。 */
+async function readDigestExtras(load, timeoutMs) {
+    if (!load || timeoutMs <= 0)
+        return {};
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (extras) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(extras);
+        };
+        const timer = setTimeout(() => finish({}), timeoutMs);
+        Promise.resolve()
+            .then(() => load())
+            .then((extras) => finish(extras), () => finish({}));
+    });
+}
 /** Period label "YYYY-MM-DD..YYYY-MM-DD" for the window [since, now). Deterministic given the two epochs. */
 function periodLabel(sinceMs, nowMs) {
     const d = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -38,14 +59,20 @@ export function valueDigestObserver(deps) {
     const state = deps.state ?? new InMemoryDigestState();
     const now = deps.now ?? (() => Date.now());
     const cadenceMs = deps.cadenceMs ?? DEFAULT_DIGEST_CADENCE_MS;
+    const observerTimeoutMs = deps.timeoutMs ?? 5_000;
+    const configuredExtrasTimeout = deps.digestExtrasTimeoutMs ?? DEFAULT_DIGEST_EXTRAS_TIMEOUT_MS;
+    const validExtrasTimeout = Number.isFinite(configuredExtrasTimeout) && configuredExtrasTimeout > 0
+        ? Math.floor(configuredExtrasTimeout)
+        : DEFAULT_DIGEST_EXTRAS_TIMEOUT_MS;
     const meta = {
         name: 'value-digest',
         idempotent: false,
-        timeoutMs: deps.timeoutMs ?? 5_000,
+        timeoutMs: observerTimeoutMs,
     };
     return {
         meta,
         async handle() {
+            const observerStartedAt = Date.now();
             const t = now();
             const last = state.lastDeliveredAt();
             // 1. cadence gate.
@@ -58,7 +85,13 @@ export function valueDigestObserver(deps) {
             if (!digestShouldSend(summary))
                 return; // zero-measured-value week → produce nothing
             const period = periodLabel(since, t);
-            const markdown = buildValueDigest(summary, period);
+            // 只允许可选 enrichment 使用剩余 observer 预算的一半，给摘要格式化和 sink 留出确定的余量。
+            const elapsedMs = Math.max(0, Date.now() - observerStartedAt);
+            const remainingObserverBudgetMs = Math.max(0, observerTimeoutMs - elapsedMs);
+            const extrasBudget = Math.floor(remainingObserverBudgetMs * DIGEST_EXTRAS_MAX_OBSERVER_BUDGET);
+            const digestExtrasTimeoutMs = Math.min(validExtrasTimeout, Math.max(0, extrasBudget));
+            const extras = await readDigestExtras(deps.digestExtras, digestExtrasTimeoutMs);
+            const markdown = buildValueDigest(summary, period, extras);
             if (markdown === null)
                 return; // belt-and-suspenders: gate already passed, but never deliver a null
             // 3. deliver, then record the delivery time so the cadence advances. If the sink throws, the bus isolates

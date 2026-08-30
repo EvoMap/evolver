@@ -1,1 +1,436 @@
-const _0x578ca1=_0x510f;(function(_0x13c734,_0x328823){const _0x3feba1=_0x510f,_0xd2b4a0=_0x13c734();while(!![]){try{const _0x15674c=-parseInt(_0x3feba1(0xc4,'\x29\x68\x51\x44'))/(0x1*-0x1fa2+-0x8*0x235+0x314b)+parseInt(_0x3feba1(0xe0,'\x4d\x63\x4f\x31'))/(0x72*0x21+-0x14b+0x3*-0x477)*(-parseInt(_0x3feba1(0x139,'\x56\x77\x70\x53'))/(-0xf14*0x1+-0x1cd*0xf+0x2*0x150d))+parseInt(_0x3feba1(0xe1,'\x31\x69\x2a\x6b'))/(0x18c*0x4+-0xa78+0x44c)+-parseInt(_0x3feba1(0x119,'\x4e\x58\x55\x49'))/(-0x1eaf+0x17*0x194+0x8*-0xb3)*(-parseInt(_0x3feba1(0x1ab,'\x56\x77\x70\x53'))/(-0x19dc+0x8da+-0x1108*-0x1))+parseInt(_0x3feba1(0x142,'\x4d\x50\x62\x65'))/(0x1c1e+-0xcc*-0x1f+-0x34cb)+parseInt(_0x3feba1(0x101,'\x4e\x58\x55\x49'))/(0x20e2+-0x22d0+0x1f6)*(-parseInt(_0x3feba1(0x152,'\x48\x2a\x51\x59'))/(0x2613+0x2b*-0xb6+-0x778))+parseInt(_0x3feba1(0x171,'\x32\x58\x79\x56'))/(0x1*-0xd69+-0x1*0x2531+0x32a4)*(parseInt(_0x3feba1(0xf5,'\x6d\x56\x21\x6b'))/(0x134f+-0x1826+0xa*0x7d));if(_0x15674c===_0x328823)break;else _0xd2b4a0['push'](_0xd2b4a0['shift']());}catch(_0x13c723){_0xd2b4a0['push'](_0xd2b4a0['shift']());}}}(_0x1e71,0x15187*0x3+0xa390*0xa+0x4d2*-0x147));import{computeAssetId}from'\x2e\x2e\x2f\x77\x69\x72\x65\x2f\x69\x6e\x64\x65\x78\x2e\x6a\x73';export const REDACTED=_0x578ca1(0x179,'\x76\x38\x42\x68')+'\x44\x5d';const REDACT_PATTERNS=[/Bearer\s+[A-Za-z0-9-._~+/]+=*/g,/"?node_secret"?\s*[:=]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,/sk-[A-Za-z0-9]{20,}/g,/"?token"?[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,/api[_-]?key[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,/secret[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,/password[=:]\s*["']?[^\s"',;)}\]]{6,}["']?/gi,/ghp_[A-Za-z0-9]{36,}/g,/gho_[A-Za-z0-9]{36,}/g,/ghu_[A-Za-z0-9]{36,}/g,/ghs_[A-Za-z0-9]{36,}/g,/ghr_[A-Za-z0-9]{36,}/g,/github_pat_[A-Za-z0-9_]{22,}/g,/AKIA[0-9A-Z]{16}/g,/sk-proj-[A-Za-z0-9-_]{20,}/g,/sk-ant-[A-Za-z0-9-_]{20,}/g,/npm_[A-Za-z0-9]{36,}/g,/xox[baprsv]-[A-Za-z0-9-]{10,}/g,/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}/g,/AccountKey=[^;\s]+/gi,/client_secret=[A-Za-z0-9~._-]{8,}/gi,/instrumentationkey=[0-9a-fA-F-]{20,}/gi,/\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g,/-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g,/(?<=:\/\/)[^@\s]+:[^@\s]+(?=@)/g,/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,/\.env\.[a-zA-Z]+\b/g,/(?<=[\\/])\.env\b/g],REDACT_ALLOWLIST=[/^\/home\/runner(?:[/]|$)/,/^\/Users\/runner(?:[/]|$)/,/^\/home\/circleci(?:[/]|$)/,/^\/Users\/distiller(?:[/]|$)/,/^\/home\/vsts(?:[/]|$)/,/^\/home\/travis(?:[/]|$)/,/^\/home\/jenkins(?:[/]|$)/,/^(?:noreply|no-reply|donotreply|do-not-reply)@(?:github\.com|users\.noreply\.github\.com|gitlab\.com|bitbucket\.org|npmjs\.com|claude\.ai|anthropic\.com)$/i,/^[0-9]+\+[a-zA-Z0-9._-]+@users\.noreply\.github\.com$/i,/^[a-zA-Z0-9_.-]+@users\.noreply\.github\.com$/i,/^git@github\.com$/i,/^git@gitlab\.com$/i,/^git@bitbucket\.org$/i];function isAllowlisted(_0x43848d){const _0xab6af2=_0x578ca1;for(const _0x3b8857 of REDACT_ALLOWLIST)if(_0x3b8857[_0xab6af2(0x18f,'\x49\x46\x50\x57')](_0x43848d))return!![];return![];}const ANONYMIZE_PATTERNS=[[/\/(?:home|Users)\/[^/\s"',;)}\]]+/g,'\x7e'],[/[A-Za-z]:\\Users\\[^\\/\s"',;)}\]]+/g,'\x7e']];export function redactString(_0x2c7845){const _0x282900=_0x578ca1;if(typeof _0x2c7845!==_0x282900(0xfa,'\x58\x54\x33\x74')||!_0x2c7845)return _0x2c7845;let _0xe8acb2=_0x2c7845;for(const _0x518c53 of REDACT_PATTERNS){if(_0x282900(0xea,'\x56\x77\x70\x53')!==_0x282900(0xff,'\x34\x44\x4f\x30')){if(typeof _0x2209f2!==_0x282900(0xbf,'\x31\x36\x72\x32')||!_0x2fb598)return _0x4ad038;let _0x2d9bb6=_0x17a1a;for(const _0x2a3449 of _0x2c7952){_0x2a3449[_0x282900(0x11f,'\x69\x61\x5e\x77')+'\x78']=-0x19c0+-0x119*0x13+-0x1*-0x2e9b,_0x2d9bb6=_0x2d9bb6[_0x282900(0x17c,'\x72\x70\x62\x21')](_0x2a3449,_0x599622=>_0x56e32c(_0x599622)?_0x599622:_0x32acf2);}for(const [_0x586c36,_0x461b72]of _0x32b594){_0x586c36[_0x282900(0x17a,'\x56\x77\x70\x53')+'\x78']=-0x8d*0x13+0x1*0x1001+0x2c5*-0x2,_0x2d9bb6=_0x2d9bb6[_0x282900(0x1b7,'\x79\x5b\x6d\x71')](_0x586c36,_0x402e20=>_0x37007e(_0x402e20)?_0x402e20:_0x461b72);}return _0x2d9bb6;}else _0x518c53[_0x282900(0xe2,'\x36\x37\x4f\x78')+'\x78']=-0x7a4+-0x1839+0x1fdd,_0xe8acb2=_0xe8acb2[_0x282900(0x11b,'\x76\x38\x42\x68')](_0x518c53,_0x4adaf5=>isAllowlisted(_0x4adaf5)?_0x4adaf5:REDACTED);}for(const [_0x2c0ae4,_0x2470f5]of ANONYMIZE_PATTERNS){if(_0x282900(0x146,'\x34\x44\x4f\x30')===_0x282900(0x140,'\x4d\x50\x62\x65')){const _0x1e8ee1={};for(const [_0x643f5c,_0x30c258]of _0x3b26ba[_0x282900(0x12b,'\x65\x70\x41\x6c')](_0x414357))_0x1e8ee1[_0x643f5c]=_0x346421(_0x30c258);return _0x1e8ee1;}else _0x2c0ae4[_0x282900(0x185,'\x2a\x47\x52\x6b')+'\x78']=0x1*0x2646+0x25*0x22+-0x2b3*0x10,_0xe8acb2=_0xe8acb2[_0x282900(0x161,'\x65\x70\x41\x6c')](_0x2c0ae4,_0x1da581=>isAllowlisted(_0x1da581)?_0x1da581:_0x2470f5);}return _0xe8acb2;}export function redactDeep(_0xc3cb7c){const _0x346f30=_0x578ca1;if(typeof _0xc3cb7c==='\x73\x74\x72\x69\x6e\x67')return redactString(_0xc3cb7c);if(Array[_0x346f30(0x1ae,'\x78\x4e\x6b\x4b')](_0xc3cb7c))return _0xc3cb7c[_0x346f30(0x15b,'\x55\x24\x26\x56')](_0xfdcf59=>redactDeep(_0xfdcf59));if(_0xc3cb7c&&typeof _0xc3cb7c===_0x346f30(0x144,'\x38\x23\x68\x6c')){const _0x226d57={};for(const [_0x7cc389,_0x169327]of Object[_0x346f30(0x153,'\x43\x6c\x30\x32')](_0xc3cb7c))_0x226d57[_0x7cc389]=redactDeep(_0x169327);return _0x226d57;}return _0xc3cb7c;}export function sanitizeAsset(_0x5e7a11){const _0x135c64=redactDeep(_0x5e7a11),_0x42cc2d=computeAssetId(_0x135c64);return{..._0x135c64,'\x61\x73\x73\x65\x74\x5f\x69\x64':_0x42cc2d??_0x5e7a11['\x61\x73\x73\x65\x74\x5f\x69\x64']};}const LEAK_SCANNERS=[{'\x74\x79\x70\x65':_0x578ca1(0xee,'\x58\x23\x44\x5a'),'\x70\x61\x74\x74\x65\x72\x6e':/sk-[A-Za-z0-9]{20,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x1ac,'\x59\x63\x41\x4b')+_0x578ca1(0xc1,'\x50\x6a\x47\x42')+_0x578ca1(0x1b6,'\x79\x42\x6a\x29')+'\x45\x59'},{'\x74\x79\x70\x65':_0x578ca1(0x151,'\x32\x58\x79\x56'),'\x70\x61\x74\x74\x65\x72\x6e':/sk-proj-[A-Za-z0-9-_]{20,}/g,'\x73\x75\x67\x67\x65\x73\x74':'\x70\x72\x6f\x63\x65\x73\x73\x2e'+_0x578ca1(0x12c,'\x49\x46\x50\x57')+_0x578ca1(0x19e,'\x69\x61\x5e\x77')+'\x45\x59'},{'\x74\x79\x70\x65':_0x578ca1(0x1ba,'\x67\x6e\x46\x26'),'\x70\x61\x74\x74\x65\x72\x6e':/sk-ant-[A-Za-z0-9-_]{20,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x1b0,'\x50\x6a\x47\x42')+_0x578ca1(0x149,'\x43\x6c\x30\x32')+_0x578ca1(0x11d,'\x65\x70\x41\x6c')+_0x578ca1(0xc2,'\x37\x34\x62\x36')},{'\x74\x79\x70\x65':_0x578ca1(0x1ad,'\x4d\x50\x62\x65'),'\x70\x61\x74\x74\x65\x72\x6e':/AKIA[0-9A-Z]{16}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xda,'\x4b\x75\x47\x28')+_0x578ca1(0x1a6,'\x62\x74\x32\x64')+_0x578ca1(0x1c1,'\x31\x36\x72\x32')+_0x578ca1(0x1cb,'\x6d\x56\x21\x6b')},{'\x74\x79\x70\x65':_0x578ca1(0xe8,'\x29\x68\x51\x44')+_0x578ca1(0xe6,'\x69\x4b\x72\x64'),'\x70\x61\x74\x74\x65\x72\x6e':/gh(?:p|o|u|s|r)_[A-Za-z0-9]{36,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x1b0,'\x50\x6a\x47\x42')+_0x578ca1(0xd8,'\x32\x2a\x62\x57')+_0x578ca1(0x1c9,'\x67\x6e\x46\x26')},{'\x74\x79\x70\x65':_0x578ca1(0x141,'\x33\x47\x68\x4c')+_0x578ca1(0xdd,'\x25\x55\x78\x42'),'\x70\x61\x74\x74\x65\x72\x6e':/github_pat_[A-Za-z0-9_]{22,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x135,'\x32\x58\x79\x56')+_0x578ca1(0xfd,'\x37\x34\x62\x36')+_0x578ca1(0x176,'\x4a\x48\x76\x38')},{'\x74\x79\x70\x65':_0x578ca1(0xf2,'\x43\x6c\x30\x32')+'\x6e','\x70\x61\x74\x74\x65\x72\x6e':/npm_[A-Za-z0-9]{36,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x1b9,'\x72\x70\x62\x21')+'\x65\x6e\x76\x2e\x4e\x50\x4d\x5f'+'\x54\x4f\x4b\x45\x4e'},{'\x74\x79\x70\x65':_0x578ca1(0x147,'\x36\x37\x4f\x78')+'\x6b\x65\x6e','\x70\x61\x74\x74\x65\x72\x6e':/xox[baprsv]-[A-Za-z0-9-]{10,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x128,'\x65\x4e\x41\x5d')+_0x578ca1(0x1c3,'\x38\x23\x68\x6c')+_0x578ca1(0xde,'\x56\x77\x70\x53')},{'\x74\x79\x70\x65':_0x578ca1(0x150,'\x58\x23\x44\x5a'),'\x70\x61\x74\x74\x65\x72\x6e':/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x165,'\x6d\x56\x21\x6b')+_0x578ca1(0x18d,'\x54\x47\x40\x33')},{'\x74\x79\x70\x65':_0x578ca1(0x10a,'\x49\x6e\x47\x5d')+'\x79','\x70\x61\x74\x74\x65\x72\x6e':/AccountKey=[^;\s]+/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x1ac,'\x59\x63\x41\x4b')+_0x578ca1(0xd6,'\x32\x2a\x62\x57')+_0x578ca1(0x187,'\x78\x4e\x6b\x4b')+_0x578ca1(0x154,'\x79\x42\x6a\x29')},{'\x74\x79\x70\x65':_0x578ca1(0xc5,'\x76\x38\x42\x68')+_0x578ca1(0xc7,'\x4e\x58\x55\x49')+'\x72\x65\x74','\x70\x61\x74\x74\x65\x72\x6e':/client_secret=[A-Za-z0-9~._-]{8,}/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xe4,'\x54\x47\x40\x33')+_0x578ca1(0x12e,'\x62\x74\x32\x64')+'\x45\x5f\x43\x4c\x49\x45\x4e\x54'+_0x578ca1(0x100,'\x53\x73\x57\x7a')},{'\x74\x79\x70\x65':'\x61\x7a\x75\x72\x65\x5f\x69\x6e'+_0x578ca1(0x172,'\x4b\x75\x47\x28')+_0x578ca1(0x10b,'\x67\x6e\x46\x26')+'\x79','\x70\x61\x74\x74\x65\x72\x6e':/instrumentationkey=[0-9a-fA-F-]{20,}/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x16b,'\x77\x28\x4c\x26')+_0x578ca1(0xe3,'\x29\x68\x51\x44')+'\x4e\x53\x49\x47\x48\x54\x53\x5f'+_0x578ca1(0x134,'\x56\x77\x70\x53')+'\x4e\x54\x41\x54\x49\x4f\x4e\x4b'+'\x45\x59'},{'\x74\x79\x70\x65':'\x64\x69\x73\x63\x6f\x72\x64\x5f'+_0x578ca1(0x115,'\x31\x36\x72\x32'),'\x70\x61\x74\x74\x65\x72\x6e':/\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g,'\x73\x75\x67\x67\x65\x73\x74':'\x70\x72\x6f\x63\x65\x73\x73\x2e'+'\x65\x6e\x76\x2e\x44\x49\x53\x43'+_0x578ca1(0x19a,'\x62\x74\x32\x64')+'\x4e'},{'\x74\x79\x70\x65':_0x578ca1(0x157,'\x76\x38\x42\x68')+_0x578ca1(0x148,'\x33\x47\x68\x4c'),'\x70\x61\x74\x74\x65\x72\x6e':/Bearer\s+[A-Za-z0-9-._~+/]{20,}=*/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x130,'\x4d\x63\x4f\x31')+_0x578ca1(0x14e,'\x32\x2a\x62\x57')+_0x578ca1(0x11e,'\x2a\x47\x52\x6b')},{'\x74\x79\x70\x65':_0x578ca1(0x126,'\x43\x6c\x30\x32')+'\x6b\x65\x6e','\x70\x61\x74\x74\x65\x72\x6e':/"?token"?[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,'\x73\x75\x67\x67\x65\x73\x74':'\x70\x72\x6f\x78\x79\x20\x74\x6f'+_0x578ca1(0x17b,'\x37\x34\x62\x36')+'\x65\x6d\x65\x72\x61\x6c\x2c\x20'+'\x73\x74\x6f\x72\x65\x64\x20\x69'+_0x578ca1(0x113,'\x61\x56\x42\x4f')+_0x578ca1(0xf4,'\x79\x42\x6a\x29')},{'\x74\x79\x70\x65':_0x578ca1(0x1c5,'\x41\x41\x44\x75')+_0x578ca1(0x1bc,'\x54\x47\x40\x33'),'\x70\x61\x74\x74\x65\x72\x6e':/-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g,'\x73\x75\x67\x67\x65\x73\x74':'\x70\x72\x6f\x63\x65\x73\x73\x2e'+_0x578ca1(0xfe,'\x69\x61\x5e\x77')+_0x578ca1(0xf9,'\x54\x47\x40\x33')+_0x578ca1(0x18e,'\x61\x56\x42\x4f')},{'\x74\x79\x70\x65':_0x578ca1(0xfb,'\x56\x77\x70\x53'),'\x70\x61\x74\x74\x65\x72\x6e':/(?:mongodb|postgres|postgresql|mysql|redis|amqp):\/\/[^\s"',;)}\]]{10,}/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x110,'\x79\x42\x6a\x29')+_0x578ca1(0x103,'\x58\x23\x44\x5a')+_0x578ca1(0x18b,'\x77\x28\x4c\x26')},{'\x74\x79\x70\x65':_0x578ca1(0x127,'\x37\x34\x62\x36')+'\x74\x68','\x70\x61\x74\x74\x65\x72\x6e':/\/home\/[a-zA-Z0-9_.-]+\//g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xbd,'\x33\x70\x67\x72')+_0x578ca1(0xe9,'\x32\x2a\x62\x57')},{'\x74\x79\x70\x65':_0x578ca1(0x1a8,'\x25\x55\x78\x42')+'\x74\x68','\x70\x61\x74\x74\x65\x72\x6e':/\/Users\/[a-zA-Z0-9_.-]+\//g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xfc,'\x58\x54\x33\x74')+_0x578ca1(0x15e,'\x49\x46\x50\x57')},{'\x74\x79\x70\x65':'\x6c\x6f\x63\x61\x6c\x5f\x70\x61'+'\x74\x68','\x70\x61\x74\x74\x65\x72\x6e':/[A-Z]:\\Users\\[a-zA-Z0-9_.-]+\\/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x114,'\x36\x37\x4f\x78')+_0x578ca1(0xb9,'\x62\x74\x32\x64')+_0x578ca1(0x1b4,'\x55\x24\x26\x56')},{'\x74\x79\x70\x65':_0x578ca1(0x1a3,'\x76\x38\x42\x68')+_0x578ca1(0xd5,'\x6d\x78\x29\x74'),'\x70\x61\x74\x74\x65\x72\x6e':/\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d{2,5})?\b/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xd3,'\x78\x4e\x6b\x4b')+_0x578ca1(0x107,'\x58\x23\x44\x5a')+_0x578ca1(0x162,'\x31\x69\x2a\x6b')},{'\x74\x79\x70\x65':_0x578ca1(0xdc,'\x6d\x56\x21\x6b')+'\x65\x74','\x70\x61\x74\x74\x65\x72\x6e':/[a-zA-Z0-9_.-]{1,64}@(?:(?:\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24})/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0x130,'\x4d\x63\x4f\x31')+_0x578ca1(0xf1,'\x2a\x47\x52\x6b')+_0x578ca1(0x196,'\x4e\x58\x55\x49')},{'\x74\x79\x70\x65':_0x578ca1(0x195,'\x59\x63\x41\x4b'),'\x70\x61\x74\x74\x65\x72\x6e':/password[=:]\s*["']?[^\s"',;)}\]]{6,}["']?/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xbd,'\x33\x70\x67\x72')+_0x578ca1(0xd1,'\x56\x77\x70\x53')+_0x578ca1(0x11c,'\x61\x56\x42\x4f')},{'\x74\x79\x70\x65':'\x73\x65\x63\x72\x65\x74','\x70\x61\x74\x74\x65\x72\x6e':/secret[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xc9,'\x6b\x66\x5d\x45')+_0x578ca1(0xef,'\x58\x54\x33\x74')+'\x45\x54'},{'\x74\x79\x70\x65':_0x578ca1(0x17f,'\x69\x61\x5e\x77')+'\x74\x68','\x70\x61\x74\x74\x65\x72\x6e':/:\/\/[^@\s:]+:[^@\s]+@/g,'\x73\x75\x67\x67\x65\x73\x74':_0x578ca1(0xda,'\x4b\x75\x47\x28')+_0x578ca1(0x145,'\x62\x74\x32\x64')+_0x578ca1(0x18c,'\x69\x4b\x72\x64')}],ENV_SCAN_SKIP_KEYS=new Set([_0x578ca1(0x132,'\x26\x61\x4e\x46'),_0x578ca1(0x13e,'\x79\x42\x6a\x29'),_0x578ca1(0xca,'\x33\x47\x68\x4c'),_0x578ca1(0x1af,'\x55\x24\x26\x56'),_0x578ca1(0x1b2,'\x34\x44\x4f\x30'),_0x578ca1(0x174,'\x69\x61\x5e\x77'),_0x578ca1(0x16c,'\x58\x54\x33\x74'),_0x578ca1(0x1b5,'\x37\x34\x62\x36'),'\x4f\x4c\x44\x50\x57\x44','\x53\x48\x4c\x56\x4c',_0x578ca1(0x183,'\x77\x28\x4c\x26'),'\x44\x49\x53\x50\x4c\x41\x59',_0x578ca1(0x1a7,'\x25\x55\x78\x42'),_0x578ca1(0xd4,'\x54\x47\x40\x33'),_0x578ca1(0x1c8,'\x4e\x58\x55\x49'),_0x578ca1(0x1b3,'\x34\x44\x4f\x30')+'\x53',_0x578ca1(0xdf,'\x76\x38\x42\x68')+'\x4d',_0x578ca1(0xcf,'\x56\x77\x70\x53')+_0x578ca1(0x15a,'\x34\x44\x4f\x30'),_0x578ca1(0x12a,'\x36\x55\x42\x76')+_0x578ca1(0x156,'\x4a\x48\x76\x38'),'\x58\x44\x47\x5f\x52\x55\x4e\x54'+_0x578ca1(0x118,'\x5e\x6e\x6b\x36'),_0x578ca1(0xce,'\x62\x74\x32\x64')+_0x578ca1(0x18a,'\x5e\x6e\x6b\x36')+'\x5f\x41\x44\x44\x52\x45\x53\x53',_0x578ca1(0x182,'\x33\x70\x67\x72')+'\x5f\x53\x4f\x43\x4b',_0x578ca1(0x15d,'\x69\x61\x5e\x77')+_0x578ca1(0x123,'\x76\x38\x42\x68'),'\x5f']),ENV_VALUE_FILESYSTEM_PATH_RE=/^(\/|[A-Za-z]:\\)/,ENV_VALUE_URL_RE=/^[a-z][a-z0-9+.-]*:\/\//i,SENSITIVE_ENV_KEY_PARTS=new Set([_0x578ca1(0xcb,'\x32\x58\x79\x56'),_0x578ca1(0xd9,'\x41\x41\x44\x75'),_0x578ca1(0x155,'\x65\x4e\x41\x5d'),_0x578ca1(0x186,'\x2a\x47\x52\x6b'),_0x578ca1(0x1aa,'\x61\x56\x42\x4f'),'\x50\x41\x53\x53\x57\x44',_0x578ca1(0x11a,'\x54\x47\x40\x33')+'\x53\x45',_0x578ca1(0xe7,'\x26\x61\x4e\x46'),_0x578ca1(0x16a,'\x50\x6a\x47\x42')+'\x41\x4c',_0x578ca1(0x109,'\x6d\x78\x29\x74')+_0x578ca1(0x1a9,'\x4b\x75\x47\x28'),_0x578ca1(0x1be,'\x4b\x75\x47\x28')+'\x45',_0x578ca1(0x188,'\x37\x34\x62\x36'),_0x578ca1(0x189,'\x58\x23\x44\x5a'),_0x578ca1(0x16d,'\x67\x6e\x46\x26'),_0x578ca1(0xf6,'\x6b\x66\x5d\x45'),_0x578ca1(0x14d,'\x6b\x66\x5d\x45'),'\x43\x45\x52\x54',_0x578ca1(0x138,'\x55\x24\x26\x56')+'\x41\x54\x45']),SENSITIVE_ENV_KEY_RE=/WEBHOOK|TOKEN|SECRET|PASSWORD|CREDENTIAL|SIGNATURE|SIGNED|DSN|BEARER|COOKIE|SESSION|APIKEY|ACCESSKEY|PRIVATEKEY|CERTIFICATE/,HIGH_RISK_URL_QUERY_KEYS=new Set(['\x74\x6f\x6b\x65\x6e','\x61\x63\x63\x65\x73\x73\x5f\x74'+_0x578ca1(0xdb,'\x4b\x75\x47\x28'),_0x578ca1(0x1c2,'\x6d\x56\x21\x6b'),_0x578ca1(0x177,'\x33\x70\x67\x72')+_0x578ca1(0xed,'\x76\x38\x42\x68'),_0x578ca1(0x14c,'\x32\x2a\x62\x57'),_0x578ca1(0x13a,'\x4d\x50\x62\x65'),_0x578ca1(0x1a0,'\x4e\x58\x55\x49'),_0x578ca1(0x108,'\x31\x69\x2a\x6b'),'\x73\x69\x67\x6e\x61\x74\x75\x72'+'\x65',_0x578ca1(0x12d,'\x34\x44\x4f\x30'),_0x578ca1(0x1a5,'\x6b\x66\x5d\x45'),_0x578ca1(0xc3,'\x36\x55\x42\x76')+_0x578ca1(0xbb,'\x29\x68\x51\x44'),_0x578ca1(0x120,'\x29\x68\x51\x44')+_0x578ca1(0x194,'\x69\x4b\x72\x64'),_0x578ca1(0x198,'\x25\x55\x78\x42')+_0x578ca1(0x16e,'\x43\x6c\x30\x32')+_0x578ca1(0x192,'\x36\x37\x4f\x78'),'\x78\x2d\x67\x6f\x6f\x67\x2d\x73'+_0x578ca1(0x167,'\x32\x58\x79\x56'),_0x578ca1(0x106,'\x4b\x75\x47\x28')+_0x578ca1(0x159,'\x78\x4e\x6b\x4b')+'\x6c',_0x578ca1(0x180,'\x56\x77\x70\x53')+_0x578ca1(0xf0,'\x48\x2a\x51\x59')+_0x578ca1(0x199,'\x2a\x47\x52\x6b')]);function normalizeEnvKey(_0x2923cd){const _0x17a8f3=_0x578ca1,_0x4c4993=_0x2923cd[_0x17a8f3(0x1a1,'\x34\x44\x4f\x30')+_0x17a8f3(0x190,'\x72\x70\x62\x21')]()[_0x17a8f3(0x16f,'\x6d\x56\x21\x6b')](/[^A-Z0-9]+/g,'\x5f')[_0x17a8f3(0x193,'\x50\x6a\x47\x42')](/^_+|_+$/g,'');return _0x4c4993||_0x2923cd[_0x17a8f3(0x10e,'\x32\x58\x79\x56')+_0x17a8f3(0x160,'\x4d\x63\x4f\x31')]();}function isFilesystemPathEnvValue(_0x35ce69){return ENV_VALUE_FILESYSTEM_PATH_RE['\x74\x65\x73\x74'](_0x35ce69);}function isUrlEnvValue(_0x371ab9){const _0x594341=_0x578ca1;return ENV_VALUE_URL_RE[_0x594341(0x10f,'\x62\x74\x32\x64')](_0x371ab9);}function isSensitiveEnvKey(_0xccc100){const _0x133161=_0x578ca1,_0x7e09b3=normalizeEnvKey(_0xccc100),_0x13b493=_0x7e09b3[_0x133161(0x19f,'\x69\x61\x5e\x77')](/[^A-Z0-9]+/)[_0x133161(0x1bf,'\x37\x34\x62\x36')](Boolean);if(_0x13b493[_0x133161(0x168,'\x4a\x48\x76\x38')](_0x6f2c5d=>SENSITIVE_ENV_KEY_PARTS[_0x133161(0xd7,'\x34\x44\x4f\x30')](_0x6f2c5d)))return!![];return SENSITIVE_ENV_KEY_RE[_0x133161(0x181,'\x33\x47\x68\x4c')](_0x7e09b3);}function isHighRiskUrlEnvValue(_0x5b62a9){const _0x256a98=_0x578ca1;if(!isUrlEnvValue(_0x5b62a9))return![];let _0x2f48e7;try{_0x2f48e7=new URL(_0x5b62a9);}catch{return![];}if(_0x2f48e7[_0x256a98(0x1c0,'\x59\x63\x41\x4b')]||_0x2f48e7[_0x256a98(0x191,'\x6d\x78\x29\x74')])return!![];const _0x5e4b32=_0x2f48e7[_0x256a98(0x1a4,'\x36\x55\x42\x76')][_0x256a98(0xeb,'\x59\x63\x41\x4b')+_0x256a98(0x1c6,'\x29\x68\x51\x44')](),_0xc77f44=_0x2f48e7[_0x256a98(0x1b1,'\x76\x38\x42\x68')][_0x256a98(0x1c7,'\x43\x6c\x30\x32')+_0x256a98(0xbe,'\x56\x77\x70\x53')]();if(/(^|\.)hooks?\./[_0x256a98(0x14a,'\x56\x77\x70\x53')](_0x5e4b32)||/(^|\.)webhooks?\./[_0x256a98(0xd2,'\x34\x44\x4f\x30')](_0x5e4b32))return!![];if(/\/(?:api\/)?webhooks?\//[_0x256a98(0x125,'\x41\x41\x44\x75')](_0xc77f44)||/\/hooks?\//[_0x256a98(0x102,'\x48\x2a\x51\x59')](_0xc77f44))return!![];if(/\/(?:tokens?|secrets?|signed|signatures?|credentials?)\//[_0x256a98(0x1bb,'\x26\x61\x4e\x46')](_0xc77f44))return!![];for(const _0x59328e of _0x2f48e7[_0x256a98(0x13b,'\x49\x46\x50\x57')+_0x256a98(0xf8,'\x79\x5b\x6d\x71')][_0x256a98(0x173,'\x76\x38\x42\x68')]()){if(HIGH_RISK_URL_QUERY_KEYS[_0x256a98(0x1ca,'\x32\x58\x79\x56')](_0x59328e[_0x256a98(0xc8,'\x31\x36\x72\x32')+_0x256a98(0x170,'\x2a\x47\x52\x6b')]()))return!![];}return![];}function _0x1e71(){const _0x414f14=['\x77\x53\x6f\x35\x61\x77\x33\x64\x47\x43\x6f\x49\x57\x36\x43\x39\x6b\x64\x74\x64\x52\x47','\x79\x63\x68\x63\x51\x31\x52\x64\x4d\x38\x6f\x68\x43\x76\x6d','\x57\x37\x42\x63\x48\x43\x6f\x73\x62\x32\x2f\x64\x53\x74\x57','\x57\x4f\x34\x56\x66\x38\x6b\x51\x57\x35\x2f\x63\x4d\x38\x6f\x69','\x57\x52\x79\x52\x41\x30\x53','\x76\x38\x6b\x4d\x57\x37\x39\x59\x57\x50\x72\x61\x57\x4f\x4e\x64\x51\x61','\x57\x35\x46\x63\x50\x38\x6b\x6e\x57\x52\x65\x6e\x57\x35\x4b\x78\x57\x52\x53','\x57\x35\x4e\x64\x47\x6d\x6f\x4e\x57\x36\x75','\x57\x35\x4e\x64\x4b\x53\x6f\x32\x57\x36\x68\x64\x4c\x47\x71\x74\x57\x51\x30','\x57\x52\x69\x38\x44\x4b\x61\x2f\x69\x6d\x6b\x6e','\x57\x51\x68\x64\x48\x53\x6b\x42','\x57\x52\x68\x64\x4b\x38\x6f\x30\x57\x51\x33\x63\x56\x43\x6f\x48\x57\x51\x38\x2b','\x57\x36\x4e\x64\x4d\x43\x6b\x4d\x74\x38\x6b\x47\x67\x53\x6b\x39','\x68\x6d\x6b\x6a\x6a\x61\x52\x63\x54\x47','\x57\x4f\x78\x64\x55\x74\x6d\x49\x77\x4e\x79\x72\x66\x71','\x65\x43\x6b\x43\x6c\x64\x37\x63\x52\x4d\x54\x75','\x57\x50\x31\x66\x57\x4f\x31\x75','\x6c\x61\x68\x64\x48\x57','\x57\x37\x46\x64\x4d\x43\x6b\x34\x72\x6d\x6b\x31\x65\x71','\x57\x37\x79\x6c\x75\x31\x74\x64\x4f\x32\x52\x64\x4f\x4d\x30','\x57\x50\x46\x64\x55\x6d\x6b\x5a\x57\x4f\x79\x50\x62\x61','\x7a\x73\x64\x63\x4f\x75\x56\x64\x4b\x6d\x6f\x76\x42\x58\x47','\x66\x43\x6f\x4b\x6e\x53\x6b\x44\x45\x65\x6c\x64\x4a\x63\x34','\x6c\x33\x58\x59\x74\x61','\x71\x76\x4b\x44\x78\x43\x6b\x4e\x57\x35\x46\x63\x55\x53\x6f\x41','\x57\x50\x50\x6d\x57\x50\x44\x64\x57\x34\x79','\x7a\x53\x6b\x31\x57\x51\x75\x6f\x7a\x6d\x6f\x78\x70\x38\x6b\x6c','\x7a\x53\x6f\x7a\x57\x52\x79','\x6e\x76\x52\x64\x55\x38\x6b\x37\x42\x6d\x6f\x31\x43\x38\x6b\x56','\x57\x51\x39\x65\x6b\x72\x34','\x6a\x43\x6b\x55\x67\x4a\x78\x63\x49\x4b\x76\x4f\x6d\x47','\x57\x51\x57\x75\x57\x34\x57','\x63\x31\x62\x7a\x42\x43\x6b\x63','\x57\x35\x75\x46\x57\x4f\x70\x64\x4e\x47','\x42\x53\x6f\x45\x57\x51\x74\x63\x4e\x65\x70\x64\x4d\x6d\x6b\x37\x6b\x71','\x57\x52\x33\x64\x4a\x6d\x6b\x4c\x68\x67\x68\x63\x4b\x47','\x79\x6d\x6f\x65\x57\x52\x69\x6b\x57\x36\x42\x63\x47\x4a\x47','\x57\x4f\x62\x34\x57\x37\x53','\x57\x35\x56\x64\x52\x53\x6b\x35\x57\x52\x78\x63\x52\x38\x6f\x48\x79\x53\x6b\x56','\x63\x6d\x6b\x36\x78\x71','\x6a\x38\x6f\x74\x62\x38\x6b\x58\x72\x78\x79','\x45\x38\x6f\x72\x57\x51\x42\x64\x48\x4e\x70\x64\x55\x43\x6b\x71','\x71\x53\x6b\x36\x57\x36\x79\x2f\x57\x52\x35\x4a\x57\x52\x2f\x63\x49\x61','\x57\x52\x4a\x64\x4a\x53\x6b\x75\x57\x52\x43\x76','\x57\x51\x34\x70\x66\x53\x6b\x70\x65\x58\x4f\x56\x45\x57','\x6d\x38\x6b\x79\x57\x36\x50\x6a\x57\x51\x52\x64\x48\x74\x4e\x63\x4c\x6d\x6f\x61\x57\x36\x52\x63\x49\x6d\x6f\x4c','\x57\x34\x42\x63\x56\x6d\x6b\x6d\x57\x51\x53\x67\x57\x36\x43\x7a\x57\x52\x69','\x69\x6d\x6f\x45\x62\x43\x6b\x39','\x57\x4f\x50\x4b\x66\x64\x4e\x64\x49\x38\x6b\x4f\x57\x37\x31\x52','\x69\x6d\x6f\x69\x6f\x43\x6b\x33\x78\x68\x74\x64\x4f\x73\x79','\x57\x50\x56\x64\x4f\x49\x35\x33\x57\x4f\x6d\x30\x57\x36\x4c\x74','\x57\x4f\x46\x63\x48\x4c\x7a\x6b\x57\x51\x47','\x57\x50\x6d\x57\x57\x37\x33\x64\x55\x67\x65\x74\x61\x57','\x67\x38\x6b\x59\x44\x32\x46\x63\x4c\x43\x6f\x4a\x57\x34\x30','\x57\x35\x74\x63\x53\x53\x6b\x6c\x57\x52\x61\x61\x57\x34\x57','\x74\x38\x6f\x59\x57\x4f\x46\x64\x4f\x75\x4e\x64\x4d\x6d\x6b\x37\x6b\x61','\x70\x43\x6b\x6d\x41\x48\x42\x63\x51\x6d\x6f\x4d\x57\x37\x71\x34','\x57\x34\x43\x6f\x57\x35\x61','\x64\x6d\x6b\x4e\x74\x4e\x78\x63\x50\x38\x6f\x33\x57\x37\x75\x4b','\x57\x36\x68\x64\x50\x6d\x6f\x41\x57\x35\x79','\x57\x50\x43\x55\x6f\x43\x6b\x37\x57\x34\x4a\x63\x49\x43\x6f\x63\x57\x36\x79','\x66\x59\x78\x64\x55\x78\x4b\x6f','\x69\x38\x6b\x65\x66\x47','\x57\x51\x37\x63\x4c\x76\x50\x57\x6b\x6d\x6f\x4c\x57\x34\x42\x64\x52\x47','\x57\x37\x33\x64\x4f\x6d\x6f\x41','\x57\x51\x37\x63\x4c\x76\x50\x57\x6c\x53\x6f\x32\x57\x34\x46\x64\x54\x61','\x71\x53\x6b\x69\x57\x4f\x43\x39\x73\x57','\x57\x35\x75\x57\x45\x33\x4e\x64\x48\x30\x33\x64\x48\x62\x65','\x57\x34\x4f\x50\x43\x78\x71','\x70\x78\x50\x55\x45\x38\x6b\x59\x6f\x4e\x78\x64\x4a\x47','\x68\x78\x39\x48\x57\x36\x57','\x69\x53\x6b\x77\x42\x62\x74\x63\x56\x6d\x6f\x5a\x57\x36\x47','\x57\x36\x74\x63\x49\x43\x6b\x31\x57\x50\x79\x58\x57\x36\x57\x2f\x57\x4f\x57','\x57\x35\x71\x4e\x57\x52\x37\x63\x55\x6d\x6b\x75\x57\x37\x2f\x64\x56\x67\x52\x64\x4f\x38\x6f\x6f\x57\x52\x61','\x6c\x53\x6b\x4e\x57\x37\x4a\x64\x47\x4c\x66\x42\x76\x43\x6f\x65\x57\x51\x56\x63\x4f\x4c\x76\x74','\x57\x34\x64\x64\x4c\x43\x6f\x38\x65\x53\x6f\x73\x57\x50\x46\x63\x4b\x67\x4f','\x79\x53\x6f\x65\x57\x51\x76\x71\x57\x35\x6c\x63\x4f\x61\x33\x63\x51\x71','\x6e\x58\x42\x64\x4b\x76\x38\x35\x68\x4d\x52\x64\x55\x57','\x72\x4b\x78\x64\x48\x30\x68\x63\x48\x6d\x6f\x54\x57\x35\x39\x50','\x57\x37\x34\x41\x57\x34\x5a\x63\x47\x47','\x57\x51\x6a\x4c\x57\x51\x43','\x79\x6d\x6f\x64\x57\x51\x43\x77\x57\x36\x42\x63\x4b\x47\x6c\x63\x4c\x61','\x57\x51\x37\x63\x4c\x76\x50\x57\x69\x43\x6f\x57\x57\x35\x37\x64\x55\x71','\x69\x53\x6b\x61\x79\x71\x2f\x63\x4a\x47','\x7a\x64\x5a\x63\x49\x66\x42\x64\x49\x43\x6f\x72\x43\x64\x34','\x68\x33\x76\x30','\x57\x34\x42\x63\x53\x53\x6b\x71\x57\x52\x79\x6e','\x57\x34\x46\x63\x4c\x6d\x6f\x7a\x57\x51\x72\x46\x77\x6d\x6f\x5a','\x57\x51\x56\x64\x4c\x53\x6b\x48\x77\x31\x68\x63\x4f\x57\x4a\x64\x50\x61','\x57\x51\x66\x2b\x42\x59\x70\x64\x4f\x6d\x6b\x4b\x57\x34\x6d\x34','\x57\x37\x4c\x36\x66\x47\x43\x64\x65\x6d\x6b\x35\x57\x37\x30','\x6c\x30\x78\x64\x4d\x53\x6b\x6c\x42\x38\x6f\x2f\x41\x53\x6b\x6a','\x67\x38\x6b\x5a\x79\x4d\x4e\x63\x4b\x38\x6f\x4b','\x57\x50\x46\x64\x51\x43\x6b\x66\x57\x4f\x42\x63\x4e\x53\x6f\x68\x57\x50\x35\x43','\x46\x5a\x38\x33\x65\x38\x6b\x56\x68\x77\x37\x64\x48\x31\x52\x64\x4e\x61','\x57\x51\x4a\x64\x4e\x57\x35\x46\x57\x51\x38\x63','\x57\x37\x65\x51\x6b\x4d\x68\x63\x51\x38\x6f\x34\x57\x50\x57\x71\x41\x49\x72\x2b\x72\x6d\x6f\x62','\x57\x36\x4e\x64\x4e\x43\x6b\x37\x75\x61','\x62\x4a\x64\x64\x55\x32\x6d\x78\x6b\x65\x64\x63\x49\x47','\x57\x52\x33\x64\x4a\x6d\x6b\x4c\x68\x67\x5a\x63\x47\x71','\x64\x43\x6b\x52\x7a\x59\x37\x63\x48\x43\x6f\x41','\x57\x52\x37\x64\x49\x53\x6b\x34\x66\x4d\x46\x63\x4c\x74\x4a\x63\x4d\x61','\x57\x50\x74\x64\x56\x38\x6b\x50\x57\x35\x57\x6c\x70\x38\x6f\x75\x57\x35\x4b','\x57\x35\x75\x46\x57\x4f\x70\x64\x4e\x53\x6f\x57\x73\x53\x6b\x31\x57\x36\x30','\x57\x35\x37\x64\x49\x6d\x6f\x57\x57\x37\x42\x64\x4f\x61','\x57\x34\x6e\x53\x57\x34\x2f\x63\x55\x47\x7a\x4b\x70\x61','\x57\x35\x71\x58\x71\x33\x4a\x63\x50\x53\x6b\x51\x57\x34\x58\x62\x57\x37\x66\x55\x73\x61','\x57\x52\x7a\x2b\x42\x59\x71','\x57\x34\x70\x63\x49\x53\x6f\x67\x57\x35\x76\x57\x46\x6d\x6f\x45\x74\x47','\x57\x51\x68\x64\x4e\x53\x6b\x58','\x57\x34\x6c\x63\x51\x6d\x6b\x70','\x57\x35\x31\x56\x43\x33\x78\x64\x4a\x76\x4e\x63\x4d\x4c\x57','\x57\x34\x70\x63\x49\x53\x6f\x67\x57\x35\x76\x4e\x45\x6d\x6f\x79\x77\x71','\x41\x43\x6f\x58\x57\x51\x33\x63\x47\x47\x69\x78','\x70\x38\x6b\x2f\x69\x38\x6b\x56\x67\x66\x54\x4a\x57\x35\x61','\x75\x57\x61\x58\x57\x50\x76\x69\x61\x43\x6f\x48\x72\x71','\x65\x43\x6b\x79\x6c\x61\x37\x63\x51\x31\x66\x67\x67\x71','\x57\x4f\x34\x6c\x77\x67\x30\x66','\x57\x35\x79\x54\x45\x78\x38','\x57\x52\x61\x41\x57\x36\x52\x64\x47\x66\x34\x35\x6f\x4c\x79','\x46\x38\x6f\x76\x57\x51\x68\x64\x48\x47','\x57\x4f\x64\x64\x51\x6d\x6f\x65\x57\x4f\x2f\x63\x49\x6d\x6f\x42\x57\x4f\x6e\x42','\x67\x33\x50\x4e\x57\x36\x35\x51\x61\x4b\x6d\x45','\x57\x35\x4f\x74\x57\x34\x31\x53\x57\x36\x33\x63\x47\x77\x46\x64\x4a\x65\x38','\x77\x58\x68\x64\x48\x4b\x33\x63\x4e\x53\x6f\x2b\x57\x35\x39\x48','\x57\x35\x5a\x64\x48\x53\x6f\x47\x62\x43\x6f\x2b\x57\x4f\x52\x63\x48\x59\x65','\x69\x6d\x6f\x69\x68\x53\x6b\x39\x72\x71','\x46\x4d\x4e\x63\x4d\x72\x75','\x57\x51\x76\x64\x57\x50\x64\x64\x4d\x38\x6f\x4a\x57\x36\x54\x2b\x57\x34\x4b\x42\x57\x35\x37\x64\x4a\x38\x6b\x71','\x75\x53\x6f\x34\x79\x33\x50\x6b\x57\x51\x4f\x4f','\x57\x35\x65\x30\x6b\x58\x2f\x64\x48\x6d\x6b\x39\x57\x37\x58\x68','\x66\x59\x78\x64\x52\x77\x38\x6d\x6a\x75\x56\x63\x4c\x61','\x57\x35\x78\x63\x4f\x38\x6b\x6a\x57\x52\x75\x63\x57\x35\x53\x46','\x79\x4e\x37\x64\x50\x32\x57','\x78\x66\x70\x63\x55\x4a\x74\x63\x56\x31\x4f\x52\x57\x35\x53','\x57\x34\x6e\x61\x6c\x32\x69\x76\x64\x71','\x57\x35\x57\x71\x57\x4f\x42\x63\x48\x6d\x6f\x50\x44\x53\x6b\x79\x57\x35\x34','\x46\x38\x6b\x68\x57\x52\x69\x74\x57\x36\x4e\x64\x4e\x74\x37\x63\x4b\x47','\x57\x34\x56\x63\x56\x4c\x6d\x52','\x57\x37\x64\x64\x4e\x53\x6f\x66\x57\x34\x46\x64\x55\x63\x6d','\x57\x37\x70\x63\x4d\x43\x6b\x50\x57\x50\x61\x4e','\x57\x37\x42\x64\x4e\x43\x6b\x4d','\x79\x53\x6b\x49\x57\x52\x38\x6d','\x6d\x75\x46\x64\x4d\x6d\x6b\x53\x79\x53\x6f\x70\x44\x43\x6b\x64','\x57\x50\x33\x64\x56\x53\x6b\x38\x57\x50\x6d\x47\x6b\x43\x6f\x57\x57\x37\x61','\x78\x4b\x6c\x64\x50\x38\x6b\x39\x6d\x43\x6f\x2f\x79\x6d\x6b\x4c','\x7a\x53\x6b\x4d\x57\x52\x47\x6d\x79\x6d\x6f\x72\x6e\x61','\x57\x4f\x35\x4d\x6d\x6d\x6b\x39\x6f\x4e\x69\x70\x71\x71','\x41\x33\x6c\x63\x4e\x47\x2f\x63\x4c\x77\x61\x7a','\x64\x43\x6b\x50\x7a\x49\x37\x63\x56\x38\x6f\x61\x57\x37\x5a\x63\x50\x61','\x57\x36\x42\x64\x51\x6d\x6f\x6f','\x42\x53\x6f\x45\x57\x51\x74\x63\x4e\x66\x46\x64\x4b\x43\x6b\x52\x6b\x71','\x57\x34\x2f\x64\x4d\x38\x6f\x48\x62\x43\x6f\x36\x57\x4f\x30','\x57\x50\x76\x4b\x57\x36\x6c\x64\x52\x43\x6f\x64\x57\x36\x64\x64\x4f\x73\x57','\x57\x4f\x31\x33\x57\x37\x34','\x57\x52\x4c\x48\x57\x51\x50\x4f','\x6c\x57\x78\x64\x4a\x71','\x69\x6d\x6b\x68\x41\x57\x2f\x63\x50\x43\x6f\x4a\x57\x36\x53\x59','\x57\x52\x71\x68\x57\x35\x64\x64\x4b\x30\x53\x56\x6f\x5a\x53','\x65\x43\x6b\x69\x69\x71','\x57\x34\x2f\x63\x53\x4c\x61\x4d','\x57\x51\x65\x52\x41\x31\x69\x2f\x6b\x53\x6b\x62\x57\x37\x6d','\x77\x6d\x6f\x38\x63\x61\x2f\x63\x4f\x38\x6f\x48\x57\x35\x43\x4b\x64\x47','\x57\x37\x42\x63\x48\x43\x6f\x73\x6d\x32\x68\x64\x52\x71','\x67\x38\x6b\x49\x43\x78\x6c\x63\x4b\x38\x6f\x34\x57\x36\x4e\x63\x49\x57','\x57\x51\x53\x4b\x77\x72\x58\x49\x6d\x53\x6b\x4c\x57\x36\x56\x64\x52\x43\x6b\x59\x57\x51\x30','\x57\x4f\x39\x4b\x67\x59\x42\x64\x50\x57','\x57\x52\x4a\x64\x4c\x43\x6f\x4d\x57\x51\x4b','\x69\x77\x42\x64\x54\x67\x33\x64\x51\x53\x6f\x4a\x43\x59\x37\x64\x56\x61','\x57\x35\x74\x63\x55\x38\x6f\x78\x66\x31\x65','\x57\x52\x70\x63\x50\x32\x44\x55\x57\x50\x68\x63\x56\x6d\x6b\x57\x57\x50\x57','\x57\x51\x74\x64\x48\x6d\x6b\x6e\x41\x74\x5a\x63\x4f\x78\x30\x4a\x79\x74\x4b\x4e\x57\x51\x46\x64\x56\x47','\x78\x43\x6f\x57\x64\x4d\x37\x64\x48\x38\x6f\x49\x57\x34\x75\x45\x66\x71\x42\x64\x56\x61','\x73\x31\x75\x62\x66\x53\x6b\x78\x57\x36\x38','\x42\x53\x6f\x45\x57\x51\x74\x63\x4e\x65\x78\x64\x4a\x53\x6b\x53\x6c\x71','\x57\x37\x42\x64\x4a\x38\x6f\x49\x57\x34\x4e\x64\x4d\x47','\x57\x35\x2f\x64\x4d\x6d\x6f\x55\x62\x43\x6f\x57\x57\x51\x42\x63\x47\x67\x61','\x57\x52\x56\x63\x50\x78\x7a\x4f','\x6a\x66\x56\x64\x47\x43\x6f\x36\x77\x53\x6f\x45\x76\x43\x6b\x4b','\x68\x43\x6b\x53\x73\x59\x38','\x78\x76\x2f\x64\x50\x43\x6b\x37','\x57\x51\x52\x63\x49\x30\x75\x62\x61\x53\x6f\x41\x57\x36\x4f','\x57\x52\x4a\x64\x4c\x72\x6a\x68\x57\x51\x38\x69\x57\x35\x71','\x57\x51\x37\x63\x4c\x76\x50\x57\x6b\x6d\x6f\x51\x57\x34\x46\x64\x54\x61','\x57\x37\x70\x63\x47\x4d\x69\x66\x57\x37\x38\x65\x6a\x57\x4f','\x57\x34\x5a\x63\x4b\x38\x6f\x65','\x57\x51\x75\x66\x57\x35\x42\x64\x52\x30\x75\x35\x6d\x71','\x57\x37\x65\x4f\x6c\x58\x5a\x64\x4e\x43\x6b\x69\x57\x34\x79\x41\x75\x61','\x6a\x66\x56\x64\x47\x38\x6b\x4d\x43\x53\x6f\x31\x43\x47','\x57\x52\x78\x64\x48\x43\x6f\x47\x57\x51\x4e\x63\x54\x61','\x46\x78\x78\x64\x49\x38\x6b\x6d\x65\x43\x6f\x79','\x57\x36\x46\x63\x4f\x53\x6b\x79\x45\x76\x42\x64\x54\x71','\x57\x34\x78\x63\x4f\x38\x6b\x79\x57\x51\x53\x67\x57\x34\x4f\x4c\x57\x51\x4f','\x46\x38\x6f\x6a\x57\x51\x6c\x64\x4c\x57','\x57\x50\x75\x35\x6d\x53\x6b\x39\x57\x34\x70\x63\x4a\x53\x6f\x79\x57\x51\x4b','\x57\x35\x6c\x64\x4b\x38\x6f\x4f\x57\x36\x38','\x57\x4f\x38\x70\x73\x71','\x77\x4b\x4e\x64\x55\x6d\x6b\x37','\x57\x36\x6d\x49\x57\x52\x33\x63\x52\x38\x6f\x48\x78\x38\x6b\x35\x57\x37\x75','\x64\x43\x6b\x50\x7a\x49\x37\x63\x55\x6d\x6f\x46\x57\x37\x74\x63\x52\x57','\x57\x34\x37\x64\x53\x53\x6b\x47','\x57\x4f\x72\x4c\x57\x36\x47','\x46\x68\x4e\x63\x4d\x48\x68\x63\x4e\x77\x79\x70','\x75\x38\x6f\x78\x57\x4f\x56\x63\x52\x59\x38\x53\x75\x6d\x6f\x38','\x57\x52\x6e\x41\x65\x53\x6b\x62','\x57\x51\x74\x63\x53\x6d\x6b\x41\x57\x50\x74\x63\x51\x59\x71\x59\x57\x50\x46\x63\x4b\x4d\x64\x63\x4f\x57','\x70\x4e\x54\x50\x72\x38\x6b\x4a\x6b\x68\x74\x63\x48\x57','\x6c\x76\x52\x64\x4c\x6d\x6b\x31\x44\x38\x6f\x70\x43\x43\x6b\x6e','\x57\x51\x30\x73\x57\x35\x68\x64\x4b\x76\x4f\x50\x6f\x4e\x61','\x57\x35\x33\x63\x47\x53\x6b\x37\x71\x57','\x62\x38\x6b\x6e\x6e\x57\x38','\x7a\x6d\x6b\x67\x57\x35\x76\x76\x57\x52\x72\x39\x57\x51\x37\x63\x4a\x57','\x57\x34\x2f\x63\x54\x75\x57\x54\x57\x34\x75\x30\x68\x67\x65','\x57\x4f\x6c\x64\x54\x38\x6b\x71\x6f\x30\x70\x63\x51\x57\x34','\x6d\x53\x6b\x50\x62\x64\x70\x63\x47\x66\x57','\x69\x4b\x64\x64\x48\x43\x6b\x39\x42\x38\x6f\x50\x6c\x6d\x6b\x79','\x70\x67\x58\x32\x73\x6d\x6b\x4e\x6f\x67\x69','\x57\x37\x31\x4e\x62\x71','\x57\x37\x62\x6d\x57\x4f\x4e\x63\x48\x72\x34\x69\x6b\x33\x58\x41\x57\x35\x4a\x64\x54\x61','\x57\x35\x79\x32\x7a\x4d\x2f\x64\x4a\x31\x56\x64\x4d\x75\x53','\x57\x34\x5a\x63\x4f\x38\x6b\x61\x57\x51\x4f','\x57\x36\x75\x49\x57\x52\x64\x63\x4f\x47','\x45\x38\x6f\x72\x57\x50\x52\x64\x4e\x4e\x57','\x57\x37\x56\x63\x52\x38\x6b\x6a\x43\x4c\x64\x64\x55\x4b\x43\x32','\x57\x34\x52\x64\x51\x43\x6b\x49\x57\x52\x37\x63\x50\x43\x6f\x47\x45\x6d\x6f\x37','\x57\x34\x33\x63\x51\x43\x6b\x71\x57\x52\x43','\x57\x37\x5a\x63\x4c\x6d\x6b\x38\x57\x50\x30\x49\x57\x37\x53\x55\x57\x50\x53','\x62\x43\x6b\x4f\x73\x59\x2f\x63\x56\x53\x6f\x79\x57\x34\x69\x73','\x57\x50\x52\x64\x54\x6d\x6b\x58\x57\x35\x6a\x4b\x65\x38\x6f\x57\x57\x37\x4b','\x57\x4f\x46\x64\x52\x49\x57\x54\x78\x4d\x79\x68','\x57\x52\x4a\x63\x4a\x31\x34\x33\x62\x38\x6f\x79','\x78\x58\x75\x47\x57\x4f\x69','\x57\x35\x69\x71\x57\x4f\x42\x63\x4d\x43\x6f\x64\x72\x38\x6b\x44\x57\x34\x34','\x67\x53\x6b\x48\x77\x73\x4e\x63\x4b\x53\x6f\x73\x57\x34\x43\x75','\x57\x51\x64\x63\x51\x32\x62\x59','\x57\x37\x4a\x64\x4a\x38\x6b\x45\x57\x4f\x4e\x63\x49\x38\x6f\x68\x72\x43\x6f\x6a','\x57\x37\x46\x63\x49\x68\x61\x41\x57\x36\x34\x67\x69\x47\x4f','\x57\x37\x68\x64\x4b\x38\x6b\x2f\x74\x71','\x57\x37\x62\x31\x65\x31\x30\x7a\x6c\x43\x6b\x76\x57\x34\x43','\x57\x34\x58\x76\x6d\x33\x4f\x68\x64\x6d\x6b\x4a\x57\x36\x79','\x57\x51\x69\x64\x62\x43\x6b\x6d\x57\x36\x6c\x63\x51\x6d\x6f\x57\x57\x4f\x38','\x57\x51\x6c\x64\x4d\x6d\x6b\x79\x57\x52\x57\x6a\x6d\x47','\x57\x36\x6c\x63\x54\x38\x6f\x2b','\x73\x6d\x6f\x38\x41\x77\x54\x72\x57\x51\x65\x56\x57\x37\x79','\x57\x37\x33\x63\x48\x4e\x61\x6c\x57\x37\x38\x73\x70\x71\x6d','\x57\x35\x47\x59\x57\x36\x5a\x63\x53\x38\x6b\x70\x57\x4f\x58\x77','\x69\x47\x52\x64\x49\x62\x69\x77\x6f\x4b\x30','\x7a\x78\x64\x64\x4f\x77\x61','\x68\x6d\x6b\x49\x79\x33\x71','\x57\x50\x74\x64\x55\x64\x4b','\x64\x6d\x6b\x6d\x66\x43\x6b\x79\x6b\x4e\x50\x66\x57\x37\x30','\x57\x34\x70\x64\x4e\x38\x6f\x51\x63\x61','\x76\x43\x6b\x58\x57\x36\x62\x39\x57\x50\x62\x71\x57\x50\x38','\x57\x37\x71\x76\x57\x34\x5a\x63\x47\x53\x6b\x55\x57\x52\x44\x37\x57\x35\x65','\x79\x64\x6c\x63\x54\x30\x52\x64\x49\x43\x6f\x42\x43\x62\x4b','\x57\x51\x54\x6f\x6b\x72\x4b','\x62\x43\x6b\x4d\x79\x61','\x63\x4a\x4c\x4c\x57\x36\x39\x4c\x73\x31\x75\x69','\x57\x37\x31\x47\x66\x76\x53\x31','\x72\x6d\x6f\x49\x57\x50\x42\x64\x52\x75\x6c\x64\x48\x6d\x6b\x31\x70\x47','\x42\x32\x2f\x63\x4a\x57','\x57\x35\x75\x46\x57\x4f\x68\x63\x47\x53\x6f\x6a\x46\x43\x6b\x70','\x45\x38\x6f\x63\x57\x52\x33\x64\x4b\x78\x70\x64\x55\x6d\x6b\x6e\x76\x71','\x57\x37\x65\x34\x57\x51\x52\x63\x53\x43\x6f\x57\x75\x43\x6b\x4a\x57\x37\x61','\x57\x34\x6d\x62\x57\x50\x4e\x63\x4d\x43\x6f\x75','\x57\x4f\x48\x4b\x61\x57','\x57\x36\x68\x64\x52\x53\x6f\x38\x57\x35\x6c\x64\x51\x73\x30\x55\x57\x52\x57','\x57\x50\x44\x33\x72\x75\x4a\x64\x53\x4c\x4a\x64\x4b\x33\x61','\x57\x34\x37\x63\x51\x6d\x6b\x6e\x57\x52\x57\x72\x57\x35\x79\x42\x57\x52\x69','\x57\x52\x35\x6e\x62\x6d\x6b\x77\x62\x31\x79\x58\x44\x57','\x57\x50\x4a\x64\x55\x73\x7a\x36\x57\x4f\x6d\x4a','\x42\x53\x6f\x45\x57\x51\x74\x63\x4e\x66\x46\x64\x4e\x6d\x6b\x54\x6a\x61','\x6e\x31\x62\x6e\x57\x35\x7a\x71\x6e\x61','\x68\x4e\x54\x4e\x57\x36\x6e\x5a\x6f\x76\x79\x6d','\x57\x36\x71\x6f\x72\x57','\x7a\x78\x64\x64\x50\x4e\x53'];_0x1e71=function(){return _0x414f14;};return _0x1e71();}function shouldSkipEnvValueReverseScan(_0x27e360,_0x340c2c){if(isSensitiveEnvKey(_0x27e360))return![];if(isFilesystemPathEnvValue(_0x340c2c))return!![];if(isUrlEnvValue(_0x340c2c)&&!isHighRiskUrlEnvValue(_0x340c2c))return!![];return![];}const clip=_0x5828f5=>_0x5828f5['\x6c\x65\x6e\x67\x74\x68']>-0x1c74+-0x1da8*-0x1+0x3e*-0x4?_0x5828f5[_0x578ca1(0x1c4,'\x26\x61\x4e\x46')](0x14dd+0x6a3*0x1+-0x1b8*0x10,0x611*0x3+0x23d8+-0x1ae9*0x2)+_0x578ca1(0xd0,'\x26\x61\x4e\x46'):_0x5828f5;export function scanForLeaks(_0xf2eb90){const _0x5b9859=_0x578ca1;if(typeof _0xf2eb90!==_0x5b9859(0x17d,'\x32\x2a\x62\x57')||!_0xf2eb90)return{'\x66\x6f\x75\x6e\x64':![],'\x6c\x65\x61\x6b\x73':[]};const _0x34de62=[],_0x2feaa3=new Set();for(const _0x128467 of LEAK_SCANNERS){_0x128467[_0x5b9859(0xc0,'\x62\x74\x32\x64')][_0x5b9859(0x17a,'\x56\x77\x70\x53')+'\x78']=-0xbcb+0x4e*0x15+0x565;let _0x313206;while((_0x313206=_0x128467[_0x5b9859(0x129,'\x41\x41\x44\x75')][_0x5b9859(0x163,'\x36\x55\x42\x76')](_0xf2eb90))!==null){const _0x3a3380=_0x313206[0x3*-0x88f+0x139*-0x4+0x5*0x61d];if(isAllowlisted(_0x3a3380))continue;const _0x340df1=_0x128467['\x74\x79\x70\x65']+'\x3a'+_0x3a3380;if(_0x2feaa3[_0x5b9859(0x131,'\x4d\x63\x4f\x31')](_0x340df1))continue;_0x2feaa3[_0x5b9859(0x136,'\x67\x6e\x46\x26')](_0x340df1),_0x34de62[_0x5b9859(0x137,'\x77\x28\x4c\x26')]({'\x74\x79\x70\x65':_0x128467[_0x5b9859(0xc6,'\x31\x36\x72\x32')],'\x76\x61\x6c\x75\x65':clip(_0x3a3380),'\x73\x75\x67\x67\x65\x73\x74\x69\x6f\x6e':_0x128467[_0x5b9859(0xcc,'\x49\x46\x50\x57')]});}}return{'\x66\x6f\x75\x6e\x64':_0x34de62['\x6c\x65\x6e\x67\x74\x68']>-0x7*0x3c8+0x281*0xb+-0x113*0x1,'\x6c\x65\x61\x6b\x73':_0x34de62};}export function detectEnvValueLeaks(_0x292473,_0x4dffef){const _0x3ec685=_0x578ca1;if(typeof _0x292473!=='\x73\x74\x72\x69\x6e\x67'||!_0x292473)return[];const _0x44abdf=[];for(const [_0x398643,_0x586cc5]of Object[_0x3ec685(0x19c,'\x69\x61\x5e\x77')](_0x4dffef)){if(!_0x586cc5||_0x586cc5['\x6c\x65\x6e\x67\x74\x68']<0x1714+-0x8*0x2f6+0x1*0xa4)continue;if(ENV_SCAN_SKIP_KEYS['\x68\x61\x73'](normalizeEnvKey(_0x398643)))continue;if(shouldSkipEnvValueReverseScan(_0x398643,_0x586cc5))continue;if(_0x292473[_0x3ec685(0x111,'\x25\x55\x78\x42')](_0x586cc5))_0x44abdf[_0x3ec685(0x116,'\x65\x70\x41\x6c')]({'\x74\x79\x70\x65':'\x65\x6e\x76\x5f\x76\x61\x6c\x75'+_0x3ec685(0x122,'\x34\x44\x4f\x30'),'\x76\x61\x6c\x75\x65':REDACTED,'\x73\x75\x67\x67\x65\x73\x74\x69\x6f\x6e':_0x3ec685(0x19d,'\x62\x74\x32\x64')+_0x3ec685(0xb8,'\x69\x61\x5e\x77')+_0x398643});}return _0x44abdf;}function _0x510f(_0x53b5f9,_0x470d59){_0x53b5f9=_0x53b5f9-(0x257f+0x14fa*0x1+-0x39c1);const _0x1293eb=_0x1e71();let _0x215715=_0x1293eb[_0x53b5f9];if(_0x510f['\x52\x7a\x53\x6b\x69\x6f']===undefined){var _0x5b6689=function(_0x3363bd){const _0x52eed4='\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x2b\x2f\x3d';let _0x546d24='',_0x18fd4d='';for(let _0x50358d=-0x832*0x3+-0xfd3+-0x815*-0x5,_0x5d5aee,_0x466f5f,_0x360f2d=-0xbe0+0x7c9*0x5+-0x1b0d;_0x466f5f=_0x3363bd['\x63\x68\x61\x72\x41\x74'](_0x360f2d++);~_0x466f5f&&(_0x5d5aee=_0x50358d%(0x17aa+-0x1eb+-0x15bb)?_0x5d5aee*(0x25dd+-0x26b*0x1+-0x2332)+_0x466f5f:_0x466f5f,_0x50358d++%(0x1231+0x241*-0x7+-0x266))?_0x546d24+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](0x10*0x20+0x176c+0x1*-0x186d&_0x5d5aee>>(-(0x1*0x23a4+0x141b+-0x37bd)*_0x50358d&-0x58e*-0x3+0x14ec+-0x2590)):-0xf71*-0x1+-0x1c24+0xcb3){_0x466f5f=_0x52eed4['\x69\x6e\x64\x65\x78\x4f\x66'](_0x466f5f);}for(let _0x524dc1=0xd32+0xfcc+0xe7f*-0x2,_0x387668=_0x546d24['\x6c\x65\x6e\x67\x74\x68'];_0x524dc1<_0x387668;_0x524dc1++){_0x18fd4d+='\x25'+('\x30\x30'+_0x546d24['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x524dc1)['\x74\x6f\x53\x74\x72\x69\x6e\x67'](0x673+0x838+-0xe9b))['\x73\x6c\x69\x63\x65'](-(-0xf6*0x1d+0x8d5+0xf*0x145));}return decodeURIComponent(_0x18fd4d);};const _0x220edc=function(_0x25067f,_0x21a3aa){let _0x38a0fb=[],_0x338102=0x20b*0x1+0x1c9c+-0x1ea7,_0x283a14,_0x38aaea='';_0x25067f=_0x5b6689(_0x25067f);let _0x5c7f5b;for(_0x5c7f5b=0xd0+0x283*-0x5+0xbbf*0x1;_0x5c7f5b<-0x2148+0x1*0x10d5+0x1173;_0x5c7f5b++){_0x38a0fb[_0x5c7f5b]=_0x5c7f5b;}for(_0x5c7f5b=-0x25ba+-0x3*0xc6b+0x1*0x4afb;_0x5c7f5b<-0xc40+0xb53*0x1+-0x11*-0x1d;_0x5c7f5b++){_0x338102=(_0x338102+_0x38a0fb[_0x5c7f5b]+_0x21a3aa['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x5c7f5b%_0x21a3aa['\x6c\x65\x6e\x67\x74\x68']))%(0x84f*-0x3+0x7e2*0x2+0xa29),_0x283a14=_0x38a0fb[_0x5c7f5b],_0x38a0fb[_0x5c7f5b]=_0x38a0fb[_0x338102],_0x38a0fb[_0x338102]=_0x283a14;}_0x5c7f5b=-0x14b*-0xc+-0x647*-0x5+0x1*-0x2ee7,_0x338102=0x11*0x3a+-0xf9d+0xbc3*0x1;for(let _0x21e3f2=0x53*0x50+-0xf*-0x96+-0x22ba;_0x21e3f2<_0x25067f['\x6c\x65\x6e\x67\x74\x68'];_0x21e3f2++){_0x5c7f5b=(_0x5c7f5b+(0x1*-0x47+0x1*0x6f1+-0x6a9))%(0xbe4+-0xdd*0x17+-0x2fd*-0x3),_0x338102=(_0x338102+_0x38a0fb[_0x5c7f5b])%(-0x1601+0x1ad7+-0x1*0x3d6),_0x283a14=_0x38a0fb[_0x5c7f5b],_0x38a0fb[_0x5c7f5b]=_0x38a0fb[_0x338102],_0x38a0fb[_0x338102]=_0x283a14,_0x38aaea+=String['\x66\x72\x6f\x6d\x43\x68\x61\x72\x43\x6f\x64\x65'](_0x25067f['\x63\x68\x61\x72\x43\x6f\x64\x65\x41\x74'](_0x21e3f2)^_0x38a0fb[(_0x38a0fb[_0x5c7f5b]+_0x38a0fb[_0x338102])%(0x836*0x1+-0x8d+-0x6a9)]);}return _0x38aaea;};_0x510f['\x43\x58\x42\x68\x78\x52']=_0x220edc,_0x510f['\x66\x65\x79\x48\x45\x4e']={},_0x510f['\x52\x7a\x53\x6b\x69\x6f']=!![];}const _0x3d090c=_0x1293eb[0x128b+0x1ee6+0x3171*-0x1],_0x127154=_0x53b5f9+_0x3d090c,_0x5648ec=_0x510f['\x66\x65\x79\x48\x45\x4e'][_0x127154];return!_0x5648ec?(_0x510f['\x52\x6f\x6c\x63\x49\x4b']===undefined&&(_0x510f['\x52\x6f\x6c\x63\x49\x4b']=!![]),_0x215715=_0x510f['\x43\x58\x42\x68\x78\x52'](_0x215715,_0x470d59),_0x510f['\x66\x65\x79\x48\x45\x4e'][_0x127154]=_0x215715):_0x215715=_0x5648ec,_0x215715;}export function fullLeakCheck(_0x3c0614,_0x52195e){const _0x344ba9=_0x578ca1,_0x2c8ea4=scanForLeaks(_0x3c0614),_0x445ff1=detectEnvValueLeaks(_0x3c0614,_0x52195e),_0x3c8502=_0x2c8ea4[_0x344ba9(0x10c,'\x55\x24\x26\x56')][_0x344ba9(0x12f,'\x36\x37\x4f\x78')](_0x445ff1);return{'\x66\x6f\x75\x6e\x64':_0x3c8502[_0x344ba9(0x1bd,'\x79\x5b\x6d\x71')]>-0x1ce7+0x70f*0x1+0x15d8,'\x6c\x65\x61\x6b\x73':_0x3c8502};}const PII_ONLY_LEAK_TYPES=new Set([_0x578ca1(0x166,'\x43\x6c\x30\x32')+'\x74\x68']);export function leakCheckModeFromEnv(_0x16825d){const _0x652352=_0x578ca1,_0x1c3e4f=(_0x16825d['\x45\x56\x4f\x4c\x56\x45\x52\x5f'+_0x652352(0x14f,'\x77\x28\x4c\x26')+'\x43\x4b']??'')['\x74\x6f\x4c\x6f\x77\x65\x72\x43'+_0x652352(0x19b,'\x65\x70\x41\x6c')]();return _0x1c3e4f===_0x652352(0x169,'\x67\x6e\x46\x26')||_0x1c3e4f==='\x6f\x66\x66'?_0x1c3e4f:_0x652352(0xba,'\x58\x54\x33\x74');}export function sanitizeBundle(_0x59afff,_0x1cdf1f){const _0x4bd6a8=_0x578ca1,_0x34abf2=_0x1cdf1f[_0x4bd6a8(0x17e,'\x49\x6e\x47\x5d')]??leakCheckModeFromEnv(_0x1cdf1f[_0x4bd6a8(0x15f,'\x33\x70\x67\x72')]);let _0x4ee449=[];if(_0x34abf2!==_0x4bd6a8(0x104,'\x58\x54\x33\x74')){if('\x70\x61\x48\x6c\x6a'===_0x4bd6a8(0x175,'\x62\x74\x32\x64')){const _0x234ac3=_0x59afff[_0x4bd6a8(0x124,'\x79\x5b\x6d\x71')](_0x1a1dd2=>JSON[_0x4bd6a8(0xe5,'\x61\x56\x42\x4f')+'\x79'](_0x1a1dd2))[_0x4bd6a8(0x178,'\x76\x38\x42\x68')]('');_0x4ee449=fullLeakCheck(_0x234ac3,_0x1cdf1f[_0x4bd6a8(0x105,'\x76\x38\x42\x68')])[_0x4bd6a8(0x13d,'\x4e\x58\x55\x49')];}else{const _0x51ccd2=_0x3f8a07['\x6d\x6f\x64\x65']??_0x506639(_0x35369d[_0x4bd6a8(0xbc,'\x4d\x63\x4f\x31')]);let _0x32611=[];if(_0x51ccd2!==_0x4bd6a8(0x104,'\x58\x54\x33\x74')){const _0xebec07=_0x16070a[_0x4bd6a8(0x197,'\x49\x46\x50\x57')](_0x3db08a=>_0x21f1a7['\x73\x74\x72\x69\x6e\x67\x69\x66'+'\x79'](_0x3db08a))[_0x4bd6a8(0x184,'\x79\x5b\x6d\x71')]('');_0x32611=_0x11a458(_0xebec07,_0x2102d3['\x65\x6e\x76'])[_0x4bd6a8(0x1b8,'\x67\x6e\x46\x26')];}const _0x1cc2e5=_0x51ccd2===_0x4bd6a8(0xf3,'\x49\x46\x50\x57')&&_0x32611[_0x4bd6a8(0x10d,'\x4b\x75\x47\x28')](_0x42fa94=>!_0xe3e9b2[_0x4bd6a8(0x1ca,'\x32\x58\x79\x56')](_0x42fa94[_0x4bd6a8(0x158,'\x62\x74\x32\x64')])),_0x11cb27=_0x4ca1c2[_0x4bd6a8(0xec,'\x25\x55\x78\x42')](_0x3068f1=>_0x5bbce5(_0x3068f1));return{'\x62\x75\x6e\x64\x6c\x65':_0x11cb27,'\x62\x6c\x6f\x63\x6b\x65\x64':_0x1cc2e5,'\x6c\x65\x61\x6b\x73':_0x32611,'\x6d\x6f\x64\x65':_0x51ccd2};}}const _0x57421d=_0x34abf2===_0x4bd6a8(0xcd,'\x76\x38\x42\x68')&&_0x4ee449[_0x4bd6a8(0x14b,'\x65\x4e\x41\x5d')](_0x3ba73c=>!PII_ONLY_LEAK_TYPES[_0x4bd6a8(0x133,'\x54\x47\x40\x33')](_0x3ba73c[_0x4bd6a8(0x121,'\x77\x28\x4c\x26')])),_0x222586=_0x59afff[_0x4bd6a8(0x124,'\x79\x5b\x6d\x71')](_0x2b32d6=>sanitizeAsset(_0x2b32d6));return{'\x62\x75\x6e\x64\x6c\x65':_0x222586,'\x62\x6c\x6f\x63\x6b\x65\x64':_0x57421d,'\x6c\x65\x61\x6b\x73':_0x4ee449,'\x6d\x6f\x64\x65':_0x34abf2};}export function summarizeLeaks(_0x4b54bc){const _0x529ffd=_0x578ca1;return _0x4b54bc['\x6d\x61\x70'](_0x44c9ca=>_0x44c9ca[_0x529ffd(0x15c,'\x65\x4e\x41\x5d')]+'\u2192'+_0x44c9ca['\x73\x75\x67\x67\x65\x73\x74\x69'+'\x6f\x6e'])['\x6a\x6f\x69\x6e']('\x3b\x20');}
+// Pre-publish sanitize (ported from v1 src/gep/sanitize.js): before any asset leaves for the hub, deep-redact
+// strings (30+ secret/path/email patterns) and scan for leaks (25 scanners + reverse env-value detection).
+// Pure functions, never throw — the block decision is returned to the chokepoint (bindings), which raises a
+// terminal PublishRejectedError. Command point: when redaction changes content the asset_id MUST be recomputed
+// (computeAssetId excludes asset_id by default), else the published body hash won't match its id and the hub
+// rejects it. See feedback_public_repo_no_internal_leak.
+import { computeAssetId } from '../wire/index.js';
+export const REDACTED = '[REDACTED]';
+/** Redaction patterns (ported verbatim from v1, 30 entries). A match is replaced with [REDACTED]. */
+const REDACT_PATTERNS = [
+    // API keys & tokens (generic)
+    /Bearer\s+[A-Za-z0-9-._~+/]+=*/g,
+    /\bBasic\s+[A-Za-z0-9+/]{8,}={0,2}(?=$|[\s,;)}\]])/gi,
+    /\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|(?:xai|hf|glpat|dop_v1|pk_live|pk_test|sk_live|sk_test|rk_live|rk_test)[-_][A-Za-z0-9_-]{16,}|sq0(?:atp|csp)-[A-Za-z0-9_-]{16,})\b/g,
+    /sk-[A-Za-z0-9]{20,}/g,
+    // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_)
+    /ghp_[A-Za-z0-9]{36,}/g,
+    /gho_[A-Za-z0-9]{36,}/g,
+    /ghu_[A-Za-z0-9]{36,}/g,
+    /ghs_[A-Za-z0-9]{36,}/g,
+    /ghr_[A-Za-z0-9]{36,}/g,
+    /github_pat_[A-Za-z0-9_]{22,}/g,
+    // AWS access keys
+    /AKIA[0-9A-Z]{16}/g,
+    // OpenAI / Anthropic tokens
+    /sk-proj-[A-Za-z0-9-_]{20,}/g,
+    /sk-ant-[A-Za-z0-9-_]{20,}/g,
+    // npm tokens
+    /npm_[A-Za-z0-9]{36,}/g,
+    // Slack tokens (bot/user/app/refresh/verification)
+    /xox[baprsv]-[A-Za-z0-9-]{10,}/g,
+    // JSON Web Tokens (header.payload.signature)
+    /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}/g,
+    // Azure storage connection strings (redact the key field only)
+    /AccountKey=[^;\s]+/gi,
+    // Azure AD client secret + App Insights instrumentation key (value only)
+    /client_secret=[A-Za-z0-9~._-]{8,}/gi,
+    /instrumentationkey=[0-9a-fA-F-]{20,}/gi,
+    // Discord bot tokens: three base64url segments (uppercase leading char avoids matching dotted lowercase identifiers).
+    /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g,
+    // Private keys
+    /-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g,
+    // Basic auth in URLs (redact only credentials, keep :// and @)
+    /(?<=:\/\/)[^@\s]+:[^@\s]+(?=@)/g,
+    // Email addresses
+    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    // .env file references — only when the dot-env token looks like a real path (preceded by a path separator) or
+    // carries a suffix like `.env.production`. Bare prose mentions such as "Read from `.env` file" are intentionally
+    // NOT matched: the filename itself is a convention, not a secret, and over-redacting it strips useful debugging
+    // context from capsules without protecting anything the patterns above don't already cover (keys/tokens inside
+    // the env file). Ported from v1 src/gep/sanitize.js (PR #151).
+    /\.env\.[a-zA-Z]+\b/g,
+    /(?<=[\\/])\.env\b/g,
+];
+// 结构化执行诊断可能来自 JSON、YAML 或键值输出，字段名与分隔符之间也可能有空格。
+// 这里只识别字段前缀，值由下面两个小解析器分别读取：带引号的值读取到匹配的闭合引号，
+// 不带引号的值在空白或结构分隔符处停止，避免把凭据后的普通说明文字一起吞掉。
+const STRUCTURED_CREDENTIAL_PREFIX = /(?<![A-Za-z0-9_-])(["']?)(node[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|api[_-]?key|client[_-]?secret|private[_-]?key|token|secret|password|passwd|passphrase|credential|credentials|authorization|auth|bearer|cookie|dsn|webhook|signature)\1(\s*[:=]\s*)/gi;
+const OPAQUE_CREDENTIAL_PATTERN = /(?<![A-Za-z0-9_-])[A-Za-z0-9][A-Za-z0-9._~+=-]{31,}(?![A-Za-z0-9_-])/g;
+const AMBIGUOUS_STRUCTURED_KEYS = new Set([
+    'token', 'secret', 'credential', 'credentials', 'authorization', 'auth', 'cookie', 'signature',
+]);
+const DIAGNOSTIC_STATUS_VALUE = /^(?:ok|success|successful|succeeded|failed|failure|pending|missing|invalid|expired|mismatch|denied|unavailable|refresh needed|not configured|not found|none|null|true|false|enabled|disabled|present|absent|unknown|skipped|unsupported)$/i;
+const DIAGNOSTIC_ASSIGNMENT_VALUE = /^(?:policy|mode|state|status|configured|enabled)=(?:ok|success|successful|succeeded|failed|failure|pending|missing|invalid|expired|mismatch|denied|unavailable|none|null|true|false|enabled|disabled|present|absent|unknown|skipped|unsupported)$/i;
+function unquoteStructuredValue(value) {
+    const trimmed = value.trim();
+    if (trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
+        return trimmed.slice(1, -1).trim();
+    }
+    return trimmed;
+}
+function shouldRedactStructuredField(key, rawValue) {
+    const normalizedKey = key.toLowerCase().replace(/[_-]/g, '');
+    if (!AMBIGUOUS_STRUCTURED_KEYS.has(normalizedKey))
+        return true;
+    const value = unquoteStructuredValue(rawValue);
+    const normalizedStatus = value.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!value
+        || /^\[redacted\]$/i.test(value)
+        || DIAGNOSTIC_STATUS_VALUE.test(normalizedStatus)
+        || DIAGNOSTIC_ASSIGNMENT_VALUE.test(value))
+        return false;
+    if (/^(?:Bearer|Digest|NTLM|Negotiate|AWS)\s+\S+/i.test(value))
+        return true;
+    if (/^Basic\s+[A-Za-z0-9+/]{8,}={0,2}$/i.test(value))
+        return true;
+    // 歧义字段只有在值呈现紧凑凭据形态时才脱敏，保留“auth: denied by policy”等诊断上下文。
+    return !/\s/.test(value) && value.length >= 8;
+}
+function readQuotedStructuredValue(input, start) {
+    const quote = input[start];
+    if (quote !== '"' && quote !== "'")
+        return undefined;
+    let escaped = false;
+    for (let index = start + 1; index < input.length; index += 1) {
+        const char = input[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (char === quote) {
+            const end = index + 1;
+            return { end, raw: input.slice(start, end), quote };
+        }
+        if (char === '\r' || char === '\n')
+            break;
+    }
+    return undefined;
+}
+function readUnquotedStructuredValue(input, start) {
+    if (input.startsWith(REDACTED, start)) {
+        return { end: start + REDACTED.length, raw: REDACTED, quote: '' };
+    }
+    let end = start;
+    while (end < input.length) {
+        const char = input[end] ?? '';
+        if (/[\s,;)}\]]/.test(char) || (char === ':' && /\s/.test(input[end + 1] ?? '')))
+            break;
+        end += 1;
+    }
+    if (end === start)
+        return undefined;
+    return { end, raw: input.slice(start, end), quote: '' };
+}
+function redactStructuredCredentials(input) {
+    let cursor = 0;
+    let output = '';
+    STRUCTURED_CREDENTIAL_PREFIX.lastIndex = 0;
+    let match = STRUCTURED_CREDENTIAL_PREFIX.exec(input);
+    while (match) {
+        if (match.index < cursor) {
+            match = STRUCTURED_CREDENTIAL_PREFIX.exec(input);
+            continue;
+        }
+        const valueStart = STRUCTURED_CREDENTIAL_PREFIX.lastIndex;
+        const span = readQuotedStructuredValue(input, valueStart) ?? readUnquotedStructuredValue(input, valueStart);
+        if (!span) {
+            match = STRUCTURED_CREDENTIAL_PREFIX.exec(input);
+            continue;
+        }
+        output += input.slice(cursor, valueStart);
+        output += shouldRedactStructuredField(match[2] ?? '', span.raw)
+            ? `${span.quote}${REDACTED}${span.quote}`
+            : span.raw;
+        cursor = span.end;
+        STRUCTURED_CREDENTIAL_PREFIX.lastIndex = span.end;
+        match = STRUCTURED_CREDENTIAL_PREFIX.exec(input);
+    }
+    return cursor === 0 ? input : output + input.slice(cursor);
+}
+function isOpaqueCredential(candidate) {
+    const compact = candidate.replace(/[._~+/=-]/g, '');
+    const classes = Number(/[a-z]/.test(compact)) + Number(/[A-Z]/.test(compact)) + Number(/[0-9]/.test(compact));
+    if (compact.length < 24 || classes < 3 || /^[0-9a-f]+$/i.test(compact))
+        return false;
+    const frequencies = new Map();
+    for (const char of compact)
+        frequencies.set(char, (frequencies.get(char) ?? 0) + 1);
+    const entropy = [...frequencies.values()].reduce((sum, count) => {
+        const probability = count / compact.length;
+        return sum - probability * Math.log2(probability);
+    }, 0);
+    return entropy >= 3.5;
+}
+// Post-filter allowlist (ported from v1 src/gep/sanitize.js, PR #151): strings the patterns above — and the path
+// anonymizer below — WILL catch but that are not actually sensitive. If any entry matches a captured string it is
+// kept verbatim instead of being redacted / anonymized / flagged as a leak. Keeping this as a post-filter rather
+// than bolting more lookaheads into every pattern keeps the patterns readable and the carve-outs easy to audit.
+const REDACT_ALLOWLIST = [
+    // --- CI runner paths --- (well-known build infrastructure, no user PII)
+    /^\/home\/runner(?:[/]|$)/, // GitHub Actions Linux
+    /^\/Users\/runner(?:[/]|$)/, // GitHub Actions macOS
+    /^\/home\/circleci(?:[/]|$)/, // CircleCI Linux
+    /^\/Users\/distiller(?:[/]|$)/, // CircleCI macOS
+    /^\/home\/vsts(?:[/]|$)/, // Azure Pipelines
+    /^\/home\/travis(?:[/]|$)/, // Travis CI
+    /^\/home\/jenkins(?:[/]|$)/, // Jenkins default
+    // --- Bot / no-reply / SSH-alias addresses --- (not personal mailboxes)
+    // The domain MUST be anchored to a well-known public code host. An open noreply@<anything> allowlist would leak
+    // internal corp infra domains like noreply@internal-codename.corp (Bugbot PR #151 Low).
+    /^(?:noreply|no-reply|donotreply|do-not-reply)@(?:github\.com|users\.noreply\.github\.com|gitlab\.com|bitbucket\.org|npmjs\.com|claude\.ai|anthropic\.com)$/i,
+    /^[0-9]+\+[a-zA-Z0-9._-]+@users\.noreply\.github\.com$/i, // GitHub commit-author noreply (full digits+user form)
+    // The ssh_target scanner's local part is [a-zA-Z0-9_.-]{1,64} (no `+`), so `8275028+user@users.noreply.github.com`
+    // is captured as just `user@users.noreply.github.com` — the full-form anchor above can't match the truncated
+    // value. Allow any local part on this domain since the domain itself is by design non-personal (Bugbot PR #151
+    // round 2 Medium).
+    /^[a-zA-Z0-9_.-]+@users\.noreply\.github\.com$/i,
+    /^git@github\.com$/i, // SSH alias, not a real mailbox
+    /^git@gitlab\.com$/i,
+    /^git@bitbucket\.org$/i,
+];
+function isAllowlisted(match) {
+    for (const re of REDACT_ALLOWLIST)
+        if (re.test(match))
+            return true;
+    return false;
+}
+// Anonymize (not redact) local filesystem paths (#12): a file path is usually the gene's CONTENT ("fix
+// ~/proj/src/auth.ts"), not a secret — only the user/home prefix is PII. Strip the prefix to `~`, keeping the
+// rest of the path so the shared experience stays useful, instead of [REDACTED]-ing the whole thing.
+const ANONYMIZE_PATTERNS = [
+    [/\/(?:home|Users)\/[^/\s"',;)}\]]+/g, '~'], // /home/alice/proj → ~/proj
+    [/[A-Za-z]:\\Users\\[^\\/\s"',;)}\]]+/g, '~'], // C:\Users\alice\proj → ~\proj
+];
+/** Apply every redaction pattern (secrets → [REDACTED]) then anonymize local paths (~/...) to a single string. */
+export function redactString(s) {
+    if (typeof s !== 'string' || !s)
+        return s;
+    let out = s;
+    for (const p of REDACT_PATTERNS) {
+        p.lastIndex = 0;
+        out = out.replace(p, (m) => (isAllowlisted(m) ? m : REDACTED));
+    }
+    out = redactStructuredCredentials(out);
+    OPAQUE_CREDENTIAL_PATTERN.lastIndex = 0;
+    out = out.replace(OPAQUE_CREDENTIAL_PATTERN, (candidate) => (isOpaqueCredential(candidate) ? REDACTED : candidate));
+    for (const [p, rep] of ANONYMIZE_PATTERNS) {
+        p.lastIndex = 0;
+        out = out.replace(p, (m) => (isAllowlisted(m) ? m : rep));
+    }
+    return out;
+}
+/** Deep redaction: recursively redact string values in objects/arrays (keys untouched). Returns a copy; does not mutate the input. */
+export function redactDeep(v) {
+    if (typeof v === 'string')
+        return redactString(v);
+    if (Array.isArray(v))
+        return v.map((x) => redactDeep(x));
+    if (v && typeof v === 'object') {
+        const out = {};
+        for (const [k, val] of Object.entries(v))
+            out[k] = redactDeep(val);
+        return out;
+    }
+    return v;
+}
+/**
+ * Redact a single asset and RECOMPUTE its asset_id (command point). When redaction changes content, the id must
+ * change with it, otherwise the published body and id disagree. computeAssetId excludes the asset_id field by
+ * default; on the rare null return we fall back to the original id.
+ */
+export function sanitizeAsset(asset) {
+    const redacted = redactDeep(asset);
+    const id = computeAssetId(redacted);
+    return { ...redacted, asset_id: id ?? asset.asset_id };
+}
+/** Leak scanners (ported verbatim from v1, 25 entries): each match yields an env-var replacement suggestion. */
+const LEAK_SCANNERS = [
+    { type: 'api_key', pattern: /sk-[A-Za-z0-9]{20,}/g, suggest: 'process.env.OPENAI_API_KEY' },
+    { type: 'api_key', pattern: /sk-proj-[A-Za-z0-9-_]{20,}/g, suggest: 'process.env.OPENAI_API_KEY' },
+    { type: 'api_key', pattern: /sk-ant-[A-Za-z0-9-_]{20,}/g, suggest: 'process.env.ANTHROPIC_API_KEY' },
+    { type: 'api_key', pattern: /AKIA[0-9A-Z]{16}/g, suggest: 'process.env.AWS_ACCESS_KEY_ID' },
+    { type: 'github_token', pattern: /gh(?:p|o|u|s|r)_[A-Za-z0-9]{36,}/g, suggest: 'process.env.GITHUB_TOKEN' },
+    { type: 'github_token', pattern: /github_pat_[A-Za-z0-9_]{22,}/g, suggest: 'process.env.GITHUB_TOKEN' },
+    { type: 'npm_token', pattern: /npm_[A-Za-z0-9]{36,}/g, suggest: 'process.env.NPM_TOKEN' },
+    { type: 'slack_token', pattern: /xox[baprsv]-[A-Za-z0-9-]{10,}/g, suggest: 'process.env.SLACK_TOKEN' },
+    { type: 'jwt', pattern: /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}/g, suggest: 'process.env.JWT' },
+    { type: 'azure_key', pattern: /AccountKey=[^;\s]+/gi, suggest: 'process.env.AZURE_STORAGE_KEY' },
+    { type: 'azure_client_secret', pattern: /client_secret=[A-Za-z0-9~._-]{8,}/gi, suggest: 'process.env.AZURE_CLIENT_SECRET' },
+    { type: 'azure_instrumentation_key', pattern: /instrumentationkey=[0-9a-fA-F-]{20,}/gi, suggest: 'process.env.APPINSIGHTS_INSTRUMENTATIONKEY' },
+    { type: 'discord_token', pattern: /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g, suggest: 'process.env.DISCORD_TOKEN' },
+    { type: 'bearer_token', pattern: /Bearer\s+[A-Za-z0-9-._~+/]{20,}=*/g, suggest: 'process.env.AUTH_TOKEN' },
+    { type: 'proxy_token', pattern: /"?token"?[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi, suggest: 'proxy token (ephemeral, stored in settings.json)' },
+    { type: 'private_key', pattern: /-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g, suggest: 'process.env.PRIVATE_KEY_PATH' },
+    { type: 'db_url', pattern: /(?:mongodb|postgres|postgresql|mysql|redis|amqp):\/\/[^\s"',;)}\]]{10,}/gi, suggest: 'process.env.DATABASE_URL' },
+    { type: 'local_path', pattern: /\/home\/[a-zA-Z0-9_.-]+\//g, suggest: 'process.env.HOME' },
+    { type: 'local_path', pattern: /\/Users\/[a-zA-Z0-9_.-]+\//g, suggest: 'process.env.HOME' },
+    { type: 'local_path', pattern: /[A-Z]:\\Users\\[a-zA-Z0-9_.-]+\\/g, suggest: 'process.env.USERPROFILE' },
+    { type: 'internal_ip', pattern: /\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d{2,5})?\b/g, suggest: 'process.env.SERVICE_HOST' },
+    // Bounded quantifiers ({1,64}/{1,255}/{2,24}) instead of unbounded `+`: the unbounded user/host classes against
+    // a required `@`/`.` anchor backtrack O(n^2) on long untrusted hub content (100k took ~6s — a real ReDoS, #198).
+    // The bounds cover every realistic ssh target (usernames <=64, hosts <=255, TLDs <=24) and make the scan linear.
+    { type: 'ssh_target', pattern: /[a-zA-Z0-9_.-]{1,64}@(?:(?:\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24})/g, suggest: 'process.env.SSH_HOST' },
+    { type: 'password', pattern: /password[=:]\s*["']?[^\s"',;)}\]]{6,}["']?/gi, suggest: 'process.env.PASSWORD' },
+    { type: 'secret', pattern: /secret[=:]\s*["']?[A-Za-z0-9-._~+/]{16,}["']?/gi, suggest: 'process.env.SECRET' },
+    { type: 'basic_auth', pattern: /:\/\/[^@\s:]+:[^@\s]+@/g, suggest: 'process.env.SERVICE_URL' },
+];
+/** Env keys skipped by the reverse-value scan (non-sensitive; ported verbatim from v1). */
+const ENV_SCAN_SKIP_KEYS = new Set([
+    'PATH', 'HOME', 'SHELL', 'TERM', 'LANG', 'USER', 'LOGNAME',
+    'PWD', 'OLDPWD', 'SHLVL', 'HOSTNAME', 'DISPLAY', 'EDITOR',
+    'PAGER', 'LESS', 'LS_COLORS', 'COLORTERM', 'TERM_PROGRAM',
+    'XDG_SESSION_ID', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
+    'SSH_AUTH_SOCK', 'SSH_AGENT_PID', '_',
+]);
+const ENV_VALUE_FILESYSTEM_PATH_RE = /^(\/|[A-Za-z]:\\)/;
+const ENV_VALUE_URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+const SENSITIVE_ENV_KEY_PARTS = new Set([
+    'WEBHOOK', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'PASSWD', 'PASSPHRASE',
+    'KEY', 'CREDENTIAL', 'CREDENTIALS', 'SIGNATURE', 'SIGNED', 'DSN', 'BEARER',
+    'COOKIE', 'SESSION', 'CERT', 'CERTIFICATE',
+]);
+const SENSITIVE_ENV_KEY_RE = /WEBHOOK|TOKEN|SECRET|PASSWORD|CREDENTIAL|SIGNATURE|SIGNED|DSN|BEARER|COOKIE|SESSION|APIKEY|ACCESSKEY|PRIVATEKEY|CERTIFICATE/;
+const HIGH_RISK_URL_QUERY_KEYS = new Set([
+    'token', 'access_token', 'auth', 'authorization', 'api_key', 'apikey', 'key',
+    'secret', 'signature', 'sig', 'signed', 'x-amz-signature', 'x-amz-credential',
+    'x-amz-security-token', 'x-goog-signature', 'x-goog-credential',
+    'sharedaccesssignature',
+]);
+function normalizeEnvKey(key) {
+    const normalized = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return normalized || key.toUpperCase();
+}
+function isFilesystemPathEnvValue(value) {
+    return ENV_VALUE_FILESYSTEM_PATH_RE.test(value);
+}
+function isUrlEnvValue(value) {
+    return ENV_VALUE_URL_RE.test(value);
+}
+function isSensitiveEnvKey(key) {
+    const normalized = normalizeEnvKey(key);
+    const parts = normalized.split(/[^A-Z0-9]+/).filter(Boolean);
+    if (parts.some((part) => SENSITIVE_ENV_KEY_PARTS.has(part)))
+        return true;
+    return SENSITIVE_ENV_KEY_RE.test(normalized);
+}
+function isHighRiskUrlEnvValue(value) {
+    if (!isUrlEnvValue(value))
+        return false;
+    let parsed;
+    try {
+        parsed = new URL(value);
+    }
+    catch {
+        return false;
+    }
+    if (parsed.username || parsed.password)
+        return true;
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    if (/(^|\.)hooks?\./.test(hostname) || /(^|\.)webhooks?\./.test(hostname))
+        return true;
+    if (/\/(?:api\/)?webhooks?\//.test(pathname) || /\/hooks?\//.test(pathname))
+        return true;
+    if (/\/(?:tokens?|secrets?|signed|signatures?|credentials?)\//.test(pathname))
+        return true;
+    for (const queryKey of parsed.searchParams.keys()) {
+        if (HIGH_RISK_URL_QUERY_KEYS.has(queryKey.toLowerCase()))
+            return true;
+    }
+    return false;
+}
+function shouldSkipEnvValueReverseScan(key, value) {
+    if (isSensitiveEnvKey(key))
+        return false;
+    if (isFilesystemPathEnvValue(value))
+        return true;
+    if (isUrlEnvValue(value) && !isHighRiskUrlEnvValue(value))
+        return true;
+    return false;
+}
+const clip = (s) => (s.length > 60 ? s.slice(0, 57) + '...' : s);
+/** Pattern-scan content for sensitive info. Does not mutate content; returns a structured result. */
+export function scanForLeaks(content) {
+    if (typeof content !== 'string' || !content)
+        return { found: false, leaks: [] };
+    const leaks = [];
+    const seen = new Set();
+    for (const scanner of LEAK_SCANNERS) {
+        scanner.pattern.lastIndex = 0;
+        let m;
+        while ((m = scanner.pattern.exec(content)) !== null) {
+            const val = m[0];
+            // Apply the same allowlist redactString uses: CI runner roots and bot/no-reply/SSH-alias addresses are not
+            // leaks. Without this, strict-mode sanitizeBundle would block a publish over a `/home/runner/` path or
+            // `noreply@github.com` (an ssh_target) — exactly the false positives the allowlist exists to fix, and a
+            // contradiction with redactString, which keeps them verbatim (Bugbot PR #151 Medium).
+            if (isAllowlisted(val))
+                continue;
+            const key = scanner.type + ':' + val;
+            if (seen.has(key))
+                continue;
+            seen.add(key);
+            leaks.push({ type: scanner.type, value: clip(val), suggestion: scanner.suggest });
+        }
+    }
+    return { found: leaks.length > 0, leaks };
+}
+/** Reverse detection: if any process.env value (>=8 chars) appears verbatim in content, an env value was hardcoded and should be replaced with the env reference. */
+export function detectEnvValueLeaks(content, env) {
+    if (typeof content !== 'string' || !content)
+        return [];
+    const leaks = [];
+    for (const [key, val] of Object.entries(env)) {
+        if (!val || val.length < 8)
+            continue;
+        if (ENV_SCAN_SKIP_KEYS.has(normalizeEnvKey(key)))
+            continue;
+        // Env paths and ordinary URLs are often reproducible runtime metadata; sensitive keys and high-risk URLs still scan.
+        if (shouldSkipEnvValueReverseScan(key, val))
+            continue;
+        if (content.includes(val))
+            leaks.push({ type: 'env_value_leak', value: REDACTED, suggestion: 'process.env.' + key });
+    }
+    return leaks;
+}
+/** Full leak check: pattern scan + reverse env-value detection. */
+export function fullLeakCheck(content, env) {
+    const scan = scanForLeaks(content);
+    const envLeaks = detectEnvValueLeaks(content, env);
+    const all = scan.leaks.concat(envLeaks);
+    return { found: all.length > 0, leaks: all };
+}
+/** Leak types that are PII (anonymized, not credentials) and so must NOT hard-block a strict publish (#12). */
+const PII_ONLY_LEAK_TYPES = new Set(['local_path']);
+/** Read the leak-check mode from env (EVOLVER_LEAK_CHECK, default strict, matching v1). */
+export function leakCheckModeFromEnv(env) {
+    const v = (env['EVOLVER_LEAK_CHECK'] ?? '').toLowerCase();
+    return v === 'warn' || v === 'off' ? v : 'strict';
+}
+/**
+ * Pre-publish sanitize of a bundle (pure, never throws):
+ * 1) mode != off: scan the ORIGINAL (pre-redaction) content for leaks; strict + found → blocked=true (chokepoint refuses); warn → flag only.
+ * 2) REGARDLESS of mode, always deep-redact every asset + recompute asset_id (the leak-proof floor; off only skips the scan, not the redaction).
+ */
+export function sanitizeBundle(bundle, opts) {
+    const mode = opts.mode ?? leakCheckModeFromEnv(opts.env);
+    let leaks = [];
+    if (mode !== 'off') {
+        const combined = bundle.map((a) => JSON.stringify(a)).join('');
+        leaks = fullLeakCheck(combined, opts.env).leaks;
+    }
+    // #12: a bare local path is PII (anonymized to ~/ by the redaction floor), not a credential — it must not
+    // hard-block a publish in strict mode. Real secrets (everything else) still block. Path leaks stay reported.
+    const blocked = mode === 'strict' && leaks.some((l) => !PII_ONLY_LEAK_TYPES.has(l.type));
+    const sanitized = bundle.map((a) => sanitizeAsset(a));
+    return { bundle: sanitized, blocked, leaks, mode };
+}
+/** Collapse a leak list into a one-line human-readable summary (for logs / rejection reason). */
+export function summarizeLeaks(leaks) {
+    return leaks.map((l) => `${l.type}→${l.suggestion}`).join('; ');
+}

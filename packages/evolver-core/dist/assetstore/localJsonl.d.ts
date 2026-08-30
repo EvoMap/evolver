@@ -11,6 +11,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     readonly baseDir: string;
     private readonly index;
     private readonly lockPath;
+    private readonly bundleJournalPath;
     private fileState;
     private loaded;
     constructor(baseDir: string);
@@ -20,8 +21,12 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     private refreshUnderLock;
     private ensureFresh;
     private updateFileStateAfterWrite;
+    private readPendingBundle;
+    private recoverPendingBundleUnderLock;
+    private hasPendingBundle;
     put(asset: AssetRecord): Promise<PutResult>;
     putConditional(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
+    putBundle(assets: readonly AssetRecord[]): Promise<PutResult[]>;
     /**
      * 迁移专用(M8-2): 以**冻结 asset_id** 原样写入, 不经 normalizeForPut 重算/校验.
      * 仅 v1→v2 导入用(硬化 A6 存量冻结); 普通写一律走 put(). record 必须自带 asset_id.

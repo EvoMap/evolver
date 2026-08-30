@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-webui",
-  "version": "2.0.20",
+  "version": "2.0.0-beta.23",
   "private": false,
   "type": "module",
   "engines": {
@@ -16,7 +16,7 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.20",
+    "@evomap/evolver-core": "2.0.0-beta.23",
     "jsonc-parser": "3.3.1"
   },
   "repository": {
@@ -25,7 +25,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "latest"
+    "tag": "v2-beta"
   },
   "files": [
     "dist/",

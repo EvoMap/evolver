@@ -160,6 +160,8 @@ export interface InjectDeps {
     readHookInput?: () => string | undefined;
     /** Test seam for the hook-time proxy daemon recovery path. Default is maybeAutoRestartProxyForSessionStart. */
     ensureProxyAutostart?: () => Promise<void>;
+    /** Test seam for the hook-time legacy v1 Windows scheduled-task sweep (#956). */
+    legacyTaskSweep?: () => void;
     /** Test seam for the non-git workspace notice. Production uses cwd + ~/.evomap throttle state. */
     nonGitNotice?: NonGitWorkspaceNoticeOptions;
 }

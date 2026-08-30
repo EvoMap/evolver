@@ -24,6 +24,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { util } from '@evomap/evolver-core';
 import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
 import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, evolverManagedHookStatus, stripEvolverHookEntries, } from './installerShared.js';
+import { withCodexProductBridge, isOwnedProductBridge, restoreProductBridgeEntry, PRODUCT_BRIDGE_SERVER_ID } from './productBridge.js';
 /** The MCP server id evolver registers under [mcp_servers.evolver] / removes on uninstall. */
 export const CODEX_MCP_SERVER_ID = 'evolver';
 /** SessionStart matcher: codex fires `startup` on a fresh thread and `resume` on a resumed one — cover both. */
@@ -228,10 +229,20 @@ export function stripCodexManaged(data) {
     const out = { ...data };
     const trustManagedStatus = isObj(out['mcp_servers'])
         && CODEX_MCP_SERVER_ID in out['mcp_servers'];
-    if (isObj(out['mcp_servers']) && CODEX_MCP_SERVER_ID in out['mcp_servers']) {
+    if (isObj(out['mcp_servers'])) {
         const next = { ...out['mcp_servers'] };
-        delete next[CODEX_MCP_SERVER_ID];
-        changed = true;
+        if (CODEX_MCP_SERVER_ID in next) {
+            delete next[CODEX_MCP_SERVER_ID];
+            changed = true;
+        }
+        if (PRODUCT_BRIDGE_SERVER_ID in next && isOwnedProductBridge(next[PRODUCT_BRIDGE_SERVER_ID])) {
+            const restored = restoreProductBridgeEntry(next[PRODUCT_BRIDGE_SERVER_ID]);
+            if (restored.restored)
+                next[PRODUCT_BRIDGE_SERVER_ID] = restored.entry;
+            else
+                delete next[PRODUCT_BRIDGE_SERVER_ID];
+            changed = true;
+        }
         if (Object.keys(next).length > 0)
             out['mcp_servers'] = next;
         else
@@ -290,11 +301,11 @@ export function installCodex(plan, opts) {
     mkdirSync(codexDir, { recursive: true });
     const changed = writeTomlWithRetry(configPath, (current) => {
         if (!opts.force && codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand)) {
-            return { changed: false, data: current };
+            return withCodexProductBridge(current, false);
         }
         return {
             changed: true,
-            data: mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook),
+            data: withCodexProductBridge(mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook), opts.force === true).data,
         };
     }, assertSafe);
     return {

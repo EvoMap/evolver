@@ -55,6 +55,10 @@ export interface SearchQuery {
  */
 export interface AssetStoreProvider {
     put(asset: AssetRecord): Promise<PutResult>;
+    /** 可选的可崩溃恢复批量写入，用于保持相关资产（例如 Gene/Capsule 对）的一致性。
+     * 需要持久化相关资产组的调用方必须先确认此能力存在，不得退回顺序单条写入。
+     * 返回结果按唯一 asset_id 各一条（同 bundle 内重复条目按幂等去重），调用方必须按 asset_id 键控消费结果，不得按索引与输入条目对齐。 */
+    putBundle?(assets: readonly AssetRecord[]): Promise<PutResult[]>;
     /** Optional atomic capability; use supportsAtomicConditionalPut() before calling through this interface. */
     putConditional?(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;

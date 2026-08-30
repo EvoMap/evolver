@@ -150,9 +150,18 @@ Evolver integrates with major agent runtimes through `setup-hooks`. Run it once 
 #### Codex caveats
 
 The Codex CLI exposes `SessionStart` / `Stop` / `PostToolUse` hooks (which is
-how `setup-hooks --platform=codex` wires Evolver in), but it does **not**
-emit a session transcript file the way Cursor / Claude Code / opencode do.
-That means `evolver --review` cannot read raw session logs on Codex.
+how `setup-hooks --platform=codex` wires Evolver in). The `Stop` payload does
+not include a `transcript_path`, but Codex writes local rollout JSONL files under
+`~/.codex/sessions/**/*.jsonl`. V2 does not silently scan these files during a
+normal review; request local trajectory ingestion explicitly:
+
+```bash
+evolver trajectory-export --runtime-sessions --output ./codex-trajectories.jsonl
+```
+
+Discovery is marker-gated by default and stays local. Use
+`--include-unmarked` only when you intentionally want older or unmarked Codex
+sessions included.
 
 `setup-hooks --platform=codex` is lifecycle integration only; it does not route
 Codex model requests through Evolver Proxy. To route Codex model traffic, run
@@ -162,7 +171,7 @@ command-backed auth runs `evolver proxy-token` or the absolute `node index.js
 proxy-token --settings ...` helper emitted by `scripts/internal-proxy-env.sh
 --codex-config` from a source checkout.
 
-Evolver compensates by reading, in order:
+For the normal lifecycle path, Evolver reads additional local context in order:
 
 1. `MEMORY.md` / `USER.md` in the workspace root (if you maintain them);
 2. the `<!-- evolver-evolution-memory -->` section that
@@ -171,10 +180,10 @@ Evolver compensates by reading, in order:
 3. the tail of the local `memory_graph.jsonl` (the per-cycle outcome log
    that Evolver writes itself).
 
-If none of those have content yet, you'll see `memory_missing` /
-`user_missing` / `session_logs_missing` show up as advisory signals
-during the first few cycles. They will go quiet on their own as
-`memory_graph.jsonl` accumulates outcomes — no manual setup required.
+If none of those have content yet, you'll see `memory_missing` / `user_missing`
+or `session_logs_missing` as advisory signals during the first few cycles.
+They go quiet as local memory and marked runtime-session material accumulate;
+no manual setup is required.
 
 ## Run from Source (Contributors Only)
 
@@ -552,7 +561,7 @@ Directional, not commitments — the live backlog lives in [GitHub Issues](https
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=EvoMap/evolver&type=Date)](https://star-history.com/#EvoMap/evolver&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=EvoMap/evolver&type=Date)](https://star-history.dera.page/#EvoMap/evolver&Date)
 
 ## Acknowledgments
 

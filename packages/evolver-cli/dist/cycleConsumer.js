@@ -86,11 +86,11 @@ function makeCycleValidationHook(validationCmds, fallback, runSandboxedValidatio
         return fallback;
     return (task) => {
         const fallbackHook = fallback?.(task);
-        return async (mutation, decision, cwd) => {
-            const fallbackResult = fallbackHook ? await fallbackHook(mutation, decision, cwd) : null;
+        return async (mutation, decision, cwd, signal) => {
+            const fallbackResult = fallbackHook ? await fallbackHook(mutation, decision, cwd, signal) : null;
             if (fallbackResult && !fallbackResult.passed)
                 return fallbackResult;
-            const result = await runRequiredSandboxedValidation(task.validationCmds ?? validationCmds, cwd, {}, runSandboxedValidation);
+            const result = await runRequiredSandboxedValidation(task.validationCmds ?? validationCmds, cwd, { signal }, runSandboxedValidation);
             return { passed: result.passed, score: result.score };
         };
     };

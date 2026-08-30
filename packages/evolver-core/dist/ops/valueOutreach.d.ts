@@ -67,4 +67,6 @@ export declare function digestShouldSend(summary: ValueSummary): boolean;
  * caller then delivers nothing — no empty digest, ever). measured and estimated stay on separate lines. Pure:
  * the window label + the period string are passed in so the digest is deterministic.
  */
-export declare function buildValueDigest(summary: ValueSummary, period: string): string | null;
+export declare function buildValueDigest(summary: ValueSummary, period: string, extras?: {
+    pendingReviewCount?: number;
+}): string | null;

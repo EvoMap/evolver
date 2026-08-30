@@ -16,6 +16,12 @@ import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
 const requireFromHere = createRequire(import.meta.url);
+function configuredHomeDir() {
+    const configured = process.platform === 'win32'
+        ? process.env['USERPROFILE']
+        : process.env['HOME'];
+    return configured && configured.trim() ? configured : homedir();
+}
 function parseFlags(argv) {
     const out = {};
     for (let i = 0; i < argv.length; i++) {
@@ -70,7 +76,7 @@ function defaultRuntimeAvailable(runtime, configRoot, scope) {
         const resolution = resolveOpenCodeConfig({
             configRoot,
             scope,
-            homeDir: homedir(),
+            homeDir: configuredHomeDir(),
             xdgConfigHome: process.env['XDG_CONFIG_HOME'],
             opencodeConfig: process.env['OPENCODE_CONFIG'],
             opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
@@ -79,7 +85,7 @@ function defaultRuntimeAvailable(runtime, configRoot, scope) {
     }
     const pathOptions = {
         configRoot,
-        homeDir: homedir(),
+        homeDir: configuredHomeDir(),
         kiroHome: process.env['KIRO_HOME'],
     };
     const evidenceRoots = scope === 'project'
@@ -92,7 +98,7 @@ function defaultRuntimeAvailable(runtime, configRoot, scope) {
 }
 function displaySetupPath(path, configRoot, scope) {
     if (scope === 'user') {
-        const home = homedir();
+        const home = configuredHomeDir();
         const homePath = safeRelativePath(home, path);
         if (homePath === '')
             return '~';
@@ -495,7 +501,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
                 server,
                 scope,
                 dryRun: true,
-                homeDir: homedir(),
+                homeDir: configuredHomeDir(),
                 kiroHome: process.env['KIRO_HOME'],
                 xdgConfigHome: process.env['XDG_CONFIG_HOME'],
                 opencodeConfig: process.env['OPENCODE_CONFIG'],
@@ -542,7 +548,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             r = uninstallInjection(runtime, {
                 configRoot,
                 scope,
-                homeDir: homedir(),
+                homeDir: configuredHomeDir(),
                 kiroHome: process.env['KIRO_HOME'],
                 xdgConfigHome: process.env['XDG_CONFIG_HOME'],
                 opencodeConfig: process.env['OPENCODE_CONFIG'],
@@ -659,7 +665,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             ...(cursorGenes ? { genes: cursorGenes } : {}),
             force: f['force'] === true,
             dryRun: f['dry-run'] === true,
-            homeDir: homedir(),
+            homeDir: configuredHomeDir(),
             kiroHome: process.env['KIRO_HOME'],
             xdgConfigHome: process.env['XDG_CONFIG_HOME'],
             opencodeConfig: process.env['OPENCODE_CONFIG'],

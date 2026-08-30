@@ -4,3 +4,5 @@ import { assetstore } from '@evomap/evolver-core';
 export const reviewLedgerForStore = assetstore.reviewLedgerForStore;
 export const provenanceStoreForStore = assetstore.provenanceStoreForStore;
 export const listApprovedGenes = assetstore.listApprovedGenes;
+export const pendingReviewRecords = assetstore.pendingReviewRecords;
+export const pendingGeneReviewRecords = assetstore.pendingGeneReviewRecords;

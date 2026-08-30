@@ -23,6 +23,7 @@ export declare class InMemoryDigestState implements DigestStateStore {
     markDelivered(at: number): void;
 }
 export declare const DEFAULT_DIGEST_CADENCE_MS: number;
+export declare const DEFAULT_DIGEST_EXTRAS_TIMEOUT_MS = 1000;
 export interface ValueDigestObserverDeps {
     /** Aggregate the value summary for a window (composition wires this to loadValueSummary over trace+events). */
     summaryProvider(window: SummaryWindow): ValueSummary;
@@ -36,6 +37,14 @@ export interface ValueDigestObserverDeps {
     cadenceMs?: number;
     /** Observer handle timeout (the bus quarantines on timeout). Default 5s — plenty for format + a local sink. */
     timeoutMs?: number;
+    /** Optional extra digest fields. Pending reviews never open the send-gate by themselves. */
+    digestExtras?: () => {
+        pendingReviewCount?: number;
+    } | Promise<{
+        pendingReviewCount?: number;
+    }>;
+    /** 可选 enrichment 的尽力超时；超时只省略 extras，不判定 digest 失败。 */
+    digestExtrasTimeoutMs?: number;
 }
 /**
  * Build the value-digest observer. Subscribes to ALL events (it is cadence-driven, not event-type-driven: any

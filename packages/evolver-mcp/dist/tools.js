@@ -171,7 +171,8 @@ export function buildEvolverTools(deps) {
                 const limit = optionalNonNegativeNumberArg(a, 'limit', 'evolver_recall limit must be a non-negative number') ?? 5;
                 const sessionId = typeof a['sessionId'] === 'string' && a['sessionId'].trim() ? a['sessionId'].trim() : undefined;
                 const review = assetstore.reviewLedgerForStore(deps.store);
-                const genes = await assetstore.listApprovedGenes(deps.store, review, limit);
+                const provenance = assetstore.provenanceStoreForStore(deps.store);
+                const genes = await assetstore.listApprovedGenes(deps.store, review, limit, provenance);
                 const primed = genes.map((g) => {
                     const r = g;
                     const id = typeof r['id'] === 'string' ? r['id'] : String(r['asset_id']);
@@ -199,7 +200,7 @@ export function buildEvolverTools(deps) {
         },
         ...(deps.proxy ? [{
                 name: 'evolver_recipe_search',
-                description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。',
+                description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。旧客户端默认收到 Recipe 数组；设置 includePagination=true 可读取 nextCursor/hasMore。',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -209,16 +210,25 @@ export function buildEvolverTools(deps) {
                         limit: { type: 'number' },
                         cursor: { type: 'string' },
                         sort: { type: 'string' },
+                        includePagination: {
+                            type: 'boolean',
+                            description: 'Set true to return the recipe page envelope with nextCursor/hasMore. The default array shape remains backwards compatible.',
+                        },
                     },
                 },
                 handler: async (a) => {
                     const q = [a['q'], a['query'], a['text']].find((value) => typeof value === 'string' && value.trim().length > 0);
+                    const includePagination = a['includePagination'] === true;
                     const receipt = record(await deps.proxy.searchRecipes({
                         ...(q ? { q } : {}),
                         ...(typeof a['limit'] === 'number' ? { limit: a['limit'] } : {}),
                         ...(typeof a['cursor'] === 'string' ? { cursor: a['cursor'] } : {}),
                         ...(typeof a['sort'] === 'string' ? { sort: a['sort'] } : {}),
                     }));
+                    if (includePagination && (Array.isArray(receipt['recipes'])
+                        || Array.isArray(receipt['results'])
+                        || Array.isArray(receipt['items'])))
+                        return receipt;
                     if (Array.isArray(receipt['recipes']))
                         return receipt['recipes'];
                     if (Array.isArray(receipt['results']))
@@ -327,7 +337,7 @@ export function buildEvolverTools(deps) {
         },
         {
             name: 'evolver_distill_conversation',
-            description: '从当前对话蒸馏可复用能力. 本地仍落 Gene/Capsule, 但 Hub 默认优先发布成 Recipe, 不再优先上 Skill Store. 需要具体 summary、strategy/evidence、artifacts、validation; quality gate 会拒绝弱信号. publish=true 时默认 compose_recipe, 可用 publish_recipe=false 关掉.',
+            description: '从当前对话蒸馏可复用能力. persist=true 只在结果可发布(经宿主验证)或为失败/无轨迹草稿时才落 Gene/Capsule; 携带调用方自报 success 轨迹而未经宿主验证时仅返回草稿不落库. 需要具体 summary、strategy/evidence、artifacts、validation; 质量闸门会将弱信号保留为草稿而不会发布. provider 若不具备 putBundle 能力，成对持久化会 fail-closed 并返回 bundle_persistence_unsupported. Hub 默认优先发布成 Recipe, 不再优先上 Skill Store. publish=true 时默认 compose_recipe, 可用 publish_recipe=false 关掉.',
             inputSchema: {
                 type: 'object',
                 required: ['summary'],
@@ -346,7 +356,7 @@ export function buildEvolverTools(deps) {
                     persist: { type: 'boolean' },
                     publish: { type: 'boolean' },
                     publish_recipe: { type: 'boolean', description: 'When publish=true, also compose and publish a Recipe. Defaults to true.' },
-                    min_score: { type: 'integer', minimum: 1, maximum: 10 },
+                    min_score: { type: 'integer', minimum: 5, maximum: 10 },
                 },
             },
             handler: async (a) => {

@@ -20,6 +20,7 @@ export const EVENT_TYPES = [
     'reflection.recorded',
     'material.batch_ready',
     'value.reuse_hit', 'value.inject', 'value.reuse_outcome', 'value.recall',
+    'execution.binding.created', 'execution.started', 'execution.decision', 'execution.terminal', 'execution.recovered',
     // K_auto EvidenceProjection: coordinate-level partial revocation over (version, claim, scope, runtime,
     // verifier). A revoked event distrusts one (coordinate, value) pair; a reinstated event withdraws it. The
     // authoritative root-event stream is the single source of truth (see algo/kautoProjection.projectRevocations).

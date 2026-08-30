@@ -9,7 +9,7 @@
 // tick the cadence check — this is the bus's first live built-in observer.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { events, observers, ops } from '@evomap/evolver-core';
+import { assetstore, events, observers, ops } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
 /** Markdown file sink: appends each weekly digest to <home>/evolution/value-digest.md (inspectable history). */
 export function fileDigestSink(path) {
@@ -87,6 +87,13 @@ export function resolveValueDigestObserver(env = process.env, opts = {}) {
             events: events.readEvents(eventsPath),
             prices,
         }, window),
+        digestExtras: async () => {
+            const store = new assetstore.LocalJsonlProvider(events.assetsDir());
+            const review = assetstore.reviewLedgerForStore(store);
+            return {
+                pendingReviewCount: (await assetstore.pendingGeneReviewRecords(store, review)).length,
+            };
+        },
         sink: multiSink(sinks),
         state: new FileDigestState(join(home, 'evolution', 'value-digest-state.json')),
     });

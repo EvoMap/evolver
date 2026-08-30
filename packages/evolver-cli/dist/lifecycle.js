@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { bootstrap as coreBootstrap, util as coreUtil } from '@evomap/evolver-core';
 import { expandHomePath, loadEnvFile, loadEnvFileFromEnv, parseEnvFile } from '@evomap/evolver-mcp';
 import { acquireBootstrapOwnerLock, acquireBootstrapReadinessLock, adoptLegacyBootstrapMarker, applyBootstrapCanonicalQuarantine, assertTrustedArtifactParent, assertActiveBootstrapRegistrationIntentToken, assertPlannedArtifactsAbsent, assertBootstrapTransactionClaimsAbsent, bootstrapArtifactClaimPath, bootstrapArtifactContentIdentityForFile, bootstrapArtifactIdentityForBytes, bootstrapJournalPath, bootstrapJournalFromMarker, bootstrapJournalManagerArtifactPath, bootstrapMarkerPath, bootstrapReadinessPath, captureBootstrapArtifactIdentities, createLegacyBootstrapRemovalJournal, createBootstrapJournal, ensureBootstrapManualTransition, finalizeBootstrapCanonicalQuarantine, planBootstrapCanonicalQuarantine, readBootstrapJournal, readBootstrapArtifactFile, readLegacyBootstrapMarker, readBootstrapManualTransition, readBootstrapMarker, readBootstrapReadiness, recordPublishedBootstrapArtifact, removeBootstrapJournal, removeBootstrapManualTransition, removeBootstrapReadiness, removeDurableFile, removeOwnedBootstrapArtifacts, restoreBootstrapCanonicalQuarantine, updateBootstrapJournal, writeBootstrapJournal, writeDurableBytesExclusive, writeDurableJsonExclusive, writeDurableTextExclusive, LEGACY_BOOTSTRAP_REMOVAL_OPERATION, } from './lifecycleBootstrapTransaction.js';
+import { cleanupLegacyWindowsDaemonTasks, legacyTaskProbeSkipped, restoreLegacyTaskPreimage, sweepLegacyWindowsDaemonTasksAfterBootstrap, LEGACY_TASK_SKIP_ENV, } from './windowsLegacyTaskCleanup.js';
 const requireFromHere = createRequire(import.meta.url);
 const DEFAULT_DAEMON_NAME = 'evolver-proxy';
 const DEFAULT_LABEL = 'com.evomap.evolver-proxy';
@@ -35,7 +36,7 @@ const PS_PATH = selectExistingPosixCommand([
 const LAUNCHCTL_PATH = '/bin/launchctl';
 const UNIX_RECOVERY_CONTROLLER_FILENAME = 'evolver-recovery-controller';
 const HOST_WINDOWS_SYSTEM_ROOT = process.env['SystemRoot']?.trim() || 'C:\\Windows';
-const LIFECYCLE_USAGE = 'Usage: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows [--with-autoexec] [--autoexec-home=<path>]|remove-service --target=launchd|systemd|windows [--dry-run] [--env-file=<path>]|bootstrap [--target=launchd|systemd|windows] [--dry-run]|remove-autoexec-service --target=launchd|systemd|windows [--dry-run]>\n';
+const LIFECYCLE_USAGE = 'Usage: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows [--with-autoexec] [--autoexec-home=<path>]|remove-service --target=launchd|systemd|windows [--dry-run] [--env-file=<path>]|bootstrap [--target=launchd|systemd|windows] [--dry-run]|remove-autoexec-service --target=launchd|systemd|windows [--dry-run]|cleanup-legacy-tasks [--dry-run]|restore-legacy-task-preimage --preimage=<path>>\n';
 export function selectExistingPosixCommand(candidates, exists = existsSync) {
     if (candidates.length === 0 || candidates.some((candidate) => !posix.isAbsolute(candidate))) {
         throw new Error('trusted command candidates must be non-empty absolute POSIX paths');
@@ -336,9 +337,41 @@ async function runLifecycleCommandInner(argv, deps) {
                 : loadEnvFileFromEnv(env);
             if (envFileResult.error)
                 throw new Error('failed to load lifecycle environment file');
+            // Like install-service: recompute AFTER the env-file load so a state-dir pointer in
+            // the env file is honored by the piggyback legacy sweep below (the `paths` captured
+            // before the load would put owner lock/preimage/cooldown state in the wrong dir).
+            const removeStateDir = lifecyclePaths(env).stateDir;
             const result = await removeBootstrapService(removeFlags.target, removeFlags.dryRun, env, deps.bootstrap ?? {}, deps.argv1 ?? process.argv[1], deps.loadUnixRecoveryController, removeFlags.envFile ? { 'env-file': removeFlags.envFile } : {});
-            stdout(`${JSON.stringify(result, null, 2)}\n`);
-            return 0;
+            const payload = { ...result };
+            let exitCode = 0;
+            if (removeFlags.target === 'windows') {
+                // #956 uninstall path: after the owned v2 manager removal, sweep legacy v1 residue.
+                // The sweep keeps its own fail-closed semantics and is reported in the payload.
+                // This composite command must also return non-zero when the sweep cannot prove a
+                // conclusive result, so payload-aware and exit-code-aware automation see the same truth.
+                // Unlike that explicit command, this piggyback sweep honors the opt-out so suites
+                // and opted-out hosts never touch the real Task Scheduler.
+                if (legacyTaskProbeSkipped(env)) {
+                    payload.legacyTaskCleanup = {
+                        status: 'skipped',
+                        detail: `${LEGACY_TASK_SKIP_ENV} is set; run evolver lifecycle cleanup-legacy-tasks explicitly`,
+                    };
+                }
+                else {
+                    const sweep = (deps.cleanupLegacyTasks ?? cleanupLegacyWindowsDaemonTasks)({
+                        env,
+                        stateDir: removeStateDir,
+                        dryRun: removeFlags.dryRun,
+                    });
+                    payload.legacyTaskCleanup = sweep;
+                    if (sweep.status === 'failed' || sweep.status === 'inconclusive') {
+                        exitCode = 1;
+                        stderr(`legacy v1 scheduled-task cleanup ${sweep.status}${sweep.detail ? `: ${sweep.detail}` : ''}; run evolver lifecycle cleanup-legacy-tasks\n`);
+                    }
+                }
+            }
+            stdout(`${JSON.stringify(payload, null, 2)}\n`);
+            return exitCode;
         }
         case 'remove-autoexec-service': {
             if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
@@ -348,6 +381,42 @@ async function runLifecycleCommandInner(argv, deps) {
             const result = (deps.removeAutoexecService ?? removeAutoexecService)(target, flags['dry-run'] === true);
             stdout(`${JSON.stringify(result, null, 2)}\n`);
             return 0;
+        }
+        case 'cleanup-legacy-tasks': {
+            if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
+                throw new Error('--dry-run is a boolean flag and does not accept a value');
+            }
+            const cleanupEnvFileResult = loadEnvFileFromEnv(env);
+            if (cleanupEnvFileResult.error)
+                throw new Error('failed to load lifecycle environment file');
+            // Read AFTER the env-file load so a pointer in the env file is honored
+            // (mirrors the session-start sweep in index.ts).
+            const result = (deps.cleanupLegacyTasks ?? cleanupLegacyWindowsDaemonTasks)({
+                env,
+                stateDir: lifecyclePaths(env).stateDir,
+                dryRun: flags['dry-run'] === true,
+            });
+            stdout(`${JSON.stringify(result, null, 2)}\n`);
+            // An inconclusive or failed run must surface a non-zero exit: automation that reads
+            // the status field and automation that reads the exit code get the same truth.
+            return result.status === 'inconclusive' || result.status === 'failed' ? 1 : 0;
+        }
+        case 'restore-legacy-task-preimage': {
+            const preimage = typeof flags['preimage'] === 'string' ? flags['preimage'] : undefined;
+            if (!preimage) {
+                throw new Error('restore-legacy-task-preimage requires --preimage=<path>');
+            }
+            const restoreEnvFileResult = loadEnvFileFromEnv(env);
+            if (restoreEnvFileResult.error)
+                throw new Error('failed to load lifecycle environment file');
+            // Read AFTER the env-file load so a pointer in the env file is honored
+            // (mirrors the session-start sweep in index.ts).
+            const result = (deps.restoreLegacyTaskPreimage ?? restoreLegacyTaskPreimage)(preimage, {
+                env,
+                stateDir: lifecyclePaths(env).stateDir,
+            });
+            stdout(`${JSON.stringify(result, null, 2)}\n`);
+            return result.status === 'restored' ? 0 : 1;
         }
         default:
             stderr(LIFECYCLE_USAGE);
@@ -812,7 +881,7 @@ function trustedWindowsSystemExecutable(name) {
     }
     return win32.join(HOST_WINDOWS_SYSTEM_ROOT, 'System32', name);
 }
-function trustedWindowsPowerShell() {
+export function trustedWindowsPowerShell() {
     return trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe');
 }
 function renderWindowsProxyLauncherBytes(defaults) {
@@ -2563,7 +2632,7 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
                     assertForwardMutationBudget(deadlineMs, now());
                     return result;
                 };
-                const actions = activateBootstrapTarget(target, files, forwardRun, uid, deadlineMs, now);
+                const actions = [...activateBootstrapTarget(target, files, forwardRun, uid, deadlineMs, now)];
                 const managerPid = await waitForBootstrapManagerBinding(journal, forwardRun, uid, deadlineMs, now, deps.healthTimeoutMs ?? BOOTSTRAP_HEALTH_TIMEOUT_MS, assertOwner);
                 assertOwner();
                 const healthyReadiness = await requireBootstrapProxyHealth(lifecyclePaths(env), env, journal, managerPid, deps, forwardRun, uid, deadlineMs, now, assertOwner);
@@ -2626,6 +2695,18 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
                 }
                 catch {
                     // The durable versioned marker is the commit point. Recovery recognizes its transaction id.
+                }
+                if (target === 'windows') {
+                    // Post-activation sweep (#956): remove legacy V1 scheduled-task residue under the
+                    // already-held owner lock. Best-effort for the bootstrap (the committed marker is
+                    // the commit point and a sweep error can never roll it back), but an inconclusive
+                    // or failed sweep is reported in `actions` instead of being hidden.
+                    actions.push(...sweepLegacyWindowsDaemonTasksAfterBootstrap({
+                        env,
+                        stateDir,
+                        assertOwner,
+                        ...(deps.legacyTaskCleanupRun ? { run: deps.legacyTaskCleanupRun } : {}),
+                    }));
                 }
                 return {
                     status: 'bootstrapped',

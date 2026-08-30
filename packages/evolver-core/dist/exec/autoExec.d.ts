@@ -2,7 +2,7 @@ import type { AssetStoreProvider } from '../assetstore/provider.js';
 import { type ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { GeneCandidateInput, SelectionGuardMode } from '../algo/geneSelection.js';
-import type { CycleEngine, ExecutionFailureKind, SolidifyPermitGate } from '../algo/cycleEngine.js';
+import type { CycleEngine, ExecutionFailureKind, ExecutionResult, SolidifyPermitGate } from '../algo/cycleEngine.js';
 import { type AutonomousSafety } from './autonomousCycle.js';
 import { type GitRunner, type ValidateHook } from './claudeBridge.js';
 import type { AgentRunner } from './runnerRegistry.js';
@@ -13,6 +13,7 @@ import type { MemoryGraphProvider } from '../algo/memoryGraph.js';
 import type { SelectionPolicy } from '../algo/ucb1.js';
 import { type LearningPacketSink, type TraceSink } from '../trace/learningTrace.js';
 import type { TraceReadOptions } from '../trace/trajectoryExport.js';
+import { ExecutionBindingJournal, type BindingAuthorityChecks, type ExecutionBindingInput } from './executionBinding.js';
 export interface AutoExecTask {
     id: string;
     repo: string;
@@ -32,10 +33,18 @@ export interface AutoExecTask {
     /** Optional explicit strategy preset name for this task; wins over daemon default and meta-signal auto-detection. */
     strategyName?: string;
     validationCmds?: readonly string[];
+    /** Frozen external execution binding; bound tasks never fall back to unbound execution. */
+    execution_binding?: ExecutionBindingInput;
 }
 export interface AutoExecVerdict {
     taskId: string;
-    status: 'refused' | 'skipped' | 'solidified' | 'failed' | 'innovated';
+    status: 'refused' | 'skipped' | 'solidified' | 'failed' | 'innovated' | 'unsafe_to_replay';
+    binding_digest?: `sha256:${string}`;
+    run_id?: string;
+    execution_terminal?: ExecutionResult['executionTerminal'];
+    hub_lifecycle?: {
+        state: 'not_submitted';
+    };
     reason?: string;
     finalStage?: string;
     outcome?: {
@@ -86,6 +95,15 @@ export interface AutoExecDeps {
     validate?: (task: AutoExecTask) => ValidateHook;
     /** Optional adapter/runtime permit gate. Core owns only the seam; adapters own the verification policy. */
     solidifyPermit?: SolidifyPermitGate;
+    /** Bound execution uses the existing root-event journal; composition supplies its authoritative external checks. */
+    executionBinding?: {
+        journal: ExecutionBindingJournal;
+        authority: BindingAuthorityChecks;
+        now?: () => number;
+        maxRuntimeMs?: number;
+        maxFiles?: number;
+        maxLines?: number;
+    };
     /**
      * Optional open-PR dedup: when set, before spawning an agent the task's signals are compared against open PR
      * titles/branches; a strong overlap yields a 'skipped' verdict so the daemon never re-implements work that is

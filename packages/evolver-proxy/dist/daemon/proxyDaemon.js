@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util } from '@evomap/evolver-core';
+import { mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError } from '@evomap/evolver-adapter-public';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
@@ -10,6 +10,7 @@ import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
+const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
 export const DEFAULT_IPC_PORT = 19820;
 // V1 local-proxy compatibility contract; independent of the V2 mailbox envelope schema.
 const PROXY_PROTOCOL_VERSION = '0.1.0';
@@ -35,6 +36,27 @@ const SYNC_ASSET_SUBMIT_TYPE_RANK = {
 const SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY = 'sync_asset_submit:idempotency_scope:v1';
 const SYNC_ASSET_SUBMIT_DIRECT_RETRY_GRACE_MS = 30_000;
 const DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS = 15_000;
+function withSynchronousPublishStatus(value, publishStatus) {
+    const body = isRecordValue(value) ? { ...value } : { receipt: value };
+    return { ...body, publish_status: publishStatus, queued: false };
+}
+function legacySynchronousResultStatus(result) {
+    if (result.ok)
+        return 'accepted';
+    // 202 表示兼容层已持久化但尚未完成；校验或终态/传输失败即使在 mailbox
+    // 中保留可重试意图，聚合仍归类为 failed。
+    return result.statusCode === 202 || result.error === 'publish_pending' ? 'pending' : 'failed';
+}
+function summarizeLegacySynchronousResults(results) {
+    const statuses = new Set(results.map(legacySynchronousResultStatus));
+    // publish_status 表示聚合终态，而 queued 独立表示是否仍有 durable mailbox 工作。
+    // 因此 pending+failed 必须是 failed/true：不能掩盖失败，也不能谎报没有排队。
+    if (statuses.has('failed') || statuses.size === 0)
+        return { publishStatus: 'failed', queued: statuses.has('pending') };
+    if (statuses.has('pending'))
+        return { publishStatus: 'pending', queued: true };
+    return { publishStatus: 'accepted', queued: false };
+}
 class OutboundHubModeMismatchError extends Error {
     retryable = true;
     retryAfterMs = 1_000;
@@ -100,6 +122,8 @@ export class ProxyDaemon {
     scheduledForceUpdateKey;
     traceBackfillDraining = false;
     loopWakeHandler;
+    /** 守护进程停止时取消宿主验证。 */
+    publishAbortController = new AbortController();
     constructor(deps) {
         this.deps = deps;
         this.now = deps.now ?? (() => Date.now());
@@ -265,6 +289,8 @@ export class ProxyDaemon {
     async start() {
         if (this.started)
             throw new Error('ProxyDaemon 已启动');
+        if (this.publishAbortController.signal.aborted)
+            this.publishAbortController = new AbortController();
         try {
             this.daemon.start();
             this.ipc = new mailbox.MailboxIpcServer({
@@ -512,6 +538,9 @@ export class ProxyDaemon {
     async stop() {
         this.started = false;
         this.lifecycleArmed = false;
+        if (!this.publishAbortController.signal.aborted) {
+            this.publishAbortController.abort(new Error('proxy_daemon_stopped'));
+        }
         this.nextTickDueAt = undefined;
         if (this.forceUpdateTimer) {
             clearTimeout(this.forceUpdateTimer);
@@ -1029,17 +1058,66 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /conversation/distill') {
             const body = (await ctx.readJson());
+            const publishRequested = body['publish'] === true;
+            const abortPublish = () => {
+                if (ctx.signal?.aborted)
+                    return true;
+                if (!this.publishAbortController.signal.aborted)
+                    return false;
+                // 守护进程停止时仍需结束开放的响应，否则 IPC server.close() 会等待该连接而无法完成停机。
+                if (!ctx.res.destroyed && !ctx.res.writableEnded) {
+                    // 'blocked' (not 'failed'): the request was never queued, it was intercepted by
+                    // shutdown; the 503 + error field already explains why.
+                    ctx.json(503, { error: 'proxy_shutting_down', publish_status: 'blocked', queued: false });
+                }
+                return true;
+            };
             if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
                 ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
                 return true;
             }
-            const distill = await hubNs.distillConversation(body, { persist: body.persist === true, store: this.assetStore });
+            // 请求已取消时禁止继续生成或持久化发布草稿，避免把取消前的陈旧状态留下。
+            if (publishRequested && abortPublish())
+                return true;
+            const verifiedExecution = publishRequested
+                ? await resolveVerifiedExecutionAfterPreflight(this.deps.publishExecutionVerifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal, ...(ctx.signal ? [ctx.signal] : [])])
+                : undefined;
+            if (publishRequested && abortPublish())
+                return true;
+            const distill = await hubNs.distillConversation(body, {
+                // 调用方明确要求持久化时，即使发布被证据或质量闸门拦截，也保留可审查草稿；永不因此进入队列。
+                persist: body.persist === true,
+                store: this.assetStore,
+                ...(verifiedExecution ? { verifiedExecution } : {}),
+            });
+            if (publishRequested && abortPublish())
+                return true;
             if (!distill.ok) {
-                ctx.json(200, { ...distill, queued: false, submission: null });
+                ctx.json(200, {
+                    ...distill,
+                    queued: false,
+                    submission: null,
+                    publish_status: publishRequested ? 'blocked' : 'not_requested',
+                });
                 return true;
             }
             let submission = null;
-            if (body['publish'] === true) {
+            if (publishRequested) {
+                if (abortPublish())
+                    return true;
+                // 未达到可复用质量阈值的蒸馏结果仍可作为有用草稿，
+                // 但不得进入出站发布队列。安全与内容完整性闸门保持严格，质量负责晋级。
+                if (distill.publishable !== true) {
+                    const reason = distill.quality.ok && verifiedExecution === undefined ? 'execution_evidence' : 'quality_gate';
+                    ctx.json(200, {
+                        ...distill,
+                        queued: false,
+                        submission: null,
+                        publish_blocked: reason,
+                        publish_status: 'blocked',
+                    });
+                    return true;
+                }
                 const env = mailbox.createEnvelope({
                     type: 'asset_submit',
                     payload: {
@@ -1059,7 +1137,12 @@ export class ProxyDaemon {
                     this.notifyNewOutbound();
                 submission = { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored };
             }
-            ctx.json(200, { ...distill, queued: submission !== null, submission });
+            ctx.json(200, {
+                ...distill,
+                queued: submission !== null,
+                submission,
+                publish_status: publishRequested ? 'queued' : 'not_requested',
+            });
             return true;
         }
         if (ctx.route === 'POST /agent/search') {
@@ -1207,23 +1290,37 @@ export class ProxyDaemon {
         });
     }
     async publishAssetSubmitSynchronously(ctx, items, composeRecipe = true) {
+        const abortSynchronousPublish = () => {
+            if (ctx.signal?.aborted)
+                return true;
+            if (!this.publishAbortController.signal.aborted)
+                return false;
+            if (!ctx.res.destroyed && !ctx.res.writableEnded) {
+                ctx.json(503, { error: 'proxy_shutting_down', publish_status: 'failed', queued: false });
+            }
+            return true;
+        };
         const classified = classifySynchronousAssetSubmit(items);
         if (!classified.ok) {
             ctx.json(422, { error: classified.error, code: 'invalid_asset_submit' });
             return;
         }
         if (classified.kind === 'wire') {
+            if (abortSynchronousPublish())
+                return;
             const envelope = this.createSynchronousAssetSubmitEnvelope(classified.bundle, undefined, ctx.now, composeRecipe);
             this.writeSynchronousAssetSubmitOutcome(ctx, await this.publishSynchronousBundle(envelope));
             return;
         }
         const results = [];
         for (const item of classified.items) {
-            const converted = await convertLegacyLooseAsset(item);
+            const converted = await convertLegacyLooseAsset(item, this.deps.publishExecutionVerifier, this.deps.publishExecutionVerifierTimeoutMs, ctx.signal, this.publishAbortController.signal);
             if (!converted.ok) {
                 results.push({ ok: false, error: converted.error, statusCode: 422 });
                 continue;
             }
+            if (abortSynchronousPublish())
+                return;
             const envelope = this.createSynchronousAssetSubmitEnvelope(converted.bundle, 'v1_loose_asset_compat', ctx.now, composeRecipe);
             const outcome = await this.publishSynchronousBundle(envelope);
             if (outcome.kind === 'accepted') {
@@ -1253,10 +1350,13 @@ export class ProxyDaemon {
                 });
             }
         }
+        const summary = summarizeLegacySynchronousResults(results);
         ctx.json(200, {
             published: results.filter((result) => result.ok).length,
             total: results.length,
             results,
+            publish_status: summary.publishStatus,
+            queued: summary.queued,
         });
     }
     createSynchronousAssetSubmitEnvelope(bundle, source, now, composeRecipe = true) {
@@ -1510,13 +1610,19 @@ export class ProxyDaemon {
     }
     writeSynchronousAssetSubmitOutcome(ctx, outcome) {
         if (outcome.kind === 'accepted') {
-            ctx.json(200, outcome.receipt);
+            ctx.json(200, withSynchronousPublishStatus(outcome.receipt, 'accepted'));
         }
         else if (outcome.kind === 'failed') {
-            ctx.json(outcome.statusCode, outcome.body);
+            ctx.json(outcome.statusCode, withSynchronousPublishStatus(outcome.body, 'failed'));
         }
         else {
-            ctx.json(202, { status: 'pending', message_id: outcome.messageId, durable: true });
+            ctx.json(202, {
+                status: 'pending',
+                message_id: outcome.messageId,
+                durable: true,
+                publish_status: 'pending',
+                queued: true,
+            });
         }
     }
     async handleAtpRoute(ctx) {
@@ -1760,14 +1866,113 @@ function isClearlyLegacyLooseAsset(value) {
         return false;
     return ['content', 'summary', 'strategy'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
-async function convertLegacyLooseAsset(value) {
+async function resolveVerifiedExecution(verifier, input, expectedValidation, timeoutMs = DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS, parentSignals = []) {
+    if (!verifier)
+        return undefined;
+    if (parentSignals.some((signal) => signal.aborted))
+        return undefined;
+    const boundedTimeout = Number.isSafeInteger(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS;
+    const controller = new AbortController();
+    let timer;
+    let resolveAborted;
+    const aborted = new Promise((resolve) => {
+        resolveAborted = () => resolve(null);
+    });
+    const onParentAbort = () => {
+        if (!controller.signal.aborted)
+            controller.abort(new Error('publish_verification_aborted'));
+        resolveAborted();
+    };
+    for (const signal of parentSignals)
+        signal.addEventListener('abort', onParentAbort, { once: true });
+    try {
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => {
+                if (!controller.signal.aborted)
+                    controller.abort(new Error('publish_verification_timeout'));
+                resolve(null);
+            }, boundedTimeout);
+            timer.unref?.();
+        });
+        const candidate = await Promise.race([verifier(input, controller.signal), timeout, aborted]);
+        if (!candidate || !Array.isArray(candidate.trace) || candidate.trace.length === 0)
+            return undefined;
+        if (controller.signal.aborted)
+            return undefined;
+        if (candidate.trace.some((row) => (!row
+            || typeof row.command !== 'string'
+            || row.command.trim().length === 0
+            || !Number.isInteger(row.exit)
+            || row.exit !== 0)))
+            return undefined;
+        if (candidate.trace.length !== expectedValidation.length)
+            return undefined;
+        if (candidate.trace.some((row, index) => row.command.trim() !== expectedValidation[index]))
+            return undefined;
+        return { ...candidate, validation: expectedValidation };
+    }
+    catch {
+        return undefined;
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+        for (const signal of parentSignals)
+            signal.removeEventListener('abort', onParentAbort);
+        if (!controller.signal.aborted)
+            controller.abort(new Error('publish_verification_complete'));
+    }
+}
+function declaredValidationCommands(input) {
+    const raw = input.validation ?? input.verification ?? (input.execution && typeof input.execution === 'object' && !Array.isArray(input.execution)
+        ? input.execution['validation']
+        : undefined);
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 8)
+        return undefined;
+    const commands = raw.map((command) => typeof command === 'string' ? command.trim() : '');
+    if (commands.some((command) => command.length === 0 || command.length > 180 || !verify.isValidationCommandAllowed(command))) {
+        return undefined;
+    }
+    return commands;
+}
+async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs, parentSignals = []) {
+    if (!verifier)
+        return undefined;
+    if (parentSignals.some((signal) => signal.aborted))
+        return undefined;
+    const preflight = await hubNs.distillConversation(input, { persist: false });
+    if (parentSignals.some((signal) => signal.aborted) || !preflight.ok || !preflight.quality.ok)
+        return undefined;
+    const validation = declaredValidationCommands(input);
+    if (!validation)
+        return undefined;
+    // 只把通过质量与命令策略预检的最小验证输入交给宿主，绝不转发调用方的 execution/status/trace。
+    return resolveVerifiedExecution(verifier, { validation }, validation, timeoutMs, parentSignals);
+}
+async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTimeoutMs, ...parentSignals) {
     const normalized = legacyLooseDistillInput(value);
     if (!normalized.ok)
         return normalized;
     try {
-        const distilled = await hubNs.distillConversation(normalized.input, { persist: false });
-        if (!distilled.ok) {
+        const verifiedExecution = await resolveVerifiedExecutionAfterPreflight(verifyExecution, normalized.input, verifyExecutionTimeoutMs, parentSignals.filter((signal) => signal !== undefined));
+        const distilled = await hubNs.distillConversation(normalized.input, {
+            persist: false,
+            ...(verifiedExecution ? { verifiedExecution } : {}),
+        });
+        if (!distilled.ok)
             return { ok: false, error: `legacy_distill_${safeIdentifier(distilled.reason)}` };
+        // Mirror the /conversation/distill route: a draft that passed the quality gate but was
+        // blocked only by the missing host execution evidence must not be reported as a
+        // quality-gate failure.
+        if (distilled.publishable !== true) {
+            return {
+                ok: false,
+                error: distilled.quality.ok && verifiedExecution === undefined
+                    ? 'legacy_distill_execution_evidence'
+                    : 'legacy_distill_quality_gate',
+            };
         }
         const gene = {
             ...distilled.gene,
@@ -1899,7 +2104,7 @@ function parseLegacyCategory(value) {
     return { ok: false, error: 'legacy category is invalid' };
 }
 function deterministicDistilledAsset(asset) {
-    const draft = { ...asset, asset_id: '' };
+    const draft = wire.stripGeneHints({ ...asset, asset_id: '' });
     // `_source` is local distiller provenance and is not part of the current GEP Gene schema.
     // It also contains a wall-clock timestamp, so it must not influence compatibility asset ids.
     delete draft['_source'];

@@ -43,6 +43,7 @@ interface NormalizedExecution {
         files: number;
         lines: number;
     };
+    untrustedStatusClaim: boolean;
 }
 interface NormalizedConversation {
     text: string;
@@ -65,6 +66,22 @@ export interface QualityGate {
 export interface ConversationDistillOptions {
     persist?: boolean;
     store?: AssetStoreProvider;
+    /**
+     * 仅由受信任的宿主验证器注入。HTTP/MCP 请求体中的 execution 不能替代此证据。
+     */
+    verifiedExecution?: ConversationDistillVerifiedExecution;
+}
+export interface ConversationDistillVerifiedExecution {
+    trace: ReadonlyArray<{
+        command: string;
+        exit: number;
+        summary?: string;
+    }>;
+    validation?: readonly string[];
+    blast_radius?: {
+        files?: number;
+        lines?: number;
+    };
 }
 export type ConversationDistillResult = {
     ok: false;
@@ -80,6 +97,8 @@ export type ConversationDistillResult = {
     signals: string[];
     gene: AssetRecord;
     capsule: AssetRecord;
+    /** 仅当质量闸门通过且草稿可以进入发布流程时为 true。 */
+    publishable: boolean;
 };
 export declare function inferSignals(text: string, providedSignals?: unknown): string[];
 export declare function evaluateGate(input: ConversationDistillInput, normalized: NormalizedConversation): QualityGate;

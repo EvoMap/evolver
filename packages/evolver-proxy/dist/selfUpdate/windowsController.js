@@ -583,7 +583,9 @@ function waitForStartupAttestation(child, token, timeoutMs) {
             clearTimeout(timer);
             readable.off('data', onData);
             readable.off('end', onEnd);
-            readable.off('error', onError);
+            // Keep the error listener attached after timeout. stopNativeChild may close
+            // the child pipe with ECONNRESET; removing it here turns expected cleanup
+            // into an unhandled error in the test runner and in long-lived controllers.
             resolve(result);
         };
         const onData = (chunk) => {

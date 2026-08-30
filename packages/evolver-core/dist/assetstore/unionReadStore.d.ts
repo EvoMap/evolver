@@ -3,6 +3,7 @@ export declare class UnionReadStore implements AssetStoreProvider {
     private readonly primary;
     private readonly readOnly;
     readonly putConditional?: (asset: AssetRecord, options?: ConditionalPutOptions) => Promise<ConditionalPutResult>;
+    readonly putBundle?: (assets: readonly AssetRecord[]) => Promise<PutResult[]>;
     readonly putFrozen?: (record: AssetRecord) => Promise<PutResult>;
     readonly putFrozenConditional?: (record: AssetRecord, options?: ConditionalPutOptions) => Promise<ConditionalPutResult>;
     readonly findByLogicalId?: (id: string, limit?: number, kind?: AssetKind) => Promise<AssetRecord[]>;

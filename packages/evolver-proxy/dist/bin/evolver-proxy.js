@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootstrap as coreBootstrap, daemon, hub as hubNs, mailbox, util } from '@evomap/evolver-core';
+import { bootstrap as coreBootstrap, daemon, hub as hubNs, mailbox, util, verify } from '@evomap/evolver-core';
 import { AtpHubClient, connectPublicHub, globalFetchLike, isNodeSecret, parseNodeSecretVersion } from '@evomap/evolver-adapter-public';
 import { ProxyDaemon } from '../daemon/proxyDaemon.js';
 import { resolveHubMode, resolveHubUrl } from '../daemon/selectHub.js';
@@ -382,6 +382,7 @@ export function proxyUsage(command = 'evolver-proxy') {
         '',
         'Useful options are configured through env or EVOLVER_ENV_FILE:',
         '  EVOLVER_IPC_PORT, EVOLVER_IPC_TOKEN, EVOLVER_PROXY_SETTINGS_FILE',
+        '  EVOLVER_NATIVE_PUBLISH_VERIFIER=1, EVOLVER_PUBLISH_VALIDATION_ROOT=<dir> (必须显式设置)',
         '  EVOLVER_SELF_UPDATE, EVOLVER_LLM_TRACE_CAPTURE_BODIES',
         '',
     ].join('\n');
@@ -656,6 +657,7 @@ export function createProxyDaemonDeps(options) {
     const env = options.env ?? process.env;
     const traceBackfill = resolveTraceBackfillConfig(env);
     const heartbeatIntervalMs = positiveIntegerEnv(env['HEARTBEAT_INTERVAL_MS']);
+    const publishExecutionVerifier = resolveNativePublishExecutionVerifier(env);
     return {
         hub: options.runtime.hub,
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
@@ -673,6 +675,57 @@ export function createProxyDaemonDeps(options) {
         ...(options.runtime.helloMode ? { helloMode: options.runtime.helloMode } : {}),
         ...(selfUpdate ? { selfUpdate } : {}),
         ...(traceBackfill ? { traceBackfill } : {}),
+        ...(publishExecutionVerifier ? { publishExecutionVerifier } : {}),
+    };
+}
+/**
+ * 仅在显式启用且具备完整 OS 隔离时接入本地发布验证器；默认仍保持 draft-only。
+ * 这样不会把普通桌面进程意外变成可发布执行器，也不会在 Windows/macOS 上静默降级为弱隔离。
+ */
+function resolveNativePublishExecutionVerifier(env) {
+    if (env['EVOLVER_NATIVE_PUBLISH_VERIFIER']?.trim() !== '1')
+        return undefined;
+    // 原生发布验证器只能在完整的 OS 隔离可用时装配。Windows/macOS 目前没有
+    // 与 Linux namespace、只读文件系统和 cgroup 等价的实现，必须保持 draft-only，
+    // 不能先暴露一个运行时必然失败的“验证器”能力。
+    try {
+        if (!verify.readOnlyIsolationAvailable())
+            return undefined;
+    }
+    catch {
+        // 隔离探测本身失败也必须保持 fail-closed，而不能阻止代理启动。
+        return undefined;
+    }
+    // 发布验证必须绑定到调用方明确配置的项目根目录；回退到 daemon 当前目录会让验证对象与发布对象脱钩。
+    const configuredRoot = env['EVOLVER_PUBLISH_VALIDATION_ROOT']?.trim();
+    if (!configuredRoot)
+        return undefined;
+    const validationRoot = resolve(configuredRoot);
+    return async (input, signal) => {
+        const commands = Array.isArray(input.validation)
+            ? input.validation.filter((value) => typeof value === 'string').map((value) => value.trim()).filter(Boolean)
+            : [];
+        if (commands.length === 0
+            || commands.length > 8
+            || !Array.isArray(input.validation)
+            || input.validation.length !== commands.length
+            || commands.some((command) => command.length > 180 || !verify.isValidationCommandAllowed(command))
+            || signal.aborted)
+            return null;
+        const result = await verify.runSandboxedValidation(commands, validationRoot, {
+            requireIsolation: true,
+            signal,
+        });
+        if (signal.aborted || !result.passed || result.results.length !== commands.length)
+            return null;
+        return {
+            validation: commands,
+            trace: result.results.map((row) => ({
+                command: row.cmd,
+                exit: row.exitCode ?? 1,
+                ...(row.stdoutSummary ? { summary: row.stdoutSummary } : {}),
+            })),
+        };
     };
 }
 function positiveIntegerEnv(value) {

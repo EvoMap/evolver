@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-mcp",
-  "version": "2.0.20",
+  "version": "2.0.0-beta.23",
   "private": false,
   "type": "module",
   "engines": {
@@ -20,10 +20,14 @@
     "./stdio": {
       "types": "./dist/stdio.d.ts",
       "default": "./dist/stdio.js"
+    },
+    "./product-bridge": {
+      "types": "./dist/productBridgeShim.d.ts",
+      "default": "./dist/productBridgeShim.js"
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.20",
+    "@evomap/evolver-core": "2.0.0-beta.23",
     "smol-toml": "^1.6.1"
   },
   "repository": {
@@ -32,7 +36,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "latest"
+    "tag": "v2-beta"
   },
   "files": [
     "dist/",

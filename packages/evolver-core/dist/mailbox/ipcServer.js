@@ -84,6 +84,20 @@ export class MailboxIpcServer {
         return new Promise((resolve, reject) => this.server.close((e) => (e ? reject(e) : resolve())));
     }
     async handle(req, res) {
+        const requestAbort = new AbortController();
+        const abortRequest = () => {
+            if (!requestAbort.signal.aborted)
+                requestAbort.abort(new Error('ipc_request_aborted'));
+        };
+        // 请求/响应 close 既可能表示客户端提前断开，也可能只是正常响应结束。
+        // 只有响应尚未完成时才传播取消，避免正常返回把后台验证误判为客户端取消。
+        const abortIfResponseOpen = () => {
+            if (!res.writableEnded && !res.writableFinished)
+                abortRequest();
+        };
+        req.once('aborted', abortIfResponseOpen);
+        req.socket.once('close', abortIfResponseOpen);
+        res.once('close', abortIfResponseOpen);
         try {
             const ra = req.socket.remoteAddress ?? '';
             if (!LOOPBACK.has(ra))
@@ -109,6 +123,7 @@ export class MailboxIpcServer {
                     route,
                     now,
                     store: this.store,
+                    signal: requestAbort.signal,
                     readJson: () => this.readJson(req),
                     json: (code, body) => this.json(res, code, body),
                 });
@@ -214,6 +229,11 @@ export class MailboxIpcServer {
         }
         catch (e) {
             return this.json(res, 400, { error: e instanceof Error ? e.message : String(e), code: 'invalid_request' });
+        }
+        finally {
+            req.off('aborted', abortIfResponseOpen);
+            req.socket.off('close', abortIfResponseOpen);
+            res.off('close', abortIfResponseOpen);
         }
     }
     readJson(req) {

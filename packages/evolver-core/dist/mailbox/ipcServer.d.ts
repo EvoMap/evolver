@@ -22,6 +22,8 @@ export interface IpcRouteContext {
     route: string;
     now: number;
     store: MailboxStore;
+    /** 请求连接中止或响应提前关闭时触发；长任务应将其传给可取消的宿主执行器。 */
+    signal?: AbortSignal;
     readJson: () => Promise<unknown>;
     json: (code: number, body: unknown) => void;
 }

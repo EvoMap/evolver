@@ -308,6 +308,11 @@ const ALLOW_ENV_KEYS = new Set([
     'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'TERM', 'TZ', 'PWD', 'HOSTNAME',
     'TMPDIR', 'TMP', 'TEMP', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
     'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+    // Node's built-in fetch (undici) does NOT honor HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1 is set (Node 20+).
+    // An agent CLI that uses global fetch (e.g. the gemini CLI on system Node) is otherwise unreachable behind a
+    // proxy even though the proxy vars above are allowed. This is a neutral runtime knob, not a secret — pair it
+    // with the proxy vars so a proxied agent can actually reach its API. Absent (unset) → no-op.
+    'NODE_USE_ENV_PROXY',
     // Windows OS essentials (absent on POSIX → no-op there): a process can't run, resolve PATHEXT shims, or find
     // its own per-user config/auth dir without these. They are OS runtime vars, NOT app secrets — the secret
     // env (NODE_SECRET/AWS_*/GH_TOKEN/vendor keys) is still denied by the whitelist. Their absence is why an
@@ -362,6 +367,78 @@ class ExecBridgeRunCancelledError extends Error {
         this.name = 'ExecBridgeRunCancelledError';
     }
 }
+/**
+ * 绑定执行不能接受无法收到权威截止时间取消信号的旧验证器或写入器。
+ * AbortSignal 本身是协作式的；先拒绝不暴露该信号的回调，避免旧 hook
+ * 被静默地当作无界工作运行。
+ */
+export class ExecBridgeCancellationContractError extends Error {
+    constructor(hook) {
+        super(`bound execution ${hook} must accept AbortSignal so deadline cancellation can be enforced`);
+        this.name = 'ExecBridgeCancellationContractError';
+    }
+}
+class ExecBridgeRunTimedOutError extends Error {
+    constructor() {
+        super('exec bridge run timed out');
+        this.name = 'ExecBridgeRunTimedOutError';
+    }
+}
+/**
+ * 将绑定运行时限制应用到完整 bridge 生命周期，而不仅是 agent 子进程。验证和补丁持久化等每个操作都会
+ * 收到同一个派生信号。无法接受该信号的回调会在绑定运行启动前被拒绝（见
+ * ExecBridgeCancellationContractError），因此下面的 Promise.race 仅作为不遵守协作式取消约定时的最后
+ * 响应边界，而不是隐式放行旧 hook。
+ */
+function createExecutionDeadline(parentSignal, maxRuntimeMs) {
+    const controller = new AbortController();
+    let expired = false;
+    let rejectInterrupt = () => { };
+    const interrupt = new Promise((_, reject) => { rejectInterrupt = reject; });
+    const onParentAbort = () => {
+        if (controller.signal.aborted)
+            return;
+        controller.abort(parentSignal?.reason ?? new ExecBridgeRunCancelledError());
+        rejectInterrupt(new ExecBridgeRunCancelledError());
+    };
+    const timer = maxRuntimeMs === undefined ? undefined : setTimeout(() => {
+        expired = true;
+        controller.abort(new ExecBridgeRunTimedOutError());
+        rejectInterrupt(new ExecBridgeRunTimedOutError());
+    }, Math.min(maxRuntimeMs, 2_147_483_647));
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    if (parentSignal?.aborted)
+        onParentAbort();
+    return {
+        // 未配置本地运行时定时器时保留调用方显式传入的 parent signal，维持既有取消身份；绑定运行始终使用
+        // 带截止时间的派生信号。
+        signal: maxRuntimeMs === undefined && parentSignal ? parentSignal : controller.signal,
+        expired: () => expired,
+        assertActive: () => {
+            if (expired)
+                throw new ExecBridgeRunTimedOutError();
+            if (parentSignal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+        },
+        run: async (operation) => {
+            if (expired)
+                throw new ExecBridgeRunTimedOutError();
+            if (parentSignal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+            const value = await Promise.race([Promise.resolve().then(operation), interrupt]);
+            if (expired)
+                throw new ExecBridgeRunTimedOutError();
+            if (parentSignal?.aborted)
+                throw new ExecBridgeRunCancelledError();
+            return value;
+        },
+        dispose: () => {
+            if (timer)
+                clearTimeout(timer);
+            parentSignal?.removeEventListener('abort', onParentAbort);
+        },
+    };
+}
 class AgentRunBeforeManagedWorktreeError extends Error {
     constructor() {
         super('agent run failed before a managed worktree was created');
@@ -385,6 +462,15 @@ function cancelledExecutionResult(run) {
         outcome: { status: 'failed', score: 0.1, reason: 'execution cancelled' },
         strongEvidence: false,
         failureKind: 'cancelled',
+        exitCode: run?.exitCode ?? null,
+        ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
+    };
+}
+function timedOutExecutionResult(run) {
+    return {
+        outcome: { status: 'failed', score: 0.1, reason: 'execution timed out' },
+        strongEvidence: false,
+        failureKind: 'timeout',
         exitCode: run?.exitCode ?? null,
         ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
     };
@@ -506,7 +592,15 @@ export function makeClaudeExecBridge(opts, internal) {
         : spec.makeRunner(opts.agentOptions));
     const git = opts.git ?? defaultGitRunner;
     const gitPatchWriter = opts.gitPatchWriter ?? (git === defaultGitRunner ? defaultGitPatchWriter : undefined);
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = Math.min(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.executionLimits?.maxRuntimeMs ?? Number.MAX_SAFE_INTEGER);
+    // 绑定 patch writer 属于受保护的执行生命周期。没有第四个 AbortSignal 参数的旧三参数 writer 无法
+    // 观察我们传入的取消信号，不能让它在截止时间后继续运行。
+    if (opts.executionLimits && opts.gitPatchWriter && opts.gitPatchWriter.length < 4) {
+        throw new ExecBridgeCancellationContractError('gitPatchWriter');
+    }
+    if (opts.executionLimits && opts.validate && opts.validate.length < 4) {
+        throw new ExecBridgeCancellationContractError('validate');
+    }
     // secure by default; only THIS runner's auth env reaches it (claude never gets OPENAI_, codex never ANTHROPIC_, #66)
     const agentEnv = opts.scrubEnv === false ? undefined : scrubAgentEnv(process.env, { allowPrefixes: spec.envAllow.prefixes, ...(spec.envAllow.keys ? { allowKeys: spec.envAllow.keys } : {}) });
     // Fail-fast when a run that can write/execute against the tree with no inner sandbox we control is requested
@@ -559,312 +653,359 @@ export function makeClaudeExecBridge(opts, internal) {
             ...(opts.personality ? { personality: opts.personality.currentState() } : {}),
         });
         assertRepoCwdStillAllowed();
-        // Isolation: atomically reserve an unpredictable private temp container, then let git create the absent
-        // worktree path inside it. Cleanup is armed only after git succeeds and the resulting directory is verified.
-        const isolate = opts.isolation === 'worktree';
-        const managedCursorIsolation = isolate && opts.runner === 'cursor' && resume?.runner === 'cursor';
-        if (opts.signal?.aborted)
-            return cancelledExecutionResult(undefined);
-        const reservation = isolate ? reserveWorktreePath() : undefined;
-        let workDir = reservation?.workDir ?? repoCwd;
-        let worktreeIdentity;
-        let managedCursorIdentity;
-        const managedWorktreeName = managedCursorIsolation ? `evolver-${randomUUID()}` : undefined;
-        let result;
-        let observedRun;
-        let patchRef;
-        let ownsPatchRef = false;
-        let preservePatchRef = false;
-        let failedProof;
-        const proofGit = async (args, cwd, checkCancellationAfter = true) => {
-            if (opts.signal?.aborted)
-                throw new ExecBridgeRunCancelledError();
-            if (cwd === repoCwd)
-                assertRepoCwdStillAllowed();
-            try {
-                const output = await git(args, cwd, opts.signal);
-                if (checkCancellationAfter && opts.signal?.aborted)
-                    throw new ExecBridgeRunCancelledError();
-                return output;
-            }
-            catch (error) {
-                if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
-                    throw error;
-                if (error instanceof GitProofError)
-                    throw error;
-                throw new GitProofError('git state proof failed');
-            }
-        };
+        const executionDeadline = createExecutionDeadline(opts.signal, opts.executionLimits?.maxRuntimeMs);
         try {
-            if (reservation) {
-                await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], repoCwd, false);
-                worktreeIdentity = verifyWorktreePath(reservation);
-                if (opts.signal?.aborted)
-                    throw new ExecBridgeRunCancelledError();
-            }
-            if (!reservation)
-                assertRepoCwdStillAllowed();
-            const run = await agent(prompt, {
-                cwd: workDir,
-                timeoutMs,
-                ...(agentEnv ? { env: agentEnv } : {}),
-                ...(opts.signal ? { signal: opts.signal } : {}),
-                ...(resume ? { resume } : {}),
-                ...(managedWorktreeName ? { managedWorktreeName } : {}),
-            });
-            observedRun = run;
-            if (managedWorktreeName) {
-                try {
+            // Isolation: atomically reserve an unpredictable private temp container, then let git create the absent
+            // worktree path inside it. Cleanup is armed only after git succeeds and the resulting directory is verified.
+            const isolate = opts.isolation === 'worktree';
+            const managedCursorIsolation = isolate && opts.runner === 'cursor' && resume?.runner === 'cursor';
+            if (executionDeadline.expired())
+                return timedOutExecutionResult(undefined);
+            if (opts.signal?.aborted)
+                return cancelledExecutionResult(undefined);
+            const reservation = isolate ? reserveWorktreePath() : undefined;
+            let workDir = reservation?.workDir ?? repoCwd;
+            let worktreeIdentity;
+            let managedCursorIdentity;
+            const managedWorktreeName = managedCursorIsolation ? `evolver-${randomUUID()}` : undefined;
+            let result;
+            let observedRun;
+            let patchRef;
+            let ownsPatchRef = false;
+            let preservePatchRef = false;
+            let failedProof;
+            const proofGit = async (args, cwd, checkCancellationAfter = true) => {
+                executionDeadline.assertActive();
+                if (cwd === repoCwd)
                     assertRepoCwdStillAllowed();
-                    managedCursorIdentity = await resolveManagedCursorWorktree(run.managedWorktreePath, managedWorktreeName, repoCwd, git, cursorWorktreeRoot);
+                try {
+                    const output = await executionDeadline.run(() => git(args, cwd, executionDeadline.signal));
+                    if (checkCancellationAfter)
+                        executionDeadline.assertActive();
+                    return output;
                 }
                 catch (error) {
-                    if (run.failureKind === 'cancelled' || opts.signal?.aborted)
-                        throw new ExecBridgeRunCancelledError();
-                    if (!run.ok)
-                        throw new AgentRunBeforeManagedWorktreeError();
-                    if (error instanceof UnsafeWorktreePathError) {
-                        throw new GitProofError(`Cursor managed worktree verification failed: ${error.message}`);
-                    }
-                    throw error;
-                }
-                if (!managedCursorIdentity) {
-                    if (run.failureKind === 'cancelled' || opts.signal?.aborted)
-                        throw new ExecBridgeRunCancelledError();
-                    if (!run.ok)
-                        throw new AgentRunBeforeManagedWorktreeError();
-                    throw new GitProofError('Cursor managed worktree could not be verified');
-                }
-                workDir = managedCursorIdentity.path;
-            }
-            // Learning trace (slice 2): one model.called per agent spawn — the headless runner is one opaque
-            // model-driven turn from the bridge's viewpoint (per-request fidelity arrives via the proxy's llm_turn
-            // records; recordLlmTurn folds those when a caller has them). Best-effort: never affects the result.
-            try {
-                opts.traceRecorder?.modelCalled({
-                    ...(opts.runner !== undefined ? { provider: opts.runner } : { provider: 'claude' }),
-                    ...(opts.agentOptions?.model !== undefined ? { model: opts.agentOptions.model } : {}),
-                    ...(run.exitCode !== undefined && run.exitCode !== null ? { stopReason: `exit_${run.exitCode}` } : {}),
-                });
-                // Prefer an authoritative native session id from the runner when present. This covers Gemini and
-                // any future harness that reports a session id without also writing proxy llm_turn rows.
-                if (typeof run.sessionId === 'string' && run.sessionId.length > 0) {
-                    try {
-                        opts.traceRecorder?.bindSessionId(run.sessionId);
-                    }
-                    catch { /* observability only */ }
-                }
-                if (!run.ok) {
-                    opts.traceRecorder?.toolFailed({
-                        toolName: 'agent_runner',
-                        error: run.error ?? run.failureKind ?? 'agent run failed',
-                    });
-                }
-            }
-            catch { /* trace emission is observability only */ }
-            if (run.failureKind === 'cancelled' || opts.signal?.aborted)
-                throw new ExecBridgeRunCancelledError();
-            // A worktree can contain three independent change surfaces after the agent exits: staged tracked changes,
-            // unstaged tracked changes, and untracked files. `git diff` alone sees only the second. In an isolated
-            // worktree it is safe to mark untracked files intent-to-add temporarily, which makes one `git diff HEAD`
-            // snapshot cover all three without staging their contents or disturbing the agent's existing staged state.
-            // Reset only those temporary index entries before validation so hooks observe the state the agent left.
-            const untrackedFiles = isolate
-                ? (await proofGit(['ls-files', '--others', '--exclude-standard', '-z'], workDir)).split('\0').filter(Boolean)
-                : [];
-            if (untrackedFiles.length > 0)
-                await proofGit(['add', '--intent-to-add', '--', ...untrackedFiles], workDir);
-            let stat;
-            let changedFiles;
-            let numstat;
-            let patch = '';
-            const resetIntentToAdd = async () => {
-                if (untrackedFiles.length > 0) {
-                    await git(['reset', '--quiet', '--', ...untrackedFiles], workDir);
+                    if (error instanceof ExecBridgeRunCancelledError || error instanceof ExecBridgeRunTimedOutError || opts.signal?.aborted || executionDeadline.expired())
+                        throw error;
+                    if (error instanceof GitProofError)
+                        throw error;
+                    throw new GitProofError('git state proof failed');
                 }
             };
             try {
-                stat = parseGitShortstat(await proofGit(['diff', '--shortstat', 'HEAD'], workDir));
-                changedFiles = (await proofGit(['diff', '--name-only', 'HEAD'], workDir)).split('\n').map((s) => s.trim()).filter(Boolean);
-                numstat = await proofGit(['diff', '--numstat', 'HEAD'], workDir);
-                if (isolate && stat.files > 0) {
-                    if (gitPatchWriter) {
-                        if (workDir === repoCwd)
-                            assertRepoCwdStillAllowed();
-                        patchRef = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
-                        try {
-                            await gitPatchWriter(['diff', '--binary', '--full-index', 'HEAD'], workDir, patchRef, opts.signal, () => { ownsPatchRef = true; });
-                            // A successful writer owns its result even when an older injected implementation ignores the
-                            // optional callback. On rejection, only the callback can prove that a partial file is ours.
-                            ownsPatchRef = true;
-                        }
-                        catch (error) {
-                            if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
-                                throw error;
-                            if (error instanceof SpawnCaptureFinalizeError) {
-                                if (error.result.termination === 'cancelled')
-                                    throw new ExecBridgeRunCancelledError();
-                                if (error.result.termination === 'timeout')
-                                    throw new GitProofError('git patch capture timed out');
-                            }
-                            if (error instanceof GitProofError)
-                                throw error;
-                            throw new GitProofError('git patch capture failed');
-                        }
+                if (reservation) {
+                    await proofGit(['worktree', 'add', '--detach', workDir, 'HEAD'], repoCwd, false);
+                    worktreeIdentity = verifyWorktreePath(reservation);
+                    if (opts.signal?.aborted)
+                        throw new ExecBridgeRunCancelledError();
+                }
+                if (!reservation)
+                    assertRepoCwdStillAllowed();
+                const run = await executionDeadline.run(() => agent(prompt, {
+                    cwd: workDir,
+                    timeoutMs,
+                    ...(agentEnv ? { env: agentEnv } : {}),
+                    ...(executionDeadline.signal ? { signal: executionDeadline.signal } : {}),
+                    ...(resume ? { resume } : {}),
+                    ...(managedWorktreeName ? { managedWorktreeName } : {}),
+                }));
+                observedRun = run;
+                await executionDeadline.run(() => opts.executionObserver?.onToolDecision?.({
+                    tool_name: 'agent_runner',
+                    decision: 'allowed',
+                    status: run.ok ? 'completed' : 'failed',
+                }, executionDeadline.signal));
+                if (managedWorktreeName) {
+                    try {
+                        assertRepoCwdStillAllowed();
+                        managedCursorIdentity = await executionDeadline.run(() => resolveManagedCursorWorktree(run.managedWorktreePath, managedWorktreeName, repoCwd, git, cursorWorktreeRoot));
                     }
-                    else {
-                        patch = await proofGit(['diff', '--binary', '--full-index', 'HEAD'], workDir);
+                    catch (error) {
+                        if (error instanceof ExecBridgeRunTimedOutError || executionDeadline.expired())
+                            throw new ExecBridgeRunTimedOutError();
+                        if (run.failureKind === 'cancelled' || opts.signal?.aborted)
+                            throw new ExecBridgeRunCancelledError();
+                        if (!run.ok)
+                            throw new AgentRunBeforeManagedWorktreeError();
+                        if (error instanceof UnsafeWorktreePathError) {
+                            throw new GitProofError(`Cursor managed worktree verification failed: ${error.message}`);
+                        }
+                        throw error;
+                    }
+                    if (!managedCursorIdentity) {
+                        if (executionDeadline.expired())
+                            throw new ExecBridgeRunTimedOutError();
+                        if (run.failureKind === 'cancelled' || opts.signal?.aborted)
+                            throw new ExecBridgeRunCancelledError();
+                        if (!run.ok)
+                            throw new AgentRunBeforeManagedWorktreeError();
+                        throw new GitProofError('Cursor managed worktree could not be verified');
+                    }
+                    workDir = managedCursorIdentity.path;
+                }
+                // Learning trace (slice 2): one model.called per agent spawn — the headless runner is one opaque
+                // model-driven turn from the bridge's viewpoint (per-request fidelity arrives via the proxy's llm_turn
+                // records; recordLlmTurn folds those when a caller has them). Best-effort: never affects the result.
+                try {
+                    opts.traceRecorder?.modelCalled({
+                        ...(opts.runner !== undefined ? { provider: opts.runner } : { provider: 'claude' }),
+                        ...(opts.agentOptions?.model !== undefined ? { model: opts.agentOptions.model } : {}),
+                        ...(run.exitCode !== undefined && run.exitCode !== null ? { stopReason: `exit_${run.exitCode}` } : {}),
+                    });
+                    // Prefer an authoritative native session id from the runner when present. This covers Gemini and
+                    // any future harness that reports a session id without also writing proxy llm_turn rows.
+                    if (typeof run.sessionId === 'string' && run.sessionId.length > 0) {
+                        try {
+                            opts.traceRecorder?.bindSessionId(run.sessionId);
+                        }
+                        catch { /* observability only */ }
+                    }
+                    if (!run.ok) {
+                        opts.traceRecorder?.toolFailed({
+                            toolName: 'agent_runner',
+                            error: run.error ?? run.failureKind ?? 'agent run failed',
+                        });
                     }
                 }
-            }
-            catch (error) {
+                catch { /* trace emission is observability only */ }
+                executionDeadline.assertActive();
+                // A worktree can contain three independent change surfaces after the agent exits: staged tracked changes,
+                // unstaged tracked changes, and untracked files. `git diff` alone sees only the second. In an isolated
+                // worktree it is safe to mark untracked files intent-to-add temporarily, which makes one `git diff HEAD`
+                // snapshot cover all three without staging their contents or disturbing the agent's existing staged state.
+                // Reset only those temporary index entries before validation so hooks observe the state the agent left.
+                const untrackedFiles = isolate
+                    ? (await proofGit(['ls-files', '--others', '--exclude-standard', '-z'], workDir)).split('\0').filter(Boolean)
+                    : [];
+                if (untrackedFiles.length > 0)
+                    await proofGit(['add', '--intent-to-add', '--', ...untrackedFiles], workDir);
+                let stat;
+                let changedFiles;
+                let numstat;
+                let patch = '';
+                const resetIntentToAdd = async () => {
+                    if (untrackedFiles.length > 0) {
+                        await executionDeadline.run(() => git(['reset', '--quiet', '--', ...untrackedFiles], workDir, executionDeadline.signal));
+                    }
+                };
+                try {
+                    stat = parseGitShortstat(await proofGit(['diff', '--shortstat', 'HEAD'], workDir));
+                    changedFiles = (await proofGit(['diff', '--name-only', 'HEAD'], workDir)).split('\n').map((s) => s.trim()).filter(Boolean);
+                    numstat = await proofGit(['diff', '--numstat', 'HEAD'], workDir);
+                    if (isolate && stat.files > 0) {
+                        if (gitPatchWriter) {
+                            if (workDir === repoCwd)
+                                assertRepoCwdStillAllowed();
+                            const patchDestination = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
+                            patchRef = patchDestination;
+                            try {
+                                await executionDeadline.run(() => gitPatchWriter(['diff', '--binary', '--full-index', 'HEAD'], workDir, patchDestination, executionDeadline.signal, () => { ownsPatchRef = true; }));
+                                // A successful writer owns its result even when an older injected implementation ignores the
+                                // optional callback. On rejection, only the callback can prove that a partial file is ours.
+                                ownsPatchRef = true;
+                            }
+                            catch (error) {
+                                if (error instanceof ExecBridgeRunCancelledError || error instanceof ExecBridgeRunTimedOutError || opts.signal?.aborted || executionDeadline.expired())
+                                    throw error;
+                                if (error instanceof SpawnCaptureFinalizeError) {
+                                    if (error.result.termination === 'cancelled')
+                                        throw new ExecBridgeRunCancelledError();
+                                    if (error.result.termination === 'timeout')
+                                        throw new GitProofError('git patch capture timed out');
+                                }
+                                if (error instanceof GitProofError)
+                                    throw error;
+                                throw new GitProofError('git patch capture failed');
+                            }
+                        }
+                        else {
+                            patch = await proofGit(['diff', '--binary', '--full-index', 'HEAD'], workDir);
+                        }
+                    }
+                }
+                catch (error) {
+                    try {
+                        await resetIntentToAdd();
+                    }
+                    catch (cleanupError) {
+                        if (cleanupError instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
+                            throw new ExecBridgeRunCancelledError();
+                        }
+                        if (cleanupError instanceof ExecBridgeRunTimedOutError || executionDeadline.expired()) {
+                            throw new ExecBridgeRunTimedOutError();
+                        }
+                        // Preserve the primary proof failure for non-cancellation cleanup errors.
+                    }
+                    throw error;
+                }
                 try {
                     await resetIntentToAdd();
                 }
-                catch (cleanupError) {
-                    if (cleanupError instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
-                        throw new ExecBridgeRunCancelledError();
+                catch (error) {
+                    if (error instanceof ExecBridgeRunCancelledError || error instanceof ExecBridgeRunTimedOutError || opts.signal?.aborted || executionDeadline.expired())
+                        throw error;
+                    if (patchRef && ownsPatchRef) {
+                        failedProof = gitDiffProof(stat, patchRef);
+                        preservePatchRef = true;
                     }
-                    // Preserve the primary proof failure for non-cancellation cleanup errors.
+                    throw new GitProofError('git index cleanup failed');
                 }
-                throw error;
-            }
-            try {
-                await resetIntentToAdd();
+                executionDeadline.assertActive();
+                // ENFORCE policy against the ACTUAL diff (finding: prompt.ts only ADVISES the agent "touch at most N
+                // file(s) / never modify X"; this is the hard gate). checkPolicy ALWAYS runs the global guards — the
+                // system blast hard cap (EVOLVER_HARD_CAP_FILES/LINES), the critical-protected paths (.env, MEMORY.md,
+                // package.json, the evolver skill, …), and destructive deletes of those paths — so a no-gene / no-
+                // constraints run is no longer un-guarded. The gene's max_files/max_lines/forbidden_paths layer on top.
+                // Any violation fails the cycle no matter what the agent did — even when validation would pass.
+                const bindingConstraints = opts.executionLimits
+                    ? { max_files: opts.executionLimits.maxFiles, max_lines: opts.executionLimits.maxLines }
+                    : undefined;
+                const constraints = gene?.constraints && bindingConstraints
+                    ? {
+                        max_files: Math.min(gene.constraints.max_files ?? Number.MAX_SAFE_INTEGER, bindingConstraints.max_files ?? Number.MAX_SAFE_INTEGER),
+                        max_lines: Math.min(gene.constraints.max_lines ?? Number.MAX_SAFE_INTEGER, bindingConstraints.max_lines ?? Number.MAX_SAFE_INTEGER),
+                        ...(gene.constraints.forbidden_paths ? { forbidden_paths: gene.constraints.forbidden_paths } : {}),
+                    }
+                    : gene?.constraints ?? bindingConstraints;
+                const violations = checkPolicy({ stat, changedFiles, numstat, ...(constraints ? { constraints } : {}) });
+                await executionDeadline.run(() => opts.executionObserver?.onPolicyDecision?.({ version: 'policy.v1', allowed: violations.length === 0, violations }, executionDeadline.signal));
+                if (isolate && stat.files > 0 && !patchRef) {
+                    // preserve the isolated edits as a patch (the worktree itself is removed); the real repo is untouched
+                    const destination = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
+                    try {
+                        (opts.writePatchFile ?? writePrivatePatchFile)(destination, patch);
+                        patchRef = destination;
+                        ownsPatchRef = true;
+                    }
+                    catch (error) {
+                        if (error instanceof GitProofError)
+                            throw error;
+                        throw new GitProofError('git patch persistence failed');
+                    }
+                }
+                const proof = gitDiffProof(stat, patchRef);
+                if (proof.git_diff?.patch_ref) {
+                    const patchReference = proof.git_diff.patch_ref;
+                    await executionDeadline.run(() => opts.executionObserver?.onProofReference?.({ kind: proof.kind, ref: patchReference }, executionDeadline.signal));
+                }
+                // Success: prefer the authoritative validation hook; otherwise "agent succeeded AND produced a diff".
+                let passed = run.ok && stat.files > 0;
+                let score = passed ? 0.7 : run.ok ? 0.4 : 0.1; // ran-but-no-change is weak, not a clean failure
+                // Only validate a change that already respects the constraints — a constraint-violating diff is never
+                // a success regardless of what its tests say.
+                if (run.ok && stat.files > 0 && opts.validate && violations.length === 0) {
+                    executionDeadline.assertActive();
+                    const v = await executionDeadline.run(() => opts.validate(mutation, decision, workDir, executionDeadline.signal));
+                    if (v.validator)
+                        await executionDeadline.run(() => opts.executionObserver?.onValidatorDecision?.(v.validator, executionDeadline.signal));
+                    else
+                        await executionDeadline.run(() => opts.executionObserver?.onValidatorDecision?.({
+                            id: 'validation', version: 'validation.v1', status: 'ran', passed: v.passed, score: v.score,
+                            results: [], skipped: [], isolated: false,
+                        }, executionDeadline.signal));
+                    passed = v.passed;
+                    score = v.score ?? (v.passed ? 0.9 : 0.2);
+                }
+                else if (opts.validate && violations.length > 0) {
+                    await executionDeadline.run(() => opts.executionObserver?.onValidatorDecision?.({
+                        id: 'validation', version: 'validation.v1', status: 'not_run', reason: 'policy_denied',
+                        results: [], skipped: [], isolated: false,
+                    }, executionDeadline.signal));
+                }
+                let reason;
+                if (violations.length > 0) {
+                    passed = false;
+                    score = Math.min(score, 0.1);
+                    reason = summarizeViolations(violations);
+                }
+                preservePatchRef = patchRef !== undefined && ownsPatchRef;
+                const failureIdentity = !passed && stat.files > 0
+                    ? { rootAttemptId: mutation.id, executionId: randomUUID() }
+                    : undefined;
+                result = {
+                    outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
+                    proofOfWork: proof,
+                    strongEvidence: passed && stat.files > 0,
+                    ...(failureIdentity ? { failureIdentity } : {}),
+                    ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
+                    ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+                    ...(run.sessionId ? { nativeSessionId: run.sessionId } : {}),
+                    // On a FAILED outcome, hand the agent transcript (stdout + stderr) to the cycle engine as host-side
+                    // triage context (#279): an empty transcript -> host_no_transcript, a provider-error string ->
+                    // host_provider_error. Omitted on success (failure-only context; never persisted).
+                    ...(passed ? {} : { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output }),
+                };
             }
             catch (error) {
-                if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted)
-                    throw error;
-                if (patchRef && ownsPatchRef) {
-                    failedProof = gitDiffProof(stat, patchRef);
-                    preservePatchRef = true;
+                if (error instanceof ExecBridgeRunTimedOutError || executionDeadline.expired()) {
+                    result = timedOutExecutionResult(observedRun);
                 }
-                throw new GitProofError('git index cleanup failed');
+                else if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
+                    result = cancelledExecutionResult(observedRun);
+                }
+                else if (error instanceof AgentRunBeforeManagedWorktreeError && observedRun) {
+                    result = failedAgentRunResult(observedRun);
+                }
+                else if (error instanceof GitProofError && observedRun) {
+                    result = failedProofExecutionResult(observedRun, error, failedProof);
+                }
+                else {
+                    if (managedCursorIdentity) {
+                        try {
+                            assertRepoCwdStillAllowed();
+                            await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
+                        }
+                        catch {
+                            // Preserve the primary execution error; the verified worktree remains diagnosable.
+                        }
+                    }
+                    if (reservation) {
+                        try {
+                            assertRepoCwdStillAllowed();
+                            await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
+                        }
+                        catch {
+                            // Preserve the primary execution error. The abandoned reservation remains private and diagnosable.
+                        }
+                    }
+                    throw error;
+                }
             }
-            if (opts.signal?.aborted)
-                throw new ExecBridgeRunCancelledError();
-            // ENFORCE policy against the ACTUAL diff (finding: prompt.ts only ADVISES the agent "touch at most N
-            // file(s) / never modify X"; this is the hard gate). checkPolicy ALWAYS runs the global guards — the
-            // system blast hard cap (EVOLVER_HARD_CAP_FILES/LINES), the critical-protected paths (.env, MEMORY.md,
-            // package.json, the evolver skill, …), and destructive deletes of those paths — so a no-gene / no-
-            // constraints run is no longer un-guarded. The gene's max_files/max_lines/forbidden_paths layer on top.
-            // Any violation fails the cycle no matter what the agent did — even when validation would pass.
-            const violations = checkPolicy({ stat, changedFiles, numstat, ...(gene?.constraints ? { constraints: gene.constraints } : {}) });
-            if (isolate && stat.files > 0 && !patchRef) {
-                // preserve the isolated edits as a patch (the worktree itself is removed); the real repo is untouched
-                const destination = joinPath(tmpdir(), `evolver-patch-${randomUUID()}.diff`);
+            finally {
+                if (!preservePatchRef && ownsPatchRef && patchRef) {
+                    try {
+                        (opts.removePatchFile ?? ((path) => rmSync(path, { force: true })))(patchRef);
+                    }
+                    catch { /* best-effort cleanup must not replace the execution result or its primary failure */ }
+                }
+            }
+            let cleanupError;
+            if (managedCursorIdentity) {
                 try {
-                    (opts.writePatchFile ?? writePrivatePatchFile)(destination, patch);
-                    patchRef = destination;
-                    ownsPatchRef = true;
+                    assertRepoCwdStillAllowed();
+                    await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
                 }
                 catch (error) {
-                    if (error instanceof GitProofError)
-                        throw error;
-                    throw new GitProofError('git patch persistence failed');
+                    cleanupError = error;
                 }
             }
-            const proof = gitDiffProof(stat, patchRef);
-            // Success: prefer the authoritative validation hook; otherwise "agent succeeded AND produced a diff".
-            let passed = run.ok && stat.files > 0;
-            let score = passed ? 0.7 : run.ok ? 0.4 : 0.1; // ran-but-no-change is weak, not a clean failure
-            // Only validate a change that already respects the constraints — a constraint-violating diff is never
-            // a success regardless of what its tests say.
-            if (run.ok && stat.files > 0 && opts.validate && violations.length === 0) {
-                if (opts.signal?.aborted)
-                    throw new ExecBridgeRunCancelledError();
-                const v = await opts.validate(mutation, decision, workDir);
-                if (opts.signal?.aborted)
-                    throw new ExecBridgeRunCancelledError();
-                passed = v.passed;
-                score = v.score ?? (v.passed ? 0.9 : 0.2);
-            }
-            let reason;
-            if (violations.length > 0) {
-                passed = false;
-                score = Math.min(score, 0.1);
-                reason = summarizeViolations(violations);
-            }
-            preservePatchRef = patchRef !== undefined && ownsPatchRef;
-            const failureIdentity = !passed && stat.files > 0
-                ? { rootAttemptId: mutation.id, executionId: randomUUID() }
-                : undefined;
-            result = {
-                outcome: { status: passed ? 'success' : 'failed', score, ...(reason ? { reason } : {}) },
-                proofOfWork: proof,
-                strongEvidence: passed && stat.files > 0,
-                ...(failureIdentity ? { failureIdentity } : {}),
-                ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
-                ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
-                // On a FAILED outcome, hand the agent transcript (stdout + stderr) to the cycle engine as host-side
-                // triage context (#279): an empty transcript -> host_no_transcript, a provider-error string ->
-                // host_provider_error. Omitted on success (failure-only context; never persisted).
-                ...(passed ? {} : { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output }),
-            };
-        }
-        catch (error) {
-            if (error instanceof ExecBridgeRunCancelledError || opts.signal?.aborted) {
-                result = cancelledExecutionResult(observedRun);
-            }
-            else if (error instanceof AgentRunBeforeManagedWorktreeError && observedRun) {
-                result = failedAgentRunResult(observedRun);
-            }
-            else if (error instanceof GitProofError && observedRun) {
-                result = failedProofExecutionResult(observedRun, error, failedProof);
-            }
-            else {
-                if (managedCursorIdentity) {
-                    try {
-                        assertRepoCwdStillAllowed();
-                        await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
-                    }
-                    catch {
-                        // Preserve the primary execution error; the verified worktree remains diagnosable.
-                    }
+            if (reservation) {
+                try {
+                    assertRepoCwdStillAllowed();
+                    await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
                 }
-                if (reservation) {
-                    try {
-                        assertRepoCwdStillAllowed();
-                        await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
-                    }
-                    catch {
-                        // Preserve the primary execution error. The abandoned reservation remains private and diagnosable.
-                    }
+                catch (error) {
+                    cleanupError ??= error;
                 }
-                throw error;
             }
+            // A successful run must not hide abandoned edits/resources. Both cleanup paths are attempted first so one
+            // failure cannot strand the other worktree. Failed and cancelled results retain their primary classification.
+            if (cleanupError && result.outcome.status === 'success')
+                throw cleanupError;
+            return result;
         }
         finally {
-            if (!preservePatchRef && ownsPatchRef && patchRef) {
-                try {
-                    (opts.removePatchFile ?? ((path) => rmSync(path, { force: true })))(patchRef);
-                }
-                catch { /* best-effort cleanup must not replace the execution result or its primary failure */ }
-            }
+            executionDeadline.dispose();
         }
-        let cleanupError;
-        if (managedCursorIdentity) {
-            try {
-                assertRepoCwdStillAllowed();
-                await cleanupManagedCursorWorktree(managedCursorIdentity, git, repoCwd);
-            }
-            catch (error) {
-                cleanupError = error;
-            }
-        }
-        if (reservation) {
-            try {
-                assertRepoCwdStillAllowed();
-                await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
-            }
-            catch (error) {
-                cleanupError ??= error;
-            }
-        }
-        // A successful run must not hide abandoned edits/resources. Both cleanup paths are attempted first so one
-        // failure cannot strand the other worktree. Failed and cancelled results retain their primary classification.
-        if (cleanupError && result.outcome.status === 'success')
-            throw cleanupError;
-        return result;
     };
 }
