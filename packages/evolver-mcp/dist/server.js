@@ -21,7 +21,12 @@ export class EvolverMcpServer {
         this.instructions = opts.instructions ?? '';
     }
     listTools() {
-        return [...this.tools.values()].map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+        return [...this.tools.values()].map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            annotations: t.annotations,
+        }));
     }
     async callTool(name, args = {}) {
         const tool = this.tools.get(name);

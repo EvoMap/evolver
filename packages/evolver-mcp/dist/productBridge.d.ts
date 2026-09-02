@@ -12,24 +12,24 @@ export declare function restoreProductBridgeEntry(entry: unknown): {
     entry?: unknown;
 };
 /** Merge a managed evox-product server into a parsed MCP JSON object (project .mcp.json or ~/.claude.json). */
-export declare function withClaudeProductBridge(data: Record<string, unknown>, force?: boolean): {
+export declare function withClaudeProductBridge(data: Record<string, unknown>, force?: boolean, nodePath?: string): {
     changed: boolean;
     skipped?: boolean;
     data: Record<string, unknown>;
 };
 /** Merge a managed evox-product table into parsed Codex TOML. */
-export declare function withCodexProductBridge(data: Record<string, unknown>, force?: boolean): {
+export declare function withCodexProductBridge(data: Record<string, unknown>, force?: boolean, nodePath?: string): {
     changed: boolean;
     skipped?: boolean;
     data: Record<string, unknown>;
 };
-export declare function installClaudeProductBridge(configRoot: string, force?: boolean): {
+export declare function installClaudeProductBridge(configRoot: string, force?: boolean, nodePath?: string): {
     changed: boolean;
     skipped?: boolean;
     path: string;
 };
 export declare function uninstallClaudeProductBridge(configRoot: string): boolean;
-export declare function installCodexProductBridge(configRoot: string, force?: boolean): {
+export declare function installCodexProductBridge(configRoot: string, force?: boolean, nodePath?: string): {
     changed: boolean;
     skipped?: boolean;
     path: string;

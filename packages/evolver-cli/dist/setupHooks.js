@@ -6,10 +6,10 @@
 // cleanly removes only evolver's entries.
 import { planInjection, installInjection, uninstallInjection, runtimeSupport, renderManualWiring, renderServiceGuidance, SETUP_RUNTIMES, SERVICE_TARGETS, kiroConfigRoot, resolveOpenCodeConfig, McpConfigConflictError, McpConfigOwnershipError, McpConfigVerificationError, McpServerValidationError } from '@evomap/evolver-mcp';
 import { assetstore, events } from '@evomap/evolver-core';
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { currentTopCursorGenes } from './cursorRewrite.js';
 import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
@@ -42,7 +42,7 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for opencode and kiro\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for opencode and kiro\n`;
 export function commandNamesForPath(command, platform, pathExt) {
     if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
         return [command];
@@ -53,23 +53,95 @@ export function commandNamesForPath(command, platform, pathExt) {
         .map((extension) => extension.startsWith('.') ? extension : `.${extension}`);
     return [command, ...extensions.map((extension) => `${command}${extension}`)];
 }
-function commandOnPath(command) {
-    const names = commandNamesForPath(command, process.platform, process.env['PATHEXT']);
-    for (const directory of (process.env['PATH'] ?? '').split(delimiter).filter(Boolean)) {
+class StableNodePathError extends Error {
+    constructor() {
+        super('[setup-hooks] cannot resolve a stable absolute Node executable outside package-manager stores; install Node at a standard system path or pass --server-node=<absolute-node>');
+        this.name = 'StableNodePathError';
+    }
+}
+class McpNodeOverrideError extends Error {
+    constructor(message) {
+        super(`[setup-hooks] ${message}`);
+        this.name = 'McpNodeOverrideError';
+    }
+}
+/** Paths under package-manager stores are volatile: the linked Node disappears on the next install/upgrade,
+ *  so a persisted command pointing there breaks the generated MCP config. Exported for tests so the assertion
+ *  regex cannot drift from the resolver's. */
+export const VOLATILE_PACKAGE_MANAGER_NODE_PATH = /(?:^|[\\/])(?:pnpm[\\/]store|store[\\/]v\d+[\\/]links|node_modules[\\/]\.pnpm|node_modules[\\/]\.bin|\.npm[\\/]_npx)(?:[\\/]|$)/i;
+function executableFile(path) {
+    try {
+        if (!statSync(path).isFile())
+            return false;
+        accessSync(path, constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function stableNodeExecutablePath(path, preserveStableEntry = false) {
+    if (!isAbsolute(path) || !/^node(?:js)?(?:\.exe)?$/i.test(basename(path)) || !executableFile(path))
+        return undefined;
+    if (preserveStableEntry && VOLATILE_PACKAGE_MANAGER_NODE_PATH.test(path))
+        return undefined;
+    try {
+        const canonical = realpathSync(path);
+        if (VOLATILE_PACKAGE_MANAGER_NODE_PATH.test(canonical)
+            || !/^node(?:js)?(?:\.exe)?$/i.test(basename(canonical))
+            || !executableFile(canonical))
+            return undefined;
+        return preserveStableEntry ? resolve(path) : canonical;
+    }
+    catch {
+        return undefined;
+    }
+}
+function commandPaths(commands, platform, env) {
+    const names = commands.flatMap((command) => commandNamesForPath(command, platform, env['PATHEXT']));
+    const candidates = [];
+    for (const rawDirectory of (env['PATH'] ?? '').split(delimiter).filter(Boolean)) {
+        const directory = rawDirectory.trim().replace(/^"|"$/g, '');
         for (const name of names) {
-            try {
-                const candidate = join(directory, name);
-                if (!statSync(candidate).isFile())
-                    continue;
-                accessSync(candidate, constants.X_OK);
-                return true;
-            }
-            catch {
-                // Continue searching PATH.
-            }
+            const candidate = resolve(directory, name);
+            if (executableFile(candidate))
+                candidates.push(candidate);
         }
     }
-    return false;
+    return candidates;
+}
+function commandPath(command, platform, env) {
+    return commandPaths([command], platform, env)[0];
+}
+export function resolveStableMcpNodePath(options = {}) {
+    const execPath = options.execPath ?? process.execPath;
+    const platform = options.platform ?? process.platform;
+    const stableExecPath = stableNodeExecutablePath(execPath);
+    if (stableExecPath)
+        return stableExecPath;
+    // Do not persist a PATH candidate: PATH and ProgramFiles-style environment variables are
+    // caller-controlled and the selected file can be replaced after validation. Fixed system
+    // locations are the only automatic fallback; non-standard layouts use --server-command.
+    const systemCandidates = options.systemCandidates ?? (platform === 'win32'
+        ? []
+        : [
+            '/opt/homebrew/bin/node',
+            '/usr/local/bin/node',
+            '/usr/local/bin/nodejs',
+            '/usr/bin/node',
+            '/usr/bin/nodejs',
+        ]);
+    for (const candidate of systemCandidates) {
+        if (!candidate)
+            continue;
+        const stableCandidate = stableNodeExecutablePath(candidate, true);
+        if (stableCandidate)
+            return stableCandidate;
+    }
+    throw new StableNodePathError();
+}
+function commandOnPath(command) {
+    return commandPath(command, process.platform, process.env) !== undefined;
 }
 function defaultRuntimeAvailable(runtime, configRoot, scope) {
     if (runtime === 'opencode') {
@@ -137,6 +209,10 @@ export function safeSetupOperationError(error) {
     }
     if (error instanceof McpServerValidationError)
         return error.message;
+    if (error instanceof StableNodePathError)
+        return error.message;
+    if (error instanceof McpNodeOverrideError)
+        return error.message;
     const name = error instanceof Error ? error.name : '';
     switch (name) {
         case 'McpConfigConflictError': return '[setup-hooks] existing Evolver configuration conflicts; use --force to replace only the Evolver entry.';
@@ -145,6 +221,8 @@ export function safeSetupOperationError(error) {
         case 'McpConfigVerificationError': return error.restored === true
             ? '[setup-hooks] runtime configuration verification failed; the previous configuration was restored.'
             : '[setup-hooks] runtime configuration verification failed; rollback could not be confirmed. Inspect the runtime config before retrying.';
+        case 'StableNodePathError': return '[setup-hooks] cannot resolve a stable absolute Node executable outside package-manager stores; install Node at a standard system path or pass --server-node=<absolute-node>';
+        case 'McpNodeOverrideError': return '[setup-hooks] invalid --server-node configuration';
         case 'McpConfigChangedError': return '[setup-hooks] runtime configuration changed during the operation; retry after the runtime finishes writing it.';
         case 'EmptySharedConfigError': return '[setup-hooks] runtime configuration is empty; repair or remove it before retrying.';
         case 'UnparseableConfigError': return '[setup-hooks] runtime configuration is not valid JSON; repair it before retrying.';
@@ -334,7 +412,7 @@ function parseDescriptorServer(value, label) {
 function argsFromFlag(value) {
     return typeof value === 'string' ? value.split(',').filter(Boolean) : undefined;
 }
-function defaultMcpServer() {
+function defaultMcpServerArgs() {
     let stdioPath;
     try {
         stdioPath = requireFromHere.resolve('@evomap/evolver-mcp/stdio');
@@ -342,7 +420,10 @@ function defaultMcpServer() {
     catch {
         stdioPath = fileURLToPath(new URL('../../evolver-mcp/dist/stdio.js', import.meta.url));
     }
-    return { command: process.execPath, args: [stdioPath] };
+    return [stdioPath];
+}
+function defaultMcpServer(resolveNodePath = resolveStableMcpNodePath) {
+    return { command: resolveNodePath(), args: defaultMcpServerArgs() };
 }
 function defaultProxyDaemon() {
     return { command: resolveStableNodePath(), args: [resolveProxyBinPath() ?? '/ABSOLUTE/PATH/TO/evolver-proxy.js'] };
@@ -365,24 +446,47 @@ function descriptorEnvFile(f, descriptor, descriptorServer) {
         return f['env-file'];
     return descriptorServer?.env?.['EVOLVER_ENV_FILE'] ?? descriptor.envFile;
 }
-function buildServer(f, descriptor = { manualHints: {} }) {
+function buildServer(f, descriptor = { manualHints: {} }, resolveNodePath) {
     const serverArgs = argsFromFlag(f['server-args']);
-    const serverBase = typeof f['server-command'] === 'string'
-        ? {
+    if (f['server-node'] === true)
+        throw new McpNodeOverrideError('missing value for --server-node');
+    if (typeof f['server-node'] === 'string' && typeof f['server-command'] === 'string') {
+        throw new McpNodeOverrideError('--server-node cannot be combined with --server-command');
+    }
+    let nodePath;
+    let serverBase;
+    if (typeof f['server-node'] === 'string') {
+        nodePath = resolveStableMcpNodePath({
+            execPath: f['server-node'],
+            platform: process.platform,
+            systemCandidates: [],
+        });
+        serverBase = { command: nodePath, args: serverArgs ?? defaultMcpServerArgs() };
+    }
+    else if (typeof f['server-command'] === 'string') {
+        serverBase = {
             command: f['server-command'],
             ...(serverArgs !== undefined ? { args: serverArgs } : {}),
             ...(serverArgs === undefined && descriptor.mcpServer?.args ? { args: descriptor.mcpServer.args } : {}),
-        }
-        : descriptor.mcpServer
-            ? {
-                ...descriptor.mcpServer,
-                ...(serverArgs !== undefined ? { args: serverArgs } : {}),
-            }
-            : {
-                ...defaultMcpServer(),
-                ...(serverArgs !== undefined ? { args: serverArgs } : {}),
-            };
-    return withEnvFile(serverBase, descriptorEnvFile(f, descriptor, descriptor.mcpServer));
+        };
+    }
+    else if (descriptor.mcpServer) {
+        serverBase = {
+            ...descriptor.mcpServer,
+            ...(serverArgs !== undefined ? { args: serverArgs } : {}),
+        };
+    }
+    else {
+        serverBase = {
+            ...defaultMcpServer(resolveNodePath),
+            ...(serverArgs !== undefined ? { args: serverArgs } : {}),
+        };
+        nodePath = serverBase.command;
+    }
+    return {
+        server: withEnvFile(serverBase, descriptorEnvFile(f, descriptor, descriptor.mcpServer)),
+        ...(nodePath !== undefined ? { nodePath } : {}),
+    };
 }
 function buildServiceExec(f, descriptor = { manualHints: {} }) {
     const serviceArgs = argsFromFlag(f['service-args']);
@@ -410,7 +514,7 @@ function appendAdapterNotes(text, hints) {
 }
 const SETUP_VALUE_FLAGS = new Set([
     'runtime', 'platform', 'scope', 'root', 'env-file', 'profile-descriptor', 'service',
-    'hook-command', 'server-command', 'server-args', 'service-command', 'service-args',
+    'hook-command', 'server-node', 'server-command', 'server-args', 'service-command', 'service-args',
 ]);
 function setupHelpRequested(argv) {
     if (argv.includes('--help'))
@@ -436,6 +540,12 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     const json = f['json'] === true;
     const emit = (obj) => { if (json)
         process.stdout.write(`${JSON.stringify(obj)}\n`); };
+    const emitWarnings = (warnings) => {
+        if (json || !warnings)
+            return;
+        for (const warning of warnings)
+            process.stderr.write(`[setup-hooks] warning: ${warning}\n`);
+    };
     const scopeResult = parseScope(f['scope']);
     if (!scopeResult.ok) {
         if (json)
@@ -495,7 +605,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         }
         let verification;
         try {
-            const server = buildServer(f, verifyDescriptor.descriptor);
+            const { server } = buildServer(f, verifyDescriptor.descriptor, deps.resolveMcpNodePath);
             verification = installInjection(planInjection(runtime, server), {
                 configRoot,
                 server,
@@ -549,6 +659,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
                 configRoot,
                 scope,
                 homeDir: configuredHomeDir(),
+                codexHome: process.env['CODEX_HOME'],
                 kiroHome: process.env['KIRO_HOME'],
                 xdgConfigHome: process.env['XDG_CONFIG_HOME'],
                 opencodeConfig: process.env['OPENCODE_CONFIG'],
@@ -597,7 +708,6 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     }
     const descriptor = profileDescriptor.descriptor;
     if (support.outcome === 'manual') {
-        const server = buildServer(f, descriptor);
         // server + --service=<target>: emit a ready service template (#217 slice 4). Print-only — evolver does NOT
         // manage service lifecycle; it just prints a template wiring the EVOLVER_ENV_FILE pointer (never a secret).
         if (runtimeRaw === 'server' && typeof f['service'] === 'string') {
@@ -610,12 +720,35 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
                     process.stderr.write(`${msg}\n`);
                 return 1;
             }
-            const template = appendAdapterNotes(renderServiceGuidance(target, { exec: buildServiceExec(f, descriptor) }), descriptor.manualHints[runtimeRaw]);
+            let template;
+            try {
+                template = appendAdapterNotes(renderServiceGuidance(target, { exec: buildServiceExec(f, descriptor) }), descriptor.manualHints[runtimeRaw]);
+            }
+            catch (error) {
+                const message = safeSetupOperationError(error);
+                if (json)
+                    emit({ runtime: runtimeRaw, outcome: 'error', files: [], error: message });
+                else
+                    process.stderr.write(`${message}\n`);
+                return 1;
+            }
             if (json)
                 emit({ runtime: runtimeRaw, outcome: 'manual', files: [], service: target, template });
             else
                 process.stdout.write(`${template}\n`);
             return 0;
+        }
+        let server;
+        try {
+            server = buildServer(f, descriptor, deps.resolveMcpNodePath).server;
+        }
+        catch (error) {
+            const message = safeSetupOperationError(error);
+            if (json)
+                emit({ runtime: runtimeRaw, outcome: 'error', files: [], error: message });
+            else
+                process.stderr.write(`${message}\n`);
+            return 1;
         }
         // Otherwise: PRECISE manual wiring (#217 slice 2) so manual is actionable, not a dead end.
         const instructions = renderManualWiring(runtimeRaw, { server, hints: descriptor.manualHints[runtimeRaw] ?? [] });
@@ -625,7 +758,21 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             process.stdout.write(`${instructions}\n`);
         return 0;
     }
-    const server = buildServer(f, descriptor);
+    let server;
+    let serverNodePath;
+    try {
+        const built = buildServer(f, descriptor, deps.resolveMcpNodePath);
+        server = built.server;
+        serverNodePath = built.nodePath;
+    }
+    catch (error) {
+        const message = safeSetupOperationError(error);
+        if (json)
+            emit({ runtime, outcome: 'error', files: [], error: message });
+        else
+            process.stderr.write(`${message}\n`);
+        return 1;
+    }
     if ((runtime === 'opencode' || runtime === 'kiro') && f['dry-run'] !== true) {
         let runtimeDetected;
         try {
@@ -659,13 +806,22 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         : undefined;
     let r;
     try {
+        // claude-code and codex also persist a managed evox-product bridge entry that launches its own stdio shim.
+        // It must not inherit a package-manager-local process.execPath (#1068): give it the same stable Node the
+        // evolver entry uses — the pinned --server-node when set, otherwise the default stable resolution. Runtimes
+        // without a bridge entry never resolve a Node here.
+        const productBridgeNodePath = (runtime === 'claude-code' || runtime === 'codex')
+            ? serverNodePath ?? (deps.resolveMcpNodePath ?? resolveStableMcpNodePath)()
+            : undefined;
         r = installInjection(planInjection(runtime, server), {
             configRoot, server, scope,
+            ...(productBridgeNodePath !== undefined ? { productBridgeNodePath } : {}),
             ...(typeof f['hook-command'] === 'string' ? { hookCommand: f['hook-command'] } : {}),
             ...(cursorGenes ? { genes: cursorGenes } : {}),
             force: f['force'] === true,
             dryRun: f['dry-run'] === true,
             homeDir: configuredHomeDir(),
+            codexHome: process.env['CODEX_HOME'],
             kiroHome: process.env['KIRO_HOME'],
             xdgConfigHome: process.env['XDG_CONFIG_HOME'],
             opencodeConfig: process.env['OPENCODE_CONFIG'],
@@ -716,14 +872,16 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     }
     if (r.alreadyInstalled) {
         if (json)
-            emit({ runtime, outcome: 'installed', files, alreadyInstalled: true });
+            emit({ runtime, outcome: 'installed', files, alreadyInstalled: true, ...(r.warnings ? { warnings: r.warnings } : {}) });
         else
             process.stdout.write('evolver already installed (use --force to reinstall)\n');
+        emitWarnings(r.warnings);
         return 0;
     }
     if (json)
-        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified });
+        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified, ...(r.warnings ? { warnings: r.warnings } : {}) });
     else
         process.stdout.write(`installed evolver (${r.mode}) → ${files.join(', ')}\n`);
+    emitWarnings(r.warnings);
     return 0;
 }

@@ -25,6 +25,10 @@ export interface InstallOptions {
     scope?: InstallScope;
     /** The MCP server launch command registered in the runtime configuration. */
     server: McpServerCmd;
+    /** claude-code/codex only: store-stable absolute Node executable for the managed evox-product bridge entry's
+     *  shim, resolved by the install chain so a package-manager-local process.execPath is never persisted (#1068).
+     *  Omitted by callers without a resolved path; the bridge then falls back to the current process executable. */
+    productBridgeNodePath?: string;
     /** Command the SessionStart hook runs to inject memory. */
     hookCommand?: string;
     /** Command the UserPromptSubmit hook runs. Default is local-only, default-off prompt recall. */
@@ -39,6 +43,8 @@ export interface InstallOptions {
     maxGenes?: number;
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. */
     homeDir?: string;
+    /** Codex user scope only: direct replacement for ~/.codex, matching CODEX_HOME semantics. */
+    codexHome?: string;
     /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
     kiroHome?: string;
     /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
@@ -67,6 +73,8 @@ export interface UninstallOptions {
     scope?: InstallScope;
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. */
     homeDir?: string;
+    /** Codex user scope only: direct replacement for ~/.codex, matching CODEX_HOME semantics. */
+    codexHome?: string;
     /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
     kiroHome?: string;
     /** Validate and report the uninstall without changing config or backup files. */
@@ -88,6 +96,7 @@ export interface InstallResult {
     dryRun?: boolean;
     verified?: boolean;
     backups?: string[];
+    warnings?: string[];
     error?: string;
 }
 export declare class SymlinkRefusedError extends Error {

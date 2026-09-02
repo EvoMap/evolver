@@ -32,6 +32,7 @@ import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsControll
 import { consumeRecoveryChildStartGate, RECOVERY_CHILD_START_GATE_ENV, } from '../selfUpdate/recoveryChildStartGate.js';
 import { publishLifecycleBootstrapReadiness } from '../selfUpdate/bootstrapReadiness.js';
 import { finalizeSelfUpdateRecoveryLastUpdate } from '../selfUpdate/lastUpdate.js';
+import { resolveHubAuthFailurePolicy, } from '../daemon/proxyDaemon.js';
 export function writeBootstrapStartupResult(result, writers = {}) {
     const line = `${result.message}\n`;
     if (result.disposition === 'handoff') {
@@ -658,6 +659,7 @@ export function createProxyDaemonDeps(options) {
     const traceBackfill = resolveTraceBackfillConfig(env);
     const heartbeatIntervalMs = positiveIntegerEnv(env['HEARTBEAT_INTERVAL_MS']);
     const publishExecutionVerifier = resolveNativePublishExecutionVerifier(env);
+    const hubAuthFailurePolicy = resolveHubAuthFailurePolicy(env);
     return {
         hub: options.runtime.hub,
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
@@ -671,6 +673,7 @@ export function createProxyDaemonDeps(options) {
         evolverVersion: options.evolverVersion,
         hello: options.runtime.hello,
         heartbeat: options.runtime.heartbeat,
+        hubAuthFailurePolicy,
         ...(heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs } : {}),
         ...(options.runtime.helloMode ? { helloMode: options.runtime.helloMode } : {}),
         ...(selfUpdate ? { selfUpdate } : {}),

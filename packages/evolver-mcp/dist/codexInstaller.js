@@ -2,8 +2,8 @@
 //
 // Codex (the OpenAI CLI) loads its config from a TOML file, NOT JSON. User-level config lives at
 // ~/.codex/config.toml; a project-scoped override lives at <project>/.codex/config.toml. We write the
-// project-scoped file (same containment posture as the CC adapter, which only ever touches the project root —
-// never a user's global home config). Codex supports the SAME injection hybrid CC does:
+// project-scoped file for project scope and the real user config for user scope. User scope honors CODEX_HOME,
+// falling back to ~/.codex/config.toml. Codex supports the SAME injection hybrid CC does:
 //   1. an MCP stdio server, registered under [mcp_servers.<name>]  → codex discovers evolver's tools, and
 //   2. a SessionStart lifecycle hook, registered under [[hooks.SessionStart]] → memory is pushed at session
 //      start (MCP alone can't push; the agent must pull — identical to the CC rationale).
@@ -19,7 +19,8 @@
 // hooks-UNION merge that preserves the user's existing hooks. TOML round-trips through smol-toml (spec
 // parser/serializer) so a user's hand-written config is preserved rather than clobbered.
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { util } from '@evomap/evolver-core';
 import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
@@ -27,6 +28,8 @@ import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_C
 import { withCodexProductBridge, isOwnedProductBridge, restoreProductBridgeEntry, PRODUCT_BRIDGE_SERVER_ID } from './productBridge.js';
 /** The MCP server id evolver registers under [mcp_servers.evolver] / removes on uninstall. */
 export const CODEX_MCP_SERVER_ID = 'evolver';
+export const CODEX_PROJECT_REGISTRATION_PRESENT_WARNING = 'codex_project_registration_present: the requested project still contains an Evolver registration; if this came from the legacy user/global scope bug, remove it explicitly with --runtime=codex --scope=project --uninstall --root=<project>';
+export const CODEX_PROJECT_REGISTRATION_UNREADABLE_WARNING = 'codex_project_registration_unreadable: the requested project config could not be inspected safely; no project file was modified';
 /** SessionStart matcher: codex fires `startup` on a fresh thread and `resume` on a resumed one — cover both. */
 const SESSION_START_MATCHER = 'startup|resume';
 const CONFIG_WRITE_RETRIES = 5;
@@ -141,13 +144,54 @@ function writeTomlWithRetry(path, update, assertSafe) {
         throw releaseError;
     return operationResult;
 }
-function codexPathGuard(configRoot, codexDir, configPath) {
-    return () => {
-        assertNotSymlink(configRoot, 'config root');
-        assertNotSymlink(codexDir, '.codex');
-        assertNotSymlink(configPath, '.codex/config.toml');
-        assertNotSymlink(`${configPath}.evolver.lock`, '.codex/config.toml lock');
+function codexConfigTarget(opts) {
+    if ((opts.scope ?? 'project') === 'project') {
+        const codexDir = join(opts.configRoot, '.codex');
+        return {
+            scope: 'project',
+            configRoot: opts.configRoot,
+            codexDir,
+            configPath: join(codexDir, 'config.toml'),
+            dirLabel: '.codex',
+            configLabel: '.codex/config.toml',
+        };
+    }
+    const configured = opts.codexHome?.trim();
+    if (configured && !isAbsolute(configured)) {
+        throw new Error('[setup-hooks] refusing to use CODEX_HOME: the path must be absolute.');
+    }
+    const codexDir = configured ? resolve(configured) : join(opts.homeDir ?? homedir(), '.codex');
+    return {
+        scope: 'user',
+        codexDir,
+        configPath: join(codexDir, 'config.toml'),
+        dirLabel: configured ? '$CODEX_HOME' : '~/.codex',
+        configLabel: configured ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml',
     };
+}
+function codexPathGuard(target) {
+    return () => {
+        if (target.configRoot)
+            assertNotSymlink(target.configRoot, 'config root');
+        assertNotSymlink(target.codexDir, target.dirLabel);
+        assertNotSymlink(target.configPath, target.configLabel);
+        assertNotSymlink(`${target.configPath}.evolver.lock`, `${target.configLabel} lock`);
+    };
+}
+function userScopeProjectWarnings(configRoot) {
+    try {
+        const projectTarget = codexConfigTarget({ configRoot, scope: 'project' });
+        codexPathGuard(projectTarget)();
+        if (!existsSync(projectTarget.configPath))
+            return [];
+        const config = readTomlSnapshot(projectTarget.configPath).data;
+        return isObj(config['mcp_servers']) && CODEX_MCP_SERVER_ID in config['mcp_servers']
+            ? [CODEX_PROJECT_REGISTRATION_PRESENT_WARNING]
+            : [];
+    }
+    catch {
+        return [CODEX_PROJECT_REGISTRATION_UNREADABLE_WARNING];
+    }
 }
 // ── pure merge (exported for tests) ──────────────────────────────────────────
 /** The [mcp_servers.evolver] table from a plan's launch command. env omitted when empty (no `[..env]` table). */
@@ -284,28 +328,29 @@ function codexAlreadyInstalled(cfg, sessionStartCommand, promptRecallCommand) {
 }
 // ── install / uninstall ───────────────────────────────────────────────────────
 /**
- * Execute a codex InjectionPlan against a project config root: write/merge <root>/.codex/config.toml with
- * the evolver MCP server registration + a SessionStart hook. Idempotent (re-running without --force is a
- * no-op once evolver is registered) and symlink-safe.
+ * Execute a codex InjectionPlan against the requested scope: project writes <root>/.codex/config.toml, while
+ * user writes $CODEX_HOME/config.toml or ~/.codex/config.toml. Both carry the MCP registration and Codex-native
+ * lifecycle hooks. Idempotent (re-running without --force is a no-op) and symlink-safe.
  */
 export function installCodex(plan, opts) {
     const hookCommand = opts.hookCommand ?? DEFAULT_HOOK_COMMAND;
     const promptRecallHookCommand = opts.promptRecallHookCommand ?? DEFAULT_PROMPT_RECALL_HOOK_COMMAND;
-    const codexDir = join(opts.configRoot, '.codex');
-    const configPath = join(codexDir, 'config.toml');
-    const assertSafe = codexPathGuard(opts.configRoot, codexDir, configPath);
+    const target = codexConfigTarget(opts);
+    const warnings = target.scope === 'user' ? userScopeProjectWarnings(opts.configRoot) : [];
+    const { codexDir, configPath } = target;
+    const assertSafe = codexPathGuard(target);
     assertSafe();
     const mcpServer = codexMcpServerEntry(opts.server);
     const sessionStartHook = codexSessionStartHook(hookCommand);
     const userPromptSubmitHook = codexUserPromptSubmitHook(promptRecallHookCommand);
-    mkdirSync(codexDir, { recursive: true });
+    mkdirSync(codexDir, { recursive: true, mode: 0o700 });
     const changed = writeTomlWithRetry(configPath, (current) => {
         if (!opts.force && codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand)) {
-            return withCodexProductBridge(current, false);
+            return withCodexProductBridge(current, false, opts.productBridgeNodePath);
         }
         return {
             changed: true,
-            data: withCodexProductBridge(mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook), opts.force === true).data,
+            data: withCodexProductBridge(mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook), opts.force === true, opts.productBridgeNodePath).data,
         };
     }, assertSafe);
     return {
@@ -314,13 +359,14 @@ export function installCodex(plan, opts) {
         mode: plan.mode,
         files: changed ? [configPath] : [],
         ...(!changed ? { alreadyInstalled: true } : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
     };
 }
-/** Remove evolver's MCP registration + SessionStart hook from a codex project config (leaves user content intact). */
+/** Remove Evolver's MCP registration and hooks from the requested Codex scope, leaving user content intact. */
 export function uninstallCodex(runtime, opts) {
-    const codexDir = join(opts.configRoot, '.codex');
-    const configPath = join(codexDir, 'config.toml');
-    const assertSafe = codexPathGuard(opts.configRoot, codexDir, configPath);
+    const target = codexConfigTarget(opts);
+    const { configPath } = target;
+    const assertSafe = codexPathGuard(target);
     assertSafe();
     if (!existsSync(configPath))
         return { ok: true, runtime, mode: 'uninstall', files: [] };

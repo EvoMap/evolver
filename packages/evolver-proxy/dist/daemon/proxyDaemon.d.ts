@@ -8,6 +8,8 @@ type HubCapability = hubNs.HubCapability;
 type AssetStoreProvider = assetstore.AssetStoreProvider;
 type ConversationDistillExecutionVerifier = (input: hubNs.ConversationDistillInput, signal: AbortSignal) => Promise<hubNs.ConversationDistillVerifiedExecution | null>;
 export declare const DEFAULT_IPC_PORT = 19820;
+export type HubAuthFailurePolicy = 'deny' | 'warn';
+export declare function resolveHubAuthFailurePolicy(env?: Record<string, string | undefined>): HubAuthFailurePolicy;
 export interface ProxyDaemonDeps {
     hub: HubCapability;
     /** Immutable Hub selection for IPC callers that must fail closed across public/private runtimes. */
@@ -28,6 +30,8 @@ export interface ProxyDaemonDeps {
     assetSearchCacheMax?: number;
     /** Time after cache expiry during which a rate-limited search may serve stale remote results. */
     assetSearchStaleGraceMs?: number;
+    /** Hub auth/revocation behavior. Default deny prevents cached local assets from hiding revoked credentials. */
+    hubAuthFailurePolicy?: HubAuthFailurePolicy;
     /** Maximum time the compatibility HTTP request waits before returning a durable pending receipt. */
     assetSubmitResponseTimeoutMs?: number;
     /** Random source for heartbeat force_update staggering. Defaults to Math.random; tests inject a deterministic value. */
@@ -160,6 +164,7 @@ export declare class ProxyDaemon {
     private readonly assetSearchCacheMax;
     private readonly assetSearchStaleGraceMs;
     private readonly assetSubmitResponseTimeoutMs;
+    private readonly hubAuthFailurePolicy;
     private readonly synchronousAssetSubmitScope;
     private readonly shadowMode;
     private readonly assetSearchCache;
@@ -236,6 +241,11 @@ export declare class ProxyDaemon {
     private startForceUpdateExecution;
     private reportPendingForceUpdate;
     private stateNumber;
+    private hubAuthFailed;
+    private markHubAuthFailed;
+    private hubAuthFailureBody;
+    private localSearchAssets;
+    private localFetchAssets;
     private handleProxyRoute;
     private searchAssets;
     private searchRemoteAssets;

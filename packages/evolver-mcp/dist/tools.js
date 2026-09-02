@@ -3,6 +3,12 @@ import { buildEvolverPrimer } from './primer.js';
 const str = (v) => (typeof v === 'string' ? v : String(v ?? ''));
 const strArray = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string') : undefined;
 const REUSE_OUTCOMES = new Set(['success', 'failed', 'mismatched', 'stale', 'unsafe']);
+const LOCAL_READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+const REMOTE_READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+// Codex `auto` fail-closes when destructiveHint is true. MCP "destructive" as
+// delete/overwrite is not that contract: any state-writing tool must prompt.
+const LOCAL_WRITE = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
+const REMOTE_WRITE = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
 function record(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -40,6 +46,27 @@ function requestedAsset(value, assetId) {
     const asset = firstAsset(value);
     const recordAsset = record(asset);
     return recordAsset['asset_id'] === assetId ? asset : null;
+}
+function proxyFallbackMetadata(value) {
+    const response = record(value);
+    if (response['degraded'] !== true)
+        return undefined;
+    return {
+        degraded: true,
+        local_fallback: response['local_fallback'] === true,
+        auth_status: response['auth_status'],
+        warning: response['warning'],
+    };
+}
+function proxySearchResult(value) {
+    const results = resultArray(value);
+    const metadata = proxyFallbackMetadata(value);
+    return metadata ? { results, assets: results, ...metadata } : results;
+}
+function proxyFetchResult(value, assetId) {
+    const asset = requestedAsset(value, assetId);
+    const metadata = proxyFallbackMetadata(value);
+    return metadata ? { asset, ...metadata } : asset;
 }
 function optionalNonNegativeNumberArg(args, key, error) {
     if (!Object.prototype.hasOwnProperty.call(args, key))
@@ -157,6 +184,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_guide',
             description: '按需说明 evolver 的静默复用机制(Recipe search→express, Gene/Capsule 为 fallback；search→reuse→capture 循环)与各工具何时调用；不要向用户叙述例行预检、状态或空搜索。',
             inputSchema: { type: 'object', properties: {} },
+            annotations: LOCAL_READ_ONLY,
             handler: async () => ({ guide: buildEvolverPrimer({ proxy: !!deps.proxy }) }),
         },
         {
@@ -167,6 +195,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_recall',
             description: 'Fallback：当本机已审核通过的可复用经验 gene 可能有帮助时调用（不是 Hub Recipe 搜索）。联网默认先 evolver_recipe_search / evolver_recipe_express。返回信任+审核双闸后的本地 gene，并记录一条 value.inject。若传入 sessionId(= 本会话 transcript 文件名去掉 .jsonl 后缀),后续 auto-recall 能从该 transcript 观测哪些注入 gene 真正被用,为经 MCP 接入的 AI 闭合自学习环;不传则仅记录归因、无法关联到会话。命中后静默复用，并在结果明确后用 evolver_asset_reuse_result 回报。',
             inputSchema: { type: 'object', properties: { limit: { type: 'number' }, sessionId: { type: 'string' } } },
+            annotations: LOCAL_WRITE,
             handler: async (a) => {
                 const limit = optionalNonNegativeNumberArg(a, 'limit', 'evolver_recall limit must be a non-negative number') ?? 5;
                 const sessionId = typeof a['sessionId'] === 'string' && a['sessionId'].trim() ? a['sessionId'].trim() : undefined;
@@ -201,6 +230,7 @@ export function buildEvolverTools(deps) {
         ...(deps.proxy ? [{
                 name: 'evolver_recipe_search',
                 description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。旧客户端默认收到 Recipe 数组；设置 includePagination=true 可读取 nextCursor/hasMore。',
+                annotations: REMOTE_READ_ONLY,
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -240,6 +270,7 @@ export function buildEvolverTools(deps) {
             }, {
                 name: 'evolver_recipe_express',
                 description: '表达/执行一条 Recipe：只转发 Hub POST /a2a/recipe/{id}/express。Hub 按步骤展开 Gene 再 Capsule，从而产生全网 gene/capsule 调用。不要在本地解析 recipe JSON。',
+                annotations: REMOTE_WRITE,
                 inputSchema: {
                     type: 'object',
                     required: ['recipeId'],
@@ -264,6 +295,7 @@ export function buildEvolverTools(deps) {
                 name: 'evolver_proxy_status',
                 description: '检查本机 evolver-proxy 与 PHub 的连接状态. 需要 EVOLVER_PROXY_URL/EVOLVER_IPC_TOKEN.',
                 inputSchema: { type: 'object', properties: {} },
+                annotations: REMOTE_READ_ONLY,
                 handler: async () => deps.proxy.status(),
             }] : []),
         {
@@ -272,6 +304,7 @@ export function buildEvolverTools(deps) {
                 ? 'Fallback：当 evolver_recipe_search 无匹配 Recipe 时，通过本机 evolver-proxy 直搜 PHub 经验资产(Gene/Capsule/EvolutionEvent)。AntiGene 是本地负经验资产, 会直接查本地库供人工 review. 真正复用应优先 evolver_recipe_express。'
                 : '搜索本地经验资产库(Gene/Capsule/EvolutionEvent/AntiGene). 支持 kind/信号/类目/gene 反查/文本. 联网 Recipe 搜索需要 evolver-proxy。',
             inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: searchableKinds }, signalsAny: { type: 'array', items: { type: 'string' } }, category: { type: 'string' }, gene: { type: 'string' }, text: { type: 'string' }, limit: { type: 'number' } } },
+            annotations: deps.proxy ? REMOTE_READ_ONLY : LOCAL_READ_ONLY,
             handler: async (a) => {
                 if (deps.proxy && a['kind'] === 'AntiGene') {
                     return deps.store.search({
@@ -284,7 +317,7 @@ export function buildEvolverTools(deps) {
                     });
                 }
                 if (deps.proxy) {
-                    return resultArray(await deps.proxy.search({
+                    return proxySearchResult(await deps.proxy.search({
                         signalsAny: strArray(a['signalsAny']),
                         ...(typeof a['kind'] === 'string' ? { kind: a['kind'] } : {}),
                         ...(typeof a['category'] === 'string' ? { category: a['category'] } : {}),
@@ -307,13 +340,14 @@ export function buildEvolverTools(deps) {
             name: 'evolver_asset_fetch',
             description: deps.proxy ? '通过本机 evolver-proxy 按 asset_id 从 PHub 拉 full asset, 供当前 Agent 直接复用.' : '按 asset_id 取单个资产.',
             inputSchema: { type: 'object', required: ['assetId'], properties: { assetId: { type: 'string' } } },
+            annotations: deps.proxy ? REMOTE_READ_ONLY : LOCAL_READ_ONLY,
             handler: async (a) => {
                 const assetId = str(a['assetId']);
                 if (deps.proxy) {
                     const local = await deps.store.get(assetId);
                     if (local?.type === 'AntiGene')
                         return local;
-                    return requestedAsset(await deps.proxy.fetchAsset({ assetId }), assetId);
+                    return proxyFetchResult(await deps.proxy.fetchAsset({ assetId }), assetId);
                 }
                 return deps.store.get(assetId);
             },
@@ -322,6 +356,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_gep_build',
             description: '由字段构造资产并计算 asset_id(content-addressed). 不落库; 返回带 asset_id 的资产 + 校验结果. 用于发布前确认.',
             inputSchema: { type: 'object', required: ['asset'], properties: { asset: { type: 'object' } } },
+            annotations: LOCAL_READ_ONLY,
             handler: async (a) => {
                 const asset = a['asset'];
                 const assetId = wire.computeAssetId(asset);
@@ -331,13 +366,25 @@ export function buildEvolverTools(deps) {
         },
         {
             name: 'evolver_asset_publish',
-            description: deps.proxy ? '把资产提交给本机 evolver-proxy, 由 proxy 异步发布到 PHub. Capsule.gene 须非空或 ad-hoc.' : '把资产发布到本地库(content-addressed 去重 + 强绑定校验). Capsule.gene 须非空或 ad-hoc.',
+            description: deps.proxy ? '把资产提交给本机 evolver-proxy, 由 proxy 异步发布到 PHub. Capsule.gene 须非空或 ad-hoc.' : '仅把资产写入本地库(content-addressed 去重 + 强绑定校验)，不会发布到 PHub；返回 local_only 明示该语义. Capsule.gene 须非空或 ad-hoc.',
             inputSchema: { type: 'object', required: ['asset'], properties: { asset: { type: 'object' } } },
-            handler: async (a) => deps.proxy ? deps.proxy.submitAsset(a['asset']) : deps.store.put(a['asset']),
+            annotations: deps.proxy ? REMOTE_WRITE : LOCAL_WRITE,
+            handler: async (a) => {
+                if (deps.proxy)
+                    return deps.proxy.submitAsset(a['asset']);
+                const stored = await deps.store.put(a['asset']);
+                return {
+                    ...record(stored),
+                    local_only: true,
+                    publish_status: 'local_only',
+                    warning: 'Asset was stored locally and was not published to Hub.',
+                };
+            },
         },
         {
             name: 'evolver_distill_conversation',
             description: '从当前对话蒸馏可复用能力. persist=true 只在结果可发布(经宿主验证)或为失败/无轨迹草稿时才落 Gene/Capsule; 携带调用方自报 success 轨迹而未经宿主验证时仅返回草稿不落库. 需要具体 summary、strategy/evidence、artifacts、validation; 质量闸门会将弱信号保留为草稿而不会发布. provider 若不具备 putBundle 能力，成对持久化会 fail-closed 并返回 bundle_persistence_unsupported. Hub 默认优先发布成 Recipe, 不再优先上 Skill Store. publish=true 时默认 compose_recipe, 可用 publish_recipe=false 关掉.',
+            annotations: deps.proxy ? REMOTE_WRITE : LOCAL_WRITE,
             inputSchema: {
                 type: 'object',
                 required: ['summary'],
@@ -374,6 +421,7 @@ export function buildEvolverTools(deps) {
     tools.push({
         name: 'evolver_asset_reuse_result',
         description: '上报某复用资产的实际结果(success/failed/mismatched/stale/unsafe). 任何模式下 success 会在本地 value-ledger 记一笔 reuse(让经 MCP 接入的任何 AI 都能反哺本地经验环, #268);proxy 模式还会转发到 PHub.',
+        annotations: deps.proxy ? REMOTE_WRITE : LOCAL_WRITE,
         inputSchema: {
             type: 'object',
             required: ['assetId', 'outcome'],
@@ -420,6 +468,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_mailbox_send',
             description: '投递一条 mailbox 消息(类型须在目录内). 副作用类型应传 idempotencyKey.',
             inputSchema: { type: 'object', required: ['type'], properties: { type: { type: 'string' }, payload: { type: 'object' }, idempotencyKey: { type: 'string' }, runtimeNamespace: { type: 'string' } } },
+            annotations: LOCAL_WRITE,
             handler: async (a) => {
                 const env = mb.createEnvelope({
                     type: str(a['type']), payload: a['payload'],
@@ -434,6 +483,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_mailbox_status',
             description: '查 mailbox 消息状态(status/attempts/dlq).',
             inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+            annotations: LOCAL_READ_ONLY,
             handler: async (a) => box.getStatus(str(a['id'])) ?? { error: 'not found' },
         });
     }
@@ -442,10 +492,12 @@ export function buildEvolverTools(deps) {
             name: 'evolver_agent_search',
             description: '按自然语言 query 或 capability signals 搜索可协作 agent；结果来自 Hub，不代表实时可用，availability=unknown 时不得推断在线。',
             inputSchema: agentDirectorySearchSchema(),
+            annotations: REMOTE_READ_ONLY,
             handler: async (a) => deps.proxy.searchAgents(agentSearchArgs(a)),
         }, {
             name: 'evolver_agent_profile',
             description: '读取 Hub 授权返回的最小安全 agent profile；不返回凭证、node secret、workspace path 或设备指纹。',
+            annotations: REMOTE_READ_ONLY,
             inputSchema: {
                 type: 'object',
                 required: ['agentId'],
@@ -458,6 +510,7 @@ export function buildEvolverTools(deps) {
         }, {
             name: 'evolver_agent_discover',
             description: '按任务标题、描述和 capability signals 发现候选 agent；分页和排序由 Hub 执行。',
+            annotations: REMOTE_READ_ONLY,
             inputSchema: {
                 ...agentDirectorySearchSchema(),
                 required: ['title'],
@@ -475,6 +528,7 @@ export function buildEvolverTools(deps) {
         }, {
             name: 'evolver_asset_validate',
             description: '通过本机 evolver-proxy 对 PHub 做发布前 dry-run 校验: 先执行与发布相同的本地脱敏/泄漏拦截, 再跑 hub 端质量门禁 + 内容安全扫描, 不落库、不计费. 返回 {valid, reason?}. 建议在 evolver_asset_publish 前调用. Capsule.gene 须非空或 ad-hoc.',
+            annotations: REMOTE_READ_ONLY,
             inputSchema: {
                 type: 'object',
                 anyOf: [{ required: ['assets'] }, { required: ['asset'] }],
@@ -488,6 +542,7 @@ export function buildEvolverTools(deps) {
             name: 'evolver_mailbox_poll',
             description: '通过本机 evolver-proxy 轮询 PHub mailbox 的待处理消息.',
             inputSchema: { type: 'object', properties: { type: { type: 'string' }, direction: { type: 'string' }, limit: { type: 'number' } } },
+            annotations: REMOTE_READ_ONLY,
             handler: async (a) => deps.proxy.call('POST', '/mailbox/poll', {
                 ...(typeof a['type'] === 'string' ? { type: a['type'] } : {}),
                 ...(typeof a['direction'] === 'string' ? { direction: a['direction'] } : {}),

@@ -1043,12 +1043,28 @@ function parseFlags(argv) {
     return { ...(root !== undefined ? { root } : {}), json, profile, envCatalog };
 }
 const ICON = { pass: 'ok  ', warn: 'warn', fail: 'FAIL' };
+const PRIVATE_RUNTIME_OPERATOR_BOUNDARY = Object.freeze({
+    invitationEnrollment: {
+        owner: 'evolver_proxy',
+        supported: true,
+        input: 'A2A_INVITATION_TOKEN',
+    },
+    invitationManagement: {
+        owner: 'private_hub_operator',
+        cliSupported: false,
+        actions: ['create', 'list', 'revoke'],
+    },
+});
 export async function runDoctor(argv, deps = {}) {
     const f = parseFlags(argv);
     if (f.envCatalog) {
         const catalog = buildEnvCatalog({ ...deps, profile: f.profile, ...(f.root !== undefined ? { configRoot: f.root } : {}) });
         if (f.json) {
-            process.stdout.write(`${JSON.stringify({ ok: true, ...catalog })}\n`);
+            process.stdout.write(`${JSON.stringify({
+                ok: true,
+                ...catalog,
+                ...(f.profile === 'private-runtime' ? { operatorBoundary: PRIVATE_RUNTIME_OPERATOR_BOUNDARY } : {}),
+            })}\n`);
         }
         else {
             process.stdout.write(formatEnvCatalog(catalog, deps.label ?? (f.profile === 'private-runtime' ? 'evolver phub doctor' : 'evolver doctor')));
@@ -1073,10 +1089,18 @@ export async function runDoctor(argv, deps = {}) {
         }
     }
     if (f.json) {
-        process.stdout.write(`${JSON.stringify({ ok: !failed, profile: f.profile, checks })}\n`);
+        process.stdout.write(`${JSON.stringify({
+            ok: !failed,
+            profile: f.profile,
+            checks,
+            ...(f.profile === 'private-runtime' ? { operatorBoundary: PRIVATE_RUNTIME_OPERATOR_BOUNDARY } : {}),
+        })}\n`);
     }
     else {
         process.stdout.write(`${deps.label ?? (f.profile === 'private-runtime' ? 'evolver phub doctor' : 'evolver doctor')} (read-only):\n`);
+        if (f.profile === 'private-runtime') {
+            process.stdout.write('  operator-boundary: invitation enrollment=proxy; create/list/revoke=private Hub operator console/API\n');
+        }
         for (const c of checks)
             process.stdout.write(`  [${ICON[c.status]}] ${c.name}: ${c.detail}\n`);
         process.stdout.write(failed ? 'doctor: FAIL — fix the items above.\n' : 'doctor: ok.\n');

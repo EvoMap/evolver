@@ -36,6 +36,17 @@ const SYNC_ASSET_SUBMIT_TYPE_RANK = {
 const SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY = 'sync_asset_submit:idempotency_scope:v1';
 const SYNC_ASSET_SUBMIT_DIRECT_RETRY_GRACE_MS = 30_000;
 const DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS = 15_000;
+const HUB_AUTH_STATUS_STATE_KEY = 'hub:auth_status';
+const HUB_AUTH_FAILED = 'auth_failed';
+const HUB_AUTH_FAILURE_WARNING = 'Hub credential was revoked or rejected; only explicit local fallback is available.';
+export function resolveHubAuthFailurePolicy(env = process.env) {
+    const configured = env['EVOLVER_HUB_AUTH_FAILURE_POLICY']?.trim().toLowerCase();
+    if (!configured)
+        return 'deny';
+    if (configured === 'deny' || configured === 'warn')
+        return configured;
+    throw new Error('EVOLVER_HUB_AUTH_FAILURE_POLICY must be deny or warn');
+}
 function withSynchronousPublishStatus(value, publishStatus) {
     const body = isRecordValue(value) ? { ...value } : { receipt: value };
     return { ...body, publish_status: publishStatus, queued: false };
@@ -95,6 +106,7 @@ export class ProxyDaemon {
     assetSearchCacheMax;
     assetSearchStaleGraceMs;
     assetSubmitResponseTimeoutMs;
+    hubAuthFailurePolicy;
     synchronousAssetSubmitScope;
     shadowMode;
     assetSearchCache = new Map();
@@ -131,6 +143,7 @@ export class ProxyDaemon {
         this.assetSearchCacheTtlMs = positiveIntegerOr(deps.assetSearchCacheTtlMs, DEFAULT_ASSET_SEARCH_CACHE_TTL_MS);
         this.assetSearchCacheMax = positiveIntegerOr(deps.assetSearchCacheMax, DEFAULT_ASSET_SEARCH_CACHE_MAX);
         this.assetSearchStaleGraceMs = positiveIntegerOr(deps.assetSearchStaleGraceMs, DEFAULT_ASSET_SEARCH_STALE_GRACE_MS);
+        this.hubAuthFailurePolicy = deps.hubAuthFailurePolicy ?? 'deny';
         this.assetSubmitResponseTimeoutMs = positiveIntegerOr(deps.assetSubmitResponseTimeoutMs, DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS);
         if (!deps.store && !deps.storePath)
             throw new Error('ProxyDaemon: 需 store 或 storePath 之一');
@@ -760,6 +773,47 @@ export class ProxyDaemon {
         const n = Number(raw);
         return Number.isFinite(n) && n > 0 ? n : null;
     }
+    hubAuthFailed() {
+        return this.store.getState(HUB_AUTH_STATUS_STATE_KEY) === HUB_AUTH_FAILED;
+    }
+    markHubAuthFailed(error) {
+        const detail = safeDaemonErrorMessage(error, MAX_PROXY_TICK_ERROR_LENGTH);
+        const message = safeDaemonMessage(`hub_auth_failed: ${detail}`, MAX_PROXY_TICK_ERROR_LENGTH);
+        try {
+            this.store.setState(HUB_AUTH_STATUS_STATE_KEY, HUB_AUTH_FAILED);
+            this.store.setState('sync:last_error', message);
+        }
+        catch {
+            // A telemetry write failure must not weaken the request-level fail-closed response.
+        }
+    }
+    hubAuthFailureBody(extra = {}) {
+        return {
+            error: 'hub_credential_revoked_or_invalid',
+            auth_status: HUB_AUTH_FAILED,
+            local_fallback: false,
+            retryable: false,
+            operator_action: 'reauthenticate_hub',
+            ...extra,
+        };
+    }
+    async localSearchAssets(query) {
+        const limit = Math.max(1, Math.min(Number(query.limit ?? 5), 25));
+        const local = this.assetStore ? await this.assetStore.search(query) : [];
+        return local.filter((asset) => asset.type !== 'AntiGene').slice(0, limit);
+    }
+    async localFetchAssets(ids) {
+        const assets = [];
+        const missing = [];
+        for (const id of ids) {
+            const local = this.assetStore ? await this.assetStore.get(id) : null;
+            if (assetMatchesId(local, id))
+                assets.push(local);
+            else
+                missing.push(id);
+        }
+        return { assets, missing };
+    }
     async handleProxyRoute(ctx) {
         const expectedHeader = singleHeader(ctx.req.headers['x-evomap-expected-hub-mode']);
         if (hubModeMismatch(expectedHeader, this.deps.hubMode)) {
@@ -783,6 +837,7 @@ export class ProxyDaemon {
                 last_sync_at: this.store.getState('sync:last_sync_at') ?? null,
                 last_sync_error: this.store.getState('sync:last_error') || null,
                 hub_auth_status: this.store.getState('hub:auth_status') || null,
+                hub_auth_failure_policy: this.hubAuthFailurePolicy,
                 reauth_backoff_until: this.stateNumber('lifecycle:reauth_until'),
                 hello_rate_limit_until: this.stateNumber('lifecycle:hello_rl_until'),
                 publish_recall_verify: this.publishRecallVerifier.status(),
@@ -839,8 +894,51 @@ export class ProxyDaemon {
                 ctx.json(200, { results: [], assets: [], query: body });
                 return true;
             }
-            const results = await this.searchAssets(query);
-            ctx.json(200, { results, assets: results, query: body });
+            if (kind === 'AntiGene') {
+                const results = this.assetStore ? await this.assetStore.search(query) : [];
+                ctx.json(200, { results, assets: results, query: body });
+                return true;
+            }
+            if (this.hubAuthFailed()) {
+                if (this.hubAuthFailurePolicy === 'deny') {
+                    ctx.json(401, this.hubAuthFailureBody());
+                    return true;
+                }
+                const results = await this.localSearchAssets(query);
+                ctx.json(200, {
+                    results,
+                    assets: results,
+                    query: body,
+                    degraded: true,
+                    local_fallback: true,
+                    auth_status: HUB_AUTH_FAILED,
+                    warning: HUB_AUTH_FAILURE_WARNING,
+                });
+                return true;
+            }
+            try {
+                const results = await this.searchAssets(query);
+                ctx.json(200, { results, assets: results, query: body });
+            }
+            catch (error) {
+                if (!isAuthLikeError(error))
+                    throw error;
+                this.markHubAuthFailed(error);
+                if (this.hubAuthFailurePolicy === 'deny') {
+                    ctx.json(401, this.hubAuthFailureBody());
+                    return true;
+                }
+                const results = await this.localSearchAssets(query);
+                ctx.json(200, {
+                    results,
+                    assets: results,
+                    query: body,
+                    degraded: true,
+                    local_fallback: true,
+                    auth_status: HUB_AUTH_FAILED,
+                    warning: HUB_AUTH_FAILURE_WARNING,
+                });
+            }
             return true;
         }
         if (ctx.route === 'POST /recipe/search') {
@@ -912,6 +1010,22 @@ export class ProxyDaemon {
                 ...(Array.isArray(body.asset_ids) ? body.asset_ids : []),
                 ...(typeof body.asset_id === 'string' ? [body.asset_id] : []),
             ]);
+            if (this.hubAuthFailed()) {
+                if (this.hubAuthFailurePolicy === 'deny') {
+                    ctx.json(401, this.hubAuthFailureBody());
+                    return true;
+                }
+                const local = await this.localFetchAssets(ids);
+                ctx.json(200, {
+                    ...local,
+                    query: body,
+                    degraded: true,
+                    local_fallback: true,
+                    auth_status: HUB_AUTH_FAILED,
+                    warning: HUB_AUTH_FAILURE_WARNING,
+                });
+                return true;
+            }
             const assets = [];
             const missing = [];
             for (const id of ids) {
@@ -920,7 +1034,28 @@ export class ProxyDaemon {
                     got = await this.assetStore.get(id);
                 }
                 if (!got && this.remoteAssetById) {
-                    got = await this.remoteAssetById(id);
+                    try {
+                        got = await this.remoteAssetById(id);
+                    }
+                    catch (error) {
+                        if (!isAuthLikeError(error))
+                            throw error;
+                        this.markHubAuthFailed(error);
+                        if (this.hubAuthFailurePolicy === 'deny') {
+                            ctx.json(401, this.hubAuthFailureBody());
+                            return true;
+                        }
+                        const local = await this.localFetchAssets(ids);
+                        ctx.json(200, {
+                            ...local,
+                            query: body,
+                            degraded: true,
+                            local_fallback: true,
+                            auth_status: HUB_AUTH_FAILED,
+                            warning: HUB_AUTH_FAILURE_WARNING,
+                        });
+                        return true;
+                    }
                 }
                 if (assetMatchesId(got, id)) {
                     assets.push(got);
@@ -969,6 +1104,10 @@ export class ProxyDaemon {
                 ctx.json(400, { error: 'mode must be sync or async' });
                 return true;
             }
+            if (this.hubAuthFailed()) {
+                ctx.json(401, this.hubAuthFailureBody({ publish_status: 'failed', queued: false, stored: false }));
+                return true;
+            }
             if (mode === 'sync') {
                 if (!bundle) {
                     ctx.json(400, { error: 'mode=sync requires a full asset bundle' });
@@ -998,7 +1137,15 @@ export class ProxyDaemon {
             const r = this.store.send(env);
             if (r.stored)
                 this.notifyNewOutbound();
-            ctx.json(202, { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored });
+            ctx.json(202, {
+                id: env.id,
+                message_id: env.id,
+                receiptId: r.receiptId,
+                status: 'pending',
+                publish_status: 'pending',
+                queued: true,
+                stored: r.stored,
+            });
             return true;
         }
         if (ctx.route === 'POST /asset/validate') {
@@ -1118,6 +1265,12 @@ export class ProxyDaemon {
                     });
                     return true;
                 }
+                // 已知 Hub 凭据撤销时不入队：与 /asset/submit 的撤销门同构，
+                // 避免 envelope 以不消耗 attempts 的 defer 无限期重试。
+                if (this.hubAuthFailed()) {
+                    ctx.json(401, this.hubAuthFailureBody({ publish_status: 'failed', queued: false, stored: false }));
+                    return true;
+                }
                 const env = mailbox.createEnvelope({
                     type: 'asset_submit',
                     payload: {
@@ -1211,6 +1364,8 @@ export class ProxyDaemon {
             remote = await this.searchRemoteAssets(query, limit);
         }
         catch (error) {
+            if (isAuthLikeError(error))
+                throw error;
             if (localSafe.length === 0)
                 throw error;
             remote = [];
@@ -1404,7 +1559,20 @@ export class ProxyDaemon {
         return this.handleSynchronousProxyOutbound({ ...envelope, payload: outboundPayload });
     }
     async publishSynchronousBundle(envelope) {
-        const cached = this.readSynchronousAssetSubmitOutcome(envelope);
+        let cached = this.readSynchronousAssetSubmitOutcome(envelope);
+        if (cached?.kind === 'failed'
+            && cached.body['error'] === 'hub_credential_revoked_or_invalid'
+            && !this.hubAuthFailed()) {
+            this.store.deleteProcessed([
+                synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey),
+                synchronousAssetSubmitAcceptanceKey(envelope.idempotencyKey),
+            ]);
+            if (this.store.getStatus(envelope.id)?.dlq) {
+                this.store.replayDlq(envelope.id, this.now());
+                this.notifyNewOutbound();
+            }
+            cached = undefined;
+        }
         if (cached)
             return cached;
         const inflight = this.synchronousAssetSubmitInflight.get(envelope.idempotencyKey);
@@ -1462,6 +1630,8 @@ export class ProxyDaemon {
             return { kind: 'accepted', receipt };
         }
         catch (error) {
+            if (isAuthLikeError(error))
+                this.markHubAuthFailed(error);
             const current = this.store.getById(envelope.id);
             const currentStatus = this.store.getStatus(envelope.id);
             const cached = this.readSynchronousAssetSubmitOutcome(envelope);
@@ -2189,11 +2359,11 @@ function isSynchronousAssetSubmitEnvelope(envelope) {
         && envelope.idempotencyKey.startsWith(SYNC_ASSET_SUBMIT_PREFIX);
 }
 function isTerminalSynchronousPublishFailure(error) {
+    if (error instanceof AuthError || errorName(error) === 'AuthError')
+        return true;
     return error instanceof hubNs.PublishRejectedError && error.terminal;
 }
 function isRetryableSynchronousPublishFailure(error) {
-    if (error instanceof AuthError || errorName(error) === 'AuthError')
-        return true;
     if (error instanceof HubUnreachableError || errorName(error) === 'HubUnreachableError')
         return true;
     if (error instanceof hubNs.PublishRejectedError) {
@@ -2257,7 +2427,15 @@ function mapSynchronousPublishFailure(error) {
         };
     }
     if (error instanceof AuthError || errorName(error) === 'AuthError') {
-        return { statusCode: 502, body: { error: 'hub_auth_failed' } };
+        return {
+            statusCode: 401,
+            body: {
+                error: 'hub_credential_revoked_or_invalid',
+                auth_status: HUB_AUTH_FAILED,
+                local_fallback: false,
+                retryable: false,
+            },
+        };
     }
     if (error instanceof HubUnreachableError || errorName(error) === 'HubUnreachableError') {
         const retryAfterMs = error instanceof HubUnreachableError ? error.retryAfterMs : positiveFiniteNumber(asRecord(error)['retryAfterMs']);

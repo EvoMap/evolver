@@ -3,6 +3,7 @@ export interface ToolListEntry {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+    annotations: McpTool['annotations'];
 }
 export interface ToolCallResult {
     ok: boolean;

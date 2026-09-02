@@ -30,9 +30,12 @@ export function productBridgeShimPath() {
     return built;
 }
 const NO_PREVIOUS_ENTRY = Symbol('no previous product bridge entry');
-function productBridgeServerEntry(previous = NO_PREVIOUS_ENTRY) {
+/** The bridge shim runs under Node just like the evolver MCP entry. `nodePath` is the store-stable absolute
+ *  Node executable resolved by the install chain (setup-hooks); when omitted — standalone callers without a
+ *  resolved path — the entry keeps the current process executable. */
+function productBridgeServerEntry(nodePath, previous = NO_PREVIOUS_ENTRY) {
     return {
-        command: process.execPath,
+        command: nodePath ?? process.execPath,
         args: [productBridgeShimPath()],
         [PRODUCT_BRIDGE_MANAGED_KEY]: true,
         ...(previous === NO_PREVIOUS_ENTRY ? {} : { [PRODUCT_BRIDGE_PREVIOUS_KEY]: previous }),
@@ -59,7 +62,7 @@ export function restoreProductBridgeEntry(entry) {
     return { restored: true, entry: entry[PRODUCT_BRIDGE_PREVIOUS_KEY] };
 }
 /** Merge a managed evox-product server into a parsed MCP JSON object (project .mcp.json or ~/.claude.json). */
-export function withClaudeProductBridge(data, force = false) {
+export function withClaudeProductBridge(data, force = false, nodePath) {
     if (Object.prototype.hasOwnProperty.call(data, 'mcpServers') && !isObj(data['mcpServers'])) {
         throw new Error('[setup-hooks] refusing to overwrite MCP configuration: mcpServers must be an object.');
     }
@@ -70,13 +73,13 @@ export function withClaudeProductBridge(data, force = false) {
         return { changed: false, skipped: true, data };
     }
     const previous = previousEntryForForce(existing, hasExisting);
-    const next = productBridgeServerEntry(previous);
+    const next = productBridgeServerEntry(nodePath, previous);
     if (JSON.stringify(existing) === JSON.stringify(next))
         return { changed: false, data };
     return { changed: true, data: { ...data, mcpServers: { ...servers, [PRODUCT_BRIDGE_SERVER_ID]: next } } };
 }
 /** Merge a managed evox-product table into parsed Codex TOML. */
-export function withCodexProductBridge(data, force = false) {
+export function withCodexProductBridge(data, force = false, nodePath) {
     if (Object.prototype.hasOwnProperty.call(data, 'mcp_servers') && !isObj(data['mcp_servers'])) {
         throw new Error('[setup-hooks] refusing to overwrite MCP configuration: mcp_servers must be an object.');
     }
@@ -87,7 +90,7 @@ export function withCodexProductBridge(data, force = false) {
         return { changed: false, skipped: true, data };
     }
     const previous = previousEntryForForce(existing, hasExisting);
-    const next = productBridgeServerEntry(previous);
+    const next = productBridgeServerEntry(nodePath, previous);
     if (JSON.stringify(existing) === JSON.stringify(next))
         return { changed: false, data };
     return { changed: true, data: { ...data, mcp_servers: { ...servers, [PRODUCT_BRIDGE_SERVER_ID]: next } } };
@@ -190,9 +193,9 @@ function updateConfigFile(path, label, parse, serialize, update) {
         releaseConfigLock(lockPath);
     }
 }
-export function installClaudeProductBridge(configRoot, force = false) {
+export function installClaudeProductBridge(configRoot, force = false, nodePath) {
     const path = join(configRoot, '.mcp.json');
-    const result = updateConfigFile(path, '.mcp.json', (raw) => JSON.parse(raw), (data) => `${JSON.stringify(data, null, 2)}\n`, (data) => withClaudeProductBridge(data, force));
+    const result = updateConfigFile(path, '.mcp.json', (raw) => JSON.parse(raw), (data) => `${JSON.stringify(data, null, 2)}\n`, (data) => withClaudeProductBridge(data, force, nodePath));
     return { ...result, path };
 }
 export function uninstallClaudeProductBridge(configRoot) {
@@ -218,11 +221,11 @@ export function uninstallClaudeProductBridge(configRoot) {
     });
     return result.changed;
 }
-export function installCodexProductBridge(configRoot, force = false) {
+export function installCodexProductBridge(configRoot, force = false, nodePath) {
     const path = join(configRoot, '.codex', 'config.toml');
     assertNotSymlink(join(configRoot, '.codex'), '.codex');
     mkdirSync(dirname(path), { recursive: true });
-    const result = updateConfigFile(path, '.codex/config.toml', (raw) => parseToml(raw), (data) => `${stringifyToml(data)}\n`, (data) => withCodexProductBridge(data, force));
+    const result = updateConfigFile(path, '.codex/config.toml', (raw) => parseToml(raw), (data) => `${stringifyToml(data)}\n`, (data) => withCodexProductBridge(data, force, nodePath));
     return { ...result, path };
 }
 export function uninstallCodexProductBridge(configRoot) {

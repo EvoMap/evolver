@@ -20,19 +20,22 @@ export declare const DEFAULT_PROMPT_RECALL_HOOK_COMMAND = "evolver inject prompt
  *  - 'project' (default): register in <configRoot>/.mcp.json (cwd-scoped) — unchanged legacy behavior.
  *  - 'user': register in ~/.claude.json's top-level mcpServers so EVERY project's sessions discover evolver.
  * The SessionStart hook always lands in the matching .claude/settings.json (project: <configRoot>/.claude;
- * user: ~/.claude — which is already user-level). codex/cursor ignore this (codex's ~/.codex/config.toml is a
- * genuine global config, so its global path stays configRoot-driven).
+ * user: ~/.claude — which is already user-level). Codex resolves its own project/user targets; cursor ignores it.
  */
 export type InstallScope = 'user' | 'project';
 export interface InstallOptions {
     /** Runtime config root — the CC adapter writes <configRoot>/.mcp.json and <configRoot>/.claude/settings.json
      *  for PROJECT scope. For USER scope the MCP registration goes to ~/.claude.json instead (see `scope`). */
     configRoot: string;
-    /** claude-code only: 'project' (default) writes <configRoot>/.mcp.json; 'user' registers the MCP in
-     *  ~/.claude.json so it loads in every project (Claude Code's real user scope). Ignored by codex/cursor. */
+    /** Runtime configuration scope. Codex project scope writes <configRoot>/.codex/config.toml, while user scope
+     *  writes $CODEX_HOME/config.toml or ~/.codex/config.toml. */
     scope?: InstallScope;
     /** The MCP server launch command registered in .mcp.json (how the runtime starts the evolver MCP server). */
     server: McpServerCmd;
+    /** claude-code/codex only: store-stable absolute Node executable for the managed evox-product bridge entry's
+     *  shim, resolved by the install chain so a package-manager-local process.execPath is never persisted (#1068).
+     *  Omitted by callers without a resolved path; the bridge then falls back to the current process executable. */
+    productBridgeNodePath?: string;
     /** Command the SessionStart hook runs to inject memory. Default 'evolver inject session-start'. */
     hookCommand?: string;
     /** Command the UserPromptSubmit hook runs. Default is local-only, default-off prompt recall. */
@@ -49,6 +52,8 @@ export interface InstallOptions {
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. Intended for hermetic
      *  embedding/tests; normal callers omit it. configRoot and scope do not affect Antigravity's user config. */
     homeDir?: string;
+    /** Codex user scope only: direct replacement for ~/.codex, matching CODEX_HOME semantics. */
+    codexHome?: string;
     /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
     kiroHome?: string;
     /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
@@ -77,6 +82,8 @@ export interface UninstallOptions {
     scope?: InstallScope;
     /** Antigravity only: override the user home used to resolve ~/.gemini config roots. */
     homeDir?: string;
+    /** Codex user scope only: direct replacement for ~/.codex, matching CODEX_HOME semantics. */
+    codexHome?: string;
     /** Kiro user scope only: direct replacement for ~/.kiro, matching KIRO_HOME semantics. */
     kiroHome?: string;
     /** Validate and report the uninstall without changing config or backup files. */
@@ -98,6 +105,7 @@ export interface InstallResult {
     dryRun?: boolean;
     verified?: boolean;
     backups?: string[];
+    warnings?: string[];
     error?: string;
 }
 type SharedConfigRaceHook = (path: string, attempt: number) => void;
@@ -124,8 +132,8 @@ export declare function stripManaged(data: Record<string, unknown>): {
  * Execute an InjectionPlan against a runtime config root. Active runtimes:
  *  - claude-code (mcp-hooks): scope 'project' (default) writes/merges <root>/.mcp.json + <root>/.claude/settings.json;
  *    scope 'user' registers the MCP in ~/.claude.json (real user scope) + the SessionStart hook in ~/.claude/settings.json.
- *  - codex (mcp-plugin): writes/merges <root>/.codex/config.toml — [mcp_servers.evolver] + [[hooks.SessionStart]]
- *    (delegated to codexInstaller; TOML, not JSON). Same hybrid value (tool discovery + session-start injection).
+ *  - codex (mcp-plugin): project scope writes <root>/.codex/config.toml; user scope writes
+ *    $CODEX_HOME/config.toml or ~/.codex/config.toml. Both use Codex-native MCP and lifecycle-hook tables.
  *  - cursor (cursor-rules): renders top genes into <root>/.cursor/rules/evolver.mdc (alwaysApply:true) — gene
  *    memory injection, not MCP tool discovery (delegated to cursorRulesInstaller). The daemon keeps it fresh.
  *  - antigravity (mcp-config): writes mcpServers.evolver to every existing user-level Antigravity config root,

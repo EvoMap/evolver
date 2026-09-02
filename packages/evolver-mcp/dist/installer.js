@@ -478,8 +478,8 @@ function claudeCodeTargets(scope, configRoot, homeDir = homedir()) {
  * Execute an InjectionPlan against a runtime config root. Active runtimes:
  *  - claude-code (mcp-hooks): scope 'project' (default) writes/merges <root>/.mcp.json + <root>/.claude/settings.json;
  *    scope 'user' registers the MCP in ~/.claude.json (real user scope) + the SessionStart hook in ~/.claude/settings.json.
- *  - codex (mcp-plugin): writes/merges <root>/.codex/config.toml — [mcp_servers.evolver] + [[hooks.SessionStart]]
- *    (delegated to codexInstaller; TOML, not JSON). Same hybrid value (tool discovery + session-start injection).
+ *  - codex (mcp-plugin): project scope writes <root>/.codex/config.toml; user scope writes
+ *    $CODEX_HOME/config.toml or ~/.codex/config.toml. Both use Codex-native MCP and lifecycle-hook tables.
  *  - cursor (cursor-rules): renders top genes into <root>/.cursor/rules/evolver.mdc (alwaysApply:true) — gene
  *    memory injection, not MCP tool discovery (delegated to cursorRulesInstaller). The daemon keeps it fresh.
  *  - antigravity (mcp-config): writes mcpServers.evolver to every existing user-level Antigravity config root,
@@ -538,9 +538,9 @@ export function installInjection(plan, opts) {
         && hasEvolverMcpRegistration(existingMcp)
         && hasExactHookCommand(existingSettings, 'SessionStart', hookCommand)
         && hasExactHookCommand(existingSettings, 'UserPromptSubmit', promptRecallHookCommand)) {
-        const product = withClaudeProductBridge(existingMcp, false);
+        const product = withClaudeProductBridge(existingMcp, false, opts.productBridgeNodePath);
         if (product.changed) {
-            writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => withClaudeProductBridge(current, false));
+            writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => withClaudeProductBridge(current, false, opts.productBridgeNodePath));
             return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [mcpConfigPath], alreadyInstalled: true };
         }
         return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [], alreadyInstalled: true };
@@ -550,7 +550,7 @@ export function installInjection(plan, opts) {
     // it's Claude Code's own shared config, so uninstall keys off the mcpServers.evolver entry there instead.
     if (mcpIsSharedUserConfig) {
         writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
-            const merged = withClaudeProductBridge(deepMerge(current, plan.config), opts.force === true);
+            const merged = withClaudeProductBridge(deepMerge(current, plan.config), opts.force === true, opts.productBridgeNodePath);
             return { changed: true, data: merged.data };
         });
     }
@@ -558,7 +558,7 @@ export function installInjection(plan, opts) {
         writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
             const mcpMerged = deepMerge(current, plan.config);
             mcpMerged[MANAGED_MARKER] = true;
-            return { changed: true, data: withClaudeProductBridge(mcpMerged, opts.force === true).data };
+            return { changed: true, data: withClaudeProductBridge(mcpMerged, opts.force === true, opts.productBridgeNodePath).data };
         });
     }
     // .claude/settings.json ← SessionStart hook (hooks-union preserves the user's own hooks). For user scope this

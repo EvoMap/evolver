@@ -7,7 +7,7 @@ import { assetstore, events, mailbox } from '@evomap/evolver-core';
 import { buildEvolverTools } from './tools.js';
 import { buildEvolverPrimer } from './primer.js';
 import { EvolverMcpServer, UnknownToolError } from './server.js';
-import { reachableProxyClientFromEnv } from './proxyClient.js';
+import { proxyClientFromEnv } from './proxyClient.js';
 import { loadEnvFileFromEnvOrThrow } from './envFile.js';
 import { bootstrap } from '@evomap/evolver-core';
 try {
@@ -23,7 +23,9 @@ const store = new assetstore.LocalJsonlProvider(events.assetsDir());
 const mailboxPath = process.env['EVOLVER_MCP_MAILBOX'] ?? join(events.evomapHome(), 'mailbox', 'mcp.db');
 mkdirSync(dirname(mailboxPath), { recursive: true });
 const box = new mailbox.MailboxStore({ path: mailboxPath });
-const proxy = await reachableProxyClientFromEnv(process.env);
+// A configured proxy is authoritative. If it is temporarily unreachable or its Hub credential
+// was revoked, tool calls must surface that failure instead of silently switching to local mode.
+const proxy = proxyClientFromEnv(process.env);
 // Reuse-feedback wiring (#268): a root_events writer + a per-connection correlation id so a SUCCESS reuse_result
 // from THIS MCP agent credits the local experience loop (one stdio process ~ one MCP session).
 const ingestor = new events.Ingestor({ path: events.rootEventsPath() });

@@ -10,7 +10,7 @@ import { maybeRunWindowsUpdaterWorkerFromArgv } from '../selfUpdate/windowsUpdat
 import { maybeRunUnixRecoveryController } from '../selfUpdate/unixController.js';
 import { maybeRunWindowsRecoveryController } from '../selfUpdate/windowsController.js';
 import { consumeRecoveryChildStartGate } from '../selfUpdate/recoveryChildStartGate.js';
-import type { AtpProxyClient, ProxyDaemonDeps, ProxyTickReport } from '../daemon/proxyDaemon.js';
+import { type AtpProxyClient, type ProxyDaemonDeps, type ProxyTickReport } from '../daemon/proxyDaemon.js';
 import type { HelloLifecycleMode, HelloResult, HeartbeatOptions, HeartbeatResult } from '../lifecycle/manager.js';
 import type { InboundResult } from '../sync/engine.js';
 /** evolver-proxy 系统级 daemon 入口(M6-7). EVOMAP_HUB_MODE/URL/NODE_SECRET 选址. */
