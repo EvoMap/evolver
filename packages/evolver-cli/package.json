@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-cli",
-  "version": "2.0.0-beta.23",
+  "version": "2.0.25",
   "private": false,
   "type": "module",
   "engines": {
@@ -23,12 +23,12 @@
     }
   },
   "dependencies": {
-    "@evomap/evolver-core": "2.0.0-beta.23",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.23",
-    "@evomap/evolver-mcp": "2.0.0-beta.23",
-    "@evomap/evolver-proxy": "2.0.0-beta.23",
-    "@evomap/evolver-runtime-adapters": "2.0.0-beta.23",
-    "@evomap/evolver-webui": "2.0.0-beta.23"
+    "@evomap/evolver-core": "2.0.25",
+    "@evomap/evolver-adapter-public": "2.0.25",
+    "@evomap/evolver-mcp": "2.0.25",
+    "@evomap/evolver-proxy": "2.0.25",
+    "@evomap/evolver-runtime-adapters": "2.0.25",
+    "@evomap/evolver-webui": "2.0.25"
   },
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

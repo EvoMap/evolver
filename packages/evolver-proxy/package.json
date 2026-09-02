@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-proxy",
-  "version": "2.0.0-beta.23",
+  "version": "2.0.25",
   "private": false,
   "type": "module",
   "engines": {
@@ -29,8 +29,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1053.0",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.23",
-    "@evomap/evolver-core": "2.0.0-beta.23"
+    "@evomap/evolver-adapter-public": "2.0.25",
+    "@evomap/evolver-core": "2.0.25"
   },
   "repository": {
     "type": "git",
@@ -38,7 +38,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   },
   "files": [
     "dist/",

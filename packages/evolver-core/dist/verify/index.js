@@ -2,3 +2,4 @@ export { BLOCKED_NODE_FLAGS, SHELL_METACHARS, isAllowed, isNodeExecutable, isVal
 export * from './rollback.js';
 export * from './sandboxRunner.js';
 export * from './sandboxedValidation.js';
+export * from './executionRedaction.js';

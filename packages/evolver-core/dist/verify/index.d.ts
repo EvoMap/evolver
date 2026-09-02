@@ -3,3 +3,4 @@ export type { CommandRunner, RunOutput, ValidationCommand, ValidationPlan, Valid
 export * from './rollback.js';
 export * from './sandboxRunner.js';
 export * from './sandboxedValidation.js';
+export * from './executionRedaction.js';

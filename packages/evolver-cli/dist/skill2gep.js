@@ -351,7 +351,17 @@ export function synthesizeGene(parsed, execution = {}, opts = {}) {
         strategy.push('Run the Skill validation commands and abort if any fails.');
     }
     const rawValidations = Array.isArray(parsed.validation) ? parsed.validation : [];
-    const allowedValidations = rawValidations.map((v) => String(v || '').trim()).filter((v) => v && isValidationCommandAllowed(v));
+    const normalizedValidations = rawValidations.map((v) => String(v || '').trim()).filter(Boolean);
+    const sanitizedValidations = normalizedValidations.map((command) => verify.sanitizeExecutionCommand(command));
+    if (sanitizedValidations.some((command) => command.changed || command.blocked)) {
+        return {
+            gene: null,
+            errors: ['execution_validation_unsafe: validation commands must not contain credential-bearing arguments'],
+            generation_meta: { source, quality_score: computeQualityScore(source, parsed, execution) },
+        };
+    }
+    const allowedValidations = sanitizedValidations.map((command) => command.value)
+        .filter((command) => isValidationCommandAllowed(command));
     if (opts.strict && allowedValidations.length === 0) {
         return {
             gene: null,
@@ -483,7 +493,10 @@ export function assembleCapsule(gene, execution, opts = {}) {
         })),
         schema_version: '1.6.0',
     };
-    return { ok: true, capsule };
+    const sanitized = verify.sanitizeExecutionPayload(capsule);
+    if (sanitized.blocked)
+        return { ok: false, reason: 'execution_trace_unsafe' };
+    return { ok: true, capsule: sanitized.value };
 }
 /**
  * Reverse-distill a parsed SKILL.md + its execution into GEP assets — the PURE core of v1 runOnSkillInvocation

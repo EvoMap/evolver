@@ -1,9 +1,9 @@
 {
   "name": "@evomap/evolver",
-  "version": "2.0.0-beta.23",
+  "version": "2.0.25",
   "private": false,
   "type": "module",
-  "description": "Evolver v2 beta public distribution package.",
+  "description": "Evolver v2 public distribution package.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EvoMap/evolver.git"
@@ -32,16 +32,16 @@
     "node": "^22.13.0 || >=23.4.0"
   },
   "dependencies": {
-    "@evomap/evolver-cli": "2.0.0-beta.23",
-    "@evomap/evolver-mcp": "2.0.0-beta.23",
-    "@evomap/evolver-proxy": "2.0.0-beta.23",
-    "@evomap/evolver-core": "2.0.0-beta.23",
-    "@evomap/evolver-adapter-public": "2.0.0-beta.23",
-    "@evomap/evolver-runtime-adapters": "2.0.0-beta.23",
-    "@evomap/evolver-webui": "2.0.0-beta.23"
+    "@evomap/evolver-cli": "2.0.25",
+    "@evomap/evolver-mcp": "2.0.25",
+    "@evomap/evolver-proxy": "2.0.25",
+    "@evomap/evolver-core": "2.0.25",
+    "@evomap/evolver-adapter-public": "2.0.25",
+    "@evomap/evolver-runtime-adapters": "2.0.25",
+    "@evomap/evolver-webui": "2.0.25"
   },
   "publishConfig": {
     "access": "public",
-    "tag": "v2-beta"
+    "tag": "latest"
   }
 }

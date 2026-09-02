@@ -8,6 +8,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } f
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isolationCommand, makeSandboxRunner, sandboxResourceLimitsAvailable, unshareNetAvailable, } from './sandboxRunner.js';
 import { runValidation, tokenizeValidationCommand, validationScriptPath, } from './validation.js';
+import { sanitizeExecutionCommand, sanitizeExecutionPayload } from './executionRedaction.js';
 let readOnlyIsolationAvailableCache;
 let readOnlyFilesystemIsolationAvailableCache;
 export function readOnlyFilesystemIsolationAvailable() {
@@ -151,6 +152,26 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
     if (cmds.length === 0)
         return { passed: true, cancelled: false, score: 0.95, results: [], skipped: [], isolated };
     const list = cmds.map((c) => String(c ?? '').trim());
+    const sanitizedPlan = list.map((command) => sanitizeExecutionCommand(command));
+    if (sanitizedPlan.some((command) => command.changed || command.blocked)) {
+        return {
+            passed: false,
+            cancelled: false,
+            score: 0.2,
+            results: sanitizedPlan.map((command) => ({
+                label: command.value.split(/\s+/)[0] || '<redacted>',
+                cmd: command.value,
+                allowed: false,
+                exitCode: null,
+                stdoutSummary: command.changed || command.blocked
+                    ? 'execution_credential_blocked'
+                    : 'validation_plan_blocked',
+                passed: false,
+            })),
+            skipped: [],
+            isolated,
+        };
+    }
     // Validation plans may reference repo-relative scripts that do not exist in this checkout; skip those, but never
     // execute a script that is absolute, escapes the root, resolves through a symlink, or is not a regular file.
     const skipped = [];
@@ -219,14 +240,14 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
             rmSync(scratch, { recursive: true, force: true });
     }
     const complete = skipped.length === 0 && !cancelled;
-    return {
+    return sanitizeExecutionPayload({
         passed: passed && complete,
         cancelled,
         score: passed && complete ? 0.95 : 0.2,
         results,
         skipped,
         isolated,
-    };
+    }).value;
 }
 function pathIsWithin(root, target) {
     const rel = relative(root, target);

@@ -1,3 +1,4 @@
+import { sanitizeExecutionCommand, sanitizeExecutionDiagnostic } from './executionRedaction.js';
 // With shell:false these are passed literally (harmless), but their presence means an injection attempt
 // or a command that wrongly assumes a shell (e.g. `a && b`) — reject loudly so it is split, not silently mis-run.
 export const SHELL_METACHARS = /[;&|`$<>\n\r]/;
@@ -184,13 +185,28 @@ export async function runValidation(plan, run, signal) {
             cancelled = true;
             break;
         }
-        const label = c.label ?? c.cmd;
-        if (!isAllowed(c.cmd, plan.allowlist)) {
-            results.push({ label, cmd: c.cmd, allowed: false, exitCode: null, stdoutSummary: '', passed: false });
+        const sanitizedCommand = sanitizeExecutionCommand(c.cmd);
+        const label = sanitizeExecutionDiagnostic(c.label ?? c.cmd).value;
+        if (sanitizedCommand.changed || sanitizedCommand.blocked || !isAllowed(c.cmd, plan.allowlist)) {
+            results.push({
+                label,
+                cmd: sanitizedCommand.value,
+                allowed: false,
+                exitCode: null,
+                stdoutSummary: sanitizedCommand.changed || sanitizedCommand.blocked ? 'execution_credential_blocked' : '',
+                passed: false,
+            });
             continue;
         }
-        const out = await run(c.cmd, signal);
-        results.push({ label, cmd: c.cmd, allowed: true, exitCode: out.exitCode, stdoutSummary: summarizeStdout(out.stdout), passed: out.exitCode === 0 });
+        const out = await run(sanitizedCommand.value, signal);
+        results.push({
+            label,
+            cmd: sanitizedCommand.value,
+            allowed: true,
+            exitCode: out.exitCode,
+            stdoutSummary: sanitizeExecutionDiagnostic(summarizeStdout(out.stdout)).value,
+            passed: out.exitCode === 0,
+        });
         // runner 可能在返回结果后才观察到取消；此时不能让完整的 exit-0 列表伪装成通过。
         if (signal?.aborted) {
             cancelled = true;
@@ -213,6 +229,9 @@ export async function runValidation(plan, run, signal) {
 export function isValidationCommandAllowed(cmd) {
     const c = String(cmd || '').trim();
     if (!c)
+        return false;
+    const sanitized = sanitizeExecutionCommand(c);
+    if (sanitized.changed || sanitized.blocked)
         return false;
     // 不允许命令替换
     if (/`|\$\(/.test(c))

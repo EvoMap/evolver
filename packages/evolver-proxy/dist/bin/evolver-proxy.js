@@ -709,7 +709,9 @@ function resolveNativePublishExecutionVerifier(env) {
             || commands.length > 8
             || !Array.isArray(input.validation)
             || input.validation.length !== commands.length
-            || commands.some((command) => command.length > 180 || !verify.isValidationCommandAllowed(command))
+            || commands.some((command) => command.length > 180
+                || !verify.isValidationCommandAllowed(command)
+                || verify.sanitizeExecutionCommand(command).blocked)
             || signal.aborted)
             return null;
         const result = await verify.runSandboxedValidation(commands, validationRoot, {

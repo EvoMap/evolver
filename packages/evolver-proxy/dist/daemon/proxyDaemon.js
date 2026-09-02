@@ -1911,7 +1911,10 @@ async function resolveVerifiedExecution(verifier, input, expectedValidation, tim
             return undefined;
         if (candidate.trace.some((row, index) => row.command.trim() !== expectedValidation[index]))
             return undefined;
-        return { ...candidate, validation: expectedValidation };
+        // Compare the authoritative raw receipt first, then cross the common execution-evidence outlet exactly once.
+        // A command that required redaction no longer identifies the executed program and must not unlock publication.
+        const sanitized = verify.sanitizeExecutionPayload({ ...candidate, validation: expectedValidation });
+        return sanitized.blocked ? undefined : sanitized.value;
     }
     catch {
         return undefined;
@@ -1932,7 +1935,10 @@ function declaredValidationCommands(input) {
     if (!Array.isArray(raw) || raw.length === 0 || raw.length > 8)
         return undefined;
     const commands = raw.map((command) => typeof command === 'string' ? command.trim() : '');
-    if (commands.some((command) => command.length === 0 || command.length > 180 || !verify.isValidationCommandAllowed(command))) {
+    if (commands.some((command) => command.length === 0
+        || command.length > 180
+        || !verify.isValidationCommandAllowed(command)
+        || verify.sanitizeExecutionCommand(command).blocked)) {
         return undefined;
     }
     return commands;

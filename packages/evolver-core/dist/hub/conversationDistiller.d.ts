@@ -1,4 +1,5 @@
 import type { AssetRecord, AssetStoreProvider } from '../assetstore/provider.js';
+import { EXECUTION_REDACTION_POLICY_VERSION, type ExecutionRedactionReason } from '../verify/executionRedaction.js';
 export interface ConversationDistillInput {
     title?: unknown;
     name?: unknown;
@@ -44,6 +45,8 @@ interface NormalizedExecution {
         lines: number;
     };
     untrustedStatusClaim: boolean;
+    redactionBlocked: boolean;
+    redactionReasons: ExecutionRedactionReason[];
 }
 interface NormalizedConversation {
     text: string;
@@ -99,6 +102,11 @@ export type ConversationDistillResult = {
     capsule: AssetRecord;
     /** 仅当质量闸门通过且草稿可以进入发布流程时为 true。 */
     publishable: boolean;
+    execution_redaction: {
+        policy_version: typeof EXECUTION_REDACTION_POLICY_VERSION;
+        blocked: boolean;
+        reasons: ExecutionRedactionReason[];
+    };
 };
 export declare function inferSignals(text: string, providedSignals?: unknown): string[];
 export declare function evaluateGate(input: ConversationDistillInput, normalized: NormalizedConversation): QualityGate;
