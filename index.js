@@ -2392,6 +2392,10 @@ async function main() {
 
     const { getHubUrl, getNodeId, buildHubHeaders, sendHelloToHub, getHubNodeSecret } = require('./src/gep/a2aProtocol');
     const { hubFetch } = require('./src/gep/hubFetch');
+    const {
+      reportSkillInstallSuccess,
+      skillInstallCommitted,
+    } = require('./src/gep/skillInstallSuccess');
 
     const hubUrl = getHubUrl();
     if (!hubUrl) {
@@ -2588,6 +2592,24 @@ async function main() {
         console.log('  Fetch cost: free (already purchased)');
       } else {
         console.log('  Fetch cost: ' + (data.credit_cost || 0) + ' credits');
+      }
+
+      // B-5 / KDP-3: confirm local install *commit* so Hub trending can count
+      // unique successful installs. Fail-soft — disk write already succeeded.
+      if (skillInstallCommitted(data)) {
+        const reportSkillId = String(data.skill_id || skillId).trim() || skillId;
+        const report = await reportSkillInstallSuccess({
+          hubUrl,
+          skillId: reportSkillId,
+          nodeId,
+          hubFetch,
+          buildHeaders: buildHubHeaders,
+        });
+        if (report.ok) {
+          console.log('[fetch] Reported install-success to Hub (B-5 popularity).');
+        } else if (isVerbose) {
+          console.warn('[fetch] install-success report skipped: ' + (report.error || 'unknown'));
+        }
       }
     } catch (error) {
       if (error && error.name === 'TimeoutError') {

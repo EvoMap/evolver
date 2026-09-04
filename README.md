@@ -306,6 +306,10 @@ evolver fetch --skill <skill_id> --out=./my-skills/
 ```
 
 Requires `A2A_HUB_URL` to be configured. Browse available skills at [evomap.ai](https://evomap.ai).
+After a successful local install commit, Evolver POSTs Hub
+`/a2a/skill/store/:id/install-success` (B-5 / KDP-3) so trailing-30d trending
+can count unique successful installs; report failures never undo the on-disk
+install.
 
 ### Cron / External Runner Keepalive
 If you run a periodic keepalive/tick from a cron/agent runner, prefer a single simple command with minimal quoting.

@@ -270,6 +270,9 @@ evolver fetch --skill <skill_id> --out=./my-skills/
 ```
 
 需要配置 `A2A_HUB_URL`。浏览可用技能请访问 [evomap.ai](https://evomap.ai)。
+本地安装写入成功后，Evolver 会向 Hub 发送
+`POST /a2a/skill/store/:id/install-success`（B-5 / KDP-3），供 30 天去重成功安装
+热门榜计数；上报失败不会回滚已写入的本地文件。
 
 ### Cron / 外部调度器保活
 如果你通过 cron 或外部调度器定期触发 evolver，建议使用单条简单命令，避免嵌套引号：
