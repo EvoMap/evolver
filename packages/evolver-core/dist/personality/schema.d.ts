@@ -88,13 +88,13 @@ export declare const personalityHistoryEntry: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     at: string;
     score: number | null;
-    key: string;
     outcome: string;
+    key: string;
     notes: string | null;
 }, {
     at: string;
-    key: string;
     outcome: string;
+    key: string;
     score?: number | null | undefined;
     notes?: string | null | undefined;
 }>;
@@ -153,13 +153,13 @@ export declare const personalityModel: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         at: string;
         score: number | null;
-        key: string;
         outcome: string;
+        key: string;
         notes: string | null;
     }, {
         at: string;
-        key: string;
         outcome: string;
+        key: string;
         score?: number | null | undefined;
         notes?: string | null | undefined;
     }>, "many">>;
@@ -187,8 +187,8 @@ export declare const personalityModel: z.ZodObject<{
     history: {
         at: string;
         score: number | null;
-        key: string;
         outcome: string;
+        key: string;
         notes: string | null;
     }[];
 }, {
@@ -212,8 +212,8 @@ export declare const personalityModel: z.ZodObject<{
     }> | undefined;
     history?: {
         at: string;
-        key: string;
         outcome: string;
+        key: string;
         score?: number | null | undefined;
         notes?: string | null | undefined;
     }[] | undefined;

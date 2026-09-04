@@ -1,24 +1,21 @@
-import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
 import { Ajv } from 'ajv';
-const nodeRequire = createRequire(import.meta.url);
-const SCHEMA_SUBPATH = {
-    Gene: '@evomap/gep-sdk/schemas/gene.schema.json',
-    Capsule: '@evomap/gep-sdk/schemas/capsule.schema.json',
-    EvolutionEvent: '@evomap/gep-sdk/schemas/evolution-event.schema.json',
+// Static JSON imports, NOT createRequire.resolve + readFileSync: `bun build --compile` can only embed an asset
+// it sees at bundle time. A runtime resolve compiles fine and then throws
+// `Cannot find module '@evomap/gep-sdk/schemas/gene.schema.json' from '/$bunfs/root/<binary>'` inside every
+// standalone release binary, which took down the whole publish/distill path (schema gate is on it) while
+// `--version`/`--help` smoke stayed green. Node keeps resolving these identically, so npm consumers are unaffected.
+import capsuleSchemaJson from '@evomap/gep-sdk/schemas/capsule.schema.json' with { type: 'json' };
+import evolutionEventSchemaJson from '@evomap/gep-sdk/schemas/evolution-event.schema.json' with { type: 'json' };
+import geneSchemaJson from '@evomap/gep-sdk/schemas/gene.schema.json' with { type: 'json' };
+// Bundle-time constants, so no lazy cache is needed. Unknown types must still resolve to `undefined`:
+// validateWire / validateWireDeep / wireSchemaIssues / schemaProperties all branch on that.
+const SCHEMA_BY_TYPE = {
+    Gene: geneSchemaJson,
+    Capsule: capsuleSchemaJson,
+    EvolutionEvent: evolutionEventSchemaJson,
 };
-const cache = new Map();
 function loadSchema(type) {
-    const sub = SCHEMA_SUBPATH[type];
-    if (!sub)
-        return undefined;
-    const cached = cache.get(type);
-    if (cached)
-        return cached;
-    const path = nodeRequire.resolve(sub);
-    const schema = JSON.parse(readFileSync(path, 'utf8'));
-    cache.set(type, schema);
-    return schema;
+    return SCHEMA_BY_TYPE[type];
 }
 function validateObjectShape(value, schema, path, errors) {
     if (!schema.properties && schema.additionalProperties !== false)

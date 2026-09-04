@@ -74,14 +74,14 @@ export declare const executionBindingInputSchema: z.ZodObject<{
         max_lines: z.ZodNumber;
         validation_commands: z.ZodArray<z.ZodString, "many">;
     }, "strict", z.ZodTypeAny, {
-        validation_commands: string[];
         max_files: number;
+        validation_commands: string[];
         max_lines: number;
         allowed_roots: string[];
         max_runtime_ms: number;
     }, {
-        validation_commands: string[];
         max_files: number;
+        validation_commands: string[];
         max_lines: number;
         allowed_roots: string[];
         max_runtime_ms: number;
@@ -167,8 +167,8 @@ export declare const executionBindingInputSchema: z.ZodObject<{
     };
     deadline: string;
     resource_grant: {
-        validation_commands: string[];
         max_files: number;
+        validation_commands: string[];
         max_lines: number;
         allowed_roots: string[];
         max_runtime_ms: number;
@@ -222,8 +222,8 @@ export declare const executionBindingInputSchema: z.ZodObject<{
     };
     deadline: string;
     resource_grant: {
-        validation_commands: string[];
         max_files: number;
+        validation_commands: string[];
         max_lines: number;
         allowed_roots: string[];
         max_runtime_ms: number;

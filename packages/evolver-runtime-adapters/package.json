@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-runtime-adapters",
-  "version": "2.0.28",
+  "version": "2.0.30",
   "private": false,
   "type": "module",
   "engines": {
