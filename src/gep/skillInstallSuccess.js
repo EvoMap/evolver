@@ -5,6 +5,7 @@
  * trailing-30d unique successful-install trending can populate.
  *
  * Fail-soft: never throws to the caller; install already landed on disk.
+ * Auth: node_secret Bearer via buildHeaders (same as skill download).
  */
 
 /**
