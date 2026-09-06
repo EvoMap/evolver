@@ -556,7 +556,7 @@ Directional, not commitments — the live backlog lives in [GitHub Issues](https
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=EvoMap/evolver&type=Date)](https://star-history.com/#EvoMap/evolver&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=EvoMap/evolver&type=Date)](https://star-history.dera.page/#EvoMap/evolver&Date)
 
 ## Acknowledgments
 
