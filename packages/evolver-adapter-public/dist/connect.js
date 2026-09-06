@@ -35,7 +35,17 @@ export function connectPublicHub(opts) {
             throw new Error(`未知 authMode: ${String(_x)}`);
         }
     }
-    return { hub: new PublicHubCapability({ baseUrl: opts.hubUrl, auth, fetchFn, senderId: opts.senderId, antiAbuse: withWorkspaceIdResolver(opts.antiAbuse) }), auth };
+    return {
+        hub: new PublicHubCapability({
+            baseUrl: opts.hubUrl,
+            auth,
+            fetchFn,
+            senderId: opts.senderId,
+            antiAbuse: withWorkspaceIdResolver(opts.antiAbuse),
+            ...(opts.onMalformedPublishReceipt ? { onMalformedPublishReceipt: opts.onMalformedPublishReceipt } : {}),
+        }),
+        auth,
+    };
 }
 function withWorkspaceIdResolver(antiAbuse) {
     if (antiAbuse?.workspaceId || antiAbuse?.workspaceIdResolver)

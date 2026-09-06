@@ -37,6 +37,7 @@ export function shadowHubCapability(cap, sink, mode) {
                 sink.record({ action: 'WOULD_PUSH', envelopeType: e.type, payloadSize: JSON.stringify(e.payload ?? null).length });
             },
         },
+        ...(cap.publishDiagnostics ? { publishDiagnostics: () => cap.publishDiagnostics() } : {}),
         ...(cap.capabilities ? { capabilities: () => cap.capabilities() } : {}),
         ...(cap.recipes ? { recipes: cap.recipes } : {}),
     };

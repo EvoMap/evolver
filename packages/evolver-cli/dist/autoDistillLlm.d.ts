@@ -84,6 +84,12 @@ export declare function resolveCandidateScopeFacets(candidate: algo.GeneCandidat
 };
 export declare function parseDistillOutput(stdout: string): unknown | null;
 export declare function asGeneCandidate(value: unknown): algo.GeneCandidate | null;
+/**
+ * Stamp the model this distill spawn actually used onto the candidate when the LLM omitted it.
+ * EVOLVE_DISTILL_MODEL is the runner `--model` flag and is not in detectModelName's host-CLI list
+ * (that list is the node's execution model). 'unknown' is not a coordinate.
+ */
+export declare function attachDistillModelName(candidate: algo.GeneCandidate, env: NodeJS.ProcessEnv): algo.GeneCandidate;
 export declare function jaccardDuplicate(candidate: algo.GeneCandidate, existing: readonly algo.ExistingGeneRef[], threshold?: number): string | null;
 export declare function normalizeValidation(candidate: algo.GeneCandidate, cwd?: string): {
     candidate: algo.GeneCandidate;

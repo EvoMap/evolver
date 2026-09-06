@@ -64,29 +64,62 @@ export function atpRetryClass(status) {
         return 'cooldown';
     return 'recoverable';
 }
-/** /a2a/publish 响应 → PublishReceipt. 200=accepted; 402/4xx=rejected 终态. */
+/** /a2a/publish 响应 → PublishReceipt. 2xx 必须包含显式成功/拒绝决议；缺失或畸形回执 fail closed. */
 export function publishRespToReceipt(status, body, retryAfterMs) {
-    const payload = body['payload'] ?? body;
-    const assetIds = payload['asset_ids'];
-    const targetAssetId = payload['target_asset_id']
-        ?? body['target_asset_id'];
+    const bodyRecord = isRecord(body) ? body : {};
+    const rawPayload = bodyRecord['payload'];
+    const malformedPayload = rawPayload !== undefined && !isRecord(rawPayload);
+    const payload = isRecord(rawPayload) ? rawPayload : bodyRecord;
+    const rawAssetIds = payload['asset_ids'];
+    const malformedAssetIds = rawAssetIds !== undefined
+        && (!Array.isArray(rawAssetIds) || rawAssetIds.some((value) => typeof value !== 'string'));
+    const assetIds = !malformedAssetIds && Array.isArray(rawAssetIds) ? rawAssetIds : undefined;
+    const targetAssetId = stringField(payload, 'target_asset_id') ?? stringField(bodyRecord, 'target_asset_id');
     const assetId = (status === 409 ? targetAssetId : undefined)
-        ?? payload['asset_id']
-        ?? body['asset_id']
+        ?? stringField(payload, 'asset_id')
+        ?? stringField(bodyRecord, 'asset_id')
         ?? assetIds?.[0]
         ?? targetAssetId;
-    const bundleId = payload['bundle_id'];
+    const bundleId = stringField(payload, 'bundle_id');
+    const receiptId = nonBlankString(payload['receipt_id']);
+    const hasDecisionField = Object.prototype.hasOwnProperty.call(payload, 'decision');
+    const hasStatusField = Object.prototype.hasOwnProperty.call(payload, 'status');
+    const explicitDecision = explicitPublishDecision(payload['decision']);
+    const explicitStatus = explicitPublishDecision(payload['status']);
+    const decision = explicitDecision ?? explicitStatus;
+    const invalidDecisionField = (hasDecisionField && explicitDecision === undefined)
+        || (hasStatusField && explicitStatus === undefined);
+    const accepted = decision === 'accepted';
+    const contradictory = hasDecisionField
+        && hasStatusField
+        && (explicitDecision === undefined || explicitStatus === undefined || explicitDecision !== explicitStatus);
+    const explicitError = hasFieldWithValue(payload, 'error') || hasFieldWithValue(bodyRecord, 'error');
+    const explicitOkFalse = payload['ok'] === false || bodyRecord['ok'] === false;
     if (status >= 200 && status < 300) {
-        const decision = String(payload['decision'] ?? payload['status'] ?? 'accepted');
-        const accepted = decision === 'accept' || decision === 'accepted' || decision === 'approved' || decision === 'ok';
+        if (decision === undefined
+            || malformedPayload
+            || invalidDecisionField
+            || contradictory
+            || explicitError
+            || explicitOkFalse
+            || malformedAssetIds
+            || (accepted && receiptId === undefined)) {
+            return {
+                receiptId: receiptId ?? 'malformed_receipt',
+                status: 'rejected',
+                terminal: true,
+                reason: 'malformed publish receipt',
+                rejection: { code: 'invalid_payload' },
+            };
+        }
         return {
-            receiptId: String(payload['receipt_id'] ?? bundleId ?? payload['id'] ?? assetId ?? 'unknown'),
-            status: accepted ? 'accepted' : (decision === 'quarantine' ? 'quarantine' : 'rejected'),
+            receiptId: receiptId ?? 'rejected',
+            status: decision,
             ...(assetId ? { assetId } : {}),
             ...(bundleId ? { bundleId } : {}),
             ...(assetIds ? { assetIds } : {}),
-            ...(payload['reason'] ? { reason: String(payload['reason']) } : {}),
-            terminal: !accepted, // quarantine/rejected 终态不重试
+            ...(typeof payload['reason'] === 'string' && payload['reason'] ? { reason: payload['reason'] } : {}),
+            terminal: decision !== 'accepted', // quarantine/rejected 终态不重试
         };
     }
     // M8-1: 按语义而非纯状态码区分(都终态不重试 = money-safety: 不反复打经济端点).
@@ -102,9 +135,9 @@ export function publishRespToReceipt(status, body, retryAfterMs) {
         429: 'cooldown',
     };
     const receipt = {
-        receiptId: String(payload['receipt_id'] ?? 'rejected'),
+        receiptId: receiptId ?? 'rejected',
         status: 'rejected',
-        reason: String(payload['reason'] ?? reasonByStatus[status] ?? `hub ${status}`),
+        reason: nonBlankString(payload['reason']) ?? reasonByStatus[status] ?? `hub ${status}`,
         ...(assetId ? { assetId } : {}),
         ...(assetIds ? { assetIds } : {}),
         terminal: true,
@@ -122,4 +155,31 @@ export function publishRespToReceipt(status, body, retryAfterMs) {
         };
     }
     return receipt;
+}
+function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function stringField(record, key) {
+    return typeof record[key] === 'string' ? record[key] : undefined;
+}
+function nonBlankString(value) {
+    if (typeof value !== 'string')
+        return undefined;
+    const valueTrimmed = value.trim();
+    return valueTrimmed.length > 0 ? valueTrimmed : undefined;
+}
+function hasFieldWithValue(record, key) {
+    return Object.prototype.hasOwnProperty.call(record, key) && record[key] !== undefined;
+}
+function explicitPublishDecision(value) {
+    if (typeof value !== 'string')
+        return undefined;
+    const normalized = value.trim();
+    if (normalized === 'accept' || normalized === 'accepted' || normalized === 'approved' || normalized === 'ok')
+        return 'accepted';
+    if (normalized === 'quarantine')
+        return 'quarantine';
+    if (normalized === 'reject' || normalized === 'rejected')
+        return 'rejected';
+    return undefined;
 }

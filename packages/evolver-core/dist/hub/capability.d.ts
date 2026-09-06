@@ -30,6 +30,18 @@ export interface PublishReceipt {
         gdiScore?: number;
     };
 }
+export interface PublishReceiptDiagnostics {
+    malformed2xxCount: number;
+    lastMalformed2xxAt?: number;
+    lastMalformed2xxStatus?: number;
+}
+/** Optional adapter observability for malformed successful HTTP publish responses. */
+export interface PublishDiagnosticsCapability {
+    publishDiagnostics(): PublishReceiptDiagnostics;
+}
+/** Runtime guard shared by every adapter consumer; TypeScript declarations are not a trust boundary. */
+export declare function isPublishReceipt(value: unknown): value is PublishReceipt;
+export declare function isPublishDiagnosticsCapability(value: unknown): value is PublishDiagnosticsCapability;
 export interface PublishOptions {
     /** Stable, non-blank per logical publish so adapters can make transport retries idempotent. */
     idempotencyKey?: string;
@@ -345,6 +357,8 @@ export interface HubCapability {
      * 传单资产=[asset]。core 已 normalizeForPut(算/校验 asset_id), hub 做经济/治理/质量 gate。
      */
     publish(bundle: AssetRecord[], options?: PublishOptions): Promise<PublishReceipt>;
+    /** Optional low-cardinality diagnostics for malformed successful publish responses. */
+    publishDiagnostics?(): PublishReceiptDiagnostics;
     /** 拉取资产. hub 侧排序/scope(公版 GDI, 私有 RBAC); core 不重排. */
     fetch(query: HubQuery): Promise<AssetRecord[]>;
     /** 搜索资产. 与 fetch 同 shape, 差异在 hub 侧召回策略. */

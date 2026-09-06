@@ -1,6 +1,7 @@
 import type { hub } from '@evomap/evolver-core';
 import { PublicHubCapability } from './hubCapability.js';
 import type { AntiAbuseTelemetryOptions } from './antiAbuseTelemetry.js';
+import type { MalformedPublishReceiptEvent } from './hubCapability.js';
 import { type FetchLike } from './hubFetch.js';
 import { type OAuthTransport } from './auth/oauthDeviceToken.js';
 export type AuthMode = 'oauth' | 'keypair' | 'legacy';
@@ -32,6 +33,8 @@ export interface ConnectPublicOptions {
     }>;
     /** Optional anti-abuse metadata context for heartbeat payloads. */
     antiAbuse?: AntiAbuseTelemetryOptions;
+    /** Optional non-sensitive notification when publish returns malformed 2xx JSON. */
+    onMalformedPublishReceipt?: (event: MalformedPublishReceiptEvent) => void;
 }
 /** 选址装配公版 hub(M6-7): 按 authMode 组 AuthProvider(M6-5) + PublicHubCapability(M6-6). */
 export declare function connectPublicHub(opts: ConnectPublicOptions): {

@@ -824,6 +824,7 @@ export class ProxyDaemon {
         if (handledAtp)
             return true;
         if (ctx.route === 'GET /proxy/status') {
+            const publishReceiptDiagnostics = safePublishReceiptDiagnostics(this.hub);
             ctx.json(200, {
                 running: true,
                 status: 'running',
@@ -841,6 +842,7 @@ export class ProxyDaemon {
                 reauth_backoff_until: this.stateNumber('lifecycle:reauth_until'),
                 hello_rate_limit_until: this.stateNumber('lifecycle:hello_rl_until'),
                 publish_recall_verify: this.publishRecallVerifier.status(),
+                ...(publishReceiptDiagnostics ? { publish_receipt_diagnostics: publishReceiptDiagnostics } : {}),
             });
             return true;
         }
@@ -2309,6 +2311,29 @@ function strictOptionalStringList(value, key, maxItems, maxLength) {
 function strictForwardString(value, key) {
     const parsed = strictOptionalString(value, key);
     return parsed.ok && parsed.value ? { [key]: parsed.value } : {};
+}
+function safePublishReceiptDiagnostics(value) {
+    try {
+        if (!hubNs.isPublishDiagnosticsCapability(value))
+            return undefined;
+        const raw = value.publishDiagnostics();
+        if (!Number.isSafeInteger(raw.malformed2xxCount) || raw.malformed2xxCount < 0)
+            return undefined;
+        const lastMalformed2xxAt = raw.lastMalformed2xxAt;
+        const lastMalformed2xxStatus = raw.lastMalformed2xxStatus;
+        if (lastMalformed2xxAt !== undefined && (!Number.isSafeInteger(lastMalformed2xxAt) || lastMalformed2xxAt < 0))
+            return undefined;
+        if (lastMalformed2xxStatus !== undefined && (!Number.isInteger(lastMalformed2xxStatus) || lastMalformed2xxStatus < 200 || lastMalformed2xxStatus >= 300))
+            return undefined;
+        return {
+            malformed2xxCount: raw.malformed2xxCount,
+            ...(lastMalformed2xxAt !== undefined ? { lastMalformed2xxAt } : {}),
+            ...(lastMalformed2xxStatus !== undefined ? { lastMalformed2xxStatus } : {}),
+        };
+    }
+    catch {
+        return undefined;
+    }
 }
 function isRecordValue(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));

@@ -97,6 +97,9 @@ function traceOutboundMaxBodyBytes(env = process.env) {
 export class PublicHubCapability {
     opts;
     http;
+    malformedPublish2xxCount = 0;
+    lastMalformedPublish2xxAt;
+    lastMalformedPublish2xxStatus;
     auth;
     recipes = {
         create: async (request) => this.createRecipe(request),
@@ -272,13 +275,36 @@ export class PublicHubCapability {
                 ? stablePublishMessageId(idempotencyKey)
                 : undefined;
             const body = await this.http.call('POST', '/a2a/publish', gepEnvelope('publish', { assets: bundle }, messageId ? { messageId } : {}));
-            return publishRespToReceipt(200, body);
+            const receipt = publishRespToReceipt(200, body);
+            if (receipt.rejection?.code === 'invalid_payload')
+                this.recordMalformedPublishReceipt(200);
+            return receipt;
         }
         catch (e) {
             if (e instanceof HubClientError) {
-                return publishRespToReceipt(e.status, e.body ?? {}, e.retryAfterMs);
+                const receipt = publishRespToReceipt(e.status, e.body ?? {}, e.retryAfterMs);
+                return receipt;
             }
             throw e; // 5xx/网络 → 重试
+        }
+    }
+    publishDiagnostics() {
+        return {
+            malformed2xxCount: this.malformedPublish2xxCount,
+            ...(this.lastMalformedPublish2xxAt !== undefined ? { lastMalformed2xxAt: this.lastMalformedPublish2xxAt } : {}),
+            ...(this.lastMalformedPublish2xxStatus !== undefined ? { lastMalformed2xxStatus: this.lastMalformedPublish2xxStatus } : {}),
+        };
+    }
+    recordMalformedPublishReceipt(httpStatus) {
+        const occurredAt = Date.now();
+        this.malformedPublish2xxCount += 1;
+        this.lastMalformedPublish2xxAt = occurredAt;
+        this.lastMalformedPublish2xxStatus = httpStatus;
+        try {
+            this.opts.onMalformedPublishReceipt?.({ httpStatus, occurredAt });
+        }
+        catch {
+            // Observability must never change publish outcome or retry behavior.
         }
     }
     async fetch(query) {

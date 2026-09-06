@@ -324,6 +324,8 @@ export function asGeneCandidate(value) {
         ...(Array.isArray(value['validation']) ? { validation: value['validation'].map(String) } : {}),
         // K_auto coordinates: pass through when the model supplies them. intakeGene normalizes + fills honest
         // defaults for any missing coordinate so forward genes can enter strict K_auto without inventing claims.
+        ...(typeof value['model_name'] === 'string' && value['model_name'].trim() && value['model_name'].trim() !== 'unknown'
+            ? { model_name: value['model_name'].trim().slice(0, 100) } : {}),
         ...(value['claims'] !== undefined ? { claims: value['claims'] } : {}),
         ...(value['scope'] !== undefined ? { scope: value['scope'] } : {}),
         ...(value['runtime_profile'] !== undefined ? { runtime_profile: value['runtime_profile'] } : {}),
@@ -332,6 +334,20 @@ export function asGeneCandidate(value) {
         // not a human-taught gene) → `distilled` per V1 #302 classifyProvenance. intakeGene normalizes + validates it.
         generation_meta: { source: 'distilled' },
     };
+}
+/**
+ * Stamp the model this distill spawn actually used onto the candidate when the LLM omitted it.
+ * EVOLVE_DISTILL_MODEL is the runner `--model` flag and is not in detectModelName's host-CLI list
+ * (that list is the node's execution model). 'unknown' is not a coordinate.
+ */
+export function attachDistillModelName(candidate, env) {
+    const existing = typeof candidate.model_name === 'string' ? candidate.model_name.trim() : '';
+    if (existing && existing !== 'unknown')
+        return candidate;
+    const distill = (env['EVOLVE_DISTILL_MODEL'] ?? '').trim();
+    if (!distill || distill === 'unknown')
+        return candidate;
+    return { ...candidate, model_name: distill.slice(0, 100) };
 }
 export function jaccardDuplicate(candidate, existing, threshold = DEFAULT_DUP_JACCARD) {
     const a = new Set((candidate.signals_match ?? []).map((s) => String(s).toLowerCase()).filter(Boolean));
@@ -571,13 +587,13 @@ export async function autoDistillLlm(options) {
     if (scoped.rewrites.length > 0) {
         console.warn(`[AutoDistill] resolved scope facet(s) against store vocabulary: ${scoped.rewrites.map((r) => `${r.from} -> ${r.to}`).join(', ')}`);
     }
-    const normalized = normalizeValidation(scoped.candidate, cwd).candidate;
+    const normalized = attachDistillModelName(normalizeValidation(scoped.candidate, cwd).candidate, env);
     const duplicate = jaccardDuplicate(normalized, existing, envFloat(env, 'EVOLVER_AUTO_DISTILL_LLM_DUP_JACCARD', DEFAULT_DUP_JACCARD));
     if (duplicate) {
         patchState(statePath, input.dataHash, { failed_attempts_inc: true }, hashCap);
         return { ok: false, mode, reason: 'near_duplicate', dataHash: input.dataHash };
     }
-    const intake = algo.intakeGene(normalized, existing);
+    const intake = algo.intakeGene(normalized, existing, { env });
     if (!intake.ok || !intake.gene) {
         patchState(statePath, input.dataHash, { failed_attempts_inc: true }, hashCap);
         return { ok: false, mode, reason: 'validation_failed', dataHash: input.dataHash };

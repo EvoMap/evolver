@@ -21,8 +21,8 @@ function detectContainer(env) {
     return false;
 }
 // Env vars that expose the underlying LLM model, in priority order. EVOLVER_MODEL_NAME is the explicit
-// operator override; the rest are what the common host CLIs (Claude Code / Codex / Cursor / generic
-// OpenAI-compatible runners) set. First non-empty wins.
+// operator override; the rest are what the common host CLIs (Claude Code / Codex / Cursor / Gemini /
+// generic OpenAI-compatible runners) set. First non-empty wins.
 const MODEL_ENV_VARS = [
     'EVOLVER_MODEL_NAME',
     'ANTHROPIC_MODEL',
@@ -31,6 +31,8 @@ const MODEL_ENV_VARS = [
     'OPENAI_MODEL',
     'CODEX_MODEL',
     'CURSOR_MODEL',
+    'GEMINI_MODEL',
+    'GOOGLE_GENAI_MODEL',
 ];
 /**
  * Resolve the underlying LLM model name powering this evolver node (ported from v1 PR #174). Until now the

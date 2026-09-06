@@ -65,6 +65,10 @@ export declare class MalformedAccountAssetPageError extends Error {
 export declare function gepEnvelope(messageType: string, payload: unknown, options?: {
     messageId?: string;
 }): Record<string, unknown>;
+export interface MalformedPublishReceiptEvent {
+    httpStatus: number;
+    occurredAt: number;
+}
 export interface PublicHubOptions {
     baseUrl: string;
     auth: hub.AuthProvider;
@@ -74,6 +78,8 @@ export interface PublicHubOptions {
     subscribePollMs?: number;
     /** Public Hub anti-abuse heartbeat metadata. Defaults to env-controlled heartbeat mode. */
     antiAbuse?: AntiAbuseTelemetryOptions;
+    /** Best-effort notification for malformed 2xx publish responses; receives no Hub body or credential data. */
+    onMalformedPublishReceipt?: (event: MalformedPublishReceiptEvent) => void;
 }
 export interface PublicHelloResult {
     ok: boolean;
@@ -142,6 +148,9 @@ export declare function outboundMaxBodyBytes(env?: Record<string, string | undef
 export declare class PublicHubCapability implements hub.HubCapability {
     private readonly opts;
     private readonly http;
+    private malformedPublish2xxCount;
+    private lastMalformedPublish2xxAt;
+    private lastMalformedPublish2xxStatus;
     readonly auth: hub.AuthProvider;
     readonly recipes: hub.RecipeCapability;
     constructor(opts: PublicHubOptions);
@@ -151,6 +160,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     heartbeat(opts?: PublicHeartbeatOptions): Promise<PublicHeartbeatResult>;
     private heartbeatMeta;
     publish(bundle: hub.AssetRecord[], options?: hub.PublishOptions): Promise<hub.PublishReceipt>;
+    publishDiagnostics(): hub.PublishReceiptDiagnostics;
+    private recordMalformedPublishReceipt;
     fetch(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
     /**
      * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to

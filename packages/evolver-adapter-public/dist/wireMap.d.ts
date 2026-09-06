@@ -26,5 +26,5 @@ export type AtpRetryClass = 'permanent' | 'cooldown' | 'recoverable';
  * cooldown → backoff, recoverable → retry next tick. Same map, different retry policy per caller.
  */
 export declare function atpRetryClass(status: number): AtpRetryClass;
-/** /a2a/publish 响应 → PublishReceipt. 200=accepted; 402/4xx=rejected 终态. */
+/** /a2a/publish 响应 → PublishReceipt. 2xx 必须包含显式成功/拒绝决议；缺失或畸形回执 fail closed. */
 export declare function publishRespToReceipt(status: number, body: Record<string, unknown>, retryAfterMs?: number): hub.PublishReceipt;

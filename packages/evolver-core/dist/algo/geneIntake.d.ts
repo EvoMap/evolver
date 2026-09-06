@@ -89,4 +89,6 @@ export declare function deriveDefaultKautoCoordinates(input: {
  * Validate + normalize a distilled/proposed gene for pool insertion. On success returns the canonical Gene
  * (defaults filled, asset_id computed); otherwise the structural / dedup / schema errors.
  */
-export declare function intakeGene(candidate: GeneCandidate, existing?: readonly ExistingGeneRef[]): GeneIntakeResult;
+export declare function intakeGene(candidate: GeneCandidate, existing?: readonly ExistingGeneRef[], opts?: {
+    env?: NodeJS.ProcessEnv;
+}): GeneIntakeResult;

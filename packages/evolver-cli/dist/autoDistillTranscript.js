@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { basename, dirname, join } from 'node:path';
 import { algo, assetstore, events, hub, signals } from '@evomap/evolver-core';
 import { adapterForPath } from '@evomap/evolver-runtime-adapters';
-import { asGeneCandidate, parseDistillOutput, normalizeValidation, jaccardDuplicate, resolveDistillRunner, p3Decide, } from './autoDistillLlm.js';
+import { asGeneCandidate, parseDistillOutput, normalizeValidation, jaccardDuplicate, resolveDistillRunner, attachDistillModelName, p3Decide, } from './autoDistillLlm.js';
 import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MIN_TURNS = 2;
 const DEFAULT_MIN_CHARS = 200;
@@ -160,14 +160,14 @@ export async function autoDistillTranscript(options) {
     if (!candidate0)
         return { ok: false, mode, reason: 'no_gene_in_response' };
     const existing = existingGeneRefs(await options.store.list('Gene', 10_000));
-    const normalized = normalizeValidation(candidate0, cwd).candidate;
+    const normalized = attachDistillModelName(normalizeValidation(candidate0, cwd).candidate, env);
     // Near-duplicate guard (mirrors autoDistillLlm): intakeGene only rejects when an existing gene's signals are a
     // SUPERSET of the candidate's, so a highly-similar but non-subset signal set would otherwise slip through and
     // emit a redundant gene.distilled. Jaccard catches those before intake.
     const duplicate = jaccardDuplicate(normalized, existing);
     if (duplicate)
         return { ok: false, mode, reason: 'near_duplicate', candidate: normalized };
-    const intake = algo.intakeGene(normalized, existing);
+    const intake = algo.intakeGene(normalized, existing, { env });
     if (!intake.ok || !intake.gene)
         return { ok: false, mode, reason: 'validation_failed', candidate: normalized };
     const validation = await runRequiredSandboxedValidation(intake.gene.validation, cwd, {
