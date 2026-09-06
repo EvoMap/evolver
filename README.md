@@ -150,9 +150,12 @@ Evolver integrates with major agent runtimes through `setup-hooks`. Run it once 
 #### Codex caveats
 
 The Codex CLI exposes `SessionStart` / `Stop` / `PostToolUse` hooks (which is
-how `setup-hooks --platform=codex` wires Evolver in), but it does **not**
-emit a session transcript file the way Cursor / Claude Code / opencode do.
-That means `evolver --review` cannot read raw session logs on Codex.
+how `setup-hooks --platform=codex` wires Evolver in). Codex writes session
+transcripts to `~/.codex/sessions/*.jsonl`, but the Stop hook payload does
+not include a `transcript_path` field. Since v1.87.0, Evolver auto-discovers
+transcripts under `~/.codex/sessions/` (and `~/.claude/projects/` for Claude
+Code) without requiring manual `EVOLVER_CURSOR_TRANSCRIPTS_DIR` export, so
+`evolver --review` can read raw session logs on Codex.
 
 `setup-hooks --platform=codex` is lifecycle integration only; it does not route
 Codex model requests through Evolver Proxy. To route Codex model traffic, run
@@ -162,7 +165,7 @@ command-backed auth runs `evolver proxy-token` or the absolute `node index.js
 proxy-token --settings ...` helper emitted by `scripts/internal-proxy-env.sh
 --codex-config` from a source checkout.
 
-Evolver compensates by reading, in order:
+For additional context, Evolver reads, in order:
 
 1. `MEMORY.md` / `USER.md` in the workspace root (if you maintain them);
 2. the `<!-- evolver-evolution-memory -->` section that

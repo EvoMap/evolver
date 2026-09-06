@@ -99,6 +99,28 @@ evolver setup-hooks --platform=claude-code
 
 通过 `~/.claude/` 向 Claude Code 的 hook 系统注册 Evolver。安装完成后重启 Claude Code CLI。
 
+#### Codex
+
+```bash
+evolver setup-hooks --platform=codex
+```
+
+写入 `~/.codex/hooks.json`，将 hook 脚本安装到 `~/.codex/hooks/`，并在 `config.toml` 中启用 `codex_hooks` 特性。重启 Codex CLI 后生效。
+
+##### Codex 注意事项
+
+Codex CLI 暴露 `SessionStart` / `Stop` / `PostToolUse` 钩子（`setup-hooks --platform=codex` 通过它们接入 Evolver）。Codex 会将会话转写写入 `~/.codex/sessions/*.jsonl`，但 Stop 钩子的 payload 不包含 `transcript_path` 字段。自 v1.87.0 起，Evolver 会自动发现 `~/.codex/sessions/`（以及 Claude Code 的 `~/.claude/projects/`）下的转写文件，无需手动 export `EVOLVER_CURSOR_TRANSCRIPTS_DIR`，因此 `evolver --review` 可以在 Codex 上读取原始会话日志。
+
+`setup-hooks --platform=codex` 仅做生命周期集成，不会将 Codex 的模型请求路由到 Evolver Proxy。如需路由 Codex 的模型流量，请运行 Evolver Proxy，并为 Codex 配置一个用户级 OpenAI Responses 兼容的自定义 provider，其 `base_url` 指向 proxy 的 `/v1` 端点，鉴权命令运行 `evolver proxy-token` 或源码检出中 `scripts/internal-proxy-env.sh --codex-config` 输出的绝对路径 `node index.js proxy-token --settings ...` 辅助脚本。
+
+除会话转写外，Evolver 还按以下顺序读取：
+
+1. 工作区根目录的 `MEMORY.md` / `USER.md`（需自行维护）；
+2. `setup-hooks --platform=codex` 注入到项目 `AGENTS.md` 的 `<!-- evolver-evolution-memory -->` 段落；
+3. 本地 `memory_graph.jsonl` 的尾部（Evolver 自行写入的每轮结果日志）。
+
+如果以上来源在前几轮都还没有内容，你会看到 `memory_missing` / `user_missing` / `session_logs_missing` 作为 advisory 信号出现。随着 `memory_graph.jsonl` 积累结果，这些信号会自行消失——无需手动配置。
+
 #### OpenClaw
 
 OpenClaw 会识别 Evolver 向 stdout 输出的 `sessions_spawn(...)` 协议，**无需安装 hooks**。将 Evolver 克隆到 OpenClaw workspace 中，在会话内运行即可：
