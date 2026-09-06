@@ -10,6 +10,16 @@ const PLATFORMS = {
   opencode: { name: 'opencode', configDir: '.opencode', detector: '.opencode' },
 };
 
+const HOOK_SCRIPT_NAMES = Object.freeze([
+  '_runtimePaths.js',
+  '_memoryFiltering.js',
+  '_lockPaths.js',
+  'evolver-session-start.js',
+  'evolver-signal-detect.js',
+  'evolver-session-end.js',
+  'evolver-task-recall.js',
+]);
+
 // Detect the host agent from runtime environment signals, which are far more
 // reliable than scanning for `.claude` / `.cursor` directories when both exist
 // on disk (e.g. under $HOME). Precedence when signals conflict (#590):
@@ -261,18 +271,9 @@ function copyHookScripts(destDir, evolverRoot) {
   // To keep future helpers from re-living this, the regression test in
   // test/adapters.test.js scans every `require('./_*')` in the source
   // adapter scripts and asserts the target file is in this list.
-  const scripts = [
-    '_runtimePaths.js',
-    '_memoryFiltering.js',
-    '_lockPaths.js',
-    'evolver-session-start.js',
-    'evolver-signal-detect.js',
-    'evolver-session-end.js',
-    'evolver-task-recall.js',
-  ];
   fs.mkdirSync(destDir, { recursive: true });
   const copied = [];
-  for (const name of scripts) {
+  for (const name of HOOK_SCRIPT_NAMES) {
     const src = path.join(scriptsDir, name);
     const dest = path.join(destDir, name);
     if (!fs.existsSync(src)) {
@@ -293,6 +294,34 @@ function copyHookScripts(destDir, evolverRoot) {
     copied.push(dest);
   }
   return copied;
+}
+
+function verifyHookScriptCopies(hooksDir) {
+  const scriptsDir = path.join(__dirname, 'scripts');
+  const invalid = [];
+  for (const name of HOOK_SCRIPT_NAMES) {
+    const source = path.join(scriptsDir, name);
+    const installed = path.join(hooksDir, name);
+    try {
+      const installedStat = fs.lstatSync(installed);
+      if (!installedStat.isFile()) {
+        invalid.push(`${name} is not a regular file`);
+        continue;
+      }
+      if (!fs.readFileSync(source).equals(fs.readFileSync(installed))) {
+        invalid.push(`${name} differs from the installed Evolver version`);
+      }
+    } catch {
+      invalid.push(`${name} is missing`);
+    }
+  }
+  return {
+    id: 'hook_scripts_present',
+    ok: invalid.length === 0,
+    detail: invalid.length === 0
+      ? `all ${HOOK_SCRIPT_NAMES.length} runtime files match this Evolver version`
+      : invalid.join(', '),
+  };
 }
 
 function appendSectionToFile(filePath, marker, content) {
@@ -349,17 +378,8 @@ function removeHookScripts(hooksDir) {
   // files behind that the user then has to clean up by hand (#547 fix
   // would have introduced exactly this gap if only the install side
   // had been updated).
-  const scripts = [
-    '_runtimePaths.js',
-    '_memoryFiltering.js',
-    '_lockPaths.js',
-    'evolver-session-start.js',
-    'evolver-signal-detect.js',
-    'evolver-session-end.js',
-    'evolver-task-recall.js',
-  ];
   let removed = 0;
-  for (const name of scripts) {
+  for (const name of HOOK_SCRIPT_NAMES) {
     const p = path.join(hooksDir, name);
     try {
       if (fs.existsSync(p)) { fs.unlinkSync(p); removed++; }
@@ -413,10 +433,10 @@ function removeMarkedSection(filePath, marker) {
   }
 }
 
-async function setupHooks({ platform, cwd, force, uninstall, evolverRoot } = {}) {
+async function setupHooks({ platform, cwd, configRoot, force, uninstall, evolverRoot } = {}) {
   const effectiveCwd = cwd || process.cwd();
   const effectiveEvolverRoot = evolverRoot || path.resolve(__dirname, '..');
-  const platformId = platform || detectPlatform(effectiveCwd);
+  const platformId = platform || detectPlatform(configRoot || effectiveCwd);
 
   if (!platformId) {
     console.error('[setup-hooks] Could not detect platform. Use --platform=cursor|claude-code|codex|kiro|opencode');
@@ -429,7 +449,9 @@ async function setupHooks({ platform, cwd, force, uninstall, evolverRoot } = {})
     return { ok: false, error: 'unknown_platform' };
   }
 
-  const configRoot = resolveConfigRoot(platformId, effectiveCwd);
+  const resolvedConfigRoot = configRoot
+    ? path.resolve(configRoot)
+    : resolveConfigRoot(platformId, effectiveCwd);
   const adapter = loadAdapter(platformId);
   if (!adapter) {
     console.error(`[setup-hooks] No adapter found for ${platformId}`);
@@ -437,13 +459,13 @@ async function setupHooks({ platform, cwd, force, uninstall, evolverRoot } = {})
   }
 
   console.log(`[setup-hooks] Platform: ${meta.name}`);
-  console.log(`[setup-hooks] Config root: ${configRoot}`);
+  console.log(`[setup-hooks] Config root: ${resolvedConfigRoot}`);
 
   if (uninstall) {
-    return adapter.uninstall({ configRoot, evolverRoot: effectiveEvolverRoot });
+    return adapter.uninstall({ configRoot: resolvedConfigRoot, evolverRoot: effectiveEvolverRoot });
   }
 
-  return adapter.install({ configRoot, evolverRoot: effectiveEvolverRoot, force });
+  return adapter.install({ configRoot: resolvedConfigRoot, evolverRoot: effectiveEvolverRoot, force });
 }
 
 module.exports = {
@@ -458,6 +480,7 @@ module.exports = {
   collectCommands,
   isEvolverHookCommand,
   copyHookScripts,
+  verifyHookScriptCopies,
   appendSectionToFile,
   assertSafeConfigDir,
   assertNotSymlink,
@@ -465,5 +488,6 @@ module.exports = {
   removeHookScripts,
   removeMarkedSection,
   setupHooks,
+  HOOK_SCRIPT_NAMES,
   PLATFORMS,
 };

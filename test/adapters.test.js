@@ -80,6 +80,91 @@ function withHome(home, fn) {
 // -- hookAdapter --
 
 describe('hookAdapter', () => {
+  describe('setup-hooks CLI contract', () => {
+    it('honors legacy --runtime plus explicit --root and emits JSON verification', () => {
+      const tmp = makeTmpDir();
+      try {
+        const decoyCwd = path.join(tmp, 'decoy');
+        const targetRoot = path.join(tmp, 'target workspace');
+        fs.mkdirSync(path.join(decoyCwd, '.cursor'), { recursive: true });
+        fs.mkdirSync(targetRoot, { recursive: true });
+        const entry = path.resolve(__dirname, '..', 'index.js');
+
+        const install = spawnSync(process.execPath, [
+          entry,
+          'setup-hooks',
+          '--runtime=claude-code',
+          `--root=${targetRoot}`,
+          '--force',
+        ], {
+          cwd: decoyCwd,
+          encoding: 'utf8',
+          timeout: 15000,
+        });
+        assert.equal(install.status, 0, install.stderr);
+        assert.ok(fs.existsSync(path.join(targetRoot, '.claude', 'settings.json')));
+        assert.ok(!fs.existsSync(path.join(decoyCwd, '.cursor', 'hooks.json')));
+
+        const verify = spawnSync(process.execPath, [
+          entry,
+          'setup-hooks',
+          '--runtime=claude-code',
+          `--root=${targetRoot}`,
+          '--verify',
+          '--json',
+        ], {
+          cwd: decoyCwd,
+          encoding: 'utf8',
+          timeout: 15000,
+        });
+        assert.equal(verify.status, 0, verify.stderr);
+        const report = JSON.parse(verify.stdout);
+        assert.equal(report.ok, true);
+        assert.equal(report.platform, 'claude-code');
+        assert.equal(report.config_root, targetRoot);
+
+        const settingsPath = path.join(targetRoot, '.claude', 'settings.json');
+        const malformed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        malformed.hooks.SessionStart[0].hooks = {};
+        fs.writeFileSync(settingsPath, JSON.stringify(malformed));
+        const failedVerify = spawnSync(process.execPath, [
+          entry,
+          'setup-hooks',
+          '--runtime=claude-code',
+          `--root=${targetRoot}`,
+          '--verify',
+          '--json',
+        ], {
+          cwd: decoyCwd,
+          encoding: 'utf8',
+          timeout: 15000,
+        });
+        assert.equal(failedVerify.status, 1);
+        assert.equal(JSON.parse(failedVerify.stdout).ok, false);
+      } finally { cleanup(tmp); }
+    });
+
+    it('rejects conflicting --platform and --runtime values', () => {
+      const tmp = makeTmpDir();
+      try {
+        const entry = path.resolve(__dirname, '..', 'index.js');
+        const result = spawnSync(process.execPath, [
+          entry,
+          'setup-hooks',
+          '--platform=codex',
+          '--runtime=claude-code',
+          `--root=${tmp}`,
+        ], {
+          cwd: tmp,
+          encoding: 'utf8',
+          timeout: 15000,
+        });
+        assert.equal(result.status, 2);
+        assert.match(result.stderr, /conflicting.*platform.*runtime/i);
+      } finally { cleanup(tmp); }
+    });
+  });
+
   describe('detectPlatform', () => {
     it('detects cursor from .cursor directory', () => {
       const tmp = makeTmpDir();
@@ -912,6 +997,63 @@ describe('claudeCode adapter', () => {
     } finally { cleanup(tmp); }
   });
 
+  it('verifies the installed hook files and reports missing runtime assets', () => {
+    const tmp = makeTmpDir();
+    try {
+      const evolverRoot = path.resolve(__dirname, '..');
+      claudeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const healthy = claudeAdapter.verify({ configRoot: tmp });
+      assert.equal(healthy.ok, true);
+      assert.equal(healthy.platform, 'claude-code');
+
+      fs.unlinkSync(path.join(tmp, '.claude', 'hooks', 'evolver-session-end.js'));
+      const broken = claudeAdapter.verify({ configRoot: tmp });
+      assert.equal(broken.ok, false);
+      assert.ok(broken.checks.some(check =>
+        check.id === 'hook_scripts_present' &&
+        check.ok === false &&
+        check.detail.includes('evolver-session-end.js')
+      ));
+    } finally { cleanup(tmp); }
+  });
+
+  it('does not accept commands that merely mention managed script names', () => {
+    const tmp = makeTmpDir();
+    try {
+      const evolverRoot = path.resolve(__dirname, '..');
+      claudeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const settingsPath = path.join(tmp, '.claude', 'settings.json');
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      settings.hooks.SessionStart[0].hooks[0].command = 'echo evolver-session-start.js';
+      fs.writeFileSync(settingsPath, JSON.stringify(settings));
+      const report = claudeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      assert.equal(
+        report.checks.find(check => check.id === 'hooks_registered').ok,
+        false
+      );
+    } finally { cleanup(tmp); }
+  });
+
+  it('reports globally disabled or structurally altered hooks as unhealthy', () => {
+    const tmp = makeTmpDir();
+    try {
+      const evolverRoot = path.resolve(__dirname, '..');
+      claudeAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const settingsPath = path.join(tmp, '.claude', 'settings.json');
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      settings.disableAllHooks = true;
+      settings.hooks.PostToolUse[0].matcher = 'Bash';
+      settings.hooks.Stop[0].hooks[0].type = 'prompt';
+      fs.writeFileSync(settingsPath, JSON.stringify(settings));
+
+      const report = claudeAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      assert.equal(report.checks.find(check => check.id === 'hooks_enabled').ok, false);
+      assert.equal(report.checks.find(check => check.id === 'hooks_registered').ok, false);
+    } finally { cleanup(tmp); }
+  });
+
   it('install preserves user-installed Stop hook (#539)', () => {
     const tmp = makeTmpDir();
     try {
@@ -1169,6 +1311,43 @@ describe('codex adapter', () => {
     } finally { cleanup(tmp); }
   });
 
+  it('verifies the installed hooks, feature flag, and memory section', () => {
+    const tmp = makeTmpDir();
+    try {
+      const evolverRoot = path.resolve(__dirname, '..');
+      codexAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const healthy = codexAdapter.verify({ configRoot: tmp });
+      assert.equal(healthy.ok, true);
+      assert.equal(healthy.platform, 'codex');
+
+      fs.writeFileSync(
+        path.join(tmp, '.codex', 'config.toml'),
+        '[features]\n# codex_hooks = true\n'
+      );
+      const broken = codexAdapter.verify({ configRoot: tmp });
+      assert.equal(broken.ok, false);
+      assert.ok(broken.checks.some(check =>
+        check.id === 'codex_hooks_enabled' && check.ok === false
+      ));
+    } finally { cleanup(tmp); }
+  });
+
+  it('rejects a Codex hook whose command is present under the wrong type', () => {
+    const tmp = makeTmpDir();
+    try {
+      const evolverRoot = path.resolve(__dirname, '..');
+      codexAdapter.install({ configRoot: tmp, evolverRoot, force: true });
+      const hooksPath = path.join(tmp, '.codex', 'hooks.json');
+      const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+      hooks.hooks.Stop[0].type = 'prompt';
+      fs.writeFileSync(hooksPath, JSON.stringify(hooks));
+
+      const report = codexAdapter.verify({ configRoot: tmp });
+      assert.equal(report.ok, false);
+      assert.equal(report.checks.find(check => check.id === 'hooks_registered').ok, false);
+    } finally { cleanup(tmp); }
+  });
+
   it('ensureConfigToml adds feature flag', () => {
     const tmp = makeTmpDir();
     try {
@@ -1181,6 +1360,112 @@ describe('codex adapter', () => {
       assert.ok(toml.includes('codex_hooks = true'));
       const noChange = codexAdapter.ensureConfigToml(codexDir);
       assert.equal(noChange, false);
+    } finally { cleanup(tmp); }
+  });
+
+  it('does not treat a commented codex_hooks line as enabled', () => {
+    const tmp = makeTmpDir();
+    try {
+      const codexDir = path.join(tmp, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(codexDir, 'config.toml'),
+        '[features]\n# codex_hooks = true\n'
+      );
+      assert.equal(codexAdapter.ensureConfigToml(codexDir), true);
+      const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
+      assert.equal(codexAdapter.codexHooksEnabled(content), true);
+      assert.match(content, /^codex_hooks = true$/m);
+    } finally { cleanup(tmp); }
+  });
+
+  it('replaces a false feature value without creating a duplicate TOML key', () => {
+    const tmp = makeTmpDir();
+    try {
+      const codexDir = path.join(tmp, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(codexDir, 'config.toml'),
+        '[features]\ncodex_hooks = false\nother = true\n'
+      );
+      assert.equal(codexAdapter.ensureConfigToml(codexDir), true);
+      const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
+      assert.equal((content.match(/^codex_hooks\s*=/gm) || []).length, 1);
+      assert.match(content, /^codex_hooks = true$/m);
+      assert.match(content, /^other = true$/m);
+    } finally { cleanup(tmp); }
+  });
+
+  it('uninstall preserves same-named keys outside the features table', () => {
+    const tmp = makeTmpDir();
+    try {
+      const codexDir = path.join(tmp, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(codexDir, 'config.toml'),
+        '[features]\ncodex_hooks = true\n\n[custom]\ncodex_hooks = true\n'
+      );
+      assert.equal(codexAdapter.cleanConfigToml(codexDir), true);
+      const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
+      assert.equal(codexAdapter.codexHooksEnabled(content), false);
+      assert.match(content, /\[custom\]\ncodex_hooks = true/);
+    } finally { cleanup(tmp); }
+  });
+
+  it('ignores feature-shaped text inside TOML multiline strings', () => {
+    const tmp = makeTmpDir();
+    try {
+      const codexDir = path.join(tmp, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+      const original = [
+        '[custom]',
+        'notes = """first line',
+        '',
+        '[features]',
+        'codex_hooks = true',
+        'last line"""',
+        '',
+      ].join('\n');
+      const configPath = path.join(codexDir, 'config.toml');
+      fs.writeFileSync(configPath, original);
+
+      assert.equal(codexAdapter.codexHooksEnabled(original), false);
+      assert.equal(codexAdapter.ensureConfigToml(codexDir), true);
+      const installed = fs.readFileSync(configPath, 'utf8');
+      assert.equal(codexAdapter.codexHooksEnabled(installed), true);
+      assert.ok(installed.includes(original), 'install must preserve multiline string bytes');
+
+      assert.equal(codexAdapter.cleanConfigToml(codexDir), true);
+      const cleaned = fs.readFileSync(configPath, 'utf8');
+      assert.equal(codexAdapter.codexHooksEnabled(cleaned), false);
+      assert.ok(cleaned.includes(original), 'uninstall must preserve multiline string bytes');
+    } finally { cleanup(tmp); }
+  });
+
+  it('keeps TOML table and key matching case-sensitive', () => {
+    const tmp = makeTmpDir();
+    try {
+      const codexDir = path.join(tmp, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+      const configPath = path.join(codexDir, 'config.toml');
+      fs.writeFileSync(
+        configPath,
+        '[Features]\ncodex_hooks = true\n\n[features]\nCodex_Hooks = true\n'
+      );
+
+      assert.equal(
+        codexAdapter.codexHooksEnabled(fs.readFileSync(configPath, 'utf8')),
+        false
+      );
+      assert.equal(codexAdapter.ensureConfigToml(codexDir), true);
+      const installed = fs.readFileSync(configPath, 'utf8');
+      assert.match(installed, /\[Features\]\ncodex_hooks = true/);
+      assert.match(installed, /\[features\]\ncodex_hooks = true\nCodex_Hooks = true/);
+
+      assert.equal(codexAdapter.cleanConfigToml(codexDir), true);
+      const cleaned = fs.readFileSync(configPath, 'utf8');
+      assert.match(cleaned, /\[Features\]\ncodex_hooks = true/);
+      assert.match(cleaned, /\[features\]\nCodex_Hooks = true/);
     } finally { cleanup(tmp); }
   });
 

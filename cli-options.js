@@ -9,6 +9,50 @@ const PROXY_PATH_FLAGS = new Map([
   ['--env-file', 'envFile'],
 ]);
 
+function optionValue(argv, name) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = String(argv[index]);
+    if (arg === name) {
+      const value = argv[index + 1];
+      if (value === undefined || String(value).startsWith('-')) {
+        throw new Error(name + ' requires a value');
+      }
+      return String(value);
+    }
+    if (arg.startsWith(name + '=')) {
+      const value = arg.slice(name.length + 1);
+      if (!value) throw new Error(name + ' requires a value');
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function parseSetupHooksCliOptions(argv, env = process.env) {
+  const platform = optionValue(argv, '--platform');
+  const runtime = optionValue(argv, '--runtime');
+  if (platform && runtime && platform !== runtime) {
+    throw new Error(
+      `conflicting --platform=${platform} and --runtime=${runtime}; pass one runtime identity`
+    );
+  }
+  const rawRoot = optionValue(argv, '--root');
+  const root = rawRoot === undefined ? undefined : rawRoot.trim();
+  if (rawRoot !== undefined && !root) {
+    throw new Error('--root requires a non-empty path');
+  }
+  return {
+    platform: platform || runtime,
+    root: root
+      ? path.resolve(expandHomePath(root, env))
+      : undefined,
+    force: argv.includes('--force'),
+    uninstall: argv.includes('--uninstall'),
+    verify: argv.includes('--verify'),
+    json: argv.includes('--json'),
+  };
+}
+
 function expandHomePath(value, env = process.env) {
   if (value === '~') return env.HOME || require('os').homedir();
   if (value.startsWith('~/') || value.startsWith('~\\')) {
@@ -68,6 +112,7 @@ function prepareProxyCliEnvironment(argv, env = process.env, dotenv = require('d
 module.exports = {
   applyProxyCliPathOptions,
   expandHomePath,
+  parseSetupHooksCliOptions,
   parseProxyCliPathOptions,
   prepareProxyCliEnvironment,
 };

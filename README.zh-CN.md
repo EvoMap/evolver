@@ -99,6 +99,17 @@ evolver setup-hooks --platform=claude-code
 
 通过 `~/.claude/` 向 Claude Code 的 hook 系统注册 Evolver。安装完成后重启 Claude Code CLI。
 
+桌面应用或自动化调用时应显式传入配置根目录，不要依赖调用进程的当前目录：
+
+```bash
+evolver setup-hooks --platform=claude-code --root=/绝对路径/工作区
+evolver setup-hooks --platform=claude-code --root=/绝对路径/工作区 --verify --json
+```
+
+`--runtime=<platform>` 作为 `--platform` 的兼容别名保留。使用
+`--verify --json` 时，stdout 只输出一个机器可读的 JSON 健康报告，宿主可以据此区分
+“配置已写入”和“接入确实可用”。
+
 #### OpenClaw
 
 OpenClaw 会识别 Evolver 向 stdout 输出的 `sessions_spawn(...)` 协议，**无需安装 hooks**。将 Evolver 克隆到 OpenClaw workspace 中，在会话内运行即可：

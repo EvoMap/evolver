@@ -208,6 +208,7 @@ if (process.argv[2] === 'proxy-token') {
 
 const {
   applyProxyCliPathOptions,
+  parseSetupHooksCliOptions,
   prepareProxyCliEnvironment,
 } = require('./cli-options');
 
@@ -3236,44 +3237,87 @@ async function main() {
     const hookAdapter = require('./src/adapters/hookAdapter');
     const { setupHooks, resolveConfigRoot, detectPlatform, loadAdapter } = hookAdapter;
 
-    const platformFlag = args.find(a => typeof a === 'string' && a.startsWith('--platform='));
-    const platform = platformFlag ? platformFlag.slice('--platform='.length) : undefined;
-    const force = args.includes('--force');
-    const uninstall = args.includes('--uninstall');
-    const verifyOnly = args.includes('--verify');
+    let setupOptions;
+    try {
+      setupOptions = parseSetupHooksCliOptions(args, process.env);
+    } catch (error) {
+      const message = error && error.message || String(error);
+      if (args.includes('--json')) {
+        process.stdout.write(JSON.stringify({
+          ok: false,
+          error: { code: 'invalid_arguments', message },
+        }) + '\n');
+      } else {
+        console.error('[setup-hooks] ' + message);
+      }
+      process.exit(2);
+    }
+    const {
+      platform,
+      root,
+      force,
+      uninstall,
+      verify: verifyOnly,
+      json: jsonOut,
+    } = setupOptions;
+    const failVerify = (code, message, exitCode) => {
+      if (jsonOut) {
+        process.stdout.write(JSON.stringify({
+          ok: false,
+          platform: platform || null,
+          config_root: root || null,
+          error: { code, message },
+        }) + '\n');
+      } else {
+        console.error('[setup-hooks] --verify: ' + message);
+      }
+      process.exit(exitCode);
+    };
 
     if (verifyOnly) {
       // Read-only verification: do not touch any files, just report whether
       // the previously-installed hooks/plugin look healthy. Lets users answer
       // "is the plugin actually loaded?" without grepping opencode logs.
       try {
-        const platformId = platform || detectPlatform(process.cwd());
+        const platformId = platform || detectPlatform(root || process.cwd());
         if (!platformId) {
-          console.error('[setup-hooks] --verify: could not detect platform. Pass --platform=opencode|cursor|claude-code|codex|kiro');
-          process.exit(2);
+          failVerify(
+            'platform_not_detected',
+            'could not detect platform. Pass --platform=opencode|cursor|claude-code|codex|kiro',
+            2
+          );
         }
         const adapter = loadAdapter(platformId);
         if (!adapter || typeof adapter.verify !== 'function') {
-          console.error('[setup-hooks] --verify: platform ' + platformId + ' does not support verification yet.');
-          process.exit(2);
+          failVerify(
+            'verification_unsupported',
+            'platform ' + platformId + ' does not support verification yet.',
+            2
+          );
         }
-        const configRoot = resolveConfigRoot(platformId, process.cwd());
+        const configRoot = root || resolveConfigRoot(platformId, process.cwd());
         const report = adapter.verify({ configRoot });
-        if (typeof adapter.printVerifyReport === 'function') {
+        if (jsonOut) {
+          process.stdout.write(JSON.stringify(report) + '\n');
+        } else if (typeof adapter.printVerifyReport === 'function') {
           adapter.printVerifyReport(report);
         } else {
           console.log(JSON.stringify(report, null, 2));
         }
         process.exit(report.ok ? 0 : 1);
       } catch (verifyErr) {
-        console.error('[setup-hooks] --verify error:', verifyErr && verifyErr.message || verifyErr);
-        process.exit(1);
+        failVerify(
+          'verification_failed',
+          verifyErr && verifyErr.message || String(verifyErr),
+          1
+        );
       }
     }
 
     try {
       const result = await setupHooks({
         platform,
+        configRoot: root,
         cwd: process.cwd(),
         force,
         uninstall,
@@ -3705,9 +3749,12 @@ async function main() {
     - --response-file=<path>  (LLM response file for skill distillation)
   - setup-hooks flags:
     - --platform=cursor|claude-code|codex|kiro|opencode  (auto-detect if omitted)
+    - --runtime=<platform>                   (deprecated alias for --platform)
+    - --root=<path>                          (explicit workspace/config root)
     - --force                              (overwrite existing config)
     - --uninstall                          (remove evolver hooks)
     - --verify                             (read-only: print install health for the chosen platform)
+    - --json                               (with --verify: emit one machine-readable JSON object)
   - asset-log flags:
     - --run=<run_id>           (filter by run ID)
     - --action=<action>        (filter: hub_search_hit, hub_search_miss, asset_reuse, asset_reference, asset_publish, asset_publish_skip)
