@@ -338,11 +338,34 @@ export function installCodex(plan, opts) {
     const target = codexConfigTarget(opts);
     const warnings = target.scope === 'user' ? userScopeProjectWarnings(opts.configRoot) : [];
     const { codexDir, configPath } = target;
+    if (opts.targetPath !== undefined && resolve(opts.targetPath) !== resolve(configPath)) {
+        throw new Error('lifecycle target is outside the Codex adapter target set');
+    }
     const assertSafe = codexPathGuard(target);
     assertSafe();
     const mcpServer = codexMcpServerEntry(opts.server);
     const sessionStartHook = codexSessionStartHook(hookCommand);
     const userPromptSubmitHook = codexUserPromptSubmitHook(promptRecallHookCommand);
+    if (opts.dryRun) {
+        const current = readTomlSnapshot(configPath).data;
+        const alreadyInstalled = codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand);
+        const next = !opts.force && alreadyInstalled
+            ? withCodexProductBridge(current, false, opts.productBridgeNodePath)
+            : {
+                changed: true,
+                data: withCodexProductBridge(mergeCodexConfig(current, mcpServer, sessionStartHook, userPromptSubmitHook), opts.force === true, opts.productBridgeNodePath).data,
+            };
+        return {
+            ok: true,
+            runtime: plan.runtime,
+            mode: plan.mode,
+            files: next.changed ? [configPath] : [],
+            ...(alreadyInstalled ? { alreadyInstalled: true } : {}),
+            dryRun: true,
+            verified: alreadyInstalled && !next.changed,
+            ...(warnings.length > 0 ? { warnings } : {}),
+        };
+    }
     mkdirSync(codexDir, { recursive: true, mode: 0o700 });
     const changed = writeTomlWithRetry(configPath, (current) => {
         if (!opts.force && codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand)) {
@@ -366,10 +389,23 @@ export function installCodex(plan, opts) {
 export function uninstallCodex(runtime, opts) {
     const target = codexConfigTarget(opts);
     const { configPath } = target;
+    if (opts.targetPath !== undefined && resolve(opts.targetPath) !== resolve(configPath)) {
+        throw new Error('lifecycle target is outside the Codex adapter target set');
+    }
     const assertSafe = codexPathGuard(target);
     assertSafe();
     if (!existsSync(configPath))
-        return { ok: true, runtime, mode: 'uninstall', files: [] };
+        return { ok: true, runtime, mode: 'uninstall', files: [], ...(opts.dryRun ? { dryRun: true } : {}) };
+    if (opts.dryRun) {
+        const stripped = stripCodexManaged(readTomlSnapshot(configPath).data);
+        return {
+            ok: true,
+            runtime,
+            mode: 'uninstall',
+            files: stripped.changed ? [configPath] : [],
+            dryRun: true,
+        };
+    }
     const changed = writeTomlWithRetry(configPath, (current) => {
         const stripped = stripCodexManaged(current);
         return {

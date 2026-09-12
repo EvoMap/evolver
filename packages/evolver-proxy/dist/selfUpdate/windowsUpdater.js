@@ -155,6 +155,14 @@ export async function prepareWindowsExecutableSwap(options) {
         resultPath: paths.resultPath,
     };
 }
+function reportUpdaterFailure(options, error) {
+    try {
+        options.onFailure?.(error);
+    }
+    catch {
+        // 辅助诊断失败不能覆盖原始失败，也不能阻断 durable result 与恢复状态。
+    }
+}
 /**
  * Apply the pending operation before the stable controller starts target.
  * A successful swap is idempotent across crashes after rename: if target
@@ -180,6 +188,7 @@ export async function applyPendingWindowsExecutableSwap(options = {}) {
         await validateWorkItem(workItem, paths, stateDir, options.assertHelperTrust);
     }
     catch (error) {
+        reportUpdaterFailure(options, error);
         const result = {
             schema_version: RESULT_SCHEMA_VERSION,
             operation: workItem?.operation ?? 'install',
@@ -227,6 +236,7 @@ export async function applyPendingWindowsExecutableSwap(options = {}) {
         await rm(paths.pendingPath);
     }
     catch (error) {
+        reportUpdaterFailure(options, error);
         result = {
             schema_version: RESULT_SCHEMA_VERSION,
             operation: workItem.operation,
@@ -624,44 +634,77 @@ function assertNativeWindowsUpdaterHelperTrust(paths) {
             break;
         current = dirname(current);
     }
+    const encodedChecks = checks.map((check) => (`${Buffer.from(check.path, 'utf8').toString('base64')}|${check.parentOnly ? '1' : '0'}`)).join('\n');
+    if (encodedChecks.length > 24 * 1024) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_helper_acl_payload_oversized');
+    }
     try {
-        execFileSync(trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', windowsUpdaterAclScript(checks)], { stdio: 'ignore', timeout: 10_000, windowsHide: true });
+        execFileSync(trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', windowsUpdaterAclScript()], {
+            env: {
+                SystemRoot: HOST_WINDOWS_SYSTEM_ROOT,
+                WINDIR: HOST_WINDOWS_SYSTEM_ROOT,
+                EVOLVER_UPDATER_ACL_CHECKS: encodedChecks,
+            },
+            shell: false,
+            stdio: 'ignore',
+            timeout: 10_000,
+            windowsHide: true,
+        });
     }
     catch (error) {
-        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_helper_acl_untrusted', {
+        const status = typeof error === 'object' && error !== null
+            ? error.status
+            : undefined;
+        const reason = status === 21
+            ? 'owner_untrusted'
+            : status === 22
+                ? 'identity_unresolved'
+                : status === 23
+                    ? 'writer_untrusted'
+                    : status === 24
+                        ? 'input_or_acl_read_failed'
+                        : 'process_failed';
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_helper_acl_${reason}`, {
             cause: error,
         });
     }
 }
-function windowsUpdaterAclScript(checks) {
-    const encodedChecks = Buffer.from(JSON.stringify(checks), 'utf8').toString('base64');
+export function windowsUpdaterAclScript() {
     const d = String.fromCharCode(36);
     return [
         `${d}ErrorActionPreference = 'Stop'`,
-        'try {',
-        `  ${d}json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedChecks}'))`,
-        `  ${d}checks = ${d}json | ConvertFrom-Json`,
+        'trap { exit 24 }',
+        `${d}checks = @()`,
+        `foreach (${d}row in ${d}env:EVOLVER_UPDATER_ACL_CHECKS.Split([char]10, [System.StringSplitOptions]::RemoveEmptyEntries)) {`,
+        `  ${d}parts = ${d}row.Split('|')`,
+        `  if (${d}parts.Count -ne 2 -or (${d}parts[1] -ne '0' -and ${d}parts[1] -ne '1')) { exit 24 }`,
+        `  try { ${d}path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${d}parts[0])) } catch { exit 24 }`,
+        `  ${d}checks += [pscustomobject]@{ path = ${d}path; parentOnly = (${d}parts[1] -eq '1') }`,
+        '}',
+        `if (${d}checks.Count -eq 0) { exit 24 }`,
         `  ${d}userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
         `  ${d}trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'`,
         `  ${d}trustedOwners = @(${d}userSid, 'S-1-5-18', 'S-1-5-32-544', ${d}trustedInstaller)`,
         `  ${d}trustedWriters = @(${d}userSid, 'S-1-5-18', 'S-1-5-32-544', ${d}trustedInstaller, 'S-1-3-0', 'S-1-3-4')`,
         `  ${d}parentDanger = [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership`,
         `  ${d}contentDanger = [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::CreateDirectories`,
-        `  foreach (${d}check in @(${d}checks)) {`,
-        `    ${d}acl = Get-Acl -LiteralPath ${d}check.path`,
+        `foreach (${d}check in ${d}checks) {`,
+        `    try { ${d}attributes = [System.IO.File]::GetAttributes(${d}check.path) } catch { exit 24 }`,
+        `    try { ${d}acl = if ((${d}attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { [System.IO.Directory]::GetAccessControl(${d}check.path) } else { [System.IO.File]::GetAccessControl(${d}check.path) } } catch { exit 24 }`,
         `    ${d}owner = ${d}acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
         `    if (${d}trustedOwners -notcontains ${d}owner) { exit 21 }`,
         `    ${d}danger = if (${d}check.parentOnly) { ${d}parentDanger } else { ${d}parentDanger -bor ${d}contentDanger }`,
-        `    foreach (${d}rule in @(${d}acl.Access)) {`,
+        `    ${d}rules = @(${d}acl.GetAccessRules(${d}true, ${d}true, [System.Security.Principal.SecurityIdentifier]))`,
+        `    foreach (${d}rule in ${d}rules) {`,
         `      if (${d}rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }`,
         `      if ((${d}rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }`,
         `      if ((${d}rule.FileSystemRights -band ${d}danger) -eq 0) { continue }`,
-        `      try { ${d}sid = ${d}rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { exit 22 }`,
+        `      if (-not (${d}rule.IdentityReference -is [System.Security.Principal.SecurityIdentifier])) { exit 22 }`,
+        `      ${d}sid = ${d}rule.IdentityReference.Value`,
         `      if (${d}trustedWriters -notcontains ${d}sid) { exit 23 }`,
         '    }',
-        '  }',
-        '} catch { exit 24 }',
-    ].join('; ');
+        '}',
+    ].join('\n');
 }
 function trustedWindowsSystemExecutable(name) {
     if (!win32.isAbsolute(HOST_WINDOWS_SYSTEM_ROOT) || /[\r\n\0]/.test(HOST_WINDOWS_SYSTEM_ROOT)) {

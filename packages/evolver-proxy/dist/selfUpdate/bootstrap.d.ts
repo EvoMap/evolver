@@ -139,6 +139,11 @@ export declare function resolveBootstrapCliInvocation(options?: Pick<BootstrapRu
 export declare function recordBootstrapAttempt(env: NodeJS.ProcessEnv, outcome: BootstrapOutcome, options?: Pick<BootstrapRunOptions, 'writeFile' | 'now'>): void;
 /** Spawn `evolver lifecycle bootstrap` and await its result within a bounded timeout. */
 export declare function runBootstrap(options: BootstrapRunOptions): Promise<BootstrapOutcome>;
+interface BootstrapWindowsAclCheck {
+    path: string;
+    parentOnly: boolean;
+}
+export declare function windowsBootstrapIntentAclScript(checks: readonly BootstrapWindowsAclCheck[]): string;
 export type DegradedStartupBootstrapResult = {
     disposition: 'continue';
     handedOver: false;

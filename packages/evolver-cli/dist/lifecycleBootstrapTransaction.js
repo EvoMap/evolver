@@ -69,9 +69,23 @@ function assertWindowsAclChecksTrusted(checks) {
         bootstrapWindowsAclTrustForTest(checks);
         return;
     }
-    const serializedChecks = checks.map((check) => (`@{ Path = '${check.path.replaceAll("'", "''")}'; ParentOnly = $${check.parentOnly ? 'true' : 'false'}; OwnerCurrentOnly = $${check.ownerCurrentOnly ? 'true' : 'false'} }`)).join(', ');
+    if (checks.length === 0) {
+        throw new Error('bootstrap Windows ACL chain is not trusted: <empty>');
+    }
+    const encodedChecks = checks.map((check) => (`${Buffer.from(check.path, 'utf8').toString('base64')}|${check.parentOnly ? '1' : '0'}|${check.ownerCurrentOnly ? '1' : '0'}`)).join('\n');
+    if (encodedChecks.length > 24 * 1024) {
+        throw new Error(`bootstrap Windows ACL chain is not trusted: ${checks[0]?.path ?? '<empty>'}`);
+    }
     const script = [
-        `$checks = @(${serializedChecks})`,
+        "$ErrorActionPreference = 'Stop'",
+        'trap { exit 24 }',
+        '$checks = @()',
+        'foreach ($row in $env:EVOLVER_BOOTSTRAP_ACL_CHECKS.Split([char]10, [System.StringSplitOptions]::RemoveEmptyEntries)) {',
+        "  $parts = $row.Split('|')",
+        "  if ($parts.Count -ne 3 -or ($parts[1] -ne '0' -and $parts[1] -ne '1') -or ($parts[2] -ne '0' -and $parts[2] -ne '1')) { exit 24 }",
+        '  try { $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0])) } catch { exit 24 }',
+        "  $checks += [pscustomobject]@{ Path = $path; ParentOnly = ($parts[1] -eq '1'); OwnerCurrentOnly = ($parts[2] -eq '1') }",
+        '}',
         '$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
         "$trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'",
         "$trustedOwners = @($userSid, 'S-1-5-18', 'S-1-5-32-544', $trustedInstaller)",
@@ -79,30 +93,114 @@ function assertWindowsAclChecksTrusted(checks) {
         '$parentDanger = [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership',
         '$contentDanger = [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::CreateDirectories',
         'foreach ($check in $checks) {',
-        '  $acl = Get-Acl -LiteralPath $check.Path',
+        '  try { $attributes = [System.IO.File]::GetAttributes($check.Path) } catch { exit 24 }',
+        '  try {',
+        '    $acl = if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {',
+        '      [System.IO.Directory]::GetAccessControl($check.Path)',
+        '    } else {',
+        '      [System.IO.File]::GetAccessControl($check.Path)',
+        '    }',
+        '  } catch { exit 24 }',
         '  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value',
         '  if (($check.OwnerCurrentOnly -and $owner -ne $userSid) -or (-not $check.OwnerCurrentOnly -and $trustedOwners -notcontains $owner)) { exit 21 }',
         '  $danger = if ($check.ParentOnly) { $parentDanger } else { $parentDanger -bor $contentDanger }',
-        '  foreach ($rule in @($acl.Access)) {',
+        '  $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
+        '  foreach ($rule in $rules) {',
         '    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }',
         '    if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }',
         '    if (($rule.FileSystemRights -band $danger) -eq 0) { continue }',
-        '    try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { exit 22 }',
+        '    if (-not ($rule.IdentityReference -is [System.Security.Principal.SecurityIdentifier])) { exit 22 }',
+        '    $sid = $rule.IdentityReference.Value',
         '    if ($trustedWriters -notcontains $sid) { exit 23 }',
         '  }',
         '}',
-    ].join('; ');
+    ].join('\n');
     try {
         execFileSync(trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script], {
+            env: {
+                SystemRoot: HOST_WINDOWS_SYSTEM_ROOT,
+                WINDIR: HOST_WINDOWS_SYSTEM_ROOT,
+                EVOLVER_BOOTSTRAP_ACL_CHECKS: encodedChecks,
+            },
+            shell: false,
             stdio: 'ignore', timeout: 10_000, windowsHide: true,
         });
     }
     catch (error) {
-        throw new Error(`bootstrap Windows ACL chain is not trusted: ${checks[0]?.path ?? '<empty>'}`, { cause: error });
+        const status = typeof error === 'object' && error !== null
+            ? error.status
+            : undefined;
+        const reason = status === 21
+            ? 'owner_untrusted'
+            : status === 22
+                ? 'identity_unresolved'
+                : status === 23
+                    ? 'writer_untrusted'
+                    : status === 24
+                        ? 'input_or_acl_read_failed'
+                        : 'process_failed';
+        throw new Error(`bootstrap Windows ACL chain is not trusted (${reason}): ${checks[0]?.path ?? '<empty>'}`, { cause: error });
     }
 }
 function assertWindowsAclTrusted(path, ownerCurrentOnly = false) {
     assertWindowsAclChecksTrusted([{ path, parentOnly: false, ownerCurrentOnly }]);
+}
+function hardenWindowsOwnedFile(path, expected) {
+    if (process.platform !== 'win32' || bootstrapWindowsAclTrustForTest)
+        return;
+    const assertIdentity = () => {
+        const current = lstatSync(path, { bigint: true });
+        if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
+            || current.dev !== expected.dev || current.ino !== expected.ino || current.size !== expected.size) {
+            throw new Error(`bootstrap Windows owned file changed before hardening: ${path}`);
+        }
+    };
+    assertIdentity();
+    // Only normalize a file we just created in a trusted directory. An unsafe
+    // existing owner or writer must be rejected before changing its permissions.
+    assertWindowsAclTrusted(path);
+    assertIdentity();
+    const encodedPath = Buffer.from(path, 'utf8').toString('base64');
+    if (encodedPath.length > 8 * 1024) {
+        throw new Error(`bootstrap Windows owned file hardening failed: ${path}`);
+    }
+    const script = [
+        "$ErrorActionPreference = 'Stop'",
+        'trap { exit 31 }',
+        'try { $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:EVOLVER_BOOTSTRAP_OWNED_FILE)) } catch { exit 31 }',
+        'try { $attributes = [System.IO.File]::GetAttributes($target) } catch { exit 31 }',
+        'if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { exit 31 }',
+        '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+        'try { $acl = [System.IO.File]::GetAccessControl($target) } catch { exit 31 }',
+        '$acl.SetOwner($sid)',
+        '$acl.SetAccessRuleProtection($true, $false)',
+        '$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
+        'foreach ($rule in $rules) { [void]$acl.RemoveAccessRuleSpecific($rule) }',
+        '$access = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)',
+        '[void]$acl.AddAccessRule($access)',
+        'try { [System.IO.File]::SetAccessControl($target, $acl); $verified = [System.IO.File]::GetAccessControl($target) } catch { exit 31 }',
+        '$verifiedRules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
+        'if (-not $verified.AreAccessRulesProtected -or $verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $verifiedRules.Count -ne 1) { exit 31 }',
+        '$verifiedRule = $verifiedRules[0]',
+        'if ($verifiedRule.IdentityReference.Value -ne $sid.Value -or $verifiedRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $verifiedRule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or $verifiedRule.IsInherited) { exit 31 }',
+    ].join('\n');
+    try {
+        execFileSync(trustedWindowsSystemExecutable('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script], {
+            env: {
+                SystemRoot: HOST_WINDOWS_SYSTEM_ROOT,
+                WINDIR: HOST_WINDOWS_SYSTEM_ROOT,
+                EVOLVER_BOOTSTRAP_OWNED_FILE: encodedPath,
+            },
+            shell: false,
+            stdio: 'ignore',
+            timeout: 10_000,
+            windowsHide: true,
+        });
+    }
+    catch (error) {
+        throw new Error(`bootstrap Windows owned file hardening failed: ${path}`, { cause: error });
+    }
+    assertIdentity();
 }
 function assertWindowsAclChainTrusted(path) {
     const checks = [];
@@ -280,6 +378,9 @@ export function writeDurableText(path, content, mode = 0o600) {
         writeFileSync(descriptor, content, { encoding: 'utf8' });
         fchmodSync(descriptor, mode);
         fsyncSync(descriptor);
+        if (process.platform === 'win32') {
+            hardenWindowsOwnedFile(temporary, fstatSync(descriptor, { bigint: true }));
+        }
         closeSync(descriptor);
         descriptor = undefined;
         renameSync(temporary, path);
@@ -335,9 +436,12 @@ function writeDurableExclusive(path, content, mode, publication) {
             writeFileSync(descriptor, content);
         fchmodSync(descriptor, mode);
         fsyncSync(descriptor);
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (process.platform === 'win32') {
+            hardenWindowsOwnedFile(temporary, opened);
+        }
         if (publication && claimPath && ownershipReceipt) {
             syncDirectory(directory);
-            const opened = fstatSync(descriptor, { bigint: true });
             const receipt = lstatSync(ownershipReceipt, { bigint: true });
             if (!opened.isFile() || opened.dev <= 0n || opened.ino <= 0n
                 || receipt.dev !== opened.dev || receipt.ino !== opened.ino) {
@@ -429,6 +533,17 @@ function bootstrapLockHandle(path, owner) {
     })}\n`, 'utf8');
     let receipt;
     try {
+        if (process.platform === 'win32') {
+            const published = readBootstrapArtifactFile(path, util.MAX_LOCK_OWNER_BYTES);
+            if (!published.bytes.equals(expectedBytes)) {
+                throw new Error('bootstrap owner lock acquisition did not publish the exact owner');
+            }
+            hardenWindowsOwnedFile(path, {
+                dev: BigInt(published.identity.device),
+                ino: BigInt(published.identity.inode),
+                size: BigInt(published.identity.size),
+            });
+        }
         receipt = readBootstrapArtifactFile(path, util.MAX_LOCK_OWNER_BYTES, { role: 'owned' });
         if (!receipt.bytes.equals(expectedBytes)) {
             throw new Error('bootstrap owner lock acquisition did not publish the exact owner');

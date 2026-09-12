@@ -341,7 +341,8 @@ function anthropicStyleSession(chunk, sessionIdKeys = []) {
 }
 export const claudeCodeAdapter = {
     agent: 'claude-code',
-    detect: (p) => /\.claude[/\\]projects[/\\].*\.jsonl$/.test(p) || /claude.*\.jsonl$/i.test(p),
+    // 仅发现规则保持目录/后缀大小写兼容；原始路径与独立resume identity验证不变。
+    detect: (p) => /(^|[/\\])\.claude[/\\]projects[/\\].*\.jsonl$/i.test(p) || /(^|[/\\])[^/\\]*claude[^/\\]*\.jsonl$/i.test(p),
     resumeIdentityFromSource: (path, chunk) => nativeResumeIdentity('claude-code', path, chunk, CLAUDE_TRANSCRIPT_PATH, ['sessionId', 'session_id']),
     parse: anthropicStyleTranscript,
     parseSession: (chunk) => anthropicStyleSession(chunk, ['sessionId', 'session_id']),
@@ -352,7 +353,7 @@ export const claudeCodeAdapter = {
 // .jsonl that live under .cursor (eval datasets: task_id/canonical_solution, no role) carry no turn and parse to [].
 export const cursorAdapter = {
     agent: 'cursor',
-    detect: (p) => /\.cursor[/\\].*\.jsonl$/.test(p) || /cursor.*\.jsonl$/i.test(p),
+    detect: (p) => /(^|[/\\])\.cursor[/\\].*\.jsonl$/i.test(p) || /(^|[/\\])[^/\\]*cursor[^/\\]*\.jsonl$/i.test(p),
     resumeIdentityFromSource: cursorResumeIdentity,
     parse: anthropicStyleTranscript,
     parseSession: (chunk) => anthropicStyleSession(chunk, ['sessionId', 'session_id', 'conversationId', 'conversation_id']),
@@ -442,7 +443,7 @@ function codexSession(chunk) {
 export const codexAdapter = {
     agent: 'codex',
     // real files are rollout-<ts>-<uuid>.jsonl under .codex/sessions|archived_sessions; keep the generic codex*.jsonl too.
-    detect: (p) => /\.codex[/\\].*\.jsonl$/.test(p) || /(^|[/\\])rollout-.*\.jsonl$/i.test(p) || /codex.*\.jsonl$/i.test(p),
+    detect: (p) => /(^|[/\\])\.codex[/\\].*\.jsonl$/i.test(p) || /(^|[/\\])(?:rollout-|[^/\\]*codex)[^/\\]*\.jsonl$/i.test(p),
     parse: codexTranscript,
     parseSession: codexSession,
 };
@@ -628,7 +629,7 @@ export const geminiAdapter = {
     detect: (p) => {
         if (/(^|[/\\])logs\.json$/i.test(p))
             return false;
-        return /\.gemini[/\\].*[/\\]chats[/\\]session-[^/\\]*\.jsonl?$/i.test(p)
+        return /(^|[/\\])\.gemini[/\\].*[/\\]chats[/\\]session-[^/\\]*\.jsonl?$/i.test(p)
             || /(^|[/\\])gemini[^/\\]*session[^/\\]*\.jsonl?$/i.test(p)
             || /(^|[/\\])session-[^/\\]*\.gemini\.jsonl?$/i.test(p);
     },

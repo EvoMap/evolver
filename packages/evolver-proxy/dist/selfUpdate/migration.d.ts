@@ -149,6 +149,11 @@ export declare function resolveMigrationDestPath(env: NodeJS.ProcessEnv, platfor
  * version. Returns undefined when nothing normalizes to a concrete semver.
  */
 export declare function resolveMigrationVersion(env: NodeJS.ProcessEnv): string | undefined;
+interface MigrationWindowsAclCheck {
+    path: string;
+    parentOnly: boolean;
+}
+export declare function windowsMigrationAclScript(checks: readonly MigrationWindowsAclCheck[]): string;
 /**
  * One-time migration of the npm/JS install shape to the standalone release binary.
  * Never throws: every failure/skip becomes a structured MigrationResult. Only a proven clean

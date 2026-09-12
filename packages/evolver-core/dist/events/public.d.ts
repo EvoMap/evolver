@@ -4,7 +4,7 @@ export { Replayer } from './replayer.js';
 export type { Projector } from './replayer.js';
 export { eventCountsProjector, DEFAULT_PROJECTORS } from './projectors.js';
 export type { EventCountsMV } from './projectors.js';
-export { LineTooLargeError, MAX_LINE_BYTES } from './eventStore.js';
+export { LineTooLargeError, MAX_LINE_BYTES, fitsRootEventLine } from './eventStore.js';
 export { ArchiveSegmentConflictError, InvalidRootEventArchiveError, InvalidRootEventLogError, RootEventHistoryGapError, archiveRootEvents, inspectRootEventArchive, planRootEventArchive, readRootEventHistory, rootEventArchiveDir, rootEventArchiveSegmentName, validateRootEventHistory, ROOT_EVENT_ARCHIVE_DEFAULT_KEEP_EVENTS, } from './eventArchive.js';
 export type { RootEventArchiveOptions, RootEventArchivePlan, RootEventArchiveResult, RootEventArchiveStats, } from './eventArchive.js';
 export { rootEventsPath, evomapHome, mvDir, personalityStatePath, assetsDir, materialDir, materialStorePath, materialWatermarkPath, tracesDir, assetCallLogPath, learningTraceDir } from './paths.js';

@@ -1,4 +1,5 @@
 import { assetstore, events, material as materialNs, schema } from '@evomap/evolver-core';
+import { type StrategyDraftDiagnostics } from './distillPrimitives.js';
 declare const GROUP = "material.package_gene";
 type PackageBlocker = 'usage' | 'material_not_found' | 'unsupported_material' | 'source_unavailable' | 'draft_unavailable' | 'gene_intake_rejected' | 'missing_capsule_evidence' | 'gene_not_found' | 'capsule_not_found' | 'capsule_gene_mismatch' | 'publish_bundle_invalid' | 'publish_bundle_blocked' | 'cycle_not_solidified' | 'write_failed';
 interface MaterialPackageOptions {
@@ -41,6 +42,9 @@ interface MaterialGenePackageResult {
     publishCommand?: string;
     sourceCount?: number;
     signalCount?: number;
+    strategyDraft?: StrategyDraftDiagnostics & {
+        sourceIndex: number;
+    };
     message?: string;
 }
 type MaterialGenePackageBuildResult = {

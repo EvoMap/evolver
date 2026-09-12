@@ -38,6 +38,8 @@ export interface ApplyWindowsUpdaterOptions {
     workerExecPath?: string;
     platform?: NodeJS.Platform;
     renameFn?: typeof rename;
+    /** Test-only diagnostic seam; production does not expose internal filesystem errors. */
+    onFailure?: (error: unknown) => void;
     /** Test seam; production always evaluates the native Windows owner/writer policy. */
     assertHelperTrust?: WindowsUpdaterHelperTrust;
 }
@@ -102,3 +104,4 @@ export declare function maybeRunWindowsUpdaterWorkerFromArgv(options?: {
     /** Test seam; production always evaluates the native Windows owner/writer policy. */
     assertHelperTrust?: WindowsUpdaterHelperTrust;
 }): Promise<number | undefined>;
+export declare function windowsUpdaterAclScript(): string;

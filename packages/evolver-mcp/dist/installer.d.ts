@@ -44,6 +44,8 @@ export interface InstallOptions {
     force?: boolean;
     /** Plan and validate without writing config or backup files. */
     dryRun?: boolean;
+    /** Lifecycle-only exact config target. Omitted preserves the legacy all-target transaction. */
+    targetPath?: string;
     /** Cursor only: the top genes to render into .cursor/rules/evolver.mdc. The daemon refreshes these on change;
      *  a one-shot `setup-hooks --runtime=cursor` install seeds the file (empty ⇒ a placeholder the daemon fills). */
     genes?: readonly CursorGene[];
@@ -88,6 +90,8 @@ export interface UninstallOptions {
     kiroHome?: string;
     /** Validate and report the uninstall without changing config or backup files. */
     dryRun?: boolean;
+    /** Lifecycle-only exact config target. Omitted preserves the legacy all-target transaction. */
+    targetPath?: string;
     /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
     xdgConfigHome?: string;
     /** OpenCode user scope only: explicit OPENCODE_CONFIG file override. */

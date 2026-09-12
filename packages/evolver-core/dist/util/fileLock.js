@@ -120,10 +120,13 @@ function windowsProcessStartIdentity(pid) {
     if (powershell === null)
         return null;
     const script = [
-        `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
-        '$ticks = $process.StartTime.ToUniversalTime().Ticks',
-        '[Console]::Out.Write($ticks.ToString([Globalization.CultureInfo]::InvariantCulture))',
-    ].join('; ');
+        "$ErrorActionPreference = 'Stop'",
+        `$process = [System.Diagnostics.Process]::GetProcessById(${pid})`,
+        'try {',
+        '  $ticks = $process.StartTime.ToUniversalTime().Ticks',
+        '  [Console]::Out.Write($ticks.ToString([Globalization.CultureInfo]::InvariantCulture))',
+        '} finally { $process.Dispose() }',
+    ].join('\n');
     try {
         const startTimeTicks = execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
             encoding: 'utf8',

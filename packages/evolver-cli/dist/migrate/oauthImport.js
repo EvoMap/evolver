@@ -650,7 +650,10 @@ export async function runMigrateOAuthCommand(argv, io = {}) {
         stderr('migrate oauth: failed to load EVOLVER_ENV_FILE\n');
         return 1;
     }
-    const report = migrateV1OAuth({ ...parsed, env });
+    const report = migrateV1OAuth({
+        ...parsed,
+        env,
+    });
     if (json) {
         stdout(`${JSON.stringify(report, null, 2)}\n`);
     }

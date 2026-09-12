@@ -300,7 +300,12 @@ export function createAtpClientFromEnv(env = process.env) {
     const senderId = () => resolvedSenderId;
     const connected = nodeSecret
         ? connectPublicHub({ hubUrl, authMode: 'legacy', evomapDir, nodeSecret, senderId })
-        : connectPublicHub({ hubUrl, authMode: 'oauth', evomapDir, senderId });
+        : connectPublicHub({
+            hubUrl,
+            authMode: 'oauth',
+            evomapDir,
+            senderId,
+        });
     return new AtpHubClient({ baseUrl: hubUrl, auth: connected.auth, fetchFn: globalFetchLike, senderId });
 }
 export { resolveIdentityHome as resolveAtpIdentityHome } from './identityHome.js';

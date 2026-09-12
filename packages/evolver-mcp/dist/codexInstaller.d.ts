@@ -35,5 +35,5 @@ export declare function stripCodexManaged(data: Record<string, unknown>): {
  */
 export declare function installCodex(plan: InjectionPlan, opts: InstallOptions): InstallResult;
 /** Remove Evolver's MCP registration and hooks from the requested Codex scope, leaving user content intact. */
-export declare function uninstallCodex(runtime: RuntimeId, opts: Pick<InstallOptions, 'configRoot' | 'scope' | 'homeDir' | 'codexHome'>): InstallResult;
+export declare function uninstallCodex(runtime: RuntimeId, opts: Pick<InstallOptions, 'configRoot' | 'scope' | 'homeDir' | 'codexHome' | 'dryRun' | 'targetPath'>): InstallResult;
 export {};

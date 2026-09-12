@@ -13,7 +13,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { util } from '@evomap/evolver-core';
 import { planInjection } from './injection.js';
 // codex installer lives in its own module (TOML, different config path) but plugs into the same install/uninstall
@@ -514,32 +514,63 @@ export function installInjection(plan, opts) {
     const { mcpConfigPath, mcpIsSharedUserConfig, claudeDir, settingsPath } = claudeCodeTargets(scope, opts.configRoot, opts.homeDir);
     const mcpLabel = mcpIsSharedUserConfig ? '~/.claude.json' : '.mcp.json';
     const settingsLabel = mcpIsSharedUserConfig ? '~/.claude/settings.json' : '.claude/settings.json';
+    const targetPath = opts.targetPath === undefined ? undefined : resolve(opts.targetPath);
+    if (targetPath !== undefined && targetPath !== resolve(mcpConfigPath) && targetPath !== resolve(settingsPath)) {
+        throw new Error('lifecycle target is outside the Claude Code adapter target set');
+    }
+    const writesMcp = targetPath === undefined || targetPath === resolve(mcpConfigPath);
+    const writesSettings = targetPath === undefined || targetPath === resolve(settingsPath);
     // project scope owns configRoot; user scope writes only home-anchored paths, so configRoot is irrelevant there.
     if (scope === 'project')
         assertNotSymlink(opts.configRoot, 'config root');
     assertNotSymlink(mcpConfigPath, mcpLabel);
     assertNotSymlink(claudeDir, mcpIsSharedUserConfig ? '~/.claude' : '.claude');
     assertNotSymlink(settingsPath, settingsLabel);
-    // Validate both targets before either write so malformed input cannot cause a partial install.
+    // Full-scope installs validate both documents before either write. A lifecycle
+    // target operation owns exactly one document, so an unrelated malformed sibling
+    // must neither be parsed nor block that target's independently confirmed write.
     const readConfig = (p, label) => readJsonStrictShared(p, label);
-    if (mcpIsSharedUserConfig) {
-        ensureSharedUserClaudeDir(claudeDir);
-        hardenSharedUserConfigFile(mcpConfigPath, mcpLabel);
-        hardenSharedUserConfigFile(settingsPath, settingsLabel);
+    const existingSettings = writesSettings ? readConfig(settingsPath, settingsLabel) : {};
+    const existingMcp = writesMcp ? readConfig(mcpConfigPath, mcpLabel) : {};
+    const settingsInstalled = existingSettings[MANAGED_MARKER] === true
+        && hasExactHookCommand(existingSettings, 'SessionStart', hookCommand)
+        && hasExactHookCommand(existingSettings, 'UserPromptSubmit', promptRecallHookCommand);
+    const mcpInstalled = hasEvolverMcpRegistration(existingMcp);
+    const alreadyInstalled = (!writesSettings || settingsInstalled) && (!writesMcp || mcpInstalled);
+    if (opts.dryRun) {
+        // Exercise the same pure transformations as the writer so plan failures are
+        // discovered without creating directories, backups, locks, or config files.
+        const product = withClaudeProductBridge(deepMerge(existingMcp, plan.config), opts.force === true, opts.productBridgeNodePath);
+        mergeHooksUnion(existingSettings, runtimeHookPatch(hookCommand, promptRecallHookCommand));
+        const files = [
+            ...(writesMcp && (opts.force || !mcpInstalled || product.changed) ? [mcpConfigPath] : []),
+            ...(writesSettings && (opts.force || !settingsInstalled) ? [settingsPath] : []),
+        ];
+        return {
+            ok: true,
+            runtime: plan.runtime,
+            mode: plan.mode,
+            files,
+            ...(alreadyInstalled ? { alreadyInstalled: true } : {}),
+            dryRun: true,
+            verified: files.length === 0,
+        };
     }
-    const existingSettings = readConfig(settingsPath, settingsLabel);
-    const existingMcp = readConfig(mcpConfigPath, mcpLabel);
+    if (mcpIsSharedUserConfig) {
+        if (writesSettings)
+            ensureSharedUserClaudeDir(claudeDir);
+        if (writesMcp)
+            hardenSharedUserConfigFile(mcpConfigPath, mcpLabel);
+        if (writesSettings)
+            hardenSharedUserConfigFile(settingsPath, settingsLabel);
+    }
     // "Already installed" requires BOTH the SessionStart hook marker AND evolver's MCP registration. Keying off the
     // settings marker alone missed user-scope upgrades: a legacy global install stamped ~/.claude/settings.json but
     // registered the MCP in ~/.mcp.json (never ~/.claude.json), so a non-force reinstall returned alreadyInstalled
     // and left #290 unfixed. The hook and the MCP live in different files for user scope, so check both.
-    if (!opts.force
-        && existingSettings[MANAGED_MARKER] === true
-        && hasEvolverMcpRegistration(existingMcp)
-        && hasExactHookCommand(existingSettings, 'SessionStart', hookCommand)
-        && hasExactHookCommand(existingSettings, 'UserPromptSubmit', promptRecallHookCommand)) {
+    if (!opts.force && alreadyInstalled) {
         const product = withClaudeProductBridge(existingMcp, false, opts.productBridgeNodePath);
-        if (product.changed) {
+        if (product.changed && writesMcp) {
             writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => withClaudeProductBridge(current, false, opts.productBridgeNodePath));
             return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [mcpConfigPath], alreadyInstalled: true };
         }
@@ -548,40 +579,40 @@ export function installInjection(plan, opts) {
     // MCP server registration. project → <root>/.mcp.json (stamped _evolver_managed). user → ~/.claude.json's
     // top-level mcpServers (Claude Code's real user scope); we do NOT stamp the marker into ~/.claude.json because
     // it's Claude Code's own shared config, so uninstall keys off the mcpServers.evolver entry there instead.
-    if (mcpIsSharedUserConfig) {
-        writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
-            const merged = withClaudeProductBridge(deepMerge(current, plan.config), opts.force === true, opts.productBridgeNodePath);
-            return { changed: true, data: merged.data };
-        });
-    }
-    else {
-        writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
-            const mcpMerged = deepMerge(current, plan.config);
-            mcpMerged[MANAGED_MARKER] = true;
-            return { changed: true, data: withClaudeProductBridge(mcpMerged, opts.force === true, opts.productBridgeNodePath).data };
-        });
+    if (writesMcp) {
+        if (mcpIsSharedUserConfig) {
+            writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
+                const merged = withClaudeProductBridge(deepMerge(current, plan.config), opts.force === true, opts.productBridgeNodePath);
+                return { changed: true, data: merged.data };
+            });
+        }
+        else {
+            writeSharedJsonWithRetry(mcpConfigPath, mcpLabel, (current) => {
+                const mcpMerged = deepMerge(current, plan.config);
+                mcpMerged[MANAGED_MARKER] = true;
+                return { changed: true, data: withClaudeProductBridge(mcpMerged, opts.force === true, opts.productBridgeNodePath).data };
+            });
+        }
     }
     // .claude/settings.json ← SessionStart hook (hooks-union preserves the user's own hooks). For user scope this
     // is ~/.claude/settings.json, which is already Claude Code's user-level hook config.
-    if (mcpIsSharedUserConfig)
-        ensureSharedUserClaudeDir(claudeDir);
-    else
-        mkdirSync(claudeDir, { recursive: true });
-    if (mcpIsSharedUserConfig) {
+    if (writesSettings) {
+        if (mcpIsSharedUserConfig)
+            ensureSharedUserClaudeDir(claudeDir);
+        else
+            mkdirSync(claudeDir, { recursive: true });
         writeSharedJsonWithRetry(settingsPath, settingsLabel, (current) => {
             const settingsMerged = mergeHooksUnion(current, runtimeHookPatch(hookCommand, promptRecallHookCommand));
             settingsMerged[MANAGED_MARKER] = true;
             return { changed: true, data: settingsMerged };
         });
     }
-    else {
-        writeSharedJsonWithRetry(settingsPath, settingsLabel, (current) => {
-            const settingsMerged = mergeHooksUnion(current, runtimeHookPatch(hookCommand, promptRecallHookCommand));
-            settingsMerged[MANAGED_MARKER] = true;
-            return { changed: true, data: settingsMerged };
-        });
-    }
-    return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [mcpConfigPath, settingsPath] };
+    return {
+        ok: true,
+        runtime: plan.runtime,
+        mode: plan.mode,
+        files: [...(writesMcp ? [mcpConfigPath] : []), ...(writesSettings ? [settingsPath] : [])],
+    };
 }
 /** Remove evolver's MCP registration + SessionStart hook from a CC config root (leaves user content intact).
  *  Pass the SAME scope used at install: 'user' cleans ~/.claude.json + ~/.claude/settings.json; 'project'
@@ -613,12 +644,28 @@ export function uninstallInjection(runtime, opts) {
         [mcpConfigPath, mcpIsSharedUserConfig ? '~/.claude.json' : '.mcp.json'],
         [settingsPath, mcpIsSharedUserConfig ? '~/.claude/settings.json' : '.claude/settings.json'],
     ];
-    for (const [path, label] of targets) {
+    const targetPath = opts.targetPath === undefined ? undefined : resolve(opts.targetPath);
+    const selectedTargets = targetPath === undefined
+        ? targets
+        : targets.filter(([path]) => resolve(path) === targetPath);
+    if (targetPath !== undefined && selectedTargets.length !== 1) {
+        throw new Error('lifecycle target is outside the Claude Code adapter target set');
+    }
+    for (const [path, label] of selectedTargets) {
         assertNotSymlink(path, label);
         if (existsSync(path))
             readJsonStrictShared(path, label);
     }
-    for (const [path, label] of targets) {
+    if (opts.dryRun) {
+        for (const [path, label] of selectedTargets) {
+            if (!existsSync(path))
+                continue;
+            if (stripManaged(readJsonStrictShared(path, label)).changed)
+                cleaned.push(path);
+        }
+        return { ok: true, runtime, mode: 'uninstall', files: cleaned, dryRun: true };
+    }
+    for (const [path, label] of selectedTargets) {
         if (!existsSync(path))
             continue;
         const changed = writeSharedJsonWithRetry(path, label, (current) => stripManaged(current));

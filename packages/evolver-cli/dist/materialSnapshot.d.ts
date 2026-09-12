@@ -8,6 +8,7 @@ interface SnapshotTurn {
     isMeta?: boolean;
     toolName?: string;
     errorMessage?: string;
+    textTruncated?: boolean;
 }
 interface SnapshotSource {
     agent: string;
@@ -28,6 +29,8 @@ export interface RuntimeSessionMaterialSnapshotV1 {
     omittedSourceCount: number;
     omittedEvidenceAggregate?: RuntimeSessionEvidenceAggregate;
     truncated: boolean;
+    /** 新 writer 保留文本布局并逐 turn 标注截断；旧 v1 缺少该字段。 */
+    preservesTextLayout?: boolean;
     maxChars: number;
 }
 export interface RuntimeSessionEvidenceSummarySource {

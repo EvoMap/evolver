@@ -10,6 +10,22 @@ const makeUlid = monotonicFactory();
 import { rootEvent, EVENT_SCHEMA_VERSION } from './eventSchema.js';
 /** 单行字节上限, 保 O_APPEND+write 在 ext4 的原子性 (军杰 §3.2). */
 export const MAX_LINE_BYTES = 4096;
+function envelope(raw, identity) {
+    return rootEvent.parse({
+        ...identity,
+        type: raw.type,
+        schemaVersion: raw.schemaVersion ?? EVENT_SCHEMA_VERSION,
+        replayability: raw.replayability ?? 'deterministic',
+        payload: raw.payload ?? {},
+        human: raw.human,
+        actor: raw.actor ?? { kind: 'machine' },
+    });
+}
+/** Size-only preflight using the writer's schema and the longest generated envelope. No I/O or IDs consumed. */
+export function fitsRootEventLine(raw) {
+    const value = envelope(raw, { seq: Number.MAX_VALUE, eventId: '0'.repeat(26), ts: '9999-12-31T23:59:59.999Z' });
+    return Buffer.byteLength(`${JSON.stringify(value)}\n`, 'utf8') <= MAX_LINE_BYTES;
+}
 export class LineTooLargeError extends Error {
     bytes;
     constructor(bytes) {
@@ -43,16 +59,10 @@ export class EventStore {
         acquireLock(this.lockPath);
         try {
             const seq = this.lastSeqFromFile() + 1;
-            const evt = rootEvent.parse({
+            const evt = envelope(raw, {
                 seq,
                 eventId: makeUlid(),
                 ts: new Date(this.now()).toISOString(),
-                type: raw.type,
-                schemaVersion: raw.schemaVersion ?? EVENT_SCHEMA_VERSION,
-                replayability: raw.replayability ?? 'deterministic',
-                payload: raw.payload ?? {},
-                human: raw.human,
-                actor: raw.actor ?? { kind: 'machine' },
             });
             const line = `${JSON.stringify(evt)}\n`;
             const bytes = Buffer.byteLength(line, 'utf8');

@@ -576,27 +576,28 @@ async function emitReuseHit(ingestor, hit) {
     }
     catch { /* emission must never break the reuse path */ }
 }
-/**
- * Append a `value.inject` root_event for a SessionStart gene injection (#123). Attribution-only — the payload
- * carries the injected gene ids (+ cycle/outcome when known) and NO savings number, exactly per the ledger's
- * weakest-signal contract. Never throws: injection is the agent's critical path, so a failed emission is
- * swallowed (the genes are still injected). Skips an empty gene set — there is nothing to attribute.
- */
+/** Build the same event for byte-budget admission and durable emission. */
+export function injectEvent(info) {
+    const payload = {
+        geneIds: info.geneIds,
+        ...(info.contentSchema ? { contentSchema: info.contentSchema } : {}),
+        ...(info.content ? { content: info.content } : {}),
+        ...(info.omittedByBudget !== undefined ? { omittedByBudget: info.omittedByBudget } : {}),
+        ...(info.cycleId ? { cycleId: info.cycleId } : {}),
+        ...(info.sessionId ? { sessionId: info.sessionId } : {}),
+        ...(info.outcome ? { outcome: info.outcome } : {}),
+    };
+    return {
+        type: ops.VALUE_INJECT_EVENT,
+        human: { title: `injected ${info.geneIds.length} gene(s)`, ...(info.cycleId ? { detail: `cycle ${info.cycleId}` } : {}) },
+        payload: payload,
+    };
+}
 export async function emitInject(ingestor, info) {
     try {
         if (info.geneIds.length === 0)
             return;
-        const payload = {
-            geneIds: info.geneIds,
-            ...(info.cycleId ? { cycleId: info.cycleId } : {}),
-            ...(info.sessionId ? { sessionId: info.sessionId } : {}),
-            ...(info.outcome ? { outcome: info.outcome } : {}),
-        };
-        await ingestor.ingest({
-            type: ops.VALUE_INJECT_EVENT,
-            human: { title: `injected ${info.geneIds.length} gene(s)`, ...(info.cycleId ? { detail: `cycle ${info.cycleId}` } : {}) },
-            payload: payload,
-        });
+        await ingestor.ingest(injectEvent(info));
     }
     catch { /* emission must never break the injection path */ }
 }

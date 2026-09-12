@@ -73,9 +73,21 @@ export interface LedgerRootEvent {
 }
 /** root_events type appended when SessionStart injects genes — recorded for outcome attribution only. */
 export declare const VALUE_INJECT_EVENT = "value.inject";
+/** 仅记录实际输出的内容类型，不将摘要、资产ID或历史成功冒充完整策略送达。 */
+export interface InjectedGeneContent {
+    geneId: string;
+    assetId: string;
+    mode: 'summary' | 'strategy';
+    strategySteps: number;
+    omissionReason?: 'summary_mode' | 'empty_strategy' | 'invalid_strategy' | 'budget';
+}
 /** Payload of a `value.inject` root_event: which genes were injected and the session outcome. No savings. */
 export interface InjectPayload {
     geneIds: readonly string[];
+    /** 可选v1扩展；历史事件缺失该字段时不能推断曾发送strategy。 */
+    contentSchema?: 'session-gene-content.v1';
+    content?: readonly InjectedGeneContent[];
+    omittedByBudget?: number;
     cycleId?: string;
     /** The runtime session id this injection went into, when known (#205). Lets recall tie an inject to the exact
      *  session transcript it produced, rather than assuming "the most recent inject". Absent for runtimes with no id. */

@@ -7,11 +7,37 @@ import type { NormalizedTurn } from '@evomap/evolver-runtime-adapters';
  *  Success signals (#578) also produce tokens so a purely successful session can yield a matchable gene.
  *  Deduped, ≤8. */
 export declare function signalTokens(sigs: readonly signals.ExtractedSignal[]): string[];
-/** Draft strategy steps = the agent's own substantive (non-meta) turns — boundary-trimmed (never chopped
- *  mid-word); turns that are PURELY narration ("let me look around" with no cause/action) are dropped, and a
- *  narration-opening turn that also states a cause/fix keeps that substance (its narration opener is stripped so
- *  the capped step leads with the fix). NOT fabricated: real transcript excerpts; the gene lands UNPROVEN and is
- *  curated by `review` + pruned by the cycle, so a noisy draft self-corrects. */
+/** 位置属于调用方传入的 normalized turn，使用原始 UTF-16 半开区间；不是 JSONL 文件行号。 */
+interface StrategySourcePosition {
+    turnIndex: number;
+    field: 'text' | 'toolResult';
+    start: number;
+    end: number;
+}
+type UnitRejection = 'unit_too_long' | 'incomplete_unit' | 'source_truncated';
+export interface StrategyDraftDiagnostics {
+    status: 'ready' | 'insufficient';
+    reason: 'complete_units' | 'no_actionable_units' | UnitRejection | 'no_eligible_signal' | 'no_discriminating_topic';
+    evidence: StrategySourcePosition[];
+    rejected: Array<StrategySourcePosition & {
+        reason: UnitRejection;
+    }>;
+    omitted: {
+        nonActionable: number;
+        duplicate: number;
+        overBudget: number;
+        incomplete: number;
+        sourceTruncated: number;
+        capacity: number;
+    };
+}
+export interface StrategyDraft {
+    strategy: string[];
+    diagnostics: StrategyDraftDiagnostics;
+}
+/** 最多六个完整且已脱敏的操作单元。拒绝信息只含位置/原因/计数，不保存秘密原文。 */
+export declare function draftStrategyWithEvidence(turns: readonly NormalizedTurn[], toolWorkflowsOnly?: boolean): StrategyDraft;
+/** 兼容旧调用方；实际入口使用带位置和不足原因的同一实现。 */
 export declare function draftStrategy(turns: readonly NormalizedTurn[]): string[];
 /**
  * Assemble an UNPROVEN draft GeneCandidate from a parsed session, or null when too thin to distill (no strong
@@ -20,6 +46,12 @@ export declare function draftStrategy(turns: readonly NormalizedTurn[]): string[
  * (already extracted by the caller) to avoid a second extraction pass.
  */
 export declare function draftGeneCandidate(turns: readonly NormalizedTurn[], sigs: readonly signals.ExtractedSignal[], agent: string): algo.GeneCandidate | null;
+export interface GeneDraftAssessment {
+    candidate: algo.GeneCandidate | null;
+    diagnostics: StrategyDraftDiagnostics;
+}
+/** 共享 caller 的实际入口；diagnostics 不进入 Gene 内容或 asset_id。 */
+export declare function assessGeneDraft(turns: readonly NormalizedTurn[], sigs: readonly signals.ExtractedSignal[], agent: string): GeneDraftAssessment;
 /** Minimal reference to an existing pool gene for the novelty check (id + its signals). */
 export interface ExistingGeneSignals {
     id?: string;
@@ -49,3 +81,4 @@ export interface DraftAdmission {
  * with a non-admit (skip, never an error).
  */
 export declare function assessDraftAdmission(candidate: algo.GeneCandidate, existing?: readonly ExistingGeneSignals[], opts?: DraftAdmissionOptions): DraftAdmission;
+export {};

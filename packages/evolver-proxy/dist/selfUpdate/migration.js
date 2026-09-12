@@ -576,11 +576,14 @@ function trustedWindowsSystemExecutable(name) {
     }
     return win32.join(HOST_WINDOWS_SYSTEM_ROOT, 'System32', name);
 }
-function windowsMigrationAclScript(checks) {
+export function windowsMigrationAclScript(checks) {
     const encodedChecks = Buffer.from(JSON.stringify(checks), 'utf8').toString('base64');
     return [
         `$ErrorActionPreference = 'Stop'`,
         'try {',
+        '  $windowsRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)',
+        '  if ([string]::IsNullOrWhiteSpace($windowsRoot) -or -not [System.IO.Path]::IsPathRooted($windowsRoot)) { exit 24 }',
+        `  Import-Module (Join-Path $windowsRoot 'System32\\WindowsPowerShell\\v1.0\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop`,
         `  $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedChecks}'))`,
         '  $checks = $json | ConvertFrom-Json',
         ...windowsMigrationAclRules().map((line) => `  ${line}`),

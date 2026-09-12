@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { assetstore, algo, events, hub, material as materialNs, schema, signals } from '@evomap/evolver-core';
 import { runtimeSessionSourcesForMaterial, runtimeSessionSourcesFromMaterialPayload } from './materialSnapshot.js';
-import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessGeneDraft } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { buildPublishBundle } from './cliContracts.js';
@@ -169,12 +169,26 @@ async function draftGeneFromMaterial(material, store, readSource) {
     let signalCount = 0;
     let sawCandidate = false;
     let lastIntakeError = '';
-    for (const source of sources) {
+    let strategyDraft;
+    let lastCandidateStrategyDraft;
+    let mostSpecificNoCandidate;
+    let noCandidateSpecificity = -1;
+    for (const [sourceIndex, source] of sources.entries()) {
         const sigs = signals.extractSignals(source.turns);
         signalCount += sigs.length;
-        const candidate = draftGeneCandidate(source.turns, sigs, source.agent);
-        if (!candidate)
+        const { candidate, diagnostics } = assessGeneDraft(source.turns, sigs, source.agent);
+        strategyDraft = { ...diagnostics, sourceIndex };
+        if (!candidate) {
+            // 实际单元拒绝比已有操作证据更具体，两者均优于空巡视；同级仍使用最后source。
+            const specificity = diagnostics.rejected.length > 0 ? 2 : diagnostics.evidence.length > 0 ? 1 : 0;
+            if (specificity >= noCandidateSpecificity) {
+                mostSpecificNoCandidate = strategyDraft;
+                noCandidateSpecificity = specificity;
+            }
             continue;
+        }
+        // 候选拒绝与无候选分别保留来源；后续空 source 不得覆盖 lastIntakeError 对应的诊断。
+        lastCandidateStrategyDraft = strategyDraft;
         sawCandidate = true;
         const normalized = algo.intakeGene(candidate, []);
         if (!normalized.ok || !normalized.gene) {
@@ -183,7 +197,7 @@ async function draftGeneFromMaterial(material, store, readSource) {
         }
         const alreadyStored = await store.get(normalized.gene.asset_id);
         if (alreadyStored?.type === 'Gene') {
-            return { gene: alreadyStored, sourceCount: sources.length, signalCount, stored: true };
+            return { gene: alreadyStored, sourceCount: sources.length, signalCount, stored: true, strategyDraft };
         }
         const { admission, existing } = await assessDraftAdmissionFromStore(store, candidate);
         if (!admission.admit) {
@@ -195,7 +209,7 @@ async function draftGeneFromMaterial(material, store, readSource) {
             lastIntakeError = intake.errors.join('; ') || 'gene intake rejected the candidate';
             continue;
         }
-        return { gene: intake.gene, sourceCount: sources.length, signalCount, stored: false };
+        return { gene: intake.gene, sourceCount: sources.length, signalCount, stored: false, strategyDraft };
     }
     if (sawCandidate) {
         return {
@@ -203,9 +217,11 @@ async function draftGeneFromMaterial(material, store, readSource) {
             message: lastIntakeError || 'gene intake rejected every candidate',
             sourceCount: sources.length,
             signalCount,
+            ...(lastCandidateStrategyDraft ? { strategyDraft: lastCandidateStrategyDraft } : {}),
         };
     }
-    return { blocker: 'draft_unavailable', message: 'material does not contain enough strong signals and strategy turns', sourceCount: sources.length, signalCount };
+    return { blocker: 'draft_unavailable', message: `material draft unavailable: ${mostSpecificNoCandidate?.reason ?? 'no_actionable_units'}`, sourceCount: sources.length, signalCount,
+        ...(mostSpecificNoCandidate ? { strategyDraft: mostSpecificNoCandidate } : {}) };
 }
 async function alreadyAudited(ingestor, assetId) {
     return ingestor.readAll().some((event) => {
@@ -215,7 +231,7 @@ async function alreadyAudited(ingestor, assetId) {
         return payload?.['assetId'] === assetId;
     });
 }
-async function writeDraftGene(gene, material, store, review, ingestor) {
+async function writeDraftGene(gene, material, store, review, ingestor, strategyDraft) {
     const assetId = String(gene.asset_id);
     const existing = await store.get(assetId);
     if (existing?.type === 'Gene') {
@@ -230,6 +246,7 @@ async function writeDraftGene(gene, material, store, review, ingestor) {
                 category: gene['category'],
                 source: 'material-package',
                 materialId: material.materialId,
+                ...(strategyDraft ? { strategyDraft } : {}),
             },
             human: { title: `material-packaged gene ${String(gene['id'] ?? assetId)} (UNPROVEN - awaiting review)`, severity: 'info' },
             actor: { kind: 'machine', id: 'material-package' },
@@ -319,6 +336,7 @@ export async function buildMaterialGenePackage(opts, deps = {}) {
                 message: draft.message,
                 ...(draft.sourceCount !== undefined ? { sourceCount: draft.sourceCount } : {}),
                 ...(draft.signalCount !== undefined ? { signalCount: draft.signalCount } : {}),
+                ...(draft.strategyDraft ? { strategyDraft: draft.strategyDraft } : {}),
             },
         };
     }
@@ -326,7 +344,7 @@ export async function buildMaterialGenePackage(opts, deps = {}) {
     let written;
     if (opts.write) {
         try {
-            const write = await writeDraftGene(gene, material, store, review, ingestor);
+            const write = await writeDraftGene(gene, material, store, review, ingestor, draft.strategyDraft);
             gene = write.gene;
             written = write.written;
         }
@@ -344,6 +362,7 @@ export async function buildMaterialGenePackage(opts, deps = {}) {
             blockers: ['missing_capsule_evidence'],
             sourceCount: draft.sourceCount,
             signalCount: draft.signalCount,
+            ...(draft.strategyDraft ? { strategyDraft: draft.strategyDraft } : {}),
             message: 'Gene draft is available, but publish requires terminal Capsule evidence from cycle',
         },
     };
@@ -366,6 +385,8 @@ function emitResult(result, json, stdout) {
     }
     if (result.publishCommand)
         stdout(`  publish: ${result.publishCommand}`);
+    if (result.strategyDraft)
+        stdout(`  distill strategy: ${JSON.stringify(result.strategyDraft)}`);
     if (result.message)
         stdout(`  note: ${result.message}`);
 }

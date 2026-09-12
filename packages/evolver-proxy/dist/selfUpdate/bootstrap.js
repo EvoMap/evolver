@@ -1789,12 +1789,15 @@ export async function runBootstrap(options) {
         });
     });
 }
-function windowsBootstrapIntentAclScript(checks) {
+export function windowsBootstrapIntentAclScript(checks) {
     const encodedChecks = Buffer.from(JSON.stringify(checks), 'utf8').toString('base64');
     const d = String.fromCharCode(36);
     return [
         `${d}ErrorActionPreference = 'Stop'`,
         'try {',
+        `  ${d}windowsRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)`,
+        `  if ([string]::IsNullOrWhiteSpace(${d}windowsRoot) -or -not [System.IO.Path]::IsPathRooted(${d}windowsRoot)) { exit 24 }`,
+        `  Import-Module (Join-Path ${d}windowsRoot 'System32\\WindowsPowerShell\\v1.0\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop`,
         `  ${d}json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedChecks}'))`,
         `  ${d}checks = ${d}json | ConvertFrom-Json`,
         `  ${d}userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,

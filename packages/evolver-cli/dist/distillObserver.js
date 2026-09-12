@@ -2,7 +2,7 @@
 // M1 material into quarantined gene drafts. Core owns the trigger policy (material.batch_ready + single-flight);
 // this layer owns the side effects core must not: claim from the consumer group, re-read + parse the session via
 // the runtime adapters, draft via the SHARED distill primitive, quarantine in the ReviewLedger, and emit
-// gene.distilled. It reuses the exact same `draftGeneCandidate` as `evolver ingest --distill`, so the one-shot and
+// gene.distilled. It reuses the exact same `assessGeneDraft` as `evolver ingest --distill`, so the one-shot and
 // the auto path never drift.
 //
 // WIRING (#117 / #106): LIVE. `autoexec.ts` imports `resolveDistillObserver`, builds it inside
@@ -13,7 +13,8 @@
 // reads as a real gap, and a 2026-08 audit did misreport this composition as unwired on the strength of it.)
 import { assetstore, events, observers, signals, algo } from '@evomap/evolver-core';
 import { readFileSync } from 'node:fs';
-import { draftGeneCandidate } from './distillPrimitives.js';
+import { Console } from 'node:console';
+import { assessGeneDraft } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
@@ -31,6 +32,7 @@ export function makeDistillDrain(c) {
     const review = c.review ?? reviewLedgerForStore(c.store);
     const maxPerTick = c.maxPerTick ?? DEFAULT_MAX_PER_TICK;
     const readSource = c.readSource ?? ((p) => readFileSync(p, 'utf8'));
+    let diagnosticConsole;
     // Process ONE claimed material. `ack:true` ⇒ advance the cursor past it; `ack:false` ⇒ either a persist/audit
     // write failed OR the remaining per-tick draft budget was reached — leave it for a retry tick. A bad/unparseable/
     // missing source, a proxy_trace, a too-thin session, or a duplicate are all "handled" (skip + ack).
@@ -46,12 +48,24 @@ export function makeDistillDrain(c) {
             return { ack: true, drafted: 0 }; // bad / missing / unparseable source — nothing to retry
         }
         let drafted = 0;
-        for (const source of sources) {
+        for (const [sourceIndex, source] of sources.entries()) {
             if (drafted >= draftLimit)
                 return { ack: false, drafted };
-            const draftedCandidate = draftGeneCandidate(source.turns, signals.extractSignals(source.turns), source.agent);
-            if (!draftedCandidate)
-                continue; // too thin to distill
+            const { candidate: draftedCandidate, diagnostics } = assessGeneDraft(source.turns, signals.extractSignals(source.turns), source.agent);
+            if (!draftedCandidate) {
+                // daemon 的实际日志入口也报告不足；不创建假 Gene 或改变 ack/retry 语义。
+                try {
+                    if (!diagnosticConsole) {
+                        const stderr = process.stderr;
+                        diagnosticConsole = new Console({ stdout: stderr, stderr, ignoreErrors: true });
+                    }
+                    diagnosticConsole.error(`distill-observer: ${JSON.stringify({ materialId: m.materialId, sourceIndex, strategyDraft: diagnostics })}`);
+                }
+                catch {
+                    // Console处理本次write的同步/异步错误；格式化或初始化失败也不能阻塞薄材料ack。
+                }
+                continue;
+            }
             // Carry producer-resolved task domain into draft signals_match so selection can score domain evidence.
             // Only attach when the source already carries a resolved slug (fail-closed stamp at ingest).
             let candidate = draftedCandidate;
@@ -87,7 +101,7 @@ export function makeDistillDrain(c) {
                 if (!audited.has(assetId)) {
                     await c.ingestor.ingest({
                         type: 'gene.distilled',
-                        payload: { geneId: r.gene.id, assetId: r.gene.asset_id, category: r.gene.category, source: 'distill-observer', materialId: m.materialId, ...(source.sessionId ? { sessionId: source.sessionId } : {}) },
+                        payload: { geneId: r.gene.id, assetId: r.gene.asset_id, category: r.gene.category, source: 'distill-observer', materialId: m.materialId, sourceIndex, strategyDraft: diagnostics, ...(source.sessionId ? { sessionId: source.sessionId } : {}) },
                         human: { title: `auto-distilled gene ${r.gene.id} (UNPROVEN — awaiting review)`, severity: 'info' },
                         actor: { kind: 'machine', id: 'distill-observer' },
                     });

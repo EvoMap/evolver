@@ -94,12 +94,8 @@ export declare function makeHubReuseSeam(cap: hubNs.HubCapability, cache: ReuseC
  * candidate.
  */
 export declare function makeHubSearchMissProbe(cap: hubNs.HubCapability, cache: ReuseCache, onVerifiedSearchMiss: VerifiedHubSearchMissHandler, enabled: () => boolean, env?: NodeJS.ProcessEnv, assetLog?: AssetCallLogger): exec.HubReuseSeam;
-/**
- * Append a `value.inject` root_event for a SessionStart gene injection (#123). Attribution-only — the payload
- * carries the injected gene ids (+ cycle/outcome when known) and NO savings number, exactly per the ledger's
- * weakest-signal contract. Never throws: injection is the agent's critical path, so a failed emission is
- * swallowed (the genes are still injected). Skips an empty gene set — there is nothing to attribute.
- */
+/** Build the same event for byte-budget admission and durable emission. */
+export declare function injectEvent(info: hooks.InjectInfo): events.RawEvent;
 export declare function emitInject(ingestor: events.Ingestor, info: hooks.InjectInfo): Promise<void>;
 /**
  * Build the SessionStart inject emission seam (#123) — the public-repo composition point that connects core's

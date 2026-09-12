@@ -1,6 +1,8 @@
 import { type RootEvent, type RawEvent } from './eventSchema.js';
 /** 单行字节上限, 保 O_APPEND+write 在 ext4 的原子性 (军杰 §3.2). */
 export declare const MAX_LINE_BYTES = 4096;
+/** Size-only preflight using the writer's schema and the longest generated envelope. No I/O or IDs consumed. */
+export declare function fitsRootEventLine(raw: RawEvent): boolean;
 export declare class LineTooLargeError extends Error {
     readonly bytes: number;
     constructor(bytes: number);

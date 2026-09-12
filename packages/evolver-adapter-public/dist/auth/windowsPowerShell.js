@@ -1,4 +1,4 @@
-export const POWERSHELL_STDIN_SCRIPT_COMMAND = '& ([scriptblock]::Create([Console]::In.ReadToEnd()))';
+export const POWERSHELL_ENV_SCRIPT_COMMAND = '& ([scriptblock]::Create($env:EVOMAP_CREDENTIAL_ACL_SCRIPT))';
 export function windowsAclFailureDetail(cause) {
     const error = cause;
     const parts = [];
@@ -10,12 +10,12 @@ export function windowsAclFailureDetail(cause) {
     if (typeof error?.signal === 'string' && error.signal) {
         parts.push('signal ' + normalizePowerShellDiagnostic(error.signal));
     }
-    const streams = [error?.stderr, error?.stdout]
+    const [stderr, stdout] = [error?.stderr, error?.stdout]
         .map((stream) => (typeof stream === 'string'
         ? stream
         : Buffer.isBuffer(stream) ? stream.toString('utf8') : ''))
-        .map(stripPowerShellClixml)
-        .filter((text) => text.length > 0);
+        .map(stripPowerShellClixml);
+    const streams = stderr ? [stderr] : stdout ? [stdout] : [];
     if (streams.length > 0) {
         parts.push(streams.join(' | '));
     }

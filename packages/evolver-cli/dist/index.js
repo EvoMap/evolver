@@ -4,10 +4,10 @@ import { runGeneValue } from './geneValue.js';
 import { assetstore, algo, signals, material as materialNs } from '@evomap/evolver-core';
 import { loadPriceTable } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
-import { makeInjectEmitter } from './autoexec.js';
+import { injectEvent, makeInjectEmitter } from './autoexec.js';
 import { listApprovedGenes, pendingGeneReviewRecords, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 import { ADAPTERS, parseJsonlLines } from '@evomap/evolver-runtime-adapters';
-import { draftGeneCandidate } from './distillPrimitives.js';
+import { assessGeneDraft } from './distillPrimitives.js';
 import { assessDraftAdmissionFromStore } from './distillAdmission.js';
 import { isSyncCommandName, renderCommandGroups } from './commandCatalog.js';
 import { parseRuntimeSessionSourcesWithDiagnostics } from './runtimeSessionSource.js';
@@ -903,8 +903,10 @@ export async function runIngest(argv, store, deps = {}, review) {
     let candidateCount = 0;
     let admissionSkipped = 0;
     let lastAdmissionSkipReason = '';
-    for (const { source, sigs } of sourceSignalPairs) {
-        const candidate = draftGeneCandidate(source.turns, sigs, source.agent);
+    for (const [sourceIndex, { source, sigs }] of sourceSignalPairs.entries()) {
+        const { candidate, diagnostics } = assessGeneDraft(source.turns, sigs, source.agent);
+        // 只输出有界位置、计数和固定原因，不回显未脱敏的原文片段。
+        process.stdout.write(`  distill strategy: ${JSON.stringify({ sourceIndex, ...diagnostics })}\n`);
         if (!candidate)
             continue;
         candidateCount += 1;
@@ -923,7 +925,7 @@ export async function runIngest(argv, store, deps = {}, review) {
             process.stderr.write(`\ningest --distill rejected: ${r.errors.join('; ')}\n`);
             return 1;
         }
-        accepted.push({ source, candidate, gene: r.gene });
+        accepted.push({ source, candidate, gene: r.gene, strategyDraft: diagnostics, sourceIndex });
         acceptedSignals.push({ id: r.gene.id, signals_match: r.gene.signals_match });
     }
     if (accepted.length === 0) {
@@ -932,13 +934,13 @@ export async function runIngest(argv, store, deps = {}, review) {
             process.stdout.write(`\ningest: all ${candidateCount} draft candidate(s) skipped by admission gate.${reason} Nothing stored.\n`);
             return 0;
         }
-        process.stdout.write('\ningest: not enough to distill — need ≥1 strong signal and ≥1 substantive assistant step. Nothing stored.\n');
+        process.stdout.write('\ningest: not enough to distill - need eligible signals and complete actionable units. Nothing stored.\n');
         return 0;
     }
     const reviewDir = s instanceof assetstore.LocalJsonlProvider ? s.baseDir : events.assetsDir();
     const rev = review ?? new assetstore.ReviewLedger(reviewDir);
     const { ingestor } = resolveIngestDeps(deps);
-    for (const { source, candidate, gene } of accepted) {
+    for (const { source, candidate, gene, strategyDraft, sourceIndex } of accepted) {
         // Quarantine the draft: its auto-extracted strategy must not be embedded into a real autonomous run until a
         // human approves it (`evolver review --approve <id>`). The gate lives in makeTrustedGeneResolver (#45+review).
         // Co-locate the sidecar with the RESOLVED store so an injected store quarantines in its own dir (not the real
@@ -955,7 +957,7 @@ export async function runIngest(argv, store, deps = {}, review) {
         // AE (#91 item 1): auto-distill mints a quarantined draft — record it on the audit spine.
         await ingestor.ingest({
             type: 'gene.distilled',
-            payload: { geneId: gene.id, assetId: gene.asset_id, category: gene.category, source: 'ingest', ...(source.sessionId ? { sessionId: source.sessionId } : {}) },
+            payload: { geneId: gene.id, assetId: gene.asset_id, category: gene.category, source: 'ingest', sourceIndex, strategyDraft, ...(source.sessionId ? { sessionId: source.sessionId } : {}) },
             human: { title: `distilled gene ${gene.id}`, severity: 'info' },
             actor: { kind: 'machine', id: 'ingest' },
         });
@@ -1458,6 +1460,89 @@ export function formatGeneInjectionLine(g) {
     const hint = summary || (Array.isArray(g['signals_match']) ? g['signals_match'].slice(0, 4).join(', ') : '');
     return `- ${id}${cat ? ` [${cat}]` : ''}${hint ? `: ${hint.slice(0, 160)}` : ''}`;
 }
+function sessionContentMode(argv) {
+    let value = process.env['EVOLVER_SESSION_INJECT_CONTENT'] ?? 'summary';
+    for (let index = 1; index < argv.length; index++) {
+        const arg = argv[index];
+        if (arg === '--content')
+            value = argv[++index] ?? '';
+        else if (arg.startsWith('--content='))
+            value = arg.slice('--content='.length);
+    }
+    return value === 'summary' || value === 'strategy' ? value : undefined;
+}
+/** 整条策略作为预算原子单元；不在句中截断，也不把缺失策略当作已经送达。 */
+function renderSessionGene(g, mode, maxChars) {
+    const summary = hubNs.redactString(formatGeneInjectionLine(g));
+    const geneId = typeof g['id'] === 'string' ? g['id'] : String(g.asset_id);
+    const base = { geneId, assetId: g.asset_id, mode: 'summary', strategySteps: 0 };
+    const omitted = (omissionReason, detail) => ({
+        text: `${summary}\n  [策略未注入：${detail}；以上仅为摘要]`,
+        content: { ...base, omissionReason },
+    });
+    if (mode === 'summary')
+        return { text: summary, content: { ...base, omissionReason: 'summary_mode' } };
+    const raw = g['strategy'];
+    if (raw === undefined || (Array.isArray(raw) && raw.length === 0))
+        return omitted('empty_strategy', '没有可用步骤');
+    if (!Array.isArray(raw))
+        return omitted('invalid_strategy', '步骤格式无效');
+    const steps = [];
+    let size = summary.length + '\n  strategy:'.length;
+    for (const value of raw) {
+        if (typeof value !== 'string' || !value.trim())
+            return omitted('invalid_strategy', '步骤格式无效');
+        // 先限制输入，再脱敏；超大的记录不进入正则处理或生成残缺命令。
+        if (value.length > maxChars || size + value.length > maxChars)
+            return omitted('budget', '超过本次预算');
+        const prefix = `  ${steps.length + 1}. `;
+        const step = `\n${prefix}${hubNs.redactString(value).replace(/\r?\n/g, '\n' + ' '.repeat(prefix.length))}`;
+        size += step.length;
+        if (size > maxChars)
+            return omitted('budget', '超过本次预算');
+        steps.push(step);
+    }
+    return {
+        text: `${summary}\n  strategy:${steps.join('')}`,
+        content: { geneId, assetId: g.asset_id, mode: 'strategy', strategySteps: steps.length },
+    };
+}
+/** 输出callback确认前不记录交付；调用者最多等待一秒，底层write仍可能迟到完成。 */
+function writeSessionPrompt(text) {
+    const stdout = process.stdout;
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (error)
+                reject(new Error('session_prompt_write_unconfirmed'));
+            else
+                resolve();
+        };
+        const finish = (error) => {
+            // 即使等待已超时，真正的write callback仍负责释放本次listener；不得迟到记账。
+            // Node在失败callback之后发送error，等到下一轮再移除监听，避免EPIPE成为未处理异常。
+            if (error)
+                setImmediate(() => stdout.removeListener('error', onError));
+            else
+                stdout.removeListener('error', onError);
+            settle(error);
+        };
+        const onError = (error) => settle(error);
+        // deadline不是底层write的终点；once listener保留到实际error或callback，而非下一轮事件循环。
+        const timer = setTimeout(() => settle(new Error('write_timeout')), 1_000);
+        stdout.once('error', onError);
+        try {
+            stdout.write(text, finish);
+        }
+        catch {
+            finish(new Error('write_failed'));
+        }
+    });
+}
 /** Read the SessionStart hook's stdin payload, bounded so it can NEVER hang the agent's critical path: skipped on a
  *  TTY (a manual run), and capped by a short timeout so a runtime that leaves stdin open without sending EOF still
  *  proceeds. Resolves to '' when nothing is available. Only called when the hook opts in (--hook-stdin). */
@@ -1541,8 +1626,13 @@ export async function runInject(argv, deps = {}) {
         });
     }
     if (sub !== 'session-start') {
-        process.stderr.write('用法: evolver inject session-start | evolver inject prompt-recall --hook-stdin\n');
+        process.stderr.write('用法: evolver inject session-start [--content=summary|strategy] | evolver inject prompt-recall --hook-stdin\n');
         return sub === undefined ? 0 : 1;
+    }
+    const contentMode = sessionContentMode(argv);
+    if (!contentMode) {
+        process.stderr.write('inject session-start: content必须为summary或strategy；未执行注入。\n');
+        return 1;
     }
     const fromHookStdin = argv.includes('--hook-stdin');
     if (fromHookStdin) {
@@ -1570,7 +1660,8 @@ export async function runInject(argv, deps = {}) {
     // compact hint lines. The provenance gate keeps untrusted hub assets out until promotion; the review gate (A2a)
     // keeps auto-distilled UNPROVEN drafts out until approval.
     const genes = await listApprovedGenes(store, review, maxGenes, provenance);
-    const geneLines = genes.map(formatGeneInjectionLine);
+    const rendered = genes.map((g) => renderSessionGene(g, contentMode, hardCap * 4));
+    const geneLines = rendered.map((gene) => gene.text);
     const geneIds = genes.map((g) => (typeof g['id'] === 'string' ? String(g['id']) : String(g.asset_id)));
     // Value recap (#113): same load path as `evolver value`, over the default recap window (7d).
     const now = deps.now ? deps.now() : Date.now();
@@ -1581,23 +1672,64 @@ export async function runInject(argv, deps = {}) {
     // Inject emission seam (#123): wire the ingestor so core's onInject lands a `value.inject` root_event. The
     // composition (Ingestor ↔ core's sink-agnostic seam) lives HERE in the CLI — core never imports the Ingestor.
     const emitter = makeInjectEmitter(ingestor);
+    let injectedInfo;
     // Capture the runtime session id (#205) only when the installed hook opts in via --hook-stdin, or a test wires
     // readHookInput. Default (no flag, no seam) never touches stdin — so a plain `evolver inject session-start` and
     // the test suite can never block on a stdin read (the Windows CI hang this guards against).
     const sessionId = deps.sessionId ?? ((fromHookStdin || deps.readHookInput) ? await readHookSessionId(deps.readHookInput) : undefined);
-    const inj = hooks.composeSessionStartWithRecap({ tokenBudgetHardCap: hardCap, preamble: SESSION_START_PREAMBLE }, { injectGenes: geneLines, geneIds, successCount: summary.topGenes.length, summary }, {
-        ...(emitter ? { onInject: emitter.onInject } : {}),
-        ...(deps.cycleId ? { cycleId: deps.cycleId } : {}),
-        ...(sessionId ? { sessionId } : {}),
-    });
-    // Await durability (emit never rejects) so the value.inject event is on disk before we return without ever
-    // letting a sink error surface.
-    if (emitter)
-        await emitter.flush();
+    const compose = (count) => {
+        injectedInfo = undefined;
+        return hooks.composeSessionStartWithRecap({ tokenBudgetHardCap: hardCap, preamble: SESSION_START_PREAMBLE }, { injectGenes: geneLines.slice(0, count), geneIds: geneIds.slice(0, count), successCount: summary.topGenes.length, summary }, {
+            onInject: (info) => { injectedInfo = info; },
+            ...(deps.cycleId ? { cycleId: deps.cycleId } : {}),
+            ...(sessionId ? { sessionId } : {}),
+        });
+    };
+    const recordFor = (count) => {
+        const content = rendered.slice(0, count).map((gene) => gene.content);
+        return { ...injectedInfo, geneIds: geneIds.slice(0, count), contentSchema: 'session-gene-content.v1', content,
+            omittedByBudget: rendered.length - count + content.filter((gene) => gene.omissionReason === 'budget').length,
+        };
+    };
+    let inj = compose(rendered.length);
+    const tokenLimitedCount = inj.genes.length;
+    let low = 0;
+    let high = inj.genes.length;
+    // Find the largest whole-gene prefix whose content receipts fit
+    // the actual writer envelope, before any prompt bytes reach the runtime.
+    while (low < high) {
+        const count = Math.ceil((low + high) / 2);
+        if (events.fitsRootEventLine(injectEvent(recordFor(count))))
+            low = count;
+        else
+            high = count - 1;
+    }
+    if (low < inj.genes.length) {
+        const omitted = inj.genes.length - low;
+        inj = compose(low);
+        process.stderr.write(`inject session-start: 本次注入记录超过大小上限，省略${omitted}条经验。\n`);
+    }
     // Keep SessionStart quiet when there is no usable memory payload. When genes do land, the model still receives
     // them, but the preamble explicitly tells it not to narrate routine Evolver work to the user.
-    if (inj.genes.length > 0 && inj.systemPrompt.trim().length > 0)
-        process.stdout.write(inj.systemPrompt + '\n');
+    if (inj.genes.length > 0 && inj.systemPrompt.trim().length > 0) {
+        try {
+            await writeSessionPrompt(inj.systemPrompt + '\n');
+        }
+        catch {
+            process.stderr.write('inject session-start: 输出未确认完成，未记录策略交付。\n');
+            return 1;
+        }
+    }
+    const record = recordFor(inj.genes.length);
+    const tokenOmitted = rendered.length - tokenLimitedCount + (record.content?.filter((gene) => gene.omissionReason === 'budget').length ?? 0);
+    if (contentMode === 'strategy' && tokenOmitted > 0) {
+        process.stderr.write(`inject session-start: ${tokenOmitted}条Gene的完整策略因token预算未注入。\n`);
+    }
+    // 仅在stdout callback确认成功后记账；事件不复制策略正文，也不声称runtime已经执行。
+    if (injectedInfo && emitter) {
+        emitter.onInject(record);
+        await emitter.flush();
+    }
     // Legacy v1 Windows scheduled-task sweep (#956): runs AFTER the injection is on stdout so a worst-case
     // sweep (probe 20s + lock wait 3s + 2×(export 20s + mutation 40s) ≈ 143s) can never push the injection
     // past the host SessionStart hook timeout and lose it — injection lands first, sweep is trailing.

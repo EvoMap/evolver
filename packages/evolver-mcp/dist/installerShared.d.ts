@@ -37,6 +37,8 @@ export interface InstallOptions {
     force?: boolean;
     /** Plan and validate without writing config or backup files. */
     dryRun?: boolean;
+    /** Lifecycle-only exact config target. */
+    targetPath?: string;
     /** Cursor only: genes rendered into the managed project rules file. */
     genes?: readonly CursorGene[];
     /** Cursor only: cap on genes rendered into the always-on rules body. */
@@ -79,6 +81,8 @@ export interface UninstallOptions {
     kiroHome?: string;
     /** Validate and report the uninstall without changing config or backup files. */
     dryRun?: boolean;
+    /** Lifecycle-only exact config target. */
+    targetPath?: string;
     /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
     xdgConfigHome?: string;
     /** OpenCode user scope only: explicit OPENCODE_CONFIG file override. */

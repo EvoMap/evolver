@@ -15,6 +15,7 @@ import { currentTopCursorGenes } from './cursorRewrite.js';
 import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
+import { createSetupLifecyclePlan, decodeSetupLifecyclePlan, executeSetupLifecyclePlan, SETUP_LIFECYCLE_SCHEMA, setupLifecycleCapabilities, SetupLifecycleError, verifySetupLifecycle, } from './setupHooksLifecycle.js';
 const requireFromHere = createRequire(import.meta.url);
 function configuredHomeDir() {
     const configured = process.platform === 'win32'
@@ -42,7 +43,7 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for opencode and kiro\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--root=<dir>] [--lifecycle=capabilities|plan|verify|execute] [--action=install|uninstall] [--confirmed-plan=<base64url>] [--target-id=<id>] [--completed-targets=<id,id>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for opencode and kiro\n  lifecycle operations are versioned JSON and require --json\n`;
 export function commandNamesForPath(command, platform, pathExt) {
     if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
         return [command];
@@ -513,7 +514,7 @@ function appendAdapterNotes(text, hints) {
         : text;
 }
 const SETUP_VALUE_FLAGS = new Set([
-    'runtime', 'platform', 'scope', 'root', 'env-file', 'profile-descriptor', 'service',
+    'runtime', 'platform', 'scope', 'root', 'lifecycle', 'action', 'confirmed-plan', 'target-id', 'completed-targets', 'env-file', 'profile-descriptor', 'service',
     'hook-command', 'server-node', 'server-command', 'server-args', 'service-command', 'service-args',
 ]);
 function setupHelpRequested(argv) {
@@ -527,6 +528,121 @@ function setupHelpRequested(argv) {
             return true;
         return !SETUP_VALUE_FLAGS.has(previous.slice(2));
     });
+}
+function lifecycleAction(raw) {
+    return raw === 'install' || raw === 'uninstall' ? raw : undefined;
+}
+function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
+    const operation = f['lifecycle'];
+    if (operation === undefined)
+        return undefined;
+    const fail = (code, error, exitCode = 2) => {
+        if (f['json'] === true)
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: false, code, error });
+        else
+            process.stderr.write(`[setup-hooks] ${error}\n`);
+        return exitCode;
+    };
+    if (f['json'] !== true)
+        return fail('PLAN_INVALID', 'lifecycle operations require --json');
+    if (typeof operation !== 'string' || !['capabilities', 'plan', 'verify', 'execute'].includes(operation)) {
+        return fail('PLAN_INVALID', 'invalid --lifecycle operation');
+    }
+    if (f['verify'] !== undefined || f['uninstall'] !== undefined || f['dry-run'] !== undefined || f['force'] !== undefined) {
+        return fail('PLAN_INVALID', 'lifecycle operations cannot be combined with legacy mutation flags');
+    }
+    if (operation !== 'execute' && (f['target-id'] !== undefined || f['completed-targets'] !== undefined)) {
+        return fail('PLAN_INVALID', 'target execution flags are valid only for --lifecycle=execute');
+    }
+    if (operation === 'execute' && f['completed-targets'] !== undefined && f['target-id'] === undefined) {
+        return fail('PLAN_INVALID', '--completed-targets requires --target-id');
+    }
+    const capabilities = setupLifecycleCapabilities(runtime, scope);
+    if (operation === 'capabilities') {
+        emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, capabilities });
+        return 0;
+    }
+    if (!capabilities.supported)
+        return fail('CAPABILITY_UNAVAILABLE', `lifecycle protocol is unavailable for ${runtime}/${scope}`);
+    const action = lifecycleAction(f['action']);
+    if ((operation === 'plan' || operation === 'execute') && action === undefined) {
+        return fail('PLAN_INVALID', '--action=install|uninstall is required');
+    }
+    const descriptor = profileDescriptorFromFlag(f);
+    if (!descriptor.ok)
+        return fail('PLAN_INVALID', descriptor.error, 1);
+    let server = { command: 'evolver-mcp' };
+    let productBridgeNodePath;
+    if (operation === 'verify' || action === 'install') {
+        try {
+            const built = buildServer(f, descriptor.descriptor, deps.resolveMcpNodePath);
+            server = built.server;
+            productBridgeNodePath = built.nodePath ?? (deps.resolveMcpNodePath ?? resolveStableMcpNodePath)();
+        }
+        catch (error) {
+            return fail('CAPABILITY_UNAVAILABLE', safeSetupOperationError(error), 1);
+        }
+    }
+    const injectionPlan = planInjection(runtime, server);
+    const context = {
+        runtime,
+        scope,
+        configRoot,
+        injectionPlan,
+        installOptions: {
+            configRoot,
+            server,
+            scope,
+            ...(productBridgeNodePath !== undefined ? { productBridgeNodePath } : {}),
+            ...(typeof f['hook-command'] === 'string' ? { hookCommand: f['hook-command'] } : {}),
+            homeDir: configuredHomeDir(),
+            codexHome: process.env['CODEX_HOME'],
+            kiroHome: process.env['KIRO_HOME'],
+            xdgConfigHome: process.env['XDG_CONFIG_HOME'],
+            opencodeConfig: process.env['OPENCODE_CONFIG'],
+            opencodeConfigDir: process.env['OPENCODE_CONFIG_DIR'],
+        },
+    };
+    try {
+        if (operation === 'plan') {
+            const plan = createSetupLifecyclePlan(context, action);
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, plan });
+            return 0;
+        }
+        if (operation === 'verify') {
+            const verified = verifySetupLifecycle(context);
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, verified });
+            return 0;
+        }
+        const encoded = f['confirmed-plan'];
+        if (typeof encoded !== 'string' || encoded.length === 0) {
+            return fail('PLAN_INVALID', '--confirmed-plan=<base64url> is required');
+        }
+        const confirmed = decodeSetupLifecyclePlan(encoded);
+        if (confirmed.action !== action)
+            return fail('PLAN_INVALID', 'confirmed lifecycle plan action does not match --action');
+        const targetId = f['target-id'];
+        const completedRaw = f['completed-targets'];
+        if (targetId !== undefined && (typeof targetId !== 'string' || targetId.length === 0)) {
+            return fail('PLAN_INVALID', '--target-id requires a value');
+        }
+        if (completedRaw !== undefined && typeof completedRaw !== 'string') {
+            return fail('PLAN_INVALID', '--completed-targets requires a comma-separated value');
+        }
+        const result = executeSetupLifecyclePlan(context, confirmed, {
+            ...(typeof targetId === 'string' ? { targetId } : {}),
+            ...(typeof completedRaw === 'string' && completedRaw.length > 0
+                ? { completedTargetIds: completedRaw.split(',').filter(Boolean) }
+                : {}),
+        });
+        emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, result });
+        return result.complete ? 0 : 1;
+    }
+    catch (error) {
+        if (error instanceof SetupLifecycleError)
+            return fail(error.code, error.message, 1);
+        return fail('VERIFY_FAILED', safeSetupOperationError(error), 1);
+    }
 }
 export async function runSetupHooks(argv, store, review, deps = {}) {
     if (setupHelpRequested(argv)) {
@@ -570,6 +686,9 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     const configRoot = typeof f['root'] === 'string' ? f['root'] : process.cwd();
     // claude-code: user scope targets ~/.claude.json regardless of --root; project scope uses configRoot.
     const scope = scopeResult.scope;
+    const lifecycleCode = runSetupLifecycle(f, runtime, scope, configRoot, emit, deps);
+    if (lifecycleCode !== undefined)
+        return lifecycleCode;
     // V1 exposed setup-hooks --verify as a read-only operation. Silently ignoring it is unsafe: the command then
     // falls through to installInjection and can rewrite runtime configuration while the operator asked only to
     // inspect it. V2's JSON MCP installers already have a transaction-free dry-run preflight, so use that as the

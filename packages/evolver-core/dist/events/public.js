@@ -1,7 +1,7 @@
 export { Ingestor, EVENT_TYPES, registerEventType, isKnownEventType, IngestValidationError, UnknownEventTypeError } from './ingest.js';
 export { Replayer } from './replayer.js';
 export { eventCountsProjector, DEFAULT_PROJECTORS } from './projectors.js';
-export { LineTooLargeError, MAX_LINE_BYTES } from './eventStore.js';
+export { LineTooLargeError, MAX_LINE_BYTES, fitsRootEventLine } from './eventStore.js';
 export { ArchiveSegmentConflictError, InvalidRootEventArchiveError, InvalidRootEventLogError, RootEventHistoryGapError, archiveRootEvents, inspectRootEventArchive, planRootEventArchive, readRootEventHistory, rootEventArchiveDir, rootEventArchiveSegmentName, validateRootEventHistory, ROOT_EVENT_ARCHIVE_DEFAULT_KEEP_EVENTS, } from './eventArchive.js';
 export { rootEventsPath, evomapHome, mvDir, personalityStatePath, assetsDir, materialDir, materialStorePath, materialWatermarkPath, tracesDir, assetCallLogPath, learningTraceDir } from './paths.js';
 export { EVENT_SCHEMA_VERSION } from './eventSchema.js';

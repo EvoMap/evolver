@@ -21,13 +21,20 @@ export function connectPublicHub(opts) {
         case 'keypair':
             if (!opts.registerPublicKey)
                 throw new Error('keypair 模式需 registerPublicKey');
-            auth = new KeypairProvider({ credPath: join(dir, 'keys', 'keypair.json'), registerPublicKey: opts.registerPublicKey });
+            auth = new KeypairProvider({
+                credPath: join(dir, 'keys', 'keypair.json'),
+                registerPublicKey: opts.registerPublicKey,
+            });
             break;
         case 'oauth': {
             // Default to the real HTTP device-flow transport derived from hubUrl;
             // tests/embedders may still inject their own.
             const transport = opts.oauthTransport ?? createOAuthHttpTransport({ hubUrl: opts.hubUrl, fetchFn });
-            auth = new PublicOAuthProvider({ credPath: join(dir, 'token.json'), machine: { softIdPath: join(dir, 'machine-id') }, transport });
+            auth = new PublicOAuthProvider({
+                credPath: join(dir, 'token.json'),
+                machine: { softIdPath: join(dir, 'machine-id') },
+                transport,
+            });
             break;
         }
         default: {

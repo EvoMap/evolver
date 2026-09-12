@@ -37,12 +37,20 @@ export function buildSessionStartInjection(cfg, estimateTokens = (s) => Math.cei
  */
 export function composeSessionStartWithRecap(base, recapCtx, estimateTokensOrOpts) {
     const opts = typeof estimateTokensOrOpts === 'function' ? { estimateTokens: estimateTokensOrOpts } : (estimateTokensOrOpts ?? {});
-    const recap = buildValueRecap({
-        injectedCount: recapCtx.injectGenes.length,
-        ...(recapCtx.successCount !== undefined ? { successCount: recapCtx.successCount } : {}),
-        summary: recapCtx.summary,
-    });
-    const inj = buildSessionStartInjection({ ...base, injectGenes: recapCtx.injectGenes, recap }, opts.estimateTokens);
+    let remaining = recapCtx.injectGenes;
+    let inj;
+    for (;;) {
+        const recap = buildValueRecap({
+            injectedCount: remaining.length,
+            ...(recapCtx.successCount !== undefined ? { successCount: recapCtx.successCount } : {}),
+            summary: recapCtx.summary,
+        });
+        inj = buildSessionStartInjection({ ...base, injectGenes: remaining, recap }, opts.estimateTokens);
+        if (inj.genes.length === remaining.length)
+            break;
+        // 只缩小原有前缀，不恢复预算已剔除的Gene；数量与最终prompt一致。
+        remaining = inj.genes;
+    }
     // Inject emission (#123): record the genes that ACTUALLY landed in the prompt (post budget-trim), not the
     // pre-trim candidate list — the ledger should attribute only what the agent really saw. The trim drops from the
     // TAIL, so the survivors are the FIRST inj.genes.length entries; map them to the aligned stable gene ids (when

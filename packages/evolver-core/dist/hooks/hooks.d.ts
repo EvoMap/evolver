@@ -1,5 +1,5 @@
 import { type ExtractedSignal, type SignalSourceTurn } from '../signals/extractor.js';
-import { type ValueSummary } from '../ops/index.js';
+import { type InjectPayload, type ValueSummary } from '../ops/index.js';
 export interface SessionStartConfig {
     tokenBudgetHardCap: number;
     injectGenes?: readonly string[];
@@ -50,6 +50,9 @@ export interface SessionStartRecapContext {
 export interface InjectInfo {
     /** The gene ids actually injected into the prompt (post budget-trim). */
     geneIds: readonly string[];
+    contentSchema?: InjectPayload['contentSchema'];
+    content?: InjectPayload['content'];
+    omittedByBudget?: number;
     /** The cycle this injection feeds, when there is one. */
     cycleId?: string;
     /**

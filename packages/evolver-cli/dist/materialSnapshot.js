@@ -14,7 +14,9 @@ function isRecord(value) {
 function trimText(value, remaining) {
     if (remaining <= 0)
         return { text: '', used: 0, truncated: value.length > 0 };
-    const redacted = hub.redactString(value).replace(/\s+/g, ' ').trim();
+    const redacted = hub.redactString(value);
+    if (!redacted.trim())
+        return { text: '', used: 0, truncated: false };
     if (redacted.length <= remaining)
         return { text: redacted, used: redacted.length, truncated: false };
     return { text: redacted.slice(0, remaining), used: remaining, truncated: true };
@@ -184,8 +186,11 @@ export function buildRuntimeSessionMaterialSnapshot(sources, maxChars = DEFAULT_
             }
             const rawText = snapshotTurnText(turn);
             const trimmed = trimText(rawText, remaining);
+            const metadata = isRecord(turn.metadata) && isRecord(turn.metadata['evolverMaterialSnapshot'])
+                ? turn.metadata['evolverMaterialSnapshot'] : undefined;
+            const textTruncated = trimmed.truncated || (rawText === turn.text && metadata?.['textTruncated'] === true);
             remaining -= trimmed.used;
-            truncated = truncated || trimmed.truncated;
+            truncated = truncated || textTruncated;
             if (trimmed.text.length > 0) {
                 retainedTurnCount += 1;
                 turns.push({
@@ -194,6 +199,7 @@ export function buildRuntimeSessionMaterialSnapshot(sources, maxChars = DEFAULT_
                     ...(turn.isMeta ? { isMeta: true } : {}),
                     ...(turn.toolName ? { toolName: hub.redactString(turn.toolName).slice(0, 120) } : {}),
                     ...(turn.errorMessage && trimmed.text ? { errorMessage: trimmed.text } : {}),
+                    ...(textTruncated ? { textTruncated: true } : {}),
                 });
             }
             if (remaining <= 0) {
@@ -226,6 +232,7 @@ export function buildRuntimeSessionMaterialSnapshot(sources, maxChars = DEFAULT_
         omittedSourceCount: omittedEvidenceAggregate?.sourceCount ?? 0,
         ...(omittedEvidenceAggregate ? { omittedEvidenceAggregate } : {}),
         truncated: truncated || omittedEvidenceAggregate !== undefined,
+        preservesTextLayout: true,
         maxChars: safeMaxChars,
     };
     // Source and turn caps make this loop constant-bounded even for very large Cursor databases.
@@ -269,6 +276,8 @@ function sourceFromSnapshot(value) {
             isMeta: turn['isMeta'] === true,
             ...(toolName ? { toolName } : {}),
             ...(errorMessage ? { errorMessage } : {}),
+            ...(turn['textTruncated'] !== undefined && turn['textTruncated'] !== false
+                ? { metadata: { evolverMaterialSnapshot: { textTruncated: true } } } : {}),
         };
     })
         .filter((turn) => turn !== null);
@@ -290,6 +299,32 @@ function sourceFromSnapshot(value) {
         turns,
     };
 }
+/** 旧writer只有一次共享字符截断；整条尾部裁剪不产生新的部分文本。 */
+function legacyTailMayBeTruncated(payload, sources) {
+    if (payload['truncated'] !== true || payload['preservesTextLayout'] === true)
+        return false;
+    const maxChars = payload['maxChars'];
+    if (typeof maxChars !== 'number' || !Number.isSafeInteger(maxChars)
+        || maxChars <= 0 || maxChars > DEFAULT_MATERIAL_SNAPSHOT_MAX_CHARS)
+        return true;
+    let retainedChars = 0;
+    // 必须统计原始存储文本，不能过滤后或重复计入errorMessage而制造预算证明。
+    for (const source of sources) {
+        if (!isRecord(source) || typeof source['agent'] !== 'string' || !source['agent']
+            || typeof source['label'] !== 'string' || !source['label'] || !Array.isArray(source['turns']))
+            return true;
+        for (const turn of source['turns']) {
+            if (!isRecord(turn) || typeof turn['text'] !== 'string' || typeof turn['role'] !== 'string'
+                || !['user', 'assistant', 'tool', 'system'].includes(turn['role']))
+                return true;
+            retainedChars += turn['text'].length;
+            if (retainedChars >= maxChars)
+                return true;
+        }
+    }
+    // 若部分截断仍被保留，总text长度必然耗尽maxChars；有余量则只发生整条省略。
+    return false;
+}
 export function runtimeSessionSourcesFromMaterialPayload(payload) {
     if (!isRecord(payload))
         return [];
@@ -298,9 +333,20 @@ export function runtimeSessionSourcesFromMaterialPayload(payload) {
     if (payload['sourceKind'] !== 'runtime_session' || payload['kind'] !== 'session_log')
         return [];
     const sources = Array.isArray(payload['sources']) ? payload['sources'] : [];
-    return sources
+    const restored = sources
         .map(sourceFromSnapshot)
         .filter((source) => source !== null);
+    if (legacyTailMayBeTruncated(payload, sources)) {
+        // 顺序字符预算只能在全局最后一段保留文本内切断，较早source的尾部不是不完整证据。
+        for (let index = restored.length - 1; index >= 0; index--) {
+            const tail = restored[index].turns.findLast((turn) => turn.text.trim().length > 0);
+            if (!tail)
+                continue;
+            tail.metadata = { ...(isRecord(tail.metadata) ? tail.metadata : {}), evolverMaterialSnapshot: { textTruncated: true } };
+            break;
+        }
+    }
+    return restored;
 }
 export function runtimeSessionEvidenceSummariesFromMaterialPayload(payload) {
     if (!isRecord(payload))

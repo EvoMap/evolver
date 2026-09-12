@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, resolve, win32 } from 'node:path';
-import { POWERSHELL_STDIN_SCRIPT_COMMAND, windowsAclFailureDetail, } from './windowsPowerShell.js';
+import { POWERSHELL_ENV_SCRIPT_COMMAND, windowsAclFailureDetail, } from './windowsPowerShell.js';
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 export class CredentialStoreError extends Error {
@@ -805,17 +805,22 @@ function Assert-TrustedParent([string]$ParentPath, [bool]$StrictCreate) {
       $finalParent,
       [System.StringComparison]::OrdinalIgnoreCase
     )
-    $item = Get-Item -LiteralPath $current -Force
-    if (-not $item.PSIsContainer -or
-        (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    $attributes = [System.IO.File]::GetAttributes($current)
+    if ((($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) -or
+        (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
       Throw-CredentialAclFailure -Reason 'Credential parent contains a reparse point or non-directory' -Path $current
     }
-    $parentAcl = Get-Acl -LiteralPath $current
+    $parentAcl = [System.IO.Directory]::GetAccessControl($current)
     $ownerSid = $parentAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
     if ($trustedSids -notcontains $ownerSid.Value) {
       Throw-CredentialAclFailure -Reason 'Credential parent has an untrusted owner' -Path $current -Sid $ownerSid.Value
     }
-    foreach ($parentRule in @($parentAcl.Access)) {
+    $parentRules = @($parentAcl.GetAccessRules(
+      $true,
+      $true,
+      [System.Security.Principal.SecurityIdentifier]
+    ))
+    foreach ($parentRule in $parentRules) {
       if ($parentRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
         continue
       }
@@ -845,11 +850,8 @@ function Assert-TrustedParent([string]$ParentPath, [bool]$StrictCreate) {
         $dangerousGrant = $hasGranularDanger -or ($isCreateParent -and $hasCreateDanger)
       }
       if (-not $dangerousGrant) { continue }
-      try {
-        $parentRuleSid = $parentRule.IdentityReference.Translate(
-          [System.Security.Principal.SecurityIdentifier]
-        )
-      } catch {
+      $parentRuleSid = $parentRule.IdentityReference
+      if (-not ($parentRuleSid -is [System.Security.Principal.SecurityIdentifier])) {
         Throw-CredentialAclFailure -Reason 'Credential parent contains an unresolvable write principal' -Path $current -Principal $parentRule.IdentityReference.Value -Rights $rights
       }
       if ($trustedSids -notcontains $parentRuleSid.Value) {
@@ -860,17 +862,22 @@ function Assert-TrustedParent([string]$ParentPath, [bool]$StrictCreate) {
 }
 
 function Assert-TrustedFile([string]$FilePath) {
-  $item = Get-Item -LiteralPath $FilePath -Force
-  if ($item.PSIsContainer -or
-      (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+  $attributes = [System.IO.File]::GetAttributes($FilePath)
+  if ((($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) -or
+      (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
     Throw-CredentialAclFailure -Reason 'Credential file is a reparse point or not a regular file' -Path $FilePath
   }
-  $fileAcl = Get-Acl -LiteralPath $FilePath
+  $fileAcl = [System.IO.File]::GetAccessControl($FilePath)
   $ownerSid = $fileAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
   if ($trustedSids -notcontains $ownerSid.Value) {
     Throw-CredentialAclFailure -Reason 'Credential file has an untrusted owner' -Path $FilePath -Sid $ownerSid.Value
   }
-  foreach ($fileRule in @($fileAcl.Access)) {
+  $fileRules = @($fileAcl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  foreach ($fileRule in $fileRules) {
     if ($fileRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
       continue
     }
@@ -884,11 +891,8 @@ function Assert-TrustedFile([string]$FilePath) {
       (($rights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq
         [System.Security.AccessControl.FileSystemRights]::FullControl)
     if (-not ($hasGranularDanger -or $hasCompositeDanger)) { continue }
-    try {
-      $fileRuleSid = $fileRule.IdentityReference.Translate(
-        [System.Security.Principal.SecurityIdentifier]
-      )
-    } catch {
+    $fileRuleSid = $fileRule.IdentityReference
+    if (-not ($fileRuleSid -is [System.Security.Principal.SecurityIdentifier])) {
       Throw-CredentialAclFailure -Reason 'Credential file contains an unresolvable write principal' -Path $FilePath -Principal $fileRule.IdentityReference.Value -Rights $rights
     }
     if ($trustedSids -notcontains $fileRuleSid.Value) {
@@ -903,15 +907,17 @@ function Test-CanonicalCredentialAcl(
   [System.Security.AccessControl.InheritanceFlags]$ExpectedInheritance
 ) {
   try {
-    $candidateRules = @($CandidateAcl.Access)
+    $candidateRules = @($CandidateAcl.GetAccessRules(
+      $true,
+      $true,
+      [System.Security.Principal.SecurityIdentifier]
+    ))
     if (-not $CandidateAcl.AreAccessRulesProtected -or $candidateRules.Count -ne 1) {
       return $false
     }
     $candidateOwner = $CandidateAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
     $candidateRule = $candidateRules[0]
-    $candidateRuleSid = $candidateRule.IdentityReference.Translate(
-      [System.Security.Principal.SecurityIdentifier]
-    )
+    $candidateRuleSid = $candidateRule.IdentityReference
     return (
       $candidateOwner.Value -eq $ExpectedOwner.Value -and
       $candidateRuleSid.Value -eq $ExpectedOwner.Value -and
@@ -945,13 +951,21 @@ $expectedInheritance = if ($Kind -eq 'directory') {
 } else {
   [System.Security.AccessControl.InheritanceFlags]::None
 }
-$acl = Get-Acl -LiteralPath $Target
+$acl = if ($Kind -eq 'directory') {
+  [System.IO.Directory]::GetAccessControl($Target)
+} else {
+  [System.IO.File]::GetAccessControl($Target)
+}
 if (Test-CanonicalCredentialAcl $acl $sid $expectedInheritance) {
   exit 0
 }
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
-foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+foreach ($rule in @($acl.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))) { [void]$acl.RemoveAccessRuleSpecific($rule) }
 $access = [System.Security.AccessControl.FileSystemAccessRule]::new(
   $sid,
   [System.Security.AccessControl.FileSystemRights]::FullControl,
@@ -960,8 +974,13 @@ $access = [System.Security.AccessControl.FileSystemAccessRule]::new(
   [System.Security.AccessControl.AccessControlType]::Allow
 )
 [void]$acl.AddAccessRule($access)
-Set-Acl -LiteralPath $Target -AclObject $acl
-$verified = Get-Acl -LiteralPath $Target
+if ($Kind -eq 'directory') {
+  [System.IO.Directory]::SetAccessControl($Target, $acl)
+  $verified = [System.IO.Directory]::GetAccessControl($Target)
+} else {
+  [System.IO.File]::SetAccessControl($Target, $acl)
+  $verified = [System.IO.File]::GetAccessControl($Target)
+}
 if (-not (Test-CanonicalCredentialAcl $verified $sid $expectedInheritance)) {
   Throw-CredentialAclFailure -Reason 'Credential ACL verification failed' -Path $Target -Sid $sid.Value
 }
@@ -996,23 +1015,23 @@ class PowerShellWindowsAclOps {
                 '-NoProfile',
                 '-NonInteractive',
                 '-ExecutionPolicy', 'Bypass',
-                // The fixed wrapper parses stdin once. Bare -Command - can execute
-                // PowerShell 5.1 input statement by statement and mask an earlier error.
-                '-Command', POWERSHELL_STDIN_SCRIPT_COMMAND,
+                // Keep the trusted constant script out of stdin: Windows PowerShell 5.1
+                // can wait indefinitely for redirected stdin on hosted runners.
+                '-Command', POWERSHELL_ENV_SCRIPT_COMMAND,
             ], {
                 encoding: 'utf8',
                 env: {
                     SystemRoot: this.systemRoot,
                     EVOMAP_CREDENTIAL_ACL_TARGET: path,
                     EVOMAP_CREDENTIAL_ACL_KIND: kind,
+                    EVOMAP_CREDENTIAL_ACL_SCRIPT: WINDOWS_ACL_SCRIPT,
                 },
                 shell: false,
                 // Capture both streams rather than discarding them: the script's own
                 // message names which path level and which SID failed, and without it
                 // every rejection is indistinguishable from "PowerShell is missing".
                 // The script prints nothing on success, so this stays quiet normally.
-                input: WINDOWS_ACL_SCRIPT,
-                stdio: ['pipe', 'pipe', 'pipe'],
+                stdio: ['ignore', 'pipe', 'pipe'],
                 timeout: 15_000,
                 windowsHide: true,
             });
