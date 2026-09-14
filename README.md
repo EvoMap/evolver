@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="Evolver" width="96" height="96" />
 </p>
 
-<h1 align="center">Evolver — Agent Self-Evolving Engine</h1>
+<h1 align="center">Evolver v2</h1>
 
 <p align="center">
   <a href="https://trendshift.io/repositories/26015?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-26015" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/26015" alt="EvoMap%2Fevolver | Trendshift" width="250" height="55"/></a>
@@ -11,12 +11,12 @@
 <p align="center">
   <a href="https://github.com/EvoMap/evolver/stargazers"><img src="https://img.shields.io/badge/Stars-9k-2b3137?logo=github&amp;logoColor=white" alt="GitHub stars"/></a>
   <a href="https://opensource.org/licenses/GPL-3.0"><img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License: GPL-3.0"/></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%3E%3D%2018-green.svg" alt="Node.js &gt;= 18"/></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-V2%20engine%20range-green.svg" alt="Node.js 版本要求见下文"/></a>
   <a href="https://www.npmjs.com/package/@evomap/evolver"><img src="https://img.shields.io/npm/dm/@evomap/evolver.svg" alt="npm downloads"/></a>
   <a href="https://arxiv.org/abs/2604.15097"><img src="https://img.shields.io/badge/arXiv-2604.15097-b31b1b.svg" alt="arXiv"/></a>
 </p>
 
-**[evomap.ai](https://evomap.ai)** | [Documentation](https://evomap.ai/wiki) | [Chinese / 中文文档](README.zh-CN.md) | [Japanese / 日本語ドキュメント](README.ja-JP.md) | [Korean / 한국어 문서](README.ko-KR.md) | [GitHub](https://github.com/EvoMap/evolver) | [Releases](https://github.com/EvoMap/evolver/releases)
+**[evomap.ai](https://evomap.ai)** | [V2 使用指南](#evolver-v2-使用指南) | [Wiki](https://evomap.ai/wiki) | [GitHub](https://github.com/EvoMap/evolver) | [Releases](https://github.com/EvoMap/evolver/releases)
 
 ---
 
@@ -24,7 +24,7 @@
 >
 > Evolver has been fully open source since our first release on 2026-02-01 (initially MIT, and GPL-3.0-or-later since 2026-04-09). In March 2026, another project in the same lane released a system with strikingly similar memory / skill / evolution-asset design — without any attribution to Evolver. Full analysis: [Hermes Agent Self-Evolution vs. Evolver: A Detailed Similarity Analysis](https://evomap.ai/en/blog/hermes-agent-evolver-similarity-analysis).
 >
-> To protect the integrity of the work and keep investing in this direction, future Evolver releases will transition from fully open source to source-available. **Our commitment to users is unchanged**: we will keep shipping the best agent self-evolution capability in the industry — faster iteration, deeper GEP integration, stronger memory and skill systems. All already-published MIT and GPL-3.0 versions remain freely usable under their original terms. You can still `npm install @evomap/evolver` or clone this repo; nothing in your current workflow breaks.
+> To protect the integrity of the work and keep investing in this direction, future Evolver releases will transition from fully open source to source-available. **Our commitment to users is unchanged**: we will keep shipping the best agent self-evolution capability in the industry — faster iteration, deeper GEP integration, stronger memory and skill systems. All already-published MIT and GPL-3.0 versions remain freely usable under their original terms. You can still `npm install @evomap/evolver` or clone this repo. V1 与 V2 的命令和运行方式存在差异，升级前请按下文核对。
 >
 > Questions or concerns: open an issue or reach us at [evomap.ai](https://evomap.ai).
 
@@ -42,522 +42,191 @@
 
 ---
 
-> **"Evolution is not optional. Adapt or die."**
+## Evolver v2 使用指南
 
-**Three lines**
-- **What it is**: A [GEP](https://evomap.ai/wiki)-powered self-evolution engine for AI agents.
-- **Pain it solves**: Turns ad hoc prompt tweaks into auditable, reusable evolution assets.
-- **Use in 30 seconds**: `npm install -g @evomap/evolver`, then run `evolver` in any git repo.
+Evolver 将 agent 的运行材料整理为可审核、可追溯的 Gene、Capsule 和 EvolutionEvent，并通过本地资产、MCP 与 Hub 接口复用经验。安装程序、接通工具、认证成功和真正执行任务是不同的步骤。
 
-## EvoMap -- The Evolution Network
+本指南面向 V2 发行包。上面的研究结果及历史 OpenClaw 实验不代表当前 V2 已具备免配置 OpenClaw 接线或自主执行能力。升级前保留原配置与资产，核对实际安装版本的 `--help` 和能力清单；不要把尚未发布的主线修复当作本机已有功能。
 
-Evolver is the core engine behind **[EvoMap](https://evomap.ai)**, a network where AI agents evolve through validated collaboration. Visit [evomap.ai](https://evomap.ai) to explore the full platform -- live agent maps, evolution leaderboards, and the ecosystem that turns isolated prompt tweaks into shared, auditable intelligence.
+## 环境要求与安装
 
-Keywords: protocol-constrained evolution, audit trail, genes and capsules, prompt governance.
-
-## Choose Your Path
-
-Evolver has one install but two usage shapes. Pick the one that matches how you plan to use it, then follow only that section.
-
-| Path | Who it's for | Command after install | Guide |
-|---|---|---|---|
-| **CLI Quick Start** | You just want to use Evolver to evolve an agent / project. 99% of readers. | `evolver` | [below](#cli-quick-start) |
-| **Run from Source** | You want to hack on the engine, send PRs, or run unreleased builds. | `node index.js` | [below](#run-from-source-contributors-only) |
-
-> **For agent / skill integrations** (Codex, Claude Code skill system, custom MCP clients) see the separate [SKILL.md](SKILL.md) -- it documents the Proxy mailbox API that wraps the CLI. You still install Evolver via the CLI Quick Start below first.
-
-## Prerequisites
-
-- **[Node.js](https://nodejs.org/)** >= 18
-- **[Git](https://git-scm.com/)** -- Required. Evolver uses git for rollback, blast radius calculation, and solidify. Running in a non-git directory will fail with a clear error message.
-
-## CLI Quick Start
-
-This is the recommended path for almost everyone.
-
-### 1. Install
+- npm 发行包的 Node.js engines 合同是 `^22.13.0 || >=23.4.0`：支持22.x中的22.13.0及以上版本，或23.4.0及以上版本；Node18、Node20及23.0至23.3不满足要求。
+- Git 用于需要仓库上下文、差异与回滚证明的操作；显示帮助或能力清单不等于已经运行进化任务。
+- npm安装会访问registry并写入所选安装前缀。遇到权限错误时使用用户自有的npm前缀，不要以管理员安装来掩盖服务用户、PATH或身份目录不同的问题。
 
 ```bash
 npm install -g @evomap/evolver
 ```
 
-Verify the CLI is on your PATH:
+升级前记录旧版本、安装方式和服务实际使用的可执行文件路径；完成升级后重新核对 PATH。CLI显示新版本不证明后台服务已经重启到同一版本。
+
+## 先进行只读检查
+
+<!-- v2-safe-quickstart:start -->
+
+下面三条命令只检查当前CLI和能力清单，不执行任务、不登录Hub，也不授权花费：
 
 ```bash
+evolver --version
 evolver --help
+evolver cycle capabilities --json
 ```
 
-If you hit `EACCES` on Linux/macOS, configure a user-level prefix instead of using `sudo`:
+<!-- v2-safe-quickstart:end -->
+
+能力清单逐项区分 `ingest`、`inject`、`execute`、`verify` 和 `resume`。能读transcript不代表能启动runner；能发现MCP工具也不代表有经过验证的自主执行路径。`unsupported` 必须保留为未支持，不能靠改用另一个runtime或关闭安全检查变成成功。
+
+## 选择实际支持的接入方式
+
+MCP由外部agent主动调用；受支持的hook或规则提供各自的注入入口。需要安装配置时先查看：
 
 ```bash
-npm config set prefix ~/.npm-global
-echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+evolver setup-hooks --help
 ```
 
-### 2. Run it
+V2推荐使用 `--runtime` 选择入口，`--platform` 仍是兼容别名。确认runtime、`--scope` 和 `--root` 后再决定安装；真正安装会修改对应配置文件，需要操作者明确同意。
 
-From inside any **git-initialized** project directory:
+`--dry-run` 目前仅适用于 `opencode` 和 `kiro`。Claude Code、Codex、Cursor、Antigravity等入口会拒绝该legacy预览参数，不要把它作为所有runtime通用的第一步。OpenCode/Kiro的JSON预览结果带 `dryRun:true`，即使 `outcome` 为 `installed` 也不表示已经写入配置。
+
+| 入口 | V2边界 |
+| --- | --- |
+| Claude Code / Codex | MCP及受支持的SessionStart、UserPromptSubmit hook；仍受runtime的信任与hook审核约束。 |
+| Cursor | 受管理的规则注入；不承诺V1 hooks.json路径或安全自主执行已就绪。 |
+| Antigravity / Kiro / OpenCode | 已有MCP配置入口不自动等于transcript、执行或恢复能力全部可用；逐列查看能力清单。 |
+| OpenClaw | 有 `setup-hooks` 手动入口，返回 `manual` 接线指引，不自动写配置；尚无自动installer或专用runtime执行合同。 |
+
+OpenClaw用户可以先取得手动MCP/HTTP接线说明：
 
 ```bash
-# Single evolution run -- scans logs, selects a Gene, outputs a GEP prompt
-evolver
-
-# Review mode -- pause before applying, wait for human confirmation
-evolver --review
-
-# Continuous loop -- runs as a background daemon
-evolver --loop
+evolver setup-hooks --runtime=openclaw --json
 ```
 
-A "successful first run" looks like:
+成功返回 `outcome:manual`、空 `files` 和 `instructions`，不代表已经安装、认证或执行任务。HTTP/A2A的具体endpoint由相应adapter提供，不从任意输出推断或替换账户身份。
 
-1. Evolver prints a banner with the detected strategy preset (e.g. `balanced`).
-2. It scans `./memory/` (creates it if missing) for logs and signals.
-3. It selects a matching Gene / Capsule from its built-in asset pool.
-4. It prints a **GEP prompt** to stdout -- that's the artifact. Copy it into your agent, or let a host runtime (OpenClaw, Cursor hook, Claude Code hook) consume it automatically.
-5. It writes an `EvolutionEvent` into `./memory/` for audit.
+<!-- v2-openclaw-native:start -->
 
-If step 4 didn't appear, you're not running inside a git repo -- `cd` into one and retry. Everything else runs fully offline.
+**OpenClaw 2026.8.1 注意事项：不要将 `instructions` 中的通用 `mcpServers` 片段直接粘贴到 OpenClaw 的 `openclaw.json`。** 该版本管理的是 `mcp.servers`，直接粘贴会被配置校验拒绝。当前指引仍显示通用片段；请通过宿主 CLI 注册。
 
-### 3. Connect to the EvoMap network (optional)
+以下 Bash 示例已用 OpenClaw 2026.8.1（ea80657）、Ubuntu24.04.4 和 Node22.23.1 验证。先从上面本机输出的片段读取 `command` 和 `args[0]`（默认 npm 入口为一个 stdio 脚本参数），核对都是本机安装产物的绝对路径，再替换下面五个路径。不要根据 `npm root -g` 猜测局部安装或不同服务用户的路径。若自定义了其他 args/env，必须逐项保留，并按本机 `openclaw mcp add --help` 确认；私密env-file只传绝对路径指针，不要内联 token 或 node secret。
 
-Evolver works fully offline. Hub connection only unlocks network features (skill sharing, worker pool, evolution leaderboards).
-
-Create a `.env` file **in the current working directory where you run `evolver`** (not in your home directory, not in the global npm install location):
+在 OpenClaw 实际使用的用户、profile和workspace中执行。若已有同名 `evolver`，先检查 `openclaw mcp show evolver`，不要盲目覆盖。`add` 会启动 MCP probe，成功后写入配置，**不是只读检查**；它需要操作者同意。后续 `probe` 可能连接当前profile中的其他已配置服务器，执行前确认范围。
 
 ```bash
-# Register at https://evomap.ai to get your Node ID
-A2A_HUB_URL=https://evomap.ai
-A2A_NODE_ID=your_node_id_here
+EVOLVER_MCP_NODE='/absolute/path/from/command'
+EVOLVER_MCP_ENTRY='/absolute/path/from/args/0'
+EVOLVER_MCP_WORKSPACE='/absolute/path/to/workspace'
+EVOLVER_IDENTITY_DIR='/absolute/path/to/identity'
+EVOLVER_STATE_DIR='/absolute/path/to/state'
+
+openclaw mcp add evolver \
+  --command "$EVOLVER_MCP_NODE" \
+  --arg "$EVOLVER_MCP_ENTRY" \
+  --cwd "$EVOLVER_MCP_WORKSPACE" \
+  --env "EVOMAP_HOME=$EVOLVER_IDENTITY_DIR" \
+  --env "EVOLVER_HOME=$EVOLVER_STATE_DIR" \
+  --include evolver_recall \
+  --approval prompt \
+  --connect-timeout 10 \
+  --timeout 10 &&
+openclaw mcp probe &&
+openclaw mcp doctor
 ```
 
-Evolver reads `.env` from `process.cwd()` on each run. If you run `evolver` from multiple projects, each project can have its own `.env`.
+此示例仅暴露 `evolver_recall` 来验证连接及本地经验读取，不等于完整学习闭环、agent任务、Hub认证或计费验收；需要其他工具时另行审核其权限与副作用。空store返回零条经验是有效结果，不是未登录。若 agent 报 runtime plugin/provider auth 缺失，应分别检查 OpenClaw 运行时与模型配置，不要据此删除 Evolver 凭据。上面的 `manual/files=[]` 只描述 Evolver 生成指引的那一步，不描述后续宿主写入。
 
-### 4. Wire up your agent runtime (optional)
+<!-- v2-openclaw-native:end -->
 
-Evolver integrates with major agent runtimes through `setup-hooks`. Run it once per platform you want to wire up.
+外部宿主若自行支持MCP或通用日志格式，仍需单独配置并验证工具发现、材料输入和结果回传。通用接口的存在不能代替OpenClaw端到端验收。
 
-| Platform | Command | What it writes |
-|---|---|---|
-| [Cursor](https://cursor.com) | `evolver setup-hooks --platform=cursor` | `~/.cursor/hooks.json` + scripts in `~/.cursor/hooks/`. Restart Cursor or open a new session. Fires on `sessionStart`, `afterFileEdit`, `stop`. |
-| [Claude Code](https://www.anthropic.com/claude-code) | `evolver setup-hooks --platform=claude-code` | Registers with Claude Code's hook system via `~/.claude/`. Restart the Claude Code CLI. |
-| [Codex](https://github.com/openai/codex) | `evolver setup-hooks --platform=codex` | `~/.codex/hooks.json` + scripts in `~/.codex/hooks/`, enables `codex_hooks` feature in `config.toml`. Restart the Codex CLI. See [Codex caveats](#codex-caveats) below. |
-| [Kiro](https://kiro.dev) | `evolver setup-hooks --platform=kiro` | Three `*.kiro.hook` files + scripts in `~/.kiro/hooks/`. Auto-discovered, no restart needed. |
-| [opencode](https://opencode.ai) | `evolver setup-hooks --platform=opencode` | Plugin at `~/.opencode/plugins/evolver.js` + scripts in `~/.opencode/hooks/`. Restart opencode. |
-| [OpenClaw](https://openclaw.com) | No setup needed | OpenClaw natively interprets the `sessions_spawn(...)` stdout directives Evolver emits. Just run `evolver` from inside an OpenClaw session. |
+## V1调用迁移与常驻任务
 
-#### Codex caveats
+<!-- v2-compatibility:start -->
 
-The Codex CLI exposes `SessionStart` / `Stop` / `PostToolUse` hooks (which is
-how `setup-hooks --platform=codex` wires Evolver in). The `Stop` payload does
-not include a `transcript_path`, but Codex writes local rollout JSONL files under
-`~/.codex/sessions/**/*.jsonl`. V2 does not silently scan these files during a
-normal review; request local trajectory ingestion explicitly:
+| 历史调用 | 当前V2行为 |
+| --- | --- |
+| 裸 `evolver` 或 `evolver run` | one-shot没有安全等价实现，提示必须迁移并退出2；不会启动任务。 |
+| `evolver run --json` | 同一失败结果以JSON返回，`ok:false`、`mode:one_shot`。 |
+| `evolver --loop` 或 `evolver run --loop` | 兼容映射到常驻 `autoexec`，不是原one-shot prompt生成器。 |
+| `evolver --review` | 不能作为V2通用的“先审核再运行”入口。审核是独立的命令及资产状态合同。 |
+| `--mad-dog` | 要求显式迁移，不会自动切换到可能丢弃工作树修改的solo模式。 |
+
+OpenClaw旧skill、cron或shell脚本若期待裸命令打印GEP prompt或 `sessions_spawn(...)`，必须先迁移调用合同。不要把 `migration_required` 当作成功、可重试的Hub认证错误，或持续重启的理由。
+
+`autoexec` 是常驻守护进程。它需要真实队列、明确的仓库 `allowedRoots` 和受支持的runner/containment；默认空allowlist会拒绝执行。把one-shot脚本替换成常驻进程会改变启动、停止和重复实例语义，必须由operator审核，不能直接作为免配置修复。
+
+`WORKER_*`、V1 OpenClaw bridge和历史validator默认轮询/收益说明不能直接套用到V2。不要为恢复旧worker行为而开启buyer自动消费。已有的 `EVOLVER_ATP_AUTODELIVER` 与 `EVOLVER_ATP_AUTOBUY` 也代表不同的授权与工作流。
+
+<!-- v2-compatibility:end -->
+
+## Hub认证与进程上下文
+
+<!-- v2-auth-context:start -->
+
+EvoX登录、外部agent的模型认证、Evolver Hub OAuth和legacy节点身份并不是同一份会话。桌面应用可用，不证明由另一个用户、service或容器启动的Evolver已取得相同凭据。
+
+Evolver的CLI login和ATP身份目录按以下顺序选择首个非空值：
+
+1. `EVOMAP_HOME`
+2. `EVOMAP_DIR`
+3. `EVOLVER_HOME`
+4. 当前进程用户HOME下的 `.evomap`
+
+OAuth保存在该身份目录的 `token.json`。身份目录和运行状态目录可以分离；例如EvoX组合环境可分别配置身份与任务状态。比较配置是否一致时不要公开文件内容或绝对私有路径。
+
+V2不搜索工作目录中的 `.env`。对支持Evolver loader的入口，显式传递 `EVOLVER_ENV_FILE`；该文件的值可覆盖已有进程配置。直接使用Node内置env-file loader时则有不同的覆盖规则，不要同时依赖两条路径覆盖同一键。不要把“文件放在当前目录”当作已经加载的证据。
+
+ATP客户端存在显式 `nodeSecret` 时选择legacy认证，否则使用OAuth。完整的 `EVOMAP_NODE_ID` / `EVOMAP_NODE_SECRET` 身份对优先于完整的A2A别名；不应把一套namespace的ID与另一套secret拼在一起。残留legacy配置可能意味着重新OAuth登录后，该入口仍在使用legacy路径。
+
+先查看登录命令的无副作用帮助：
 
 ```bash
-evolver trajectory-export --runtime-sessions --output ./codex-trajectories.jsonl
+evolver login --help
 ```
 
-Discovery is marker-gated by default and stays local. Use
-`--include-unmarked` only when you intentionally want older or unmarked Codex
-sessions included.
+确认Hub地址和执行用户后，只有需要授权时才显式运行 `evolver login`。它会发起device flow、等待浏览器批准并写凭据，不是只读诊断步骤。缺少token时 `authenticate` 明确失败；接近过期时有可用refresh token则尝试refresh，刷新失败不能当作已登录或继续使用旧token。
 
-`setup-hooks --platform=codex` is lifecycle integration only; it does not route
-Codex model requests through Evolver Proxy. To route Codex model traffic, run
-Evolver Proxy and configure Codex with a user-level OpenAI Responses-compatible
-custom provider whose `base_url` points at the proxy's `/v1` endpoint and whose
-command-backed auth runs `evolver proxy-token` or the absolute `node index.js
-proxy-token --settings ...` helper emitted by `scripts/internal-proxy-env.sh
---codex-config` from a source checkout.
+默认公共Hub为 `https://evomap.ai`，可由 `A2A_HUB_URL`、`EVOMAP_HUB_URL` 等受支持配置覆盖。OAuth授权的Hub、legacy节点归属和服务实际访问地址必须一致。不要连续重新登录、删除凭据、reset secret或跟随一个未验证的node identity来排除所有认证错误。
 
-For the normal lifecycle path, Evolver reads additional local context in order:
+<!-- v2-auth-context:end -->
 
-1. `MEMORY.md` / `USER.md` in the workspace root (if you maintain them);
-2. the `<!-- evolver-evolution-memory -->` section that
-   `setup-hooks --platform=codex` injects into your project's
-   `AGENTS.md`;
-3. the tail of the local `memory_graph.jsonl` (the per-cycle outcome log
-   that Evolver writes itself).
+## 不执行任务或认证失败时
 
-If none of those have content yet, you'll see `memory_missing` / `user_missing`
-or `session_logs_missing` as advisory signals during the first few cycles.
-They go quiet as local memory and marked runtime-session material accumulate;
-no manual setup is required.
+先区分返回结果，而不是根据“账户余额有没有变化”判断系统是否工作：
 
-## Run from Source (Contributors Only)
+| 现象 | 应核对的证据 |
+| --- | --- |
+| Node引擎或模块启动错误 | 实际Node版本、PATH、安装方法以及后台服务使用的binary；不要只查看交互式终端。 |
+| `migration_required` | OpenClaw或脚本实际调用的V1命令；该结果不表示Hub token失效。 |
+| `oauth 未登录` | 进程用户与身份目录是否正确、是否有可用token；不要发送token文件。 |
+| refresh错误、401或403 | 错误码、Hub地址、请求时间和脱敏request ID；区分缺凭据、过期、权限和身份状态。 |
+| `node_merged` | Hub返回的节点终态，需按服务端身份协议确认；不等同于普通密码失效。 |
+| daemon运行但没有任务 | 队列、allowlist、runner能力、外部调度及明确授权；存活和heartbeat不证明任务已执行。 |
 
-Skip this section entirely if you installed via `npm install -g @evomap/evolver` above. This path exists so contributors can hack on the engine.
-
-```bash
-git clone https://github.com/EvoMap/evolver.git
-cd evolver
-npm install
-
-# Then use node index.js wherever the CLI docs say evolver
-node index.js            # equivalent to: evolver
-node index.js --review   # equivalent to: evolver --review
-node index.js --loop     # equivalent to: evolver --loop
-```
-
-Every `evolver <flag>` invocation in the rest of this README maps 1:1 to `node index.js <flag>` when running from source.
-
-## What Evolver Does (and Does Not Do)
-
-**Evolver is a prompt generator, not a code patcher.** Each evolution cycle:
-
-1. Scans your `memory/` directory for runtime logs, error patterns, and signals.
-2. Selects the best-matching [Gene or Capsule](https://evomap.ai/wiki) from the local GEP asset store.
-3. Emits a strict, protocol-bound GEP prompt that guides the next evolution step.
-4. Records an auditable [EvolutionEvent](https://evomap.ai/wiki) for traceability.
-
-**It does NOT**:
-- Automatically edit your source code.
-- Execute arbitrary shell commands (see [Security Model](#security-model)).
-- Require an internet connection for core functionality.
-
-### How It Integrates with Host Runtimes
-
-When running inside a host runtime (e.g., [OpenClaw](https://openclaw.com)), the `sessions_spawn(...)` text printed to stdout can be picked up by the host to trigger follow-up actions. **In standalone mode, these are just text output** -- nothing is executed automatically.
-
-| Mode | Behavior |
-| :--- | :--- |
-| Standalone (`evolver`) | Generates prompt, prints to stdout, exits |
-| Loop (`evolver --loop`) | Repeats the above in a daemon loop with adaptive sleep |
-| Inside OpenClaw | Host runtime interprets stdout directives like `sessions_spawn(...)` |
-
-> **`--loop` is not a real-time agent assistant.** Loop mode is for background self-maintenance (validator runs, worker tasks, ATP merchant auto-deliver, solidify). Its stdout is consumed by evolver itself, **not** by a running host agent, so `sessions_spawn(...)` directives produced in loop mode will not be picked up by OpenClaw / Cursor / Claude Code even if those runtimes are installed. If you want evolver to observe and advise a live agent session, call `evolver` from **inside** that agent session (OpenClaw will pick up the stdout directives on that single run). For OpenClaw specifically, also make sure `AGENT_NAME` (or `AGENT_SESSIONS_DIR`) points at the agent directory actually producing sessions under `~/.openclaw/agents/<name>/sessions/` -- otherwise evolver falls back to reading its own logs and looks like it is "cycling emptily".
+向维护者提供旧版本和新版本、OpenClaw版本、操作系统、Node版本、实际命令与脱敏错误。说明这里的“task”指本地队列、OpenClaw会话任务还是Hub订单；不要贴完整环境变量、原始transcript、token、node secret或支付资料。
 
-## Who This Is For / Not For
+## 经济行为与本地活动
 
-**For**
-- Teams maintaining agent prompts and logs at scale
-- Users who need auditable evolution traces ([Genes](https://evomap.ai/wiki), [Capsules](https://evomap.ai/wiki), [Events](https://evomap.ai/wiki))
-- Environments requiring deterministic, protocol-bound changes
+自动ATP花费默认关闭，受 `EVOLVER_ATP_AUTOBUY` 或显式ack控制；`evolver atp enable` 是授权动作，不是恢复认证的普通排障步骤。手动购买、自动buyer、autodelivery和本地经验复用必须分别审核。
 
-**Not For**
-- One-off scripts without logs or history
-- Projects that require free-form creative changes
-- Systems that cannot tolerate protocol overhead
+Credits账单需要按交易类型、时间及请求标识核对。登录附近出现扣款不能单独证明登录本身收费；无账单也不能证明没有本地活动。本指南不要求运行付费任务来证明安装有效。
 
-## Features
+## 本地数据与安全
 
-- **Auto-Log Analysis**: scans memory and history files for errors and patterns.
-- **Self-Repair Guidance**: emits repair-focused directives from signals.
-- **[GEP Protocol](https://evomap.ai/wiki)**: standardized evolution with reusable assets.
-- **Mutation + Personality Evolution**: each evolution run is gated by an explicit Mutation object and an evolvable PersonalityState.
-- **Configurable Strategy Presets**: `EVOLVE_STRATEGY=balanced|innovate|harden|repair-only` controls intent balance.
-- **Signal De-duplication**: prevents repair loops by detecting stagnation patterns.
-- **Operations Module** (`src/ops/`): portable lifecycle, skill monitoring, cleanup, self-repair, wake triggers -- zero platform dependency.
-- **Protected Source Files**: prevents autonomous agents from overwriting core evolver code.
-- **[Skill Store](https://evomap.ai)**: download and share reusable skills via `evolver fetch --skill <id>`.
+升级前备份已有配置、身份和资产，并保留旧版本及启动命令。V1与V2的目录、资产格式、环境变量和服务生命周期不保证一对一兼容；不要手工改写asset ID或用删除账本解决迁移错误。
 
-## Typical Use Cases
+V2区分来源trust、内容review/quarantine与实际执行证据。新起草的经验不因存在于磁盘而自动可信；MCP recall和本地日志读取不能被写成执行、验证或获得收益的证明。
 
-- Harden a flaky agent loop by enforcing validation before edits
-- Encode recurring fixes as reusable [Genes and Capsules](https://evomap.ai/wiki)
-- Produce auditable evolution events for review or compliance
+对外发布必须先脱敏并保持内容身份一致。真实执行需要明确权限、验证和恢复边界；不要通过禁用门禁或提高权限让不受支持的runner“看起来能跑”。本地只读能力可独立于Hub使用，网络发布、订单和认证仍有各自的外部依赖。
 
-## Anti-Examples
+## 公开包与源码入口
 
-- Rewriting entire subsystems without signals or constraints
-- Using the protocol as a generic task runner
-- Producing changes without recording EvolutionEvent
+公开npm包提供 `evolver`、`evolver-mcp`、`evolver-proxy` 和 `evolver-llm-proxy` 入口。其根 `index.js` 导出V2 API，不是V1 CLI替身；不要把旧指南中的 `node index.js` 脚本机械复制到V2。
 
-## Usage
+公开分发代码位于 [EvoMap/evolver 的 v2-beta 分支](https://github.com/EvoMap/evolver/tree/v2-beta)，安装入口与资源以所选release为准。维护源码工作区使用锁定的pnpm workspace构建；公开分发包与维护源码工作区不是同一种安装目录。
 
-All commands below assume you installed with `npm install -g @evomap/evolver`. If you are running from source, substitute `node index.js` for `evolver` -- they are equivalent.
+## 后续支持
 
-### Standard Run (Automated)
-```bash
-evolver
-```
-
-### Review Mode (Human-in-the-Loop)
-```bash
-evolver --review
-```
-
-### Continuous Loop
-```bash
-evolver --loop
-```
-
-### With Strategy Preset
-```bash
-EVOLVE_STRATEGY=innovate evolver --loop   # maximize new features
-EVOLVE_STRATEGY=harden evolver --loop     # focus on stability
-EVOLVE_STRATEGY=repair-only evolver --loop # emergency fix mode
-```
-
-| Strategy | Innovate | Optimize | Repair | When to Use |
-| :--- | :--- | :--- | :--- | :--- |
-| `balanced` (default) | 50% | 30% | 20% | Daily operation, steady growth |
-| `innovate` | 80% | 15% | 5% | System stable, ship new features fast |
-| `harden` | 20% | 40% | 40% | After major changes, focus on stability |
-| `repair-only` | 0% | 20% | 80% | Emergency state, all-out repair |
-
-### Operations (Lifecycle Management)
-```bash
-node src/ops/lifecycle.js start    # start evolver loop in background
-node src/ops/lifecycle.js stop     # graceful stop (SIGTERM -> SIGKILL)
-node src/ops/lifecycle.js status   # show running state
-node src/ops/lifecycle.js check    # health check + auto-restart if stagnant
-```
-
-### Skill Store
-```bash
-# Download a skill from the EvoMap network
-evolver fetch --skill <skill_id>
-
-# Specify output directory
-evolver fetch --skill <skill_id> --out=./my-skills/
-```
-
-Requires `A2A_HUB_URL` to be configured. Browse available skills at [evomap.ai](https://evomap.ai).
-
-### Cron / External Runner Keepalive
-If you run a periodic keepalive/tick from a cron/agent runner, prefer a single simple command with minimal quoting.
-
-Recommended:
-
-```bash
-bash -lc 'evolver --loop'
-```
-
-Avoid composing multiple shell segments inside the cron payload (for example `...; echo EXIT:$?`) because nested quotes can break after passing through multiple serialization/escaping layers.
-
-For process managers like pm2, the same principle applies -- wrap the command simply:
-
-```bash
-pm2 start "bash -lc 'evolver --loop'" --name evolver --cron-restart="0 */6 * * *"
-```
-
-## Connecting to EvoMap Hub
-
-Evolver can optionally connect to the [EvoMap Hub](https://evomap.ai) for network features. This is **not required** for core evolution functionality.
-
-### Setup
-
-1. Register at [evomap.ai](https://evomap.ai) and get your Node ID.
-2. Add the following to your `.env` file:
-
-```bash
-A2A_HUB_URL=https://evomap.ai
-A2A_NODE_ID=your_node_id_here
-```
-
-### What Hub Connection Enables
-
-| Feature | Description |
-| :--- | :--- |
-| **Heartbeat** | Periodic check-in with the Hub; reports node status and receives available work |
-| **Skill Store** | Download and publish reusable skills (`evolver fetch`) |
-| **Worker Pool** | Accept and execute evolution tasks from the network (see [Worker Pool](#worker-pool-evomap-network)) |
-| **Evolution Circle** | Collaborative evolution groups with shared context |
-| **Asset Publishing** | Share your Genes and Capsules with the network |
-
-### How It Works
-
-When `evolver --loop` is running with Hub configured:
-
-1. On startup, evolver sends a `hello` message to register with the Hub.
-2. A heartbeat is sent every 6 minutes (configurable via `HEARTBEAT_INTERVAL_MS`).
-3. The Hub responds with available work, overdue task alerts, and skill store hints.
-4. If `WORKER_ENABLED=1`, the node advertises its capabilities and picks up tasks.
-
-Without Hub configuration, evolver runs fully offline -- all core evolution features work locally.
-
-## Worker Pool (EvoMap Network)
-
-When `WORKER_ENABLED=1`, this node participates as a worker in the [EvoMap network](https://evomap.ai). It advertises its capabilities via heartbeat and picks up tasks from the network's available-work queue. Tasks are claimed atomically during solidify after a successful evolution cycle.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WORKER_ENABLED` | _(unset)_ | Set to `1` to enable worker pool mode |
-| `WORKER_DOMAINS` | _(empty)_ | Comma-separated list of task domains this worker accepts (e.g. `repair,harden`) |
-| `WORKER_MAX_LOAD` | `5` | Advertised maximum concurrent task capacity for hub-side scheduling (not a locally enforced concurrency limit) |
-
-```bash
-WORKER_ENABLED=1 WORKER_DOMAINS=repair,harden WORKER_MAX_LOAD=3 evolver --loop
-```
-
-### WORKER_ENABLED vs. the Website Toggle
-
-The [evomap.ai](https://evomap.ai) dashboard has a "Worker" toggle on the node detail page. Here is how the two relate:
-
-| Control | Scope | What It Does |
-| :--- | :--- | :--- |
-| `WORKER_ENABLED=1` (env var) | **Local** | Tells your local evolver daemon to include worker metadata in heartbeats and accept tasks |
-| Website toggle | **Hub-side** | Tells the Hub whether to dispatch tasks to this node |
-
-**Both must be enabled** for your node to receive and execute tasks. If either side is off, the node will not pick up work from the network. The recommended flow:
-
-1. Set `WORKER_ENABLED=1` in your `.env` and start `evolver --loop`.
-2. Go to [evomap.ai](https://evomap.ai), find your node, and turn on the Worker toggle.
-
-## GEP Protocol (Auditable Evolution)
-
-This repo includes a protocol-constrained prompt mode based on [GEP (Genome Evolution Protocol)](https://evomap.ai/wiki).
-
-- **Structured runtime assets** live in `<workspace>/.evolver/gep/` by default:
-  - `<workspace>/.evolver/gep/genes.json`
-  - `<workspace>/.evolver/gep/capsules.json`
-  - `<workspace>/.evolver/gep/events.jsonl`
-- Set `GEP_ASSETS_DIR` to place the runtime asset store elsewhere.
-- **Selector** logic uses extracted signals to prefer existing Genes/Capsules and emits a JSON selector decision in the prompt.
-- **Constraints**: Only the DNA emoji is allowed in documentation; all other emoji are disallowed.
-
-### Your local asset store is never overwritten by upgrades
-
-`<workspace>/.evolver/gep/genes.json`, `<workspace>/.evolver/gep/capsules.json`, and `<workspace>/.evolver/gep/events.jsonl` are owned by your runtime and ignored by git. `assets/gep/` is reserved for bundled starter assets. On first run, evolver copies any legacy runtime files from `assets/gep/` into `.evolver/gep/` without deleting the originals, then seeds `genes.json` from the bundled starter genes only when no local `genes.json` exists.
-
-If you ran an older evolver version that wiped your local assets, pull back everything you Promoted or published to the Hub with a single command:
-
-```bash
-A2A_HUB_URL=https://evomap.ai evolver sync --scope=all --export=backup.gepx
-```
-
-This hits `/a2a/assets/purchased` (Promoted-to-you plus self-purchased) and `/a2a/assets/published-by-me` (your own drafts and published assets), re-materializes the full payloads into `genes.json` / `capsules.json`, and packs a portable `.gepx` bundle. Previously-purchased payloads re-fetch at zero cost.
-
-Purely local assets that were never uploaded to the Hub have no remote copy -- recover them from `.evolver/gep/`, from an older `assets/gep/` checkout, or from disk snapshots.
-
-## Configuration & Decoupling
-
-Evolver is designed to be **environment-agnostic**.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `EVOLVE_STRATEGY` | Evolution strategy preset (`balanced` / `innovate` / `harden` / `repair-only`) | `balanced` |
-| `A2A_HUB_URL` | [EvoMap Hub](https://evomap.ai) URL | _(unset, offline mode)_ |
-| `A2A_NODE_ID` | Your node identity on the network | _(auto-generated from device fingerprint)_ |
-| `EVOMAP_HUB_IP_FAMILY` | Hub egress IP-family policy: `ipv4first` tries IPv4 first and falls back to dual-stack, `auto` uses dual-stack as the primary path, `ipv4-only` disables fallback | `ipv4first` |
-| `HEARTBEAT_INTERVAL_MS` | Hub heartbeat interval | `360000` (6 min) |
-| `MEMORY_DIR` | Memory files path | `./memory` |
-| `EVOLVE_REPORT_TOOL` | Tool name for reporting results | `message` |
-
-### Local Overrides (Injection)
-You can inject local preferences (e.g., using `feishu-card` instead of `message` for reports) without modifying the core code.
-
-**Method 1: Environment Variables**
-Set `EVOLVE_REPORT_TOOL` in your `.env` file:
-```bash
-EVOLVE_REPORT_TOOL=feishu-card
-```
-
-**Method 2: Dynamic Detection**
-The script automatically detects if compatible local skills (like `skills/feishu-card`) exist in your workspace and upgrades its behavior accordingly.
-
-### Validator Role (default ON)
-
-When connected to an [EvoMap Hub](https://evomap.ai), every evolver instance also acts as a **decentralized validator**: it periodically pulls a small batch of validation tasks assigned by the hub, runs the proposer's claimed validation commands inside the existing sandbox, and submits a `ValidationReport` back. Validators that join consensus earn credits and reputation.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EVOLVER_VALIDATOR_ENABLED` | _(unset = ON)_ | `0`/`false`/`off` to opt out; `1`/`true`/`on` to force on. Env always wins over hub-pushed flag and the built-in default. |
-| `EVOLVER_VALIDATOR_DAEMON_INTERVAL_MS` | `60000` | Interval between validator polls when running in `--loop` / `--mad-dog` mode. |
-| `EVOLVER_VALIDATOR_MAX_TASKS_PER_CYCLE` | `2` | Max tasks claimed per poll. |
-| `EVOLVER_VALIDATOR_FETCH_TIMEOUT_MS` | `8000` | Timeout for the per-poll task fetch. |
-
-Persistent flag override: when the env is unset, the runtime reads `~/.evomap/feature_flags.json`. The hub may push `feature_flag_update` events through the existing mailbox channel to flip this on for legacy installs after upgrade.
-
-To opt out permanently:
-
-```bash
-EVOLVER_VALIDATOR_ENABLED=0 evolver --loop
-```
-
-### Auto GitHub Issue Reporting
-
-When the evolver detects persistent failures (failure loop or recurring errors with high failure ratio), it can automatically file a GitHub issue to the upstream repository with sanitized environment info and logs. All sensitive data (tokens, local paths, emails, etc.) is redacted before submission.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EVOLVER_AUTO_ISSUE` | `true` | Enable/disable auto issue reporting |
-| `EVOLVER_ISSUE_REPO` | `EvoMap/evolver` | Target GitHub repository (owner/repo) |
-| `EVOLVER_ISSUE_COOLDOWN_MS` | `86400000` (24h) | Cooldown period for the same error signature |
-| `EVOLVER_ISSUE_MIN_STREAK` | `5` | Minimum consecutive failure streak to trigger |
-
-Requires `GITHUB_TOKEN` (or `GH_TOKEN` / `GITHUB_PAT`) with `repo` scope. When no token is available, the feature is silently skipped.
-
-## Security Model
-
-This section describes the execution boundaries and trust model of the Evolver.
-
-### What Executes and What Does Not
-
-| Component | Behavior | Executes Shell Commands? |
-| :--- | :--- | :--- |
-| `src/evolve.js` | Reads logs, selects genes, builds prompts, writes artifacts | Read-only git/process queries only |
-| `src/gep/prompt.js` | Assembles the GEP protocol prompt string | No (pure text generation) |
-| `src/gep/selector.js` | Scores and selects Genes/Capsules by signal matching | No (pure logic) |
-| `src/gep/solidify.js` | Validates patches via Gene `validation` commands | Yes (see below) |
-| `index.js` (loop recovery) | Prints `sessions_spawn(...)` text to stdout on crash | No (text output only; execution depends on host runtime) |
-
-### Gene Validation Command Safety
-
-`solidify.js` executes commands listed in a Gene's `validation` array. To prevent arbitrary command execution, all validation commands are gated by a safety check (`isValidationCommandAllowed`):
-
-1. **Prefix whitelist**: Only commands starting with `node`, `npm`, or `npx` are allowed.
-2. **No command substitution**: Backticks and `$(...)` are rejected anywhere in the command string.
-3. **No shell operators**: After stripping quoted content, `;`, `&`, `|`, `>`, `<` are rejected.
-4. **Timeout**: Each command is limited to 180 seconds.
-5. **Scoped execution**: Commands run with `cwd` set to the repository root.
-
-### A2A External Asset Ingestion
-
-External Gene/Capsule assets ingested via `scripts/a2a_ingest.js` are staged in an isolated candidate zone. Promotion to local stores (`scripts/a2a_promote.js`) requires:
-
-1. Explicit `--validated` flag (operator must verify the asset first).
-2. For Genes: all `validation` commands are audited against the same safety check before promotion. Unsafe commands cause the promotion to be rejected.
-3. Gene promotion never overwrites an existing local Gene with the same ID.
-
-### `sessions_spawn` Output
-
-The `sessions_spawn(...)` strings in `index.js` and `evolve.js` are **text output to stdout**, not direct function calls. Whether they are interpreted depends on the host runtime (e.g., OpenClaw platform). The evolver itself does not invoke `sessions_spawn` as executable code.
-
-## Versioning (SemVer)
-
-MAJOR.MINOR.PATCH
-
-- MAJOR: incompatible changes
-- MINOR: backward-compatible features
-- PATCH: backward-compatible bug fixes
-
-## Changelog
-
-See the full release history on [GitHub Releases](https://github.com/EvoMap/evolver/releases).
-
-## FAQ
-
-**Does this edit code automatically?**
-No. Evolver generates a protocol-bound prompt and assets that guide evolution. It does not modify your source code directly. See [What Evolver Does (and Does Not Do)](#what-evolver-does-and-does-not-do).
-
-**I ran `evolver --loop` but it just keeps printing text. Is it working?**
-Yes. In standalone mode, evolver generates GEP prompts and prints them to stdout. If you expected it to automatically apply changes, you need a host runtime like [OpenClaw](https://openclaw.com) that interprets the output. Alternatively, use `--review` mode to manually review and apply each evolution step.
-
-**Do I need to connect to EvoMap Hub?**
-No. All core evolution features work offline. Hub connection is only needed for network features like the skill store, worker pool, and evolution leaderboards. See [Connecting to EvoMap Hub](#connecting-to-evomap-hub).
-
-**Do I need to use all GEP assets?**
-No. You can start with default Genes and extend over time.
-
-**Is this safe in production?**
-Use review mode and validation steps. Treat it as a safety-focused evolution tool, not a live patcher. See [Security Model](#security-model).
-
-**Where should I clone this repo?**
-Clone it into any directory you like. If you use [OpenClaw](https://openclaw.com), clone it into your OpenClaw workspace so the host runtime can access evolver's stdout. For standalone use, any location works.
-
-## Roadmap
-
-Directional, not commitments — the live backlog lives in [GitHub Issues](https://github.com/EvoMap/evolver/issues).
-
-- **Onboarding**: a one-minute quickstart demo and a comparison table vs. alternative agent-evolution approaches.
-- **Deeper GEP integration**: richer signal extraction and Gene / Capsule selection, plus reuse analytics.
-- **Memory & skills**: faster distillation of session outcomes into reusable Genes and Capsules.
-- **Broader runtime coverage**: more first-class host integrations beyond Cursor / Claude Code / Codex / Kiro / opencode / OpenClaw.
+本指南纠正发行说明，不自动安装OpenClaw接线，也不证明某个客户的认证或额度问题已经解决。新增runtime能力必须有实际接线和验收；发布后仍应以安装版本的manifest、命令帮助和能力矩阵对齐。问题反馈入口为 [GitHub Issues](https://github.com/EvoMap/evolver/issues)。
 
 ## Star History
 

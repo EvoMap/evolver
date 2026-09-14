@@ -13,7 +13,7 @@
 //   - payload cache: assetId → phase-3 payload (content-addressed, long/permanent, bounded LRU). A cached
 //     payload → ZERO fetch. Both clocks are injected so TTL/eviction is deterministic and testable.
 import { createHash } from 'node:crypto';
-import { hub, algo, signals as signalNs, wire } from '@evomap/evolver-core';
+import { reference, hub, algo, signals as signalNs, wire } from '@evomap/evolver-core';
 const { scoreSearchResults, decideReuse, DEFAULT_MIN_REUSE_SCORE, } = hub;
 const GENE_WIRE_KEYS = new Set([
     'type',
@@ -280,6 +280,7 @@ export function stripHubDeliveryMetadataForIntegrity(rec) {
  * price/credit field by simply not reading it — the core HubMetadata has no slot for cost.
  */
 export function toHubMetadata(rec) {
+    reference.assertExecutionEligible(rec);
     const r = rec;
     const assetId = String(r['asset_id'] ?? r['assetId'] ?? '');
     const updatedAt = ts(r['updated_at'] ?? r['updatedAt'] ?? r['created_at'] ?? r['createdAt']);
@@ -303,6 +304,7 @@ export function toHubMetadata(rec) {
 }
 /** Map a fetched hub asset (full payload) → a selection candidate so it competes in candidateAssembly. */
 export function toGeneCandidate(rec) {
+    reference.assertExecutionEligible(rec);
     const r = rec;
     const assetId = String(r['asset_id'] ?? r['assetId'] ?? '');
     const geneId = typeof r['id'] === 'string' ? r['id'] : assetId;
@@ -562,6 +564,8 @@ function normalizeMatchedAssetId(asset, assetId) {
     return normalized;
 }
 export function assetMatchesId(asset, assetId) {
+    if (!reference.isExecutionEligible(asset) || !reference.isExecutionEligible(assetId))
+        return false;
     if (!asset)
         return false;
     const record = asset;

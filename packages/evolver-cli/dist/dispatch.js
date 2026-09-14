@@ -21,6 +21,7 @@ import { runRecallVerifyReportCommand } from './recallVerifyReport.js';
 import { runDoctorCommand } from './doctor.js';
 import { runPhubCommand } from './phub.js';
 import { runTrajectoryExport } from './trajectoryExport.js';
+import { runReferenceCommand } from './reference.js';
 import { runSyncCommand } from './sync.js';
 import { runAntiGeneBenchmarkCommand } from './antiGeneBenchmark.js';
 import { runAntiGeneRolloutCommand } from './antiGeneRollout.js';
@@ -67,6 +68,7 @@ const ASYNC_COMMAND_TABLE = {
     recipe: runRecipeCommand,
     reuse: runReuseCommand,
     publish: runPublishCommand,
+    reference: runReferenceCommand,
     sync: runSyncCommand,
     recall: runRecallCommand,
     'reuse-report': runReuseReportCommand,

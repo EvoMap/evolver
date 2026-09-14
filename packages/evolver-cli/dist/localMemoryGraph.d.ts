@@ -68,6 +68,7 @@ export declare class MemoryGraphBusyError extends Error {
 }
 export declare class LocalMemoryGraph implements algo.MemoryGraphProvider {
     private readonly dir;
+    private readonly referenceScope;
     private readonly userScope;
     private readonly readableUserScopes;
     private readonly now;

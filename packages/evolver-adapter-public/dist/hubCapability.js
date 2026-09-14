@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { bootstrap, hub as hubNs, signals, wire } from '@evomap/evolver-core';
-import { AuthError, HubFetch, HubClientError, isHubUnreachableError } from './hubFetch.js';
+import { bootstrap, reference, hub as hubNs, signals, wire } from '@evomap/evolver-core';
+import { AuthError, HubFetch, HubClientError, globalFetchLike, referenceFetchLike, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire, searchQueryToSearchOnlyWire, } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
@@ -96,6 +96,7 @@ function traceOutboundMaxBodyBytes(env = process.env) {
  */
 export class PublicHubCapability {
     opts;
+    referenceScope = new reference.ReferenceSessionScope();
     http;
     malformedPublish2xxCount = 0;
     lastMalformedPublish2xxAt;
@@ -259,6 +260,7 @@ export class PublicHubCapability {
         return Object.keys(meta).length > 0 ? meta : undefined;
     }
     async publish(bundle, options = {}) {
+        reference.assertExecutionEligible(bundle, this.referenceScope);
         const normalizedIdempotencyKey = options.idempotencyKey?.trim();
         if (options.idempotencyKey !== undefined && !normalizedIdempotencyKey) {
             return {
@@ -307,12 +309,26 @@ export class PublicHubCapability {
             // Observability must never change publish outcome or retry behavior.
         }
     }
+    references = {
+        fetch: async (query) => {
+            const normalized = normalizePublicReferenceQuery(query);
+            const http = new HubFetch({ baseUrl: this.opts.baseUrl, auth: this.auth, senderId: this.opts.senderId,
+                fetchFn: this.opts.fetchFn === globalFetchLike ? referenceFetchLike : this.opts.fetchFn });
+            const body = await http.call('POST', '/a2a/fetch', gepEnvelope('fetch', {
+                ...normalized, evidence_mode: 'reference_only',
+            }));
+            const page = reference.decodeReferencePage(body, true);
+            this.referenceScope.remember(page.results.flatMap((p) => [p.gene.asset_id, p.capsule.asset_id, String(p.gene['id']), String(p.capsule['id'])]));
+            return page;
+        },
+    };
     async fetch(query) {
+        reference.assertExecutionEligible(query, this.referenceScope);
         // #69: map camelCase SearchQuery → hub snake_case wire (signalsAny → signals) before sending.
         // /a2a/fetch responses are FULL GEP envelopes (buildResponse('fetch', …)); the rows live at payload.results,
         // NOT at the top level. Reading body.results here always yielded [] — every fetch silently returned nothing.
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToFetchWire(query)));
-        return assetsFromBody(body);
+        return reference.withReferenceScope(this.referenceScope, () => assetsFromBody(body));
     }
     /**
      * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to
@@ -320,12 +336,13 @@ export class PublicHubCapability {
      * client refuses" — and the CLI reported both as `not_found` on assets that demonstrably exist (#964).
      */
     async fetchAssetDeliveryById(assetId, options) {
+        reference.assertExecutionEligible(assetId, this.referenceScope);
         const id = assetId.trim();
         if (!id)
             return { status: 'absent' };
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', { asset_ids: [id] }));
         const matches = [];
-        for (const row of assetCandidatesFromBody(body)) {
+        for (const row of reference.withReferenceScope(this.referenceScope, () => assetCandidatesFromBody(body))) {
             const asset = unwrapFetchDeliveryRow(row);
             if (!fetchDeliveryIdentityConsistent(row, asset))
                 return { status: 'rejected', reason: 'identity_mismatch' };
@@ -371,6 +388,7 @@ export class PublicHubCapability {
      * so text must not go there and paid/full fetch must remain an explicit follow-up.
      */
     async search(query) {
+        reference.assertExecutionEligible(query, this.referenceScope);
         if (query.text && query.text.trim()) {
             // GET /a2a/assets/semantic-search returns a FLAT object keyed `assets` (no GEP envelope), plus a
             // `search_status` (found / degraded(retryable) / low_confidence_only / no_match). Only an explicit
@@ -381,10 +399,10 @@ export class PublicHubCapability {
                 ...(query.domain !== undefined ? { domain: query.domain } : {}),
                 ...(query.limit !== undefined ? { limit: query.limit } : {}),
             });
-            return semanticSearchAssets(body);
+            return reference.withReferenceScope(this.referenceScope, () => semanticSearchAssets(body));
         }
         const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToSearchOnlyWire(query)));
-        return signalSearchAssets(body);
+        return reference.withReferenceScope(this.referenceScope, () => signalSearchAssets(body));
     }
     agentDirectory = {
         search: async (request) => {
@@ -469,6 +487,8 @@ export class PublicHubCapability {
      * Costs hub credits per the hub's memory pricing (caller gates on enablement).
      */
     async recordOutcome(report) {
+        if (!reference.isExecutionEligible(report, this.referenceScope))
+            return { recorded: false, reason: 'reference_not_execution_evidence' };
         const signals = report.signals.map((s) => String(s).trim()).filter(Boolean);
         if (signals.length === 0)
             return { recorded: false, reason: 'no_signals' }; // hub rejects empty signals; skip the paid call
@@ -489,6 +509,8 @@ export class PublicHubCapability {
         }
     }
     async recordMemoryEvent(report) {
+        if (!reference.isExecutionEligible(report, this.referenceScope))
+            return { recorded: false, reason: 'reference_not_execution_evidence' };
         const sender = this.opts.senderId()?.trim();
         if (!sender)
             return { recorded: false, reason: 'sender_id_required' };
@@ -507,6 +529,8 @@ export class PublicHubCapability {
         }
     }
     async recordReuseResult(report) {
+        if (!reference.isExecutionEligible(report, this.referenceScope))
+            return { recorded: false, reason: 'reference_not_execution_evidence' };
         const assetId = report.assetId.trim();
         if (!assetId)
             return { recorded: false, reason: 'asset_id_required' };
@@ -553,6 +577,8 @@ export class PublicHubCapability {
         }
     }
     async recordLearningAssetUsage(report) {
+        if (!reference.isExecutionEligible(report, this.referenceScope))
+            return { recorded: false, results: [], reason: 'reference_not_execution_evidence' };
         if (!this.opts.senderId()?.trim())
             return { recorded: false, reason: 'sender_id_required', results: [] };
         const sourceEventId = trimStringField(report.sourceEventId, 160);
@@ -707,6 +733,7 @@ export class PublicHubCapability {
             return { claimId: event.id };
         },
         complete: async (claimId, _result, context) => {
+            reference.assertExecutionEligible({ result: _result, payload: context }, this.referenceScope);
             if (typeof context?.taskId !== 'string' || !context.taskId.trim()
                 || typeof context.assetId !== 'string' || !context.assetId.trim()) {
                 throw new hubNs.PublishRejectedError('invalid_task_completion', true, 'task completion requires explicit taskId and assetId', undefined, false);
@@ -867,6 +894,7 @@ function searchAssets(value, source) {
     });
 }
 function semanticSearchAssets(body) {
+    reference.assertExecutionEligible(body);
     const status = stringField(body, 'search_status');
     if (status === 'degraded' || body['retryable'] === true)
         throw new Error('semantic_search_degraded');
@@ -887,6 +915,7 @@ function semanticSearchAssets(body) {
     throw new Error('semantic_search_status_invalid');
 }
 function signalSearchAssets(body) {
+    reference.assertExecutionEligible(body);
     const payload = asRecord(body['payload']);
     return searchAssets(payload?.['results'], 'signal_search');
 }
@@ -997,6 +1026,7 @@ function dryRunRecipeReceipt(action, recipeId, extra = {}) {
     };
 }
 function assetCandidatesFromBody(body) {
+    reference.assertExecutionEligible(body);
     const payload = asRecord(body['payload']);
     const candidates = [
         body['asset'],
@@ -1606,4 +1636,12 @@ function forceUpdateFromRecord(value) {
         ...(staggerWindowMs !== undefined ? { stagger_window_ms: staggerWindowMs } : {}),
     };
     return directive.required_version || directive.manifest !== undefined ? directive : undefined;
+}
+/** Public Hub contract is narrower than local storage; reject, never silently truncate. */
+export function normalizePublicReferenceQuery(query) {
+    const normalized = reference.normalizeReferenceQuery(query);
+    if ((normalized.max_assets ?? 20) > 50 || (normalized.query?.length ?? 0) > 500 || (normalized.signals?.length ?? 0) > 50) {
+        throw new Error('reference_public_query_limit: max_assets<=50, query<=500, signals<=50');
+    }
+    return normalized;
 }

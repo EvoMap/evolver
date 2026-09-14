@@ -1,3 +1,4 @@
+import { type ReferenceScope } from '../reference/guard.js';
 import type { HubCapability, HubBindings, PublishReceipt } from './capability.js';
 import { type LeakCheckMode } from './sanitize.js';
 /** publish 回执非 accepted → 抛此错; SyncEngine 据 terminal 决定是否重试. */
@@ -10,6 +11,7 @@ export declare class PublishRejectedError extends Error {
 }
 /** makeHubBindings options. Pre-publish sanitize is on by default (both public + private adapters share this single chokepoint). */
 export interface HubBindingsOptions {
+    referenceScope?: ReferenceScope;
     sanitize?: {
         /** Default true: deep-redact + leak-scan before egress. Off = raw publish (tests / special cases only). */
         enabled?: boolean;

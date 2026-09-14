@@ -1,4 +1,6 @@
-import { dirname, join } from 'node:path';
+import { assertExecutionEligible } from '../reference/guard.js';
+import { loadReferenceFence } from '../reference/store.js';
+import { basename, dirname, join } from 'node:path';
 import { EventStore } from './eventStore.js';
 import { createIssueDraftForEventBestEffort } from '../issueReporter/index.js';
 /** 已知事件类型 (军杰 §9; 可 registerEventType 扩展). */
@@ -43,12 +45,18 @@ export class UnknownEventTypeError extends Error {
 /** root_events 的全仓唯一写入口 (军杰 §9.2). EventStore 不对外暴露 (见 public.ts). */
 export class Ingestor {
     store;
+    referenceScope;
     sink;
     constructor(opts) {
         this.store = 'store' in opts ? opts.store : new EventStore(opts);
         this.sink = opts.sink;
+        const eventDir = dirname(this.store.path);
+        this.referenceScope = loadReferenceFence(join(basename(eventDir) === 'evolution' ? dirname(eventDir) : eventDir, 'assets'));
     }
     async ingest(raw) {
+        if (raw.type.startsWith('value.') || ['capsule.produced', 'evolution_event.projected', 'cycle.solidified', 'decision.gene_selected', 'execution.started', 'execution.terminal'].includes(raw.type)) {
+            assertExecutionEligible(raw.payload, this.referenceScope);
+        }
         if (!isKnownEventType(raw.type))
             throw new UnknownEventTypeError(raw.type);
         if (!raw.human || typeof raw.human.title !== 'string' || raw.human.title.length === 0)

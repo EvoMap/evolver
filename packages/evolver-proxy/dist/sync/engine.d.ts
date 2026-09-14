@@ -1,4 +1,4 @@
-import { mailbox, hub as hubNs } from '@evomap/evolver-core';
+import { reference, mailbox, hub as hubNs } from '@evomap/evolver-core';
 type MailboxStore = mailbox.MailboxStore;
 type Envelope = mailbox.Envelope;
 type HubCapability = hubNs.HubCapability;
@@ -13,6 +13,7 @@ export declare const MAX_BATCH = 50;
 export declare const IDLE_THRESHOLD_MS: number;
 export interface SyncEngineDeps {
     store: MailboxStore;
+    referenceStore?: reference.ReferenceStore;
     hub: HubCapability;
     /** = makeHubBindings(hub).asProxyHandler(); outbound 推送复用 Dispatcher 同一 handler. */
     proxyHandler: (e: Envelope) => Promise<unknown>;
@@ -48,6 +49,8 @@ export interface InboundResult {
     enqueued: number;
     nextPollAfterMs?: number;
     hasMore: boolean;
+    storedReferences?: number;
+    rejectedReferences?: number;
 }
 export declare class SyncEngine {
     private readonly deps;

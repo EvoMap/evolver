@@ -352,6 +352,7 @@ export type AssetDeliveryOutcome = {
     reason: AssetDeliveryRejection;
 };
 export interface HubCapability {
+    references?: import('../reference/decoder.js').ReferenceCapability;
     /**
      * 异步发布. 公版 /a2a/publish 收 **bundle**[Gene,Capsule,(EvolutionEvent)](一个 cycle 的产物一起发, +GDI);
      * 传单资产=[asset]。core 已 normalizeForPut(算/校验 asset_id), hub 做经济/治理/质量 gate。

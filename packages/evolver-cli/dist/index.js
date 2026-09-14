@@ -1,4 +1,4 @@
-import { events, ops, hooks, mailbox, hub as hubNs } from '@evomap/evolver-core';
+import { reference, events, ops, hooks, mailbox, hub as hubNs } from '@evomap/evolver-core';
 import { readEvents, statusReport, listCycles, showCycle, listTriggers, buildNarrativeSnapshot, buildRetentionReport, dailyCapsuleCount } from './commands.js';
 import { runGeneValue } from './geneValue.js';
 import { assetstore, algo, signals, material as materialNs } from '@evomap/evolver-core';
@@ -1201,7 +1201,7 @@ export function runValue(argv, deps = {}) {
     const evts = readEvents(deps.eventsPath ?? events.rootEventsPath());
     const prices = deps.prices ?? loadPriceTable();
     const window = ops.windowFromSpec(windowSpec, now);
-    const summary = ops.loadValueSummary({ traces, events: evts, prices }, window);
+    const summary = ops.loadValueSummary({ traces, events: evts, prices, referenceScope: reference.referenceScopeForEventsPath(deps.eventsPath ?? events.rootEventsPath()) }, window);
     process.stdout.write(ops.formatValueReport(summary, windowSpec) + '\n');
     return 0;
 }
@@ -1668,7 +1668,7 @@ export async function runInject(argv, deps = {}) {
     const traces = ops.readTraceRecords(deps.tracesDir ?? events.tracesDir());
     const evts = readEvents(deps.eventsPath ?? events.rootEventsPath());
     const prices = deps.prices ?? loadPriceTable();
-    const summary = ops.loadValueSummary({ traces, events: evts, prices }, ops.windowFromSpec('7d', now));
+    const summary = ops.loadValueSummary({ traces, events: evts, prices, referenceScope: reference.referenceScopeForEventsPath(deps.eventsPath ?? events.rootEventsPath()) }, ops.windowFromSpec('7d', now));
     // Inject emission seam (#123): wire the ingestor so core's onInject lands a `value.inject` root_event. The
     // composition (Ingestor ↔ core's sink-agnostic seam) lives HERE in the CLI — core never imports the Ingestor.
     const emitter = makeInjectEmitter(ingestor);

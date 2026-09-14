@@ -1,3 +1,4 @@
+import { assertExecutionEligible } from '../reference/guard.js';
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -221,6 +222,7 @@ export function computeExecutionBindingDigest(input) {
     return sha256(canonicalExecutionBinding(input));
 }
 export function freezeExecutionBinding(input) {
+    assertExecutionEligible(input);
     const parsed = parseOrThrow(input);
     const targetDigest = computeTargetDigest(parsed.target_descriptor);
     if (parsed.target_digest !== targetDigest) {

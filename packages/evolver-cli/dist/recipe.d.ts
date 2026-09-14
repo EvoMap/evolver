@@ -62,6 +62,7 @@ export interface RecipeSearchOptions {
 }
 export type RecipeOptions = RecipeBuildOptions | RecipeReuseOptions | RecipeFromSkillsOptions | RecipeSearchOptions;
 export declare function runRecipeCommand(argv: readonly string[], deps?: RecipeCliDeps): Promise<number>;
+export declare function ensureRecipeHubIdentity(hub: RecipeHub): Promise<void>;
 export declare function createRecipeHubFromEnv(env?: NodeJS.ProcessEnv, connectHub?: (opts: ConnectPublicOptions) => {
     hub: PublicHubCapability;
     auth: hubNs.AuthProvider;

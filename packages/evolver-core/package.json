@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-core",
-  "version": "2.0.34",
+  "version": "2.0.35",
   "private": false,
   "type": "module",
   "engines": {
@@ -16,7 +16,7 @@
     }
   },
   "dependencies": {
-    "@evomap/gep-sdk": "1.13.0",
+    "@evomap/gep-sdk": "1.14.0",
     "ajv": "^8.20.0",
     "ulid": "^2.3.0",
     "zod": "^3.24.1"

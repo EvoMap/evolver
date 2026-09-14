@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify } from '@evomap/evolver-core';
+import { reference, mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError } from '@evomap/evolver-adapter-public';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
@@ -90,6 +90,7 @@ export class ProxyDaemon {
     sync;
     lifecycle;
     assetStore;
+    referenceStore;
     remoteAssetById;
     reuseResultReporter;
     validator;
@@ -161,12 +162,16 @@ export class ProxyDaemon {
         }
         const assetStoreDir = deps.assetStoreDir ?? (deps.storePath ? join(dirname(deps.storePath), 'assets') : undefined);
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
+        const referenceBase = assetStoreDir ?? deps.assetStore?.baseDir;
+        this.referenceStore = referenceBase ? new reference.ReferenceStore(join(referenceBase, 'references')) : undefined;
+        this.referenceStore?.search({ max_assets: 1 });
         this.atp = deps.atp;
         const hubToUse = shadow ? shadow_.shadowHubCapability(deps.hub, deps.shadowSink, 'shadow') : deps.hub;
         this.hub = hubToUse;
-        const hubBindings = hubNs.makeHubBindings(hubToUse, deps.publishSanitizeEnv
-            ? { sanitize: { env: deps.publishSanitizeEnv } }
-            : {});
+        const hubBindings = hubNs.makeHubBindings(hubToUse, {
+            referenceScope: this.referenceStore?.scope,
+            ...(deps.publishSanitizeEnv ? { sanitize: { env: deps.publishSanitizeEnv } } : {}),
+        });
         this.proxyHandler = hubBindings.asProxyHandler();
         const proxyHandler = this.proxyHandler;
         const syncProxyHandler = (envelope) => this.handleHubModeBoundOutbound(envelope);
@@ -218,6 +223,7 @@ export class ProxyDaemon {
         });
         this.sync = new SyncEngine({
             store: this.store, hub: hubToUse, proxyHandler: syncProxyHandler, now: this.now,
+            ...(this.referenceStore ? { referenceStore: this.referenceStore } : {}),
             ...(deps.runtimeNamespace ? { runtimeNamespace: deps.runtimeNamespace } : {}),
             onOutboundSucceeded: (envelope, result) => {
                 this.collaborationFacade.handleOutboundSucceeded(envelope, result);
@@ -315,7 +321,7 @@ export class ProxyDaemon {
                         this.notifyNewOutbound();
                 },
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
-                extraRoutes: [(ctx) => this.handleProxyRoute(ctx)],
+                extraRoutes: [(ctx) => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx))],
             });
             const port = await this.listenIpc(this.ipc);
             try {
@@ -870,8 +876,56 @@ export class ProxyDaemon {
         }
         if (await this.collaborationFacade.handle(ctx))
             return true;
+        if (['POST /reference/import', 'POST /reference/search', 'POST /reference/fetch', 'POST /reference/context'].includes(ctx.route)) {
+            const body = asRecord(await ctx.readJson());
+            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
+            if (!this.referenceStore) {
+                ctx.json(503, { error: 'reference_store_not_configured' });
+                return true;
+            }
+            try {
+                if (ctx.route === 'POST /reference/import')
+                    ctx.json(200, this.referenceStore.import(body['batch']));
+                else {
+                    const query = reference.normalizeReferenceQuery(asRecord(body['query']));
+                    if (ctx.route === 'POST /reference/search')
+                        ctx.json(200, this.referenceStore.search(query));
+                    else if (ctx.route === 'POST /reference/context')
+                        ctx.json(200, this.referenceStore.context(query, body['max_chars'] === undefined ? undefined : Number(body['max_chars'])));
+                    else {
+                        if (this.hubAuthFailed()) {
+                            ctx.json(401, this.hubAuthFailureBody());
+                            return true;
+                        }
+                        if (!this.hub.references) {
+                            ctx.json(501, { error: 'reference_hub_unsupported' });
+                            return true;
+                        }
+                        const page = reference.decodeReferencePage(await this.hub.references.fetch(query), true);
+                        const receipt = page.results.length ? this.referenceStore.import(page.results, 'hub') : { status: 'stored_reference', stored: 0, duplicates: 0, asset_ids: [], executable: false };
+                        ctx.json(200, { ...receipt, ...page });
+                    }
+                }
+            }
+            catch (error) {
+                if (isAuthLikeError(error)) {
+                    this.markHubAuthFailed(error);
+                    ctx.json(401, this.hubAuthFailureBody());
+                }
+                else
+                    ctx.json(400, { error: safeDaemonErrorMessage(error, MAX_PROXY_TICK_ERROR_LENGTH) });
+            }
+            return true;
+        }
         if (ctx.route === 'POST /asset/search') {
             const body = (await ctx.readJson());
+            if (reference.hasEvidenceMode(body)) {
+                ctx.json(400, { error: 'use_reference_endpoint' });
+                return true;
+            }
             if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
                 ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
                 return true;
@@ -1004,6 +1058,10 @@ export class ProxyDaemon {
         }
         if (ctx.route === 'POST /asset/fetch') {
             const body = (await ctx.readJson());
+            if (reference.hasEvidenceMode(body)) {
+                ctx.json(400, { error: 'use_reference_endpoint' });
+                return true;
+            }
             if (hubModeMismatch(body.expected_hub_mode, this.deps.hubMode)) {
                 ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
                 return true;
@@ -1186,6 +1244,10 @@ export class ProxyDaemon {
             const body = await ctx.readJson();
             if (hubModeMismatch(asRecord(body)['expected_hub_mode'], this.deps.hubMode)) {
                 ctx.json(409, { recorded: false, error: 'proxy_hub_mode_mismatch' });
+                return true;
+            }
+            if (!reference.isExecutionEligible(body, this.referenceStore?.scope)) {
+                ctx.json(200, { recorded: false, reason: 'reference_not_execution_evidence' });
                 return true;
             }
             const parsed = parseReuseResultReport(body);
@@ -1372,6 +1434,7 @@ export class ProxyDaemon {
                 throw error;
             remote = [];
         }
+        reference.assertExecutionEligible(remote, this.referenceStore?.scope);
         if (localSafe.length === 0)
             return remote.slice(0, limit);
         if (remote.length === 0)
@@ -1896,6 +1959,8 @@ function isValidator(value) {
     return Boolean(value && typeof value === 'object' && typeof value.validate === 'function');
 }
 function assetMatchesId(asset, assetId) {
+    if (!reference.isExecutionEligible(asset) || !reference.isExecutionEligible(assetId))
+        return false;
     if (!asset)
         return false;
     return assetId.startsWith('sha256:')

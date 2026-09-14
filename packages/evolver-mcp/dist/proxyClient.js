@@ -18,6 +18,9 @@ export class EvolverProxyClient {
     status(opts = {}) {
         return this.call('GET', '/proxy/status', undefined, opts);
     }
+    reference(operation, input) {
+        return this.call('POST', `/reference/${operation}`, this.modeBoundBody(input));
+    }
     search(args) {
         const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
         return this.call('POST', '/asset/search', {

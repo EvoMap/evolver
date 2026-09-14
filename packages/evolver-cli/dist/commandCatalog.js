@@ -43,6 +43,7 @@ export const COMMAND_GROUPS = {
     'asset-health': 'Assets',
     'asset-repair': 'Assets',
     material: 'Assets',
+    reference: 'Assets',
     recipe: 'Assets',
     skill: 'Assets',
     login: 'Hub',

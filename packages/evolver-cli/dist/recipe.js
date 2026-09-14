@@ -149,6 +149,9 @@ function runRecipeReuseDryRun(opts, io) {
     }
     return 0;
 }
+export async function ensureRecipeHubIdentity(hub) {
+    await recipeIdentityBootstraps.get(hub)?.();
+}
 export function createRecipeHubFromEnv(env = process.env, connectHub = connectPublicHub) {
     loadEnvFileFromEnv(env);
     const hubUrl = resolveRecipeHubUrl(env);

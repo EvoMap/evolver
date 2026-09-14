@@ -16,6 +16,12 @@ export const MAX_IN_FLIGHT_REQUESTS = 32;
 export const MAX_PENDING_STDIO_FRAMES = 64;
 export const MAX_PENDING_STDIO_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+// Desktop owns a two-minute irreversible-action deadline. Keep transport alive
+// slightly longer so the user's decision, not the stdio proxy, settles tools/call.
+const TOOL_CALL_REQUEST_TIMEOUT_MS = 130_000;
+export function productBridgeRequestTimeoutMs(method) {
+    return method === 'tools/call' ? TOOL_CALL_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+}
 export function grantFilePath(env = process.env) {
     const override = String(env['EVOX_PRODUCT_BRIDGE_GRANT_FILE'] ?? '').trim();
     if (override)
@@ -104,7 +110,7 @@ function postJson(url, body, headers) {
                 }
             });
         });
-        req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        req.setTimeout(productBridgeRequestTimeoutMs(body?.method), () => {
             req.destroy(new Error('product-bridge request timed out'));
         });
         req.on('error', reject);

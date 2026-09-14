@@ -1,3 +1,5 @@
+import { assertExecutionEligible, isExecutionEligible } from '../reference/guard.js';
+import { loadReferenceFence } from '../reference/store.js';
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
@@ -38,11 +40,13 @@ export class LocalJsonlProvider {
     bundleJournalPath;
     fileState = new Map();
     loaded = false;
+    referenceScope;
     // `baseDir` is public-readonly so callers that inject a store (e.g. the CLI under test) can co-locate sidecars
     // — the ReviewLedger/ProvenanceStore — in the SAME directory, instead of defaulting to the real ~/.evomap.
     constructor(baseDir) {
         this.baseDir = baseDir;
         ensureAssetStoreDirectory(baseDir);
+        this.referenceScope = loadReferenceFence(baseDir);
         this.lockPath = join(baseDir, '.assetstore.lock');
         this.bundleJournalPath = join(baseDir, BUNDLE_JOURNAL_FILE);
     }
@@ -148,7 +152,7 @@ export class LocalJsonlProvider {
             return;
         this.refreshUnderLock();
         for (const pendingRecord of pending) {
-            const { record } = normalizeForPut(pendingRecord);
+            const { record } = normalizeForPut(pendingRecord, this.referenceScope);
             if (record.asset_id !== pendingRecord.asset_id)
                 throw new Error('asset store bundle journal asset_id mismatch');
             const existing = this.index.get(record.asset_id);
@@ -171,7 +175,7 @@ export class LocalJsonlProvider {
         return this.putConditional(asset, { allowLogicalCollision: true });
     }
     async putConditional(asset, options) {
-        const { record, verified } = normalizeForPut(asset);
+        const { record, verified } = normalizeForPut(asset, this.referenceScope);
         const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
         const logicalId = typeof record.id === 'string' ? record.id : undefined;
         let collision;
@@ -231,7 +235,7 @@ export class LocalJsonlProvider {
             return [];
         if (assets.length > MAX_BUNDLE_ASSETS)
             throw new Error('asset store bundle is too large');
-        const normalized = assets.map((asset) => normalizeForPut(asset));
+        const normalized = assets.map((asset) => normalizeForPut(asset, this.referenceScope));
         const seen = new Map();
         for (const normalizedRecord of normalized) {
             const { record } = normalizedRecord;
@@ -287,6 +291,7 @@ export class LocalJsonlProvider {
         return this.putFrozenConditional(record, { allowLogicalCollision: true });
     }
     async putFrozenConditional(record, options = {}) {
+        assertExecutionEligible(record, this.referenceScope);
         if (!record.asset_id)
             throw new Error('putFrozen 需 record 自带冻结 asset_id');
         const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
@@ -341,13 +346,16 @@ export class LocalJsonlProvider {
     }
     async get(assetId) {
         this.ensureFresh();
-        return this.index.get(assetId) ?? null;
+        const asset = this.index.get(assetId);
+        return asset && isExecutionEligible(asset, this.referenceScope) ? asset : null;
     }
     async findByLogicalId(id, limit = 2, kind) {
         this.ensureFresh();
         const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(1_000, Math.floor(limit))) : 2;
         const out = [];
         for (const record of this.index.values()) {
+            if (!isExecutionEligible(record, this.referenceScope))
+                continue;
             if (record['id'] !== id || (kind !== undefined && record.type !== kind))
                 continue;
             out.push(record);
@@ -360,7 +368,7 @@ export class LocalJsonlProvider {
         this.ensureFresh();
         const out = [];
         for (const r of this.index.values()) {
-            if (!kind || r.type === kind)
+            if (isExecutionEligible(r, this.referenceScope) && (!kind || r.type === kind))
                 out.push(r);
             if (out.length >= limit)
                 break;
@@ -369,12 +377,14 @@ export class LocalJsonlProvider {
     }
     listAll(kind) {
         this.ensureFresh();
-        return [...this.index.values()].filter((record) => kind === undefined || record.type === kind);
+        return [...this.index.values()].filter((record) => isExecutionEligible(record, this.referenceScope) && (kind === undefined || record.type === kind));
     }
     async search(q) {
         this.ensureFresh();
         const out = [];
         for (const r of this.index.values()) {
+            if (!isExecutionEligible(r, this.referenceScope))
+                continue;
             if (q.kind && r.type !== q.kind)
                 continue;
             if (q.category) {

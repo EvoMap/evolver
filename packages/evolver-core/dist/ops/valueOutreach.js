@@ -103,6 +103,7 @@ export function loadValueSummary(sources, window = {}) {
         traces: sources.traces ?? [],
         events: sources.events ?? [],
         prices: sources.prices,
+        referenceScope: sources.referenceScope,
     });
     return valueSummary(entries, window);
 }

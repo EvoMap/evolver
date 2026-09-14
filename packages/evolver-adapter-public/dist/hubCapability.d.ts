@@ -1,4 +1,4 @@
-import { type hub } from '@evomap/evolver-core';
+import { reference, type hub } from '@evomap/evolver-core';
 import { type FetchLike } from './hubFetch.js';
 import { type AntiAbuseTelemetryOptions } from './antiAbuseTelemetry.js';
 export declare const INBOUND_LIMIT = 100;
@@ -147,6 +147,7 @@ export declare function outboundMaxBodyBytes(env?: Record<string, string | undef
  */
 export declare class PublicHubCapability implements hub.HubCapability {
     private readonly opts;
+    readonly referenceScope: reference.ReferenceSessionScope;
     private readonly http;
     private malformedPublish2xxCount;
     private lastMalformedPublish2xxAt;
@@ -162,6 +163,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
     publish(bundle: hub.AssetRecord[], options?: hub.PublishOptions): Promise<hub.PublishReceipt>;
     publishDiagnostics(): hub.PublishReceiptDiagnostics;
     private recordMalformedPublishReceipt;
+    readonly references: reference.ReferenceCapability;
     fetch(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
     /**
      * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to
@@ -233,3 +235,5 @@ export declare class PublicHubCapability implements hub.HubCapability {
     };
     capabilities(): Promise<hub.HubManifest>;
 }
+/** Public Hub contract is narrower than local storage; reject, never silently truncate. */
+export declare function normalizePublicReferenceQuery(query: reference.ReferenceQuery): reference.ReferenceQuery;

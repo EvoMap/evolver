@@ -9,6 +9,7 @@ export * as cycle from './cycle/index.js';
 export * as daemon from './daemon/index.js';
 export * as material from './material/index.js';
 export * as mailbox from './mailbox/index.js';
+export * as reference from './reference/index.js';
 export * as assetstore from './assetstore/index.js';
 export * as assetrepair from './assetrepair/index.js';
 export * as strategy from './strategy/index.js';

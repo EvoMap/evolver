@@ -1,3 +1,4 @@
+import type { ReferenceScope } from '../reference/guard.js';
 import { type ValueSummary, type TraceRecord, type LedgerRootEvent, type PriceTable, type SummaryWindow } from './valueLedger.js';
 /**
  * Read all proxy trace day-files in `dir` and return the parsed `llm_turn` records as ledger TraceRecords. A
@@ -13,6 +14,7 @@ export declare function windowFromSpec(spec: string | undefined, now: number): S
 /** Human label for a window spec (for the report/digest header). */
 export declare function windowLabel(spec: string | undefined): string;
 export interface ValueSources {
+    referenceScope?: ReferenceScope;
     /** Parsed proxy trace records (route source). Default []. */
     traces?: readonly TraceRecord[];
     /** Parsed root_events (reuse + inject source). Default []. */

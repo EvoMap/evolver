@@ -175,8 +175,8 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance: number;
         obedience: number;
     };
-    updatedAt: string | null;
     version: 1;
+    updatedAt: string | null;
     stats: Record<string, {
         fail: number;
         success: number;
@@ -201,8 +201,8 @@ export declare const personalityModel: z.ZodObject<{
         risk_tolerance?: number | undefined;
         obedience?: number | undefined;
     } | undefined;
-    updatedAt?: string | null | undefined;
     version?: 1 | undefined;
+    updatedAt?: string | null | undefined;
     stats?: Record<string, {
         fail?: number | undefined;
         success?: number | undefined;

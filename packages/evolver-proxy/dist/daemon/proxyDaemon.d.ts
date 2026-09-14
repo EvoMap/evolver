@@ -148,6 +148,7 @@ export declare class ProxyDaemon {
     readonly sync: SyncEngine;
     readonly lifecycle: LifecycleManager;
     private readonly assetStore;
+    private readonly referenceStore;
     private readonly remoteAssetById;
     private readonly reuseResultReporter;
     private readonly validator;

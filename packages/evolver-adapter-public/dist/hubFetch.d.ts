@@ -144,6 +144,10 @@ type RawFetch = (url: string, init: Record<string, unknown>) => Promise<HubFetch
 export declare function _setFetchImplForTest(fn?: RawFetch): void;
 /** Test seam: reset the one-time insecure-warning latch. */
 export declare function _resetInsecureWarningForTest(): void;
+/** Reference pages carry full pairs and can exceed Bun's npm-undici response-stream boundary.
+ * Use Bun's native stream implementation there, retaining the shared authenticated HubFetch,
+ * redirect refusal, body/deadline limits and explicit TLS verification. Node stays on undici. */
+export declare const referenceFetchLike: FetchLike;
 /** Default production transport: secure mode = https guard + forced TLS dispatcher; escape-hatch mode = skip both (local dev). */
 export declare const globalFetchLike: FetchLike;
 export {};

@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
+import { reference, assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
 import { AuthError, connectPublicHub, HubClientError, HubUnreachableError, isHubDryRunEnabled, MalformedAccountAssetPageError, resolveHubUrl, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv, resolveRecipeHubResumeIdentityFingerprint } from './recipe.js';
@@ -53,6 +53,34 @@ export async function runSyncCommand(argv, deps = {}) {
             env,
             assetsDir: deps.assetsDir ?? join(events.evomapHome(env), 'assets'),
         };
+        if (parsed.value.importPath) {
+            const raw = JSON.parse(readBoundedGepxText(parsed.value.importPath));
+            if (reference.hasEvidenceMode(raw)) {
+                const envelope = !Array.isArray(raw) ? reference.record(raw) : undefined;
+                const assets = envelope?.['assets'];
+                let batch = raw;
+                if (Array.isArray(assets)) {
+                    if (assets.some((a) => !['Gene', 'Capsule'].includes(String(reference.record(a)['type']))))
+                        throw new Error('reference_pair_required');
+                    const genes = assets.filter((a) => reference.record(a)['type'] === 'Gene');
+                    const capsules = assets.filter((a) => reference.record(a)['type'] === 'Capsule');
+                    batch = capsules.map((capsule) => {
+                        const matches = genes.filter((gene) => [reference.record(gene)['id'], reference.record(gene)['asset_id']].includes(reference.record(capsule)['gene']));
+                        if (matches.length !== 1)
+                            throw new Error('reference_gene_binding_invalid');
+                        return { gene: matches[0], capsule };
+                    });
+                    if (genes.some((g) => !capsules.some((c) => [reference.record(g)['id'], reference.record(g)['asset_id']].includes(reference.record(c)['gene']))))
+                        throw new Error('reference_orphan_gene');
+                }
+                const pairs = reference.decodeReferenceBatch(batch);
+                const receipt = parsed.value.write
+                    ? new reference.ReferenceStore(join(runtimeDeps.assetsDir, 'references')).import(pairs)
+                    : { status: 'would_store_reference', count: pairs.length, executable: false };
+                out(stringifyJsonOutput({ ok: true, group: GROUP, ...receipt }));
+                return 0;
+            }
+        }
         const result = parsed.value.exportPath
             ? await executeSyncExport(parsed.value, runtimeDeps)
             : parsed.value.importPath

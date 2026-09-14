@@ -44,6 +44,7 @@ export interface Gene {
 }
 /** Capsule = 表现型/纯进化产物 (capsule.schema.json). */
 export interface Capsule {
+    evidence_mode?: 'reference_only';
     type: 'Capsule';
     schema_version: string;
     id: string;

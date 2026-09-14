@@ -751,6 +751,22 @@ function warnInsecureOnce() {
 }
 /** Test seam: reset the one-time insecure-warning latch. */
 export function _resetInsecureWarningForTest() { _insecureWarned = false; }
+/** Reference pages carry full pairs and can exceed Bun's npm-undici response-stream boundary.
+ * Use Bun's native stream implementation there, retaining the shared authenticated HubFetch,
+ * redirect refusal, body/deadline limits and explicit TLS verification. Node stays on undici. */
+export const referenceFetchLike = async (url, init) => {
+    if (!globalThis.Bun)
+        return globalFetchLike(url, init);
+    const insecure = insecureAllowed(process.env);
+    if (insecure)
+        warnInsecureOnce();
+    else
+        assertHubUrlSecure(url);
+    const response = await globalThis.fetch(url, { ...init, redirect: 'manual',
+        ...(!insecure ? { tls: { rejectUnauthorized: true } } : {}),
+    });
+    return response;
+};
 /** Default production transport: secure mode = https guard + forced TLS dispatcher; escape-hatch mode = skip both (local dev). */
 export const globalFetchLike = async (url, init) => {
     const raw = { ...init, redirect: 'manual' };

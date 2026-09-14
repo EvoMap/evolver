@@ -1,3 +1,4 @@
+import { type ReferenceScope } from '../reference/guard.js';
 import { type AssetKind, type AssetRecord, type AssetStoreProvider, type ConditionalPutOptions, type ConditionalPutResult, type PutResult, type SearchQuery } from './provider.js';
 /** Signal names a record advertises, across the four key spellings the pool uses. */
 export declare function signalsOf(a: AssetRecord): string[];
@@ -14,6 +15,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     private readonly bundleJournalPath;
     private fileState;
     private loaded;
+    readonly referenceScope: ReferenceScope;
     constructor(baseDir: string);
     private captureFileState;
     private stateChanged;

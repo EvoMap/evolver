@@ -1,3 +1,4 @@
+import { type ReferenceScope } from '../reference/guard.js';
 /** USD price per single token, split by token class (Anthropic-style usage breakdown). All optional: an
  *  absent class is treated as 0 so a sparse table still prices what it can. */
 export interface ModelPrice {
@@ -139,7 +140,7 @@ export declare function deriveRouteEntries(traces: readonly TraceRecord[], price
  * at zero so a small-step reuse inside a large task cannot be promoted into fabricated whole-task ROI.
  * Each entry's refs point at the real `assetId` + `cycleId` from the hit - the audit anchor.
  */
-export declare function deriveReuseEntries(events: readonly LedgerRootEvent[], prices: PriceTable): ValueEntry[];
+export declare function deriveReuseEntries(events: readonly LedgerRootEvent[], prices: PriceTable, scope?: ReferenceScope): ValueEntry[];
 /**
  * Derive inject records from `value.inject` root_events. Attribution-only: which genes were injected and the
  * session outcome. tokensSaved / costSavedUsd are ALWAYS 0 (the issue: inject is a weak signal — record it,
@@ -148,6 +149,7 @@ export declare function deriveReuseEntries(events: readonly LedgerRootEvent[], p
  */
 export declare function deriveInjectEntries(events: readonly LedgerRootEvent[]): ValueEntry[];
 export interface DeriveInput {
+    referenceScope?: ReferenceScope;
     /** Parsed proxy trace records (one per LLM turn). */
     traces?: readonly TraceRecord[];
     /** Parsed root_events (the reuse-hit + inject records live here). */

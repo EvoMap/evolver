@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, ftruncateSync, fsyncSync, 
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { userInfo } from 'node:os';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { algo, events, util } from '@evomap/evolver-core';
+import { reference, algo, events, util } from '@evomap/evolver-core';
 const ACTIVE_FILE = 'memory_graph.v2.jsonl';
 const COMPACT_FILE = 'memory_graph.compact.jsonl';
 const LOCK_FILE = 'memory_graph.lock';
@@ -48,6 +48,7 @@ export class MemoryGraphBusyError extends Error {
 }
 export class LocalMemoryGraph {
     dir;
+    referenceScope;
     userScope;
     readableUserScopes;
     now;
@@ -62,6 +63,7 @@ export class LocalMemoryGraph {
     rotationCleanupFailed = false;
     constructor(options) {
         this.dir = resolve(options.dir);
+        this.referenceScope = reference.referenceScopeForEventsPath(join(this.dir, 'root_events.jsonl'));
         this.userScope = scopeHash(`user:${options.userId}`);
         this.readableUserScopes = new Set([
             this.userScope,
@@ -98,7 +100,7 @@ export class LocalMemoryGraph {
                     diagnostics.recovery = 'degraded';
                 if (records.length === 0 && diagnostics.recovery === 'healthy')
                     diagnostics.recovery = 'empty';
-                return algo.deriveMemoryGraphAdvice(records, input.signals, this.now(), diagnostics);
+                return reference.withReferenceScope(this.referenceScope, () => algo.deriveMemoryGraphAdvice(records, input.signals, this.now(), diagnostics));
             });
         }
         catch (error) {
@@ -109,6 +111,8 @@ export class LocalMemoryGraph {
         }
     }
     recordOutcome(input) {
+        if (!reference.isExecutionEligible(input, this.referenceScope))
+            return;
         const workspaceScope = this.workspaceScope(input.workspace);
         if (!workspaceScope)
             return;

@@ -211,6 +211,7 @@ export function createDashboardServer(memoryGraphStatus, env = process.env) {
         valueSummary: (window, eventSnapshot) => ops.loadValueSummary({
             traces: ops.readTraceRecords(tracesDir),
             events: eventSnapshot,
+            referenceScope: store.referenceScope,
             prices,
         }, window),
         retentionReport: () => events.buildRetentionReport({

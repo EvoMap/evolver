@@ -1,3 +1,7 @@
+// Secure-by-construction autonomous execution: compose ALL the exec-bridge safety controls into one factory
+// so an unattended caller (a resident daemon) can't accidentally omit a control. This is the productized
+// counterpart to the scratch daemon — the daemon becomes a thin caller of makeSafeExecute().
+import { isExecutionEligible } from '../reference/guard.js';
 import { CLAUDE_SAFE_AUTONOMOUS_TOOLS, hasBoundedClaudeFileAccess, makeClaudeExecBridge, validateAgentSessionResume } from './claudeBridge.js';
 const asStrings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 /**
@@ -12,7 +16,7 @@ export function makeTrustedGeneResolver(store, provenance, review, includeProbat
     return async (geneId) => {
         const genes = await store.list('Gene', 1000);
         const g = genes.find((x) => String(x['id']) === geneId || String(x.asset_id) === geneId);
-        if (!g)
+        if (!g || !isExecutionEligible(g, store.referenceScope))
             return null;
         const summary = g['summary'];
         const trustedOrigin = provenance ? provenance.isTrusted(String(g.asset_id)) : true;

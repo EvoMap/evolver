@@ -30,6 +30,7 @@ export declare const COMMAND_GROUPS: {
     readonly 'asset-health': "Assets";
     readonly 'asset-repair': "Assets";
     readonly material: "Assets";
+    readonly reference: "Assets";
     readonly recipe: "Assets";
     readonly skill: "Assets";
     readonly login: "Hub";

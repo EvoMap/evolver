@@ -1,3 +1,4 @@
+import { type ReferenceScope } from '../reference/guard.js';
 export type AssetKind = 'Gene' | 'Capsule' | 'EvolutionEvent' | 'AntiGene';
 /** 任意带 type/asset_id 的 wire 资产(schema SSOT=gep-sdk, 此处不重定义字段). */
 export interface AssetRecord {
@@ -54,6 +55,7 @@ export interface SearchQuery {
  * core 可同时连多个 provider(本地 + 远程), 不造第四套契约.
  */
 export interface AssetStoreProvider {
+    readonly referenceScope?: ReferenceScope;
     put(asset: AssetRecord): Promise<PutResult>;
     /** 可选的可崩溃恢复批量写入，用于保持相关资产（例如 Gene/Capsule 对）的一致性。
      * 需要持久化相关资产组的调用方必须先确认此能力存在，不得退回顺序单条写入。
@@ -98,14 +100,14 @@ export declare class CapsuleGeneBindingError extends Error {
  * 抽成独立 helper 以便 normalizeForPut(校验落库路径)与 ingestUnverified(冻结落库路径,
  * 绕过 normalizeForPut)共用同一条不变量,不让降级路径把绑定校验漏掉.
  */
-export declare function assertCapsuleGeneBinding(asset: AssetRecord): void;
+export declare function assertCapsuleGeneBinding(asset: AssetRecord, scope?: ReferenceScope): void;
 /**
  * 落库前规范化(共享给各 provider): 计算/校验 asset_id + 强绑定校验.
  * - 缺 asset_id → 计算填入(verified=false 表示非入参自带).
  * - 带 asset_id → 必须自洽, 否则抛 AssetIdMismatchError.
  * - Capsule.gene 必须非空(M3-4 强绑定).
  */
-export declare function normalizeForPut(asset: AssetRecord): {
+export declare function normalizeForPut(asset: AssetRecord, scope?: ReferenceScope): {
     record: AssetRecord;
     verified: boolean;
 };

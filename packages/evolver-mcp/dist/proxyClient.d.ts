@@ -1,3 +1,4 @@
+import type { reference } from '@evomap/evolver-core';
 export interface ProxyFetch {
     (url: string, init: {
         method: string;
@@ -82,6 +83,11 @@ export declare class EvolverProxyClient {
     constructor(opts: EvolverProxyClientOptions);
     status(opts?: {
         signal?: AbortSignal;
+    }): Promise<unknown>;
+    reference(operation: 'import' | 'fetch' | 'search' | 'context', input: {
+        batch?: unknown;
+        query?: reference.ReferenceQuery;
+        max_chars?: number;
     }): Promise<unknown>;
     search(args: ProxySearchArgs): Promise<unknown>;
     searchRecipes(args: ProxyRecipeSearchArgs): Promise<unknown>;

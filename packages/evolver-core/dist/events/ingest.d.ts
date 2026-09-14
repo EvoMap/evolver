@@ -1,3 +1,4 @@
+import { type ReferenceScope } from '../reference/guard.js';
 import { EventStore, type EventStoreOptions } from './eventStore.js';
 import type { RawEvent, RootEvent } from './eventSchema.js';
 import type { EventSink } from './sink.js';
@@ -21,6 +22,7 @@ export type IngestorOptions = (EventStoreOptions | {
 /** root_events 的全仓唯一写入口 (军杰 §9.2). EventStore 不对外暴露 (见 public.ts). */
 export declare class Ingestor {
     private readonly store;
+    readonly referenceScope: ReferenceScope;
     private readonly sink;
     constructor(opts: IngestorOptions);
     ingest(raw: RawEvent): Promise<RootEvent>;

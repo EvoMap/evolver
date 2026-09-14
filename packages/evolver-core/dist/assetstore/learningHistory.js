@@ -1,8 +1,9 @@
+import { isExecutionEligible } from '../reference/guard.js';
 import { normalizeProofOfWork, proofOfWork } from '../schema/proofOfWork.js';
 import { proofIndicatesOutput } from '../algo/solidify.js';
 /** 扫该 gene 关联的 Capsule, 派生学习视图(只读, 不落库). */
 export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
-    const caps = await provider.search({ kind: 'Capsule', gene: geneId, limit: 10_000 });
+    const caps = (await provider.search({ kind: 'Capsule', gene: geneId, limit: 10_000 })).filter((item) => isExecutionEligible(item, provider.referenceScope));
     let success = 0, failed = 0, inert = 0, scoreSum = 0;
     for (const c of caps) {
         const outcome = c.outcome;

@@ -1,3 +1,4 @@
+import { assertExecutionEligible } from '../reference/guard.js';
 import { canonicalize, computeAssetId, verifyAssetId } from '../wire/index.js';
 export class FrozenAssetIdCollisionError extends Error {
     assetId;
@@ -100,7 +101,8 @@ export class CapsuleGeneBindingError extends Error {
  * 抽成独立 helper 以便 normalizeForPut(校验落库路径)与 ingestUnverified(冻结落库路径,
  * 绕过 normalizeForPut)共用同一条不变量,不让降级路径把绑定校验漏掉.
  */
-export function assertCapsuleGeneBinding(asset) {
+export function assertCapsuleGeneBinding(asset, scope) {
+    assertExecutionEligible(asset, scope);
     if (asset.type !== 'Capsule')
         return;
     const gene = asset.gene;
@@ -113,8 +115,8 @@ export function assertCapsuleGeneBinding(asset) {
  * - 带 asset_id → 必须自洽, 否则抛 AssetIdMismatchError.
  * - Capsule.gene 必须非空(M3-4 强绑定).
  */
-export function normalizeForPut(asset) {
-    assertCapsuleGeneBinding(asset);
+export function normalizeForPut(asset, scope) {
+    assertCapsuleGeneBinding(asset, scope);
     const actual = computeAssetId(asset);
     if (actual === null)
         throw new Error('computeAssetId 失败: 资产非对象');

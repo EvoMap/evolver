@@ -4,6 +4,7 @@ export declare const MAX_STDIO_FRAME_BYTES: number;
 export declare const MAX_IN_FLIGHT_REQUESTS = 32;
 export declare const MAX_PENDING_STDIO_FRAMES = 64;
 export declare const MAX_PENDING_STDIO_BYTES: number;
+export declare function productBridgeRequestTimeoutMs(method: string | undefined): number;
 interface JsonRpcMessage {
     jsonrpc?: string;
     id?: unknown;

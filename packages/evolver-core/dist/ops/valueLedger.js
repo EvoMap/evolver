@@ -14,6 +14,7 @@
 //
 // Determinism: every function here is pure. No Date.now / Math.random — all timestamps come from the event or
 // trace records themselves, so a golden fixture replays byte-for-byte.
+import { isExecutionEligible } from '../reference/guard.js';
 import { ENTROPY_EVENT_TOKENS_EST } from './savingsCore.js';
 /** Build a PriceTable from a plain {model: ModelPrice} map (the shape a JSON data file deserializes to). */
 export function priceTableFromMap(map) {
@@ -80,10 +81,10 @@ export function deriveRouteEntries(traces, prices) {
  * at zero so a small-step reuse inside a large task cannot be promoted into fabricated whole-task ROI.
  * Each entry's refs point at the real `assetId` + `cycleId` from the hit - the audit anchor.
  */
-export function deriveReuseEntries(events, prices) {
+export function deriveReuseEntries(events, prices, scope) {
     const out = [];
     for (const e of events) {
-        if (e.type !== VALUE_REUSE_HIT_EVENT)
+        if (e.type !== VALUE_REUSE_HIT_EVENT || !isExecutionEligible(e.payload, scope))
             continue;
         const p = (e.payload ?? {});
         const assetId = typeof p.assetId === 'string' ? p.assetId : '';
@@ -150,7 +151,7 @@ export function deriveValueEntries(input) {
     const events = input.events ?? [];
     const entries = [
         ...deriveRouteEntries(traces, input.prices),
-        ...deriveReuseEntries(events, input.prices),
+        ...deriveReuseEntries(events, input.prices, input.referenceScope),
         ...deriveInjectEntries(events),
     ];
     entries.sort((a, b) => {

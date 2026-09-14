@@ -139,6 +139,13 @@ export declare const executionBindingInputSchema: z.ZodObject<{
     }>;
 }, "strict", z.ZodTypeAny, {
     schema_version: "execution-binding.v1";
+    selected_context: {
+        capsule_id: string | null;
+        gene_id: string | null;
+        gene_asset_id: string | null;
+        capsule_asset_id: string | null;
+        context_digest: string;
+    };
     budget: {
         max_credits: number;
     };
@@ -184,16 +191,16 @@ export declare const executionBindingInputSchema: z.ZodObject<{
     correlation: {
         run_id: string;
         cycle_id: string;
-    };
-    selected_context: {
-        capsule_id: string | null;
-        gene_id: string | null;
-        gene_asset_id: string | null;
-        capsule_asset_id: string | null;
-        context_digest: string;
     };
 }, {
     schema_version: "execution-binding.v1";
+    selected_context: {
+        capsule_id: string | null;
+        gene_id: string | null;
+        gene_asset_id: string | null;
+        capsule_asset_id: string | null;
+        context_digest: string;
+    };
     budget: {
         max_credits: number;
     };
@@ -239,13 +246,6 @@ export declare const executionBindingInputSchema: z.ZodObject<{
     correlation: {
         run_id: string;
         cycle_id: string;
-    };
-    selected_context: {
-        capsule_id: string | null;
-        gene_id: string | null;
-        gene_asset_id: string | null;
-        capsule_asset_id: string | null;
-        context_digest: string;
     };
 }>;
 export type ExecutionBindingInput = z.infer<typeof executionBindingInputSchema>;
