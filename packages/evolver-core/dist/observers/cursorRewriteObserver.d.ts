@@ -7,6 +7,8 @@ import type { Observer } from './observerBus.js';
  *    UN-quarantined, so it is immediately part of the rendered set.
  *  - actor.human.review.approve          : a human approved a quarantined draft (`evolver review --approve`) — it
  *    now passes the read-side review gate (A2a), so the rendered set genuinely changed (A2b).
+ *  - actor.human.review.reject           : 内容审核拒绝后移除原来可注入的经验。
+ *  - actor.human.source.qualify          : source eligibility changed, including revocation.
  * NOT subscribed: `gene.distilled`. An auto-distilled draft enters QUARANTINED, and the read side (A2a) withholds
  * it until approved — so re-rendering on distill would only ever be a no-op. The meaningful change is the APPROVE
  * above. Subscribing to this exact set (not all events) keeps the observer quiet on unrelated traffic.
@@ -36,11 +38,13 @@ export interface CursorRewriteObserverDeps {
  * Build the cursor rewrite observer. Subscribes to the gene-set-change event types only. On each such event it
  * (re)arms a debounce timer; when the timer fires it calls `rewrite()` once for the whole burst. Because the bus
  * dispatches asynchronously and the debounce is timer-based, the observer's own `handle` returns immediately
- * (just arming the timer) — the actual rewrite runs on the timer and reports its own errors to `onError`.
+ * (just arming the timer) — the actual rewrite runs on the timer and retains errors for `flush()`.
  *
  * idempotent=false: a rewrite has an external side effect (a file write), so the bus must not assume free re-run.
  */
 export declare function cursorRewriteObserver(deps: CursorRewriteObserverDeps): Observer & {
+    invalidate(): void;
     flush(): Promise<void>;
+    stop(): Promise<void>;
     pending(): boolean;
 };

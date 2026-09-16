@@ -50,6 +50,7 @@ export interface SessionStartRecapContext {
 export interface InjectInfo {
     /** The gene ids actually injected into the prompt (post budget-trim). */
     geneIds: readonly string[];
+    sourceQualifications?: readonly import('../assetstore/sourceQualification.js').SourceEligibilityReceipt[];
     contentSchema?: InjectPayload['contentSchema'];
     content?: InjectPayload['content'];
     omittedByBudget?: number;

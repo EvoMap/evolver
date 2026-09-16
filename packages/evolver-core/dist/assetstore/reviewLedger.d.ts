@@ -22,6 +22,8 @@ export declare class ReviewLedger {
     private readonly index;
     private fileState;
     constructor(baseDir: string, now?: () => number);
+    /** 只用于轮询变化提示；审批判断仍须读取加锁的权威 snapshot。 */
+    revision(): string;
     private static isHuman;
     /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
     private static keep;

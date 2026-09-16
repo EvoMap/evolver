@@ -1,7 +1,18 @@
 import type { AssetStoreProvider } from '../assetstore/provider.js';
+import { LocalJsonlProvider } from '../assetstore/localJsonl.js';
+import type { ProvenanceStore } from '../assetstore/provenance.js';
+import type { ReviewLedger } from '../assetstore/reviewLedger.js';
+import { type BenchmarkContext } from '../assetstore/sourceQualification.js';
 import { type CycleInput, type CycleResult } from '../algo/cycleEngine.js';
 import { type RunCycleOptions } from '../algo/orchestrator.js';
 import type { ThesisArm, ThesisSolver, ThesisTask } from './thesis.js';
+export interface BenchmarkExperimentPolicy {
+    benchmark: BenchmarkContext;
+    provenance: ProvenanceStore;
+    review: ReviewLedger;
+}
+/** 实验只写临时库；资格、trust/review及reference状态始终从来源宿主重新读取。 */
+export declare function makeBenchmarkExperimentStore(source: AssetStoreProvider, destination: LocalJsonlProvider, policy: BenchmarkExperimentPolicy): AssetStoreProvider;
 export interface EvolutionThesisDeps<I> {
     /** evolver arm store: the learned-gene pool (assembleCandidates pulls candidates from here). */
     pool: AssetStoreProvider;

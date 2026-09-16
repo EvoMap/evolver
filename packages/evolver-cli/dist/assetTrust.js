@@ -1,5 +1,7 @@
 import { assetstore, events, hub } from '@evomap/evolver-core';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { runSourceQualificationCommand } from './sourceQualification.js';
+import { runReferenceAccessCommand } from './referenceAccess.js';
 const GROUP = 'asset-trust';
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -13,6 +15,9 @@ const USAGE = [
     '  evolver asset-trust show <asset_id> [--json]',
     '  evolver asset-trust promote <asset_id> --reason <text> [--json]',
     '  evolver asset-trust revoke <asset_id> --reason <text> [--json]',
+    '  evolver asset-trust qualify <asset_id> --evidence <file> --reason <text> [--exception <reason>] [--json]',
+    '  evolver asset-trust qualification <asset_id> --benchmark <id> [--evidence-digest <sha256>] [--json]',
+    '  evolver asset-trust access <replay|get|read> --help',
     '',
 ].join('\n');
 function parseArgs(argv) {
@@ -133,6 +138,10 @@ async function recordTrustEvent(ingestor, action, view, reason, actorId) {
     }
 }
 export async function runAssetTrustCommand(argv, deps = {}) {
+    if (argv[0] === 'access')
+        return runReferenceAccessCommand(argv.slice(1), deps);
+    if (argv[0] === 'qualify' || argv[0] === 'qualification')
+        return runSourceQualificationCommand(argv, deps, safeActorId);
     const stdout = deps.stdout ?? ((text) => { process.stdout.write(text); });
     const stderr = deps.stderr ?? ((text) => { process.stderr.write(text); });
     if (argv.includes('--help') || argv.includes('-h')) {

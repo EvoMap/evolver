@@ -9,6 +9,12 @@ export declare const ATP_AUTODELIVER_COOLDOWN_CAP_MS: number;
 export interface AtpAutoDeliverClient {
     listMyTasks(limit?: number, nodeId?: string): Promise<AtpResult>;
     submitDelivery(orderId: string, proofPayload?: unknown): Promise<AtpResult>;
+    /**
+     * The node this client authenticates as — the only node its deliveries can be for.
+     * Optional so an older injected client still compiles and still runs; not answering is
+     * simply not being trusted, because there is no fallback identity to guess with.
+     */
+    nodeId?(): string | undefined;
 }
 export interface AtpAutoDeliverLedger {
     version: 2;
@@ -23,6 +29,8 @@ export interface AtpAutoDeliverTickResult {
     checked: number;
     delivered: number;
     skippedTasks: number;
+    /** Tasks another node holds. Delivering those is what the Hub rejects. */
+    skippedForeign: number;
     terminalFailures: number;
     transientFailures: number;
     /** 429 rate-limit hits this tick — backed off (a subset of "failed", tracked apart for observability). */
@@ -30,6 +38,8 @@ export interface AtpAutoDeliverTickResult {
 }
 export interface AtpAutoDeliverDeps {
     client?: AtpAutoDeliverClient;
+    /** Which node we are. A task claimed by anyone else is not ours to deliver. */
+    nodeId?: string;
     createClient?: (env: NodeJS.ProcessEnv) => AtpAutoDeliverClient;
     env?: NodeJS.ProcessEnv;
     ledgerPath?: string;

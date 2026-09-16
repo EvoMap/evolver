@@ -51,6 +51,14 @@ export async function runThesisCommand(argv, deps = {}) {
         process.stderr.write('用法: evolver thesis --suite <file> [--repo <allowlisted>] [--runner gemini] [--min-samples N] [--min-delta D] [--alpha A] [--target-power P] [--interleave] [--json]\n');
         return 1;
     }
+    let sourceBenchmark;
+    try {
+        sourceBenchmark = assetstore.benchmarkContext((deps.env ?? process.env)['EVOLVER_BENCHMARK_ID']);
+    }
+    catch {
+        process.stderr.write('thesis: invalid_benchmark_id\n');
+        return 1;
+    }
     let suite;
     try {
         const parsed = JSON.parse(readFileSync(resolve(flags['suite']), 'utf8'));
@@ -85,112 +93,126 @@ export async function runThesisCommand(argv, deps = {}) {
     // evolution events) must NOT land in production — that would pollute real selection + bans. So seed a THROWAWAY
     // evolver store with a copy of the pool's genes; both arms write only into temp stores that are discarded after.
     const readPool = deps.pool ?? new assetstore.LocalJsonlProvider(events.assetsDir());
-    const expDir = mkdtempSync(join(tmpdir(), 'thesis-exp-'));
-    const evolverStore = new assetstore.LocalJsonlProvider(join(expDir, 'evolver'));
-    const baseline = new assetstore.LocalJsonlProvider(join(expDir, 'baseline'));
-    for (const g of await readPool.list('Gene', 100_000))
-        await evolverStore.put(g); // read prod genes, write experiment capsules to temp
-    // The agent: injected fake (tests) OR makeSafeExecute over the operator-allowlisted repo (live). The resolver
-    // store is the temp evolverStore (baseline selects no gene, so it embeds none — no cross-arm contamination).
-    let execute = deps.execute;
-    if (!execute) {
-        const repo = resolve(flags['repo']);
-        const validate = async (_m, _d, cwd) => {
-            for (const cmd of suite.validation) {
-                const [c, ...a] = cmd.split(' ');
-                if (await sh(c, a, cwd) !== 0)
-                    return { passed: false, score: 0.2 };
-            }
-            return { passed: true, score: 0.95 };
-        };
-        try {
-            execute = exec.makeSafeExecute(repo, evolverStore, { allowedRoots: [repo], runner: 'gemini' }, { validate });
-        }
-        catch (error) {
-            rmSync(expDir, { recursive: true, force: true });
-            if (error instanceof exec.UnsupportedAutonomousClaudeRunnerError
-                || error instanceof exec.UnsupportedAutonomousCodexRunnerError) {
-                process.stderr.write('thesis: execute capability is unsupported: built-in autonomous runners require a verified host filesystem sandbox\n');
-                return 1;
-            }
-            throw error;
-        }
+    const sourceProvenance = sourceBenchmark
+        ? deps.provenance ?? (readPool instanceof assetstore.LocalJsonlProvider ? new assetstore.ProvenanceStore(readPool.baseDir) : undefined)
+        : undefined;
+    const sourceReview = sourceBenchmark
+        ? deps.review ?? (readPool instanceof assetstore.LocalJsonlProvider ? new assetstore.ReviewLedger(readPool.baseDir) : undefined)
+        : undefined;
+    if (sourceBenchmark && (!sourceProvenance || !sourceReview)) {
+        process.stderr.write('thesis: benchmark_source_ledgers_required\n');
+        return 1;
     }
-    const agent = execute;
-    const solver = benchmark.makeEvolutionThesisSolver({
-        pool: evolverStore, baseline, now, execute: agent,
-        toCycleOpts: (t) => ({
-            problem: buildProblem(t.id, t.input.signals, now()),
-            signals: t.input.signals,
-            category: t.input.category ?? 'repair',
-            target: t.input.target ?? 't.ts',
-            expectedEffect: t.input.expectedEffect ?? 'fix',
-            summary: t.input.summary ?? `thesis ${t.id}`,
-            confidence: t.input.confidence ?? 0.9,
-            ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),
-        }),
-    });
-    const tasks = suite.tasks.map((s) => ({
-        id: s.id,
-        input: {
-            signals: s.signals,
-            ...(s.category ? { category: s.category } : {}),
-            ...(s.target ? { target: s.target } : {}),
-            ...(s.expectedEffect ? { expectedEffect: s.expectedEffect } : {}),
-            ...(s.summary ? { summary: s.summary } : {}),
-            ...(s.confidence != null ? { confidence: s.confidence } : {}),
-        },
-    }));
-    const opts = { interleave: 'interleave' in flags };
-    if (flags['min-samples'])
-        opts.minSamples = Number(flags['min-samples']);
-    if (flags['min-delta'])
-        opts.minPassRateDelta = Number(flags['min-delta']);
-    if (flags['alpha'])
-        opts.alpha = Number(flags['alpha']);
-    if (flags['target-power'])
-        opts.targetPower = Number(flags['target-power']);
-    let report;
+    const expDir = mkdtempSync(join(tmpdir(), 'thesis-exp-'));
     try {
-        report = await benchmark.runThesis({ name: suite.name || 'thesis', tasks }, solver, opts);
+        const experimentAssets = new assetstore.LocalJsonlProvider(join(expDir, 'evolver'));
+        const evolverStore = sourceBenchmark ? benchmark.makeBenchmarkExperimentStore(readPool, experimentAssets, {
+            benchmark: sourceBenchmark, provenance: sourceProvenance, review: sourceReview,
+        }) : experimentAssets;
+        const baseline = new assetstore.LocalJsonlProvider(join(expDir, 'baseline'));
+        for (const g of await readPool.list('Gene', 100_000))
+            await evolverStore.put(g);
+        // The agent: injected fake (tests) OR makeSafeExecute over the operator-allowlisted repo (live). The resolver
+        // store is the temp evolverStore (baseline selects no gene, so it embeds none — no cross-arm contamination).
+        let execute = deps.execute;
+        if (!execute) {
+            const repo = resolve(flags['repo']);
+            const validate = async (_m, _d, cwd) => {
+                for (const cmd of suite.validation) {
+                    const [c, ...a] = cmd.split(' ');
+                    if (await sh(c, a, cwd) !== 0)
+                        return { passed: false, score: 0.2 };
+                }
+                return { passed: true, score: 0.95 };
+            };
+            try {
+                execute = exec.makeSafeExecute(repo, evolverStore, { allowedRoots: [repo], runner: 'gemini' }, { validate,
+                    ...(sourceBenchmark ? { benchmark: sourceBenchmark, provenance: sourceProvenance, review: sourceReview } : {}),
+                });
+            }
+            catch (error) {
+                if (error instanceof exec.UnsupportedAutonomousClaudeRunnerError
+                    || error instanceof exec.UnsupportedAutonomousCodexRunnerError) {
+                    process.stderr.write('thesis: execute capability is unsupported: built-in autonomous runners require a verified host filesystem sandbox\n');
+                    return 1;
+                }
+                throw error;
+            }
+        }
+        const agent = execute;
+        const solver = benchmark.makeEvolutionThesisSolver({
+            pool: evolverStore, baseline, now, execute: agent,
+            toCycleOpts: (t) => ({
+                ...(sourceBenchmark ? { benchmark: sourceBenchmark, provenance: sourceProvenance, review: sourceReview, consumePendingSignals: false } : {}),
+                problem: buildProblem(t.id, t.input.signals, now()),
+                signals: t.input.signals,
+                category: t.input.category ?? 'repair',
+                target: t.input.target ?? 't.ts',
+                expectedEffect: t.input.expectedEffect ?? 'fix',
+                summary: t.input.summary ?? `thesis ${t.id}`,
+                confidence: t.input.confidence ?? 0.9,
+                ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),
+            }),
+        });
+        const tasks = suite.tasks.map((s) => ({
+            id: s.id,
+            input: {
+                signals: s.signals,
+                ...(s.category ? { category: s.category } : {}),
+                ...(s.target ? { target: s.target } : {}),
+                ...(s.expectedEffect ? { expectedEffect: s.expectedEffect } : {}),
+                ...(s.summary ? { summary: s.summary } : {}),
+                ...(s.confidence != null ? { confidence: s.confidence } : {}),
+            },
+        }));
+        const opts = { interleave: 'interleave' in flags };
+        if (flags['min-samples'])
+            opts.minSamples = Number(flags['min-samples']);
+        if (flags['min-delta'])
+            opts.minPassRateDelta = Number(flags['min-delta']);
+        if (flags['alpha'])
+            opts.alpha = Number(flags['alpha']);
+        if (flags['target-power'])
+            opts.targetPower = Number(flags['target-power']);
+        const report = await benchmark.runThesis({ name: suite.name || 'thesis', tasks }, solver, opts);
+        if ('json' in flags) {
+            // requiredN is Infinity when minPassRateDelta is 0; plain JSON.stringify would turn it into null, which a
+            // consumer can't tell apart from a missing/invalid value. Serialize non-finite numbers as explicit strings.
+            const replacer = (_k, v) => typeof v === 'number' && !Number.isFinite(v) ? (v > 0 ? 'Infinity' : v < 0 ? '-Infinity' : 'NaN') : v;
+            process.stdout.write(JSON.stringify(report, replacer) + '\n');
+            return 0;
+        }
+        const a = report.evolver;
+        const b = report.baseline;
+        process.stdout.write(`thesis [${report.suite}] controlled A/B (verdict = practical delta AND statistical significance):\n`);
+        process.stdout.write(`  baseline  n=${b.n} pass=${pct(b.passRate)} avgCost=${b.avgCost.toFixed(2)} reuse=${pct(b.reuseRate)}\n`);
+        process.stdout.write(`  evolver   n=${a.n} pass=${pct(a.passRate)} avgCost=${a.avgCost.toFixed(2)} reuse=${pct(a.reuseRate)}\n`);
+        process.stdout.write(`  Δpass=${(report.passRateDelta * 100).toFixed(1)}pt  Δcost=${report.costDelta.toFixed(2)}  → ${report.verdict}\n`);
+        process.stdout.write(`  significance: p=${report.pValue.toFixed(3)} (z=${report.z.toFixed(2)}), 95% CI Δpass=[${(report.ciLow * 100).toFixed(1)}, ${(report.ciHigh * 100).toFixed(1)}]pt → ${report.significant ? 'significant' : 'not significant'}\n`);
+        const minDelta = opts.minPassRateDelta ?? 0.05;
+        const targetPower = opts.targetPower ?? 0.8;
+        const finiteReq = Number.isFinite(report.requiredN);
+        const reqN = finiteReq ? `${report.requiredN}` : '∞';
+        const ptStr = (minDelta * 100).toFixed(0);
+        process.stdout.write(`  power: ${pct(report.power)} to detect a ${ptStr}pt effect; need ~${reqN}/arm for ${pct(targetPower)} power\n`);
+        if (report.verdict === 'insufficient_samples') {
+            process.stdout.write(`  (need ≥${opts.minSamples ?? 30} samples per arm for a verdict — add tasks or lower --min-samples)\n`);
+        }
+        else if (!report.significant && !finiteReq) {
+            // requiredN is Infinity: no achievable effect to power for (minDelta is 0, or the baseline is already at the
+            // ceiling so a lift has no headroom). MORE SAMPLES WON'T HELP — don't mislabel it underpowered (Bugbot #286).
+            process.stdout.write(`  (power undefined: no achievable ${ptStr}pt effect — set --min-delta > 0 and check the baseline isn't already at the ceiling; more samples won't help)\n`);
+        }
+        else if (!report.significant && Math.abs(report.passRateDelta) >= minDelta) {
+            process.stdout.write(`  (delta clears the practical bar but is not statistically significant — more samples needed to confirm)\n`);
+        }
+        else if (report.verdict === 'no_significant_diff' && report.power < targetPower) {
+            // A null behind low power is UNDERPOWERED, not "no effect" — and here requiredN is finite, so more tasks fix it.
+            process.stdout.write(`  (underpowered: this n could not reliably detect a ${ptStr}pt effect — 'no difference' is unconfirmed, not proven; run ~${reqN}/arm)\n`);
+        }
+        return 0;
     }
     finally {
         rmSync(expDir, { recursive: true, force: true });
     }
-    if ('json' in flags) {
-        // requiredN is Infinity when minPassRateDelta is 0; plain JSON.stringify would turn it into null, which a
-        // consumer can't tell apart from a missing/invalid value. Serialize non-finite numbers as explicit strings.
-        const replacer = (_k, v) => typeof v === 'number' && !Number.isFinite(v) ? (v > 0 ? 'Infinity' : v < 0 ? '-Infinity' : 'NaN') : v;
-        process.stdout.write(JSON.stringify(report, replacer) + '\n');
-        return 0;
-    }
-    const a = report.evolver;
-    const b = report.baseline;
-    process.stdout.write(`thesis [${report.suite}] controlled A/B (verdict = practical delta AND statistical significance):\n`);
-    process.stdout.write(`  baseline  n=${b.n} pass=${pct(b.passRate)} avgCost=${b.avgCost.toFixed(2)} reuse=${pct(b.reuseRate)}\n`);
-    process.stdout.write(`  evolver   n=${a.n} pass=${pct(a.passRate)} avgCost=${a.avgCost.toFixed(2)} reuse=${pct(a.reuseRate)}\n`);
-    process.stdout.write(`  Δpass=${(report.passRateDelta * 100).toFixed(1)}pt  Δcost=${report.costDelta.toFixed(2)}  → ${report.verdict}\n`);
-    process.stdout.write(`  significance: p=${report.pValue.toFixed(3)} (z=${report.z.toFixed(2)}), 95% CI Δpass=[${(report.ciLow * 100).toFixed(1)}, ${(report.ciHigh * 100).toFixed(1)}]pt → ${report.significant ? 'significant' : 'not significant'}\n`);
-    const minDelta = opts.minPassRateDelta ?? 0.05;
-    const targetPower = opts.targetPower ?? 0.8;
-    const finiteReq = Number.isFinite(report.requiredN);
-    const reqN = finiteReq ? `${report.requiredN}` : '∞';
-    const ptStr = (minDelta * 100).toFixed(0);
-    process.stdout.write(`  power: ${pct(report.power)} to detect a ${ptStr}pt effect; need ~${reqN}/arm for ${pct(targetPower)} power\n`);
-    if (report.verdict === 'insufficient_samples') {
-        process.stdout.write(`  (need ≥${opts.minSamples ?? 30} samples per arm for a verdict — add tasks or lower --min-samples)\n`);
-    }
-    else if (!report.significant && !finiteReq) {
-        // requiredN is Infinity: no achievable effect to power for (minDelta is 0, or the baseline is already at the
-        // ceiling so a lift has no headroom). MORE SAMPLES WON'T HELP — don't mislabel it underpowered (Bugbot #286).
-        process.stdout.write(`  (power undefined: no achievable ${ptStr}pt effect — set --min-delta > 0 and check the baseline isn't already at the ceiling; more samples won't help)\n`);
-    }
-    else if (!report.significant && Math.abs(report.passRateDelta) >= minDelta) {
-        process.stdout.write(`  (delta clears the practical bar but is not statistically significant — more samples needed to confirm)\n`);
-    }
-    else if (report.verdict === 'no_significant_diff' && report.power < targetPower) {
-        // A null behind low power is UNDERPOWERED, not "no effect" — and here requiredN is finite, so more tasks fix it.
-        process.stdout.write(`  (underpowered: this n could not reliably detect a ${ptStr}pt effect — 'no difference' is unconfirmed, not proven; run ~${reqN}/arm)\n`);
-    }
-    return 0;
 }

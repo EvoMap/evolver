@@ -11,7 +11,9 @@ import type { MemoryGraphAdvice } from './memoryGraph.js';
 import type { SelectionPolicy } from './ucb1.js';
 import type { FrozenExecutionBinding } from '../exec/executionBinding.js';
 import type { CompatibilityEvidenceIndex } from '../modelCompatibility.js';
+import type { BenchmarkContext } from '../assetstore/sourceQualification.js';
 export interface RunCycleOptions {
+    benchmark?: BenchmarkContext;
     cycleId: string;
     problem: ProblemPattern;
     signals: readonly string[];

@@ -61,7 +61,7 @@ async function landHubAssetIfPresent(deps, candidate) {
 async function hasTrustedResolvedStrategy(deps, candidate) {
     if (!deps.provenance)
         return false;
-    const resolveGene = makeTrustedGeneResolver(deps.store, deps.provenance, deps.review);
+    const resolveGene = makeTrustedGeneResolver(deps.store, deps.provenance, deps.review, false, deps.benchmark);
     const ids = candidate.hubAsset
         ? [candidate.assetId].filter((id) => typeof id === 'string' && id.length > 0)
         : [candidate.geneId, candidate.assetId].filter((id) => typeof id === 'string' && id.length > 0);
@@ -258,6 +258,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     } : undefined;
     const safeExecute = makeSafeExecute(task.repo, deps.store, safety, {
         ...(deps.provenance ? { provenance: deps.provenance } : {}),
+        ...(deps.benchmark ? { benchmark: deps.benchmark } : {}),
         ...(deps.review ? { review: deps.review } : {}),
         ...(deps.includeProbation ? { includeProbation: true } : {}),
         ...(task.validationCmds ? { validationCmds: task.validationCmds } : {}),
@@ -363,6 +364,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
     let res;
     try {
         res = await runEvolutionCycle(deps.engine, deps.store, {
+            ...(deps.benchmark ? { benchmark: deps.benchmark } : {}),
             ...(deps.provenance ? { provenance: deps.provenance } : {}),
             ...(deps.review ? { review: deps.review } : {}),
             ...(deps.includeProbation ? { includeProbation: true } : {}),
@@ -552,6 +554,8 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(res.execution ? { execution_terminal: res.execution.executionTerminal } : {}),
         ...(res.execution?.hubLifecycle ? { hub_lifecycle: res.execution.hubLifecycle } : {}),
         ...(usedAssetIds.length > 0 ? { usedAssetIds } : {}),
+        ...(res.capsule?.asset_id ? { resultAssetId: res.capsule.asset_id } : {}),
+        ...(typeof task.generation === 'string' ? { generation: task.generation } : {}),
     };
 }
 /**

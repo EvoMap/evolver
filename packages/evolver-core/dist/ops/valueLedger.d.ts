@@ -85,6 +85,9 @@ export interface InjectedGeneContent {
 /** Payload of a `value.inject` root_event: which genes were injected and the session outcome. No savings. */
 export interface InjectPayload {
     geneIds: readonly string[];
+    sourceQualificationSchema?: 'benchmark-source-references.v1';
+    sourceBenchmarkId?: string;
+    sourceQualifications?: readonly import('../assetstore/sourceQualification.js').SourceQualificationReference[];
     /** 可选v1扩展；历史事件缺失该字段时不能推断曾发送strategy。 */
     contentSchema?: 'session-gene-content.v1';
     content?: readonly InjectedGeneContent[];

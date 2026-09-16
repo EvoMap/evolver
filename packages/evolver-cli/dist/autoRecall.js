@@ -4,7 +4,7 @@
 // This feeds the experience loop with OBSERVED data, turning the inert manual `evolver recall` into the loop's
 // real, unbiased input. PURE-ish + injectable; best-effort + never throws (it must never break session ingest).
 import { events, ops, assetstore } from '@evomap/evolver-core';
-import { sessionIdFromTranscript, pickInjectEvent, geneIdsOf, geneFromAsset, resolveGene } from './recall.js';
+import { sessionIdFromTranscript, pickInjectEvent, geneIdsOf, geneFromRecallSelection, resolveGene } from './recall.js';
 /**
  * Derive + emit `value.recall` for ONE session transcript. Returns the number of verdicts emitted (0 when there is
  * no matching inject, no resolvable gene, or the session was already recalled). Idempotent: a session whose
@@ -49,8 +49,11 @@ export async function emitSessionRecall(transcriptPath, turns, deps) {
         const genes = [];
         for (const id of geneIds) {
             const a = await resolveGene(store, id);
-            if (a)
-                genes.push(geneFromAsset(a));
+            if (a) {
+                const gene = geneFromRecallSelection(a, id, inject);
+                if (gene)
+                    genes.push(gene);
+            }
         }
         if (genes.length === 0)
             return 0;
@@ -65,7 +68,8 @@ export async function emitSessionRecall(transcriptPath, turns, deps) {
             try {
                 await deps.ingestor.ingest({
                     type: ops.VALUE_RECALL_EVENT,
-                    human: { title: `recall ${r.recalled}: ${r.geneId}`, detail: `session ${sessionId}` },
+                    // 展示标题遵守既有 80 字符上限；payload 中的完整版本身份不能截断。
+                    human: { title: `recall ${r.recalled}: ${r.geneId}`.slice(0, 80), detail: `session ${sessionId}` },
                     payload: payload,
                 });
                 emitted += 1;

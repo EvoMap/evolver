@@ -1,5 +1,7 @@
 import { assetstore, benchmark, events, exec } from '@evomap/evolver-core';
 export interface AntiGeneRolloutCommandDeps {
+    env?: Readonly<NodeJS.ProcessEnv>;
+    provenance?: assetstore.ProvenanceStore;
     store?: assetstore.AssetStoreProvider;
     review?: assetstore.ReviewLedger;
     readEvents?: (eventsPath?: string) => events.ReportEvent[];

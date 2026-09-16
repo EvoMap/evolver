@@ -14,6 +14,7 @@
 //   2. one-switch off: EVOLVER_CURSOR_REWRITE=0 disables it even when installed.
 import { assetstore, events, observers } from '@evomap/evolver-core';
 import { cursorRulesInstalled, rewriteCursorRules, formatCursorGeneLine } from '@evomap/evolver-mcp';
+import { startResidentLoop } from './daemonLoop.js';
 import { listApprovedGenes, provenanceStoreForStore, reviewLedgerForStore } from './reviewFilter.js';
 /**
  * Map a stored gene asset onto the renderer's minimal CursorGene shape. Mirrors the CC SessionStart line voice
@@ -43,18 +44,75 @@ export function resolveCursorRewriteObserver(env = process.env, opts = {}) {
     const store = opts.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
     const review = opts.review ?? reviewLedgerForStore(store); // co-located with the store, not pinned to live dir
     const provenance = opts.provenance ?? provenanceStoreForStore(store); // co-located with the store, not pinned to live dir
-    const maxGenes = opts.maxGenes ?? 8;
+    const benchmark = assetstore.benchmarkContext(env['EVOLVER_BENCHMARK_ID']);
+    const maxGenes = benchmark ? Math.min(opts.maxGenes ?? 8, 8) : (opts.maxGenes ?? 8);
+    let lastRevision;
     const observer = observers.cursorRewriteObserver({
         ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
         // The real side effect: read the current top TRUSTED + REVIEW-APPROVED genes and re-render the rules file.
-        // The gates are essential here: the observer fires on hub reuse and `gene.distilled`, so without them unsafe
-        // drafts could be rendered straight into cursor's alwaysApply rules.
+        // The gates also apply to sidecar refreshes; drafts must never reach alwaysApply rules.
         async rewrite() {
-            const genes = (await listApprovedGenes(store, review, maxGenes, provenance)).map(geneToCursorGene);
-            return rewriteCursorRules(projectRoot, genes, maxGenes);
+            try {
+                if (benchmark && (!Number.isSafeInteger(maxGenes) || maxGenes < 1))
+                    throw new Error('invalid_benchmark_gene_limit');
+                // 此wiring已从env选定上下文；刷新只重读账本，不再从process.env选择另一个benchmark。
+                const genes = (await assetstore.listApprovedGenes(store, review, maxGenes, provenance, { ...(benchmark ? { benchmark } : {}) })).map(geneToCursorGene);
+                return rewriteCursorRules(projectRoot, genes, maxGenes);
+            }
+            catch (error) {
+                // A damaged or unavailable qualification ledger must not leave old benchmark memory active.
+                // 清空派生规则后不能继续信任旧revision，事件触发的失败同样需要轮询恢复。
+                lastRevision = undefined;
+                if (benchmark)
+                    rewriteCursorRules(projectRoot, [], maxGenes);
+                throw error;
+            }
         },
     });
-    return { enabled: true, observer };
+    let loop;
+    let stopped = false;
+    let started = false;
+    let lastDiagnostic;
+    const reconcile = async () => {
+        let revision;
+        try {
+            revision = JSON.stringify([provenance.revision(), review.revision()]);
+        }
+        catch { /* Re-read through the normal gate to clear unsafe rules. */ }
+        if (revision !== undefined && revision === lastRevision)
+            return;
+        try {
+            observer.invalidate();
+            await observer.flush();
+            lastRevision = revision;
+            lastDiagnostic = undefined;
+        }
+        catch (error) {
+            lastRevision = undefined;
+            const diagnostic = error instanceof Error ? error.message : String(error);
+            if (diagnostic !== lastDiagnostic)
+                process.stderr.write(`[cursor-rewrite] source reconciliation failed; retrying: ${diagnostic}\n`);
+            lastDiagnostic = diagnostic;
+        }
+    };
+    return {
+        enabled: true, observer,
+        async start() {
+            if (started || stopped || !benchmark)
+                return;
+            started = true;
+            // Reconcile at startup too: a qualification can change while this daemon is stopped.
+            await reconcile();
+            if (!stopped)
+                loop = startResidentLoop({ tick: reconcile, basePollMs: opts.pollMs ?? 1000,
+                    idleAware: false, runFirstImmediately: false });
+        },
+        async stop() {
+            stopped = true;
+            await loop?.stop();
+            await observer.stop();
+        },
+    };
 }
 /** Re-export for the installer composition: `setup-hooks --runtime=cursor` seeds evolver.mdc with the current
  *  top REVIEW-APPROVED genes (so the file is useful immediately, before the first daemon rewrite — without

@@ -5,8 +5,10 @@ import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { AntiWarning, GeneCandidateInput } from './geneSelection.js';
 import { type RuntimeRegistry } from './kautoValidator.js';
 import { type CompatibilityEvidenceIndex } from '../modelCompatibility.js';
+import { type BenchmarkContext } from '../assetstore/sourceQualification.js';
 export interface AssembleOptions {
     limit?: number;
+    benchmark?: BenchmarkContext;
     /** Build the bounded trusted pre-admission corpus used by semantic IDF. Default true. */
     includeSemanticCorpus?: boolean;
     provenance?: ProvenanceStore;

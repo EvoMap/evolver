@@ -1,6 +1,7 @@
 import type { AssetStoreProvider, AssetRecord } from './provider.js';
 import { ReviewLedger, type ReviewRecord } from './reviewLedger.js';
 import { ProvenanceStore } from './provenance.js';
+import { type SourceSelectionOptions } from './sourceQualification.js';
 /**
  * The ReviewLedger CO-LOCATED with a store — its quarantine/approve records live in the SAME dir as the genes.
  * A read site that defaults the ledger independently (e.g. always `assetsDir()`) would, when handed an injected
@@ -35,4 +36,4 @@ export declare function pendingReviewRecords(review: ReviewLedger, excludeAssetI
  * remote provider.
  */
 export declare function pendingGeneReviewRecords(store: AssetStoreProvider, review: ReviewLedger): Promise<ReviewRecord[]>;
-export declare function listApprovedGenes(store: AssetStoreProvider, review: ReviewLedger, maxGenes: number, provenance?: ProvenanceStore): Promise<AssetRecord[]>;
+export declare function listApprovedGenes(store: AssetStoreProvider, review: ReviewLedger, maxGenes: number, provenance?: ProvenanceStore, options?: SourceSelectionOptions): Promise<AssetRecord[]>;

@@ -33,6 +33,12 @@ export interface AutoExecDirs {
 export declare function ensureAutoExecDirs(base: string): AutoExecDirs;
 export declare function summarizeSandboxedValidation(result: verify.SandboxedValidationResult): string | null;
 /**
+ * Whether a claim for this queue id is already checked out to the exec pass. The name has
+ * to match on both ends — `--hub-1` is a prefix of `--hub-10`, and treating one task as
+ * another's execution either strands it until its commitment lapses or runs it twice.
+ */
+export declare function hasInflightClaim(dirs: AutoExecDirs, queueTaskId: string): boolean;
+/**
  * One queue pass: atomically claim regular tasks/*.json into inflight/, then route each verdict to done/
  * (success or failure) or refused/ (deny-by-default). A claim is atomically marked started before runOne;
  * after a crash, started and legacy claims are ambiguous and fail closed instead of repeating side effects.
@@ -41,6 +47,15 @@ export declare function summarizeSandboxedValidation(result: verify.SandboxedVal
 export declare function autoExecPass(dirs: AutoExecDirs, runOne: (task: exec.AutoExecTask) => Promise<exec.AutoExecVerdict>, options?: {
     executePendingTasks?: boolean;
 }): Promise<exec.AutoExecVerdict[]>;
+/**
+ * Which repo Hub tasks land in. A Hub task does not say which one it belongs to, so a
+ * multi-repo allowlist cannot be spread across — one receiver serves one repo. Silently
+ * taking the first is a guess the operator never made, so EVOLVER_TASK_RECEIVER_REPO lets
+ * them say; it must still be allowlisted, or the receiver has no repo and stays off.
+ */
+export declare function taskReceiverRepo(env: NodeJS.ProcessEnv, allowedRoots: readonly string[]): string | undefined;
+/** Runners cleared to take work off the queue, rather than only keeping the daemon alive. */
+export declare function canExecuteQueue(runner: exec.RunnerName): boolean;
 /** Keep unsupported built-in runners away from the execution queue without stopping the resident daemon. */
 export declare function runnerBoundAutoExecPass(runner: exec.RunnerName, dirs: AutoExecDirs, runOne: (task: exec.AutoExecTask) => Promise<exec.AutoExecVerdict>): () => Promise<exec.AutoExecVerdict[]>;
 /**

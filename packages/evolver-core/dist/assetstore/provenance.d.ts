@@ -1,4 +1,5 @@
 import { type AssetStoreProvider, type AssetRecord, type ConditionalPutOptions, type ConditionalPutResult, type PutResult } from './provider.js';
+import { type SourceQualification } from './sourceQualification.js';
 export type ProvenanceSource = 'local' | 'migrated' | 'hub';
 export type ProvenanceDecision = 'promoted' | 'revoked';
 export declare const UNVERIFIED_V1_IMPORT_REASON = "unverified_v1_import";
@@ -14,6 +15,8 @@ export interface ProvenanceRecord {
     reason?: string;
     /** Canonical content id of the exact hash-mismatched body accepted by a supported unverified ingest. */
     frozenContentId?: string;
+    /** 独立benchmark资格，不进入asset_id，不被普通promote/approve覆盖。 */
+    sourceQualifications?: readonly SourceQualification[];
 }
 export interface ProvenanceTrustChange {
     changed: boolean;
@@ -58,6 +61,11 @@ export declare class ProvenanceWritePendingError extends Error {
     readonly code = "PROVENANCE_WRITE_PENDING";
     constructor(assetId: string);
 }
+export declare class SourceQualificationProvenanceRequiredError extends Error {
+    readonly assetId: string;
+    readonly code = "SOURCE_QUALIFICATION_PROVENANCE_REQUIRED";
+    constructor(assetId: string);
+}
 /**
  * Append-only JSONL sidecar (last-write-wins) at <baseDir>/provenance.jsonl. Default for an asset with NO
  * record = trusted: verified local writers (cycleEngine self-produce and self-consistent v1 migration rows)
@@ -70,6 +78,8 @@ export declare class ProvenanceStore {
     private readonly index;
     private fileState;
     constructor(baseDir: string, now?: () => number);
+    /** A cheap change hint; readers must still use the locked snapshot before consuming records. */
+    revision(): string;
     private rebuildIndex;
     private refreshUnderLock;
     private withFreshRead;
@@ -99,6 +109,10 @@ export declare class ProvenanceStore {
     isTrusted(assetId: string): boolean;
     /** One linearizable trust snapshot for bounded batch readers. */
     snapshot(): ReadonlyMap<string, ProvenanceRecord>;
+    /** 指定历史证据的只读追溯，不将旧资格恢复为当前状态。 */
+    qualificationHistory(assetId: string, benchmarkId: string, evidenceDigest: string): readonly SourceQualification[];
+    /** operator确认的资格仅附加到现有provenance，不创建或修改trust/ReviewLedger状态。 */
+    qualify(value: unknown, by: string, reason: string, exceptionReason?: string): SourceQualification;
     /** Compare and append one trust decision under the same cross-process lock. */
     changeTrust(assetId: string, trusted: boolean, by: string, reason: string): ProvenanceTrustChange;
     /** Explicit, audited untrusted→trusted promotion. Appends a new trusted record carrying who/why. */

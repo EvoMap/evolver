@@ -263,7 +263,7 @@ function diffSummary(result) {
         changedLines: Number.isSafeInteger(diff?.lines) && (diff?.lines ?? -1) >= 0 ? (diff?.lines ?? 0) : 0,
     };
 }
-async function requireReviewedGene(context, store, provenance, review) {
+async function requireReviewedGene(context, store, provenance, review, benchmark) {
     let gene;
     try {
         gene = await store.get(context.reviewedGeneAssetId);
@@ -276,6 +276,9 @@ async function requireReviewedGene(context, store, provenance, review) {
     }
     if (!provenance.isTrusted(context.reviewedGeneAssetId) || !review.isExplicitlyApproved(context.reviewedGeneAssetId)) {
         throw classified('safety', 'workflow reviewed Gene is not trusted and explicitly approved');
+    }
+    if (benchmark && !assetstore.assessSourceEligibility(gene, provenance.get(gene.asset_id), benchmark).allowed) {
+        throw classified('safety', 'workflow reviewed Gene is not eligible for the configured benchmark');
     }
     return gene;
 }
@@ -311,6 +314,13 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
     const provenance = options.provenance ?? new assetstore.ProvenanceStore(assetsDir);
     const review = options.review ?? new assetstore.ReviewLedger(assetsDir);
     const runValidation = options.runValidation ?? verify.runSandboxedValidation;
+    let benchmark;
+    try {
+        benchmark = assetstore.benchmarkContext((options.env ?? process.env)['EVOLVER_BENCHMARK_ID']);
+    }
+    catch {
+        throw classified('safety', 'workflow benchmark configuration is invalid');
+    }
     return async (prompt, ctx, bridgeOptions) => {
         if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > MAX_PROMPT_LENGTH || SECRET_TEXT_RE.test(prompt)) {
             throw classified('safety', 'workflow agent prompt is invalid');
@@ -323,7 +333,7 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
         if (allowedRoots.length === 0 || !allowedRoots.some((root) => isWithinRoot(repo, root))) {
             throw classified('safety', 'workflow execution repo is not allowlisted');
         }
-        const gene = await requireReviewedGene(context, store, provenance, review);
+        const gene = await requireReviewedGene(context, store, provenance, review, benchmark);
         const logicalGeneId = typeof gene['id'] === 'string' && SAFE_ID_RE.test(gene['id'])
             ? gene['id']
             : context.reviewedGeneAssetId;
@@ -353,6 +363,7 @@ function createProductionWorkflowAgentBridgeFromSnapshot(config, options, policy
             }, {
                 provenance,
                 review,
+                ...(benchmark ? { benchmark } : {}),
                 ...(validate ? { validate } : {}),
                 ...(validationCommands ? { validationCmds: validationCommands } : {}),
                 ...(options.agent ? { agent: options.agent } : {}),

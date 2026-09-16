@@ -3,6 +3,8 @@
 // counterpart to the scratch daemon — the daemon becomes a thin caller of makeSafeExecute().
 import { isExecutionEligible } from '../reference/guard.js';
 import { CLAUDE_SAFE_AUTONOMOUS_TOOLS, hasBoundedClaudeFileAccess, makeClaudeExecBridge, validateAgentSessionResume } from './claudeBridge.js';
+import { assessSourceEligibility } from '../assetstore/sourceQualification.js';
+import { sha256Hash } from '../schema/common.js';
 const asStrings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
 /**
  * Resolve a gene's strategy from the store and whether it is safe to EMBED into an autonomous agent's prompt —
@@ -12,10 +14,16 @@ const asStrings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'strin
  * is quarantined until a human approves). Both default-open, so cycle-self-produced/local genes are unaffected;
  * only hub-ingested (untrusted) and auto-distilled (unreviewed) drafts are withheld. Looks up by id or asset_id.
  */
-export function makeTrustedGeneResolver(store, provenance, review, includeProbation = false) {
+export function makeTrustedGeneResolver(store, provenance, review, includeProbation = false, benchmark) {
     return async (geneId) => {
         const genes = await store.list('Gene', 1000);
-        const g = genes.find((x) => String(x['id']) === geneId || String(x.asset_id) === geneId);
+        // 只识别完整digest；长度检查也防止正则$把尾随换行当作结束位置。
+        const canonicalOnly = benchmark !== undefined && geneId.length === 71 && sha256Hash.safeParse(geneId).success;
+        const g = genes.find((x) => {
+            // benchmark逻辑ID先过滤来源资格；canonical引用不能回退到其他资产的logical别名。
+            const matches = String(x.asset_id) === geneId || (!canonicalOnly && String(x['id']) === geneId);
+            return matches && (!benchmark || assessSourceEligibility(x, provenance?.get(x.asset_id), benchmark).allowed);
+        });
         if (!g || !isExecutionEligible(g, store.referenceScope))
             return null;
         const summary = g['summary'];
@@ -49,8 +57,13 @@ const CODEX_DEFAULT_AGENT_OPTIONS = {};
 const CURSOR_DEFAULT_AGENT_OPTIONS = {};
 // Gemini's verified safe default is `--approval-mode auto_edit`; shell remains gated and --yolo is refused.
 const GEMINI_DEFAULT_AGENT_OPTIONS = {};
+// The llm runner has no host permission prompts to bypass and no vendor tool names to allow:
+// its tools are its own, and they are bounded by construction.
+const LLM_DEFAULT_AGENT_OPTIONS = {};
 /** Per-runner safe default agent options. Host permission bypass is never enabled by default. */
 function defaultAgentOptions(runner) {
+    if (runner === 'llm')
+        return LLM_DEFAULT_AGENT_OPTIONS;
     if (runner === 'codex')
         return CODEX_DEFAULT_AGENT_OPTIONS;
     if (runner === 'cursor')
@@ -132,7 +145,7 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         agentOptions: resolveAutonomousAgentOptions(runner, safety.isolation, safety.agentOptions),
         ...(safety.timeoutMs !== undefined ? { timeoutMs: safety.timeoutMs } : {}),
         ...(safety.signal ? { signal: safety.signal } : {}),
-        resolveGene: makeTrustedGeneResolver(store, opts.provenance, opts.review, opts.includeProbation ?? false),
+        resolveGene: makeTrustedGeneResolver(store, opts.provenance, opts.review, opts.includeProbation ?? false, opts.benchmark),
         ...(opts.validate ? { validate: opts.validate } : {}),
         ...(opts.validationCmds ? { validationCmds: opts.validationCmds } : {}),
         ...(opts.personality ? { personality: opts.personality } : {}),

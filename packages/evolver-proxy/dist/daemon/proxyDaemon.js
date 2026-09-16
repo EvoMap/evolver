@@ -90,6 +90,9 @@ export class ProxyDaemon {
     sync;
     lifecycle;
     assetStore;
+    benchmark;
+    sourceProvenance;
+    sourceReview;
     referenceStore;
     remoteAssetById;
     reuseResultReporter;
@@ -139,6 +142,7 @@ export class ProxyDaemon {
     publishAbortController = new AbortController();
     constructor(deps) {
         this.deps = deps;
+        this.benchmark = assetstore.benchmarkContext(deps.benchmarkId ?? process.env['EVOLVER_BENCHMARK_ID']);
         this.now = deps.now ?? (() => Date.now());
         this.random = deps.random ?? Math.random;
         this.assetSearchCacheTtlMs = positiveIntegerOr(deps.assetSearchCacheTtlMs, DEFAULT_ASSET_SEARCH_CACHE_TTL_MS);
@@ -162,6 +166,10 @@ export class ProxyDaemon {
         }
         const assetStoreDir = deps.assetStoreDir ?? (deps.storePath ? join(dirname(deps.storePath), 'assets') : undefined);
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
+        this.sourceProvenance = deps.sourceProvenance ?? (this.benchmark && this.assetStore instanceof assetstore.LocalJsonlProvider
+            ? new assetstore.ProvenanceStore(this.assetStore.baseDir) : undefined);
+        this.sourceReview = deps.sourceReview ?? (this.benchmark && this.assetStore instanceof assetstore.LocalJsonlProvider
+            ? new assetstore.ReviewLedger(this.assetStore.baseDir) : undefined);
         const referenceBase = assetStoreDir ?? deps.assetStore?.baseDir;
         this.referenceStore = referenceBase ? new reference.ReferenceStore(join(referenceBase, 'references')) : undefined;
         this.referenceStore?.search({ max_assets: 1 });
@@ -808,6 +816,33 @@ export class ProxyDaemon {
         const local = this.assetStore ? await this.assetStore.search(query) : [];
         return local.filter((asset) => asset.type !== 'AntiGene').slice(0, limit);
     }
+    qualifyAssets(assets, limit = assets.length) {
+        if (!this.benchmark)
+            return { assets: assets.slice(0, limit) };
+        // 放在缓存、远端await之后；普通审批或cache TTL不能覆盖刚撤销的来源资格。
+        const snapshot = this.sourceProvenance?.snapshot();
+        const reviewed = this.sourceReview?.snapshot();
+        const sourceQualifications = assets.map((asset) => {
+            const decision = assetstore.assessSourceEligibility(asset, snapshot?.get(asset.asset_id), this.benchmark);
+            const review = reviewed?.get(asset.asset_id);
+            const withheld = snapshot?.get(asset.asset_id)?.trusted === false ? 'trust_rejected'
+                : (review && review.state !== 'approved') || (reviewed && asset.type === 'AntiGene' && !review) ? 'review_rejected'
+                    : decision.allowed && !reviewed ? 'review_unavailable' : undefined;
+            return { ...decision, ...(withheld ? { allowed: false, reason: withheld } : {}),
+                assetId: asset.asset_id, benchmarkId: this.benchmark.benchmarkId };
+        });
+        return { assets: assets.filter((_asset, index) => sourceQualifications[index].allowed).slice(0, limit), sourceQualifications };
+    }
+    respondAssetSearch(ctx, query, assets, limit, extra = {}) {
+        const qualified = this.qualifyAssets(assets, limit);
+        ctx.json(200, { results: qualified.assets, ...qualified, query, ...extra, ...(this.benchmark ? { benchmarkId: this.benchmark.benchmarkId } : {}) });
+    }
+    qualifyFetch(ids, assets, missing) {
+        if (!this.benchmark)
+            return { assets: [...assets], missing: [...missing] };
+        const qualified = this.qualifyAssets(assets);
+        return { ...qualified, missing: ids.filter((id) => !qualified.assets.some((asset) => assetMatchesId(asset, id))) };
+    }
     async localFetchAssets(ids) {
         const assets = [];
         const missing = [];
@@ -818,7 +853,7 @@ export class ProxyDaemon {
             else
                 missing.push(id);
         }
-        return { assets, missing };
+        return this.qualifyFetch(ids, assets, missing);
     }
     async handleProxyRoute(ctx) {
         const expectedHeader = singleHeader(ctx.req.headers['x-evomap-expected-hub-mode']);
@@ -835,6 +870,7 @@ export class ProxyDaemon {
                 running: true,
                 status: 'running',
                 proxy_protocol_version: PROXY_PROTOCOL_VERSION,
+                ...(this.benchmark ? { benchmark_id: this.benchmark.benchmarkId, source_qualification_mode: 'enforce' } : {}),
                 schema_version: PROXY_STATUS_SCHEMA_VERSION,
                 hub_mode: this.deps.hubMode ?? 'public',
                 runtime_namespace: this.deps.runtimeNamespace ?? 'default',
@@ -944,15 +980,15 @@ export class ProxyDaemon {
                 ...(kind ? { kind } : {}),
                 ...(typeof body.category === 'string' ? { category: body.category } : {}),
                 ...(typeof body.gene === 'string' ? { gene: body.gene } : {}),
-                limit,
+                limit: this.benchmark ? 25 : limit,
             };
             if (kind === 'AntiGene' && !this.assetStore) {
-                ctx.json(200, { results: [], assets: [], query: body });
+                this.respondAssetSearch(ctx, body, [], limit);
                 return true;
             }
             if (kind === 'AntiGene') {
                 const results = this.assetStore ? await this.assetStore.search(query) : [];
-                ctx.json(200, { results, assets: results, query: body });
+                this.respondAssetSearch(ctx, body, results, limit);
                 return true;
             }
             if (this.hubAuthFailed()) {
@@ -961,10 +997,7 @@ export class ProxyDaemon {
                     return true;
                 }
                 const results = await this.localSearchAssets(query);
-                ctx.json(200, {
-                    results,
-                    assets: results,
-                    query: body,
+                this.respondAssetSearch(ctx, body, results, limit, {
                     degraded: true,
                     local_fallback: true,
                     auth_status: HUB_AUTH_FAILED,
@@ -974,7 +1007,7 @@ export class ProxyDaemon {
             }
             try {
                 const results = await this.searchAssets(query);
-                ctx.json(200, { results, assets: results, query: body });
+                this.respondAssetSearch(ctx, body, results, limit);
             }
             catch (error) {
                 if (!isAuthLikeError(error))
@@ -985,10 +1018,7 @@ export class ProxyDaemon {
                     return true;
                 }
                 const results = await this.localSearchAssets(query);
-                ctx.json(200, {
-                    results,
-                    assets: results,
-                    query: body,
+                this.respondAssetSearch(ctx, body, results, limit, {
                     degraded: true,
                     local_fallback: true,
                     auth_status: HUB_AUTH_FAILED,
@@ -1070,6 +1100,10 @@ export class ProxyDaemon {
                 ...(Array.isArray(body.asset_ids) ? body.asset_ids : []),
                 ...(typeof body.asset_id === 'string' ? [body.asset_id] : []),
             ]);
+            if (this.benchmark && ids.length > 25) {
+                ctx.json(400, { error: 'invalid_limit' });
+                return true;
+            }
             if (this.hubAuthFailed()) {
                 if (this.hubAuthFailurePolicy === 'deny') {
                     ctx.json(401, this.hubAuthFailureBody());
@@ -1124,7 +1158,7 @@ export class ProxyDaemon {
                     missing.push(id);
                 }
             }
-            ctx.json(200, { assets, missing, query: body });
+            ctx.json(200, { ...this.qualifyFetch(ids, assets, missing), query: body });
             return true;
         }
         if (ctx.route === 'POST /asset/submit') {

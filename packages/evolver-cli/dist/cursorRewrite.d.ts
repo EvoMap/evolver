@@ -9,6 +9,10 @@ export declare function geneToCursorGene(g: assetstore.AssetRecord): CursorGene;
 export interface CursorRewriteWiring {
     /** EVOLVER_CURSOR_REWRITE !== '0' AND cursor injection is installed at the project root (default ON when both). */
     enabled: boolean;
+    /** Start cross-process benchmark reconciliation after daemon ownership is acquired. */
+    start?: () => Promise<void>;
+    /** Stop scheduling and drain pending file writes before releasing daemon ownership. */
+    stop?: () => Promise<void>;
     /** Why it is disabled (for the daemon's startup line): 'off' (env) | 'not-installed' | undefined when enabled. */
     reason?: 'off' | 'not-installed';
     /** The wired observer (null when disabled). */
@@ -27,6 +31,8 @@ export interface CursorRewriteOptions {
     maxGenes?: number;
     /** Debounce window (a cycle's burst of gene events ⇒ one rewrite). Default the observer's default (2s). */
     debounceMs?: number;
+    /** Benchmark sidecar change-check cadence; independent of potentially long execution beats. */
+    pollMs?: number;
 }
 /**
  * Build the live cursor rewrite observer from the environment. Returns enabled=false (no observer) when

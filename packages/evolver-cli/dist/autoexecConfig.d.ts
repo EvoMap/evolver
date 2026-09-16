@@ -1,4 +1,4 @@
-export type AutoExecRunner = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type AutoExecRunner = 'claude' | 'codex' | 'cursor' | 'gemini' | 'llm';
 export interface AutoExecConfig {
     allowedRoots: string[];
     pollMs: number;

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ATP_EXECUTION_MODES, ATP_PROOF_STATUSES, ATP_ROLES, ATP_ROUTING_MODES, ATP_VERIFY_ACTIONS, ATP_VERIFY_MODES, } from '@evomap/atp-sdk';
 import { HubClientError, HubFetch } from './hubFetch.js';
 export { ATP_EXECUTION_MODES, ATP_PROOF_STATUSES, ATP_ROLES, ATP_ROUTING_MODES, ATP_VERIFY_ACTIONS, ATP_VERIFY_MODES, };
@@ -7,6 +8,25 @@ export class AtpHubClient {
     constructor(opts) {
         this.opts = opts;
         this.http = new HubFetch({ baseUrl: opts.baseUrl, auth: opts.auth, fetchFn: opts.fetchFn, senderId: opts.senderId });
+    }
+    /**
+     * The node every call of this client speaks for. Ownership checks must read it from
+     * here rather than resolve their own: a filter that answers about a different node
+     * than the one submitting is how work gets skipped or handed to the wrong claimant.
+     */
+    nodeId() {
+        return this.opts.senderId();
+    }
+    /**
+     * The node id every task-protocol write is made under. These calls take and hand back
+     * work on one node's behalf, so a request that cannot name that node is not a weaker
+     * request — it is an unattributable one, and the Hub should never be asked to guess.
+     */
+    requireSenderId(call) {
+        const senderId = this.opts.senderId();
+        if (!senderId)
+            throw new Error(`${call} needs a node identity: this client cannot say which node it authenticates as`);
+        return senderId;
     }
     async placeOrder(opts) {
         const capabilities = opts.capabilities.map((s) => String(s).trim()).filter(Boolean);
@@ -73,6 +93,89 @@ export class AtpHubClient {
             limit: limit === undefined ? undefined : clampLimit(limit),
         };
         return this.callResult('GET', '/a2a/task/my', undefined, query);
+    }
+    /**
+     * Available tasks the Hub is willing to hand this node. The Hub answers the
+     * A2A `fetch` envelope with a `tasks` array; `tasks_only` keeps it from
+     * piggybacking anything else onto the response.
+     */
+    async fetchTasks(opts = {}) {
+        // The node these calls speak for is the one the credentials belong to. Letting a
+        // caller name a different node_id would ask the Hub to act on someone else's behalf.
+        const nid = this.requireSenderId('fetchTasks');
+        return this.callResult('POST', '/a2a/fetch', {
+            protocol: 'gep-a2a',
+            protocol_version: '1.0.0',
+            message_type: 'fetch',
+            message_id: opts.messageId ?? AtpHubClient.envelopeIdFor(nid, opts),
+            sender_id: nid,
+            timestamp: new Date().toISOString(),
+            payload: {
+                tasks_only: true,
+                include_tasks: true,
+                ...(opts.limit === undefined ? {} : { limit: clampLimit(opts.limit) }),
+                ...(opts.questions && opts.questions.length > 0 ? { questions: opts.questions } : {}),
+            },
+        });
+    }
+    /**
+     * The id the Hub dedupes envelopes on. A plain read has no side effect and gets a fresh
+     * id; a fetch carrying `questions` can create bounties, so its id is derived from the
+     * questions themselves — retrying the same ask after a lost response repeats the id and
+     * the Hub recognises it, instead of posting the same question a second time.
+     */
+    static envelopeIdFor(senderId, opts) {
+        const questions = opts.questions;
+        if (!questions || questions.length === 0)
+            return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Canonical, or the same ask written two ways hashes two ways and the dedupe is lost:
+        // keys in a fixed order, signals in a fixed order, questions in a fixed order.
+        const canonical = questions
+            .map((q) => JSON.stringify([q.question, q.amount ?? null, [...(q.signals ?? [])].sort()]))
+            .sort();
+        // `limit` rides along, as the wire sees it: the same questions asked with a different
+        // page size is a different request, but two raw limits that clamp to the same value
+        // ARE the same request and a retry between them must keep its id.
+        const limit = opts.limit === undefined ? null : clampLimit(opts.limit);
+        return `msg_q_${createHash('sha256').update(JSON.stringify([senderId ?? '', canonical, limit])).digest('hex').slice(0, 32)}`;
+    }
+    /**
+     * Take a task. `commitmentDeadline` is the promise the node makes back: the
+     * Hub holds the task for this node until then, so a caller that cannot
+     * finish in time must not send one it cannot keep.
+     */
+    async claimTask(taskId, opts = {}) {
+        return this.callResult('POST', '/a2a/task/claim', {
+            task_id: nonEmpty(taskId, 'taskId'),
+            node_id: this.requireSenderId('claimTask'),
+            ...(opts.commitmentDeadline ? { commitment_deadline: opts.commitmentDeadline } : {}),
+        });
+    }
+    /** Hand a claimed task back to the Hub with the asset the work produced. */
+    async completeTask(taskId, assetId) {
+        return this.callResult('POST', '/a2a/task/complete', {
+            task_id: nonEmpty(taskId, 'taskId'),
+            asset_id: nonEmpty(assetId, 'assetId'),
+            node_id: this.requireSenderId('completeTask'),
+        });
+    }
+    /**
+     * Take a deferred worker task. The Hub gates this channel separately from
+     * `/a2a/task/claim` and answers `worker_disabled` while it is closed.
+     */
+    async claimWorkerTask(taskId) {
+        return this.callResult('POST', '/a2a/work/claim', {
+            task_id: nonEmpty(taskId, 'taskId'),
+            node_id: this.requireSenderId('claimWorkerTask'),
+        });
+    }
+    /** Hand a worker task back with the asset it produced. */
+    async completeWorkerTask(taskId, assetId) {
+        return this.callResult('POST', '/a2a/work/complete', {
+            task_id: nonEmpty(taskId, 'taskId'),
+            asset_id: nonEmpty(assetId, 'assetId'),
+            node_id: this.requireSenderId('completeWorkerTask'),
+        });
     }
     async callResult(method, path, body, query) {
         try {

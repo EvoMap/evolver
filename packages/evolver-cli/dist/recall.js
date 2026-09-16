@@ -43,6 +43,17 @@ export function geneFromAsset(a) {
     const summary = typeof a['summary'] === 'string' ? a['summary'] : undefined;
     return { geneId, ...(strategy ? { strategy } : {}), ...(summary ? { summary } : {}) };
 }
+/** 仅来源资格事件中的实际 canonical 引用保留版本身份，历史和独立手动参数仍按 logical ID 归因。 */
+export function geneFromRecallSelection(asset, requestedId, inject) {
+    const canonicalReference = inject?.payload?.['sourceQualificationSchema'] === 'benchmark-source-references.v1'
+        && geneIdsOf(inject).includes(requestedId);
+    if (!canonicalReference)
+        return geneFromAsset(asset);
+    // 自定义 provider 或旧 logical-ID fallback 返回其他版本时，不能借用被注入资产的身份。
+    if (asset.asset_id !== requestedId)
+        return null;
+    return { ...geneFromAsset(asset), geneId: requestedId };
+}
 // Resolve a --gene argument to its Gene asset, mirroring `evolver review`: an asset_id (sha256:…) hits the index
 // directly (guarded to type Gene, since asset_id is a content hash), while a LOGICAL id (the `gene-a` style id that
 // value.inject records in geneIds) falls back to a bounded Gene-only scan. Resolving via asset_id ALONE would report
@@ -83,6 +94,7 @@ export async function runRecall(argv, deps = {}) {
     const log = deps.log ?? ((s) => process.stdout.write(`${s}\n`));
     const err = deps.err ?? ((s) => process.stderr.write(`${s}\n`));
     const { transcript, geneIds, fromInject } = parseArgs(argv);
+    let selectedInject;
     // --from-inject: pull the geneIds off the most recent value.inject root_event so the operator does not have to
     // retype them (a semi-automatic step toward the auto-loop, which still needs the inject<->session key #205 to
     // pick the RIGHT inject for THIS transcript). Union with any explicit --gene; dedupe preserving order.
@@ -90,6 +102,7 @@ export async function runRecall(argv, deps = {}) {
         const evts = (deps.readEvents ?? events.readEvents)();
         const wantSession = transcript ? sessionIdFromTranscript(transcript) : undefined;
         const picked = pickInjectEvent(evts, wantSession);
+        selectedInject = picked;
         const fromEvent = geneIdsOf(picked);
         // Empty inject is fatal only when there is nothing else to run; with explicit --gene present, honour the union
         // and continue (just warn) rather than discarding the genes the operator typed.
@@ -142,7 +155,12 @@ export async function runRecall(argv, deps = {}) {
             err(`recall: gene not found in local store: ${id}`);
             continue;
         }
-        genes.push(geneFromAsset(a));
+        const gene = geneFromRecallSelection(a, id, selectedInject);
+        if (!gene) {
+            err(`recall: injected gene identity mismatch: ${id}`);
+            continue;
+        }
+        genes.push(gene);
     }
     if (genes.length === 0) {
         err('recall: no resolvable genes');

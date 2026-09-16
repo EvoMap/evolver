@@ -194,7 +194,7 @@ function validationCommand(commandLine, cwd) {
     });
 }
 function liveMakeExecute(repo, runner, validation, deps = {}) {
-    return ({ store, review }) => {
+    return ({ store, review, provenance, benchmark: sourceBenchmark }) => {
         const validate = async (_mutation, _decision, cwd) => {
             for (const command of validation) {
                 if (await validationCommand(command, cwd) !== 0)
@@ -207,6 +207,7 @@ function liveMakeExecute(repo, runner, validation, deps = {}) {
             ...(runner ? { runner } : {}),
         }, {
             review,
+            ...(sourceBenchmark ? { benchmark: sourceBenchmark, provenance } : {}),
             validate,
             validationCmds: validation,
             ...(deps.agent ? { agent: deps.agent } : {}),
@@ -238,6 +239,14 @@ export async function runAntiGeneRolloutCommand(argv, deps = {}) {
         return runReportMode(flags, deps, log);
     if (!flags.suite) {
         process.stderr.write(usage);
+        return 1;
+    }
+    let sourceBenchmark;
+    try {
+        sourceBenchmark = assetstore.benchmarkContext((deps.env ?? process.env)['EVOLVER_BENCHMARK_ID']);
+    }
+    catch {
+        process.stderr.write('anti-gene-rollout: invalid_benchmark_id\n');
         return 1;
     }
     if (flags.minSamples !== undefined && (!Number.isFinite(flags.minSamples) || flags.minSamples < 1)) {
@@ -274,12 +283,21 @@ export async function runAntiGeneRolloutCommand(argv, deps = {}) {
         return 1;
     }
     const assetsDir = flags.assets ? resolve(flags.assets) : events.assetsDir();
-    const reviewDir = flags.reviewDir ? resolve(flags.reviewDir) : assetsDir;
     const store = deps.store ?? new assetstore.LocalJsonlProvider(assetsDir);
+    if (sourceBenchmark && !(store instanceof assetstore.LocalJsonlProvider)
+        && (!deps.provenance || (!deps.review && !flags.reviewDir))) {
+        process.stderr.write('anti-gene-rollout: benchmark_source_ledgers_required\n');
+        return 1;
+    }
+    const reviewDir = flags.reviewDir ? resolve(flags.reviewDir)
+        : sourceBenchmark && store instanceof assetstore.LocalJsonlProvider ? store.baseDir : assetsDir;
     const review = deps.review ?? new assetstore.ReviewLedger(reviewDir, deps.now);
     const eventsPath = flags.events ? resolve(flags.events) : join(mkdtempSync(join(tmpdir(), 'anti-gene-rollout-events-')), 'root_events.jsonl');
     const makeExecute = deps.makeExecute ?? liveMakeExecute(resolve(flags.repo), flags.runner, suite.validation, deps);
-    const report = await benchmark.runAntiGeneRollout(suite, { store, review, makeExecute }, {
+    const report = await benchmark.runAntiGeneRollout(suite, { store, review, makeExecute,
+        ...(deps.provenance ? { provenance: deps.provenance } : {}),
+    }, {
+        ...(sourceBenchmark ? { benchmark: sourceBenchmark } : {}),
         eventsPath,
         now: deps.now,
         ...(!semanticIdfEnabled() ? { disableSemanticIdf: true } : {}),

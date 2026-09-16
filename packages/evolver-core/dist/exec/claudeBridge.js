@@ -610,6 +610,9 @@ export function makeClaudeExecBridge(opts, internal) {
     //  - cursor: gated UNCONDITIONALLY. cursor-agent base `-p` already has write+shell access, its skipPermissions
     //    path is refused by runnerRegistry, and the runner is an unverified scaffold (#66/#181), so we do not let
     //    default cursor touch the real tree until run-verified. (Bugbot High #181)
+    //  - llm: deliberately NOT here. It spawns nothing and has no shell; its whole reach is three tools whose every
+    //    path is resolved against the run's cwd and refused outside it, so containment is in the runner rather than
+    //    in a throwaway worktree. That is what lets a node with no agent CLI execute at all.
     // Built-in Claude and Codex are fail-closed above.
     const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini';
     if (!opts.agent && needsIsolation && opts.isolation !== 'worktree') {

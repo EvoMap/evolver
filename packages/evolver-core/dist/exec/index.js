@@ -10,3 +10,4 @@ export * from './autoExec.js';
 export * from './executionBinding.js';
 export * from './selfPr.js';
 export * from './selfPrObfuscation.js';
+export * from './llmRunner.js';

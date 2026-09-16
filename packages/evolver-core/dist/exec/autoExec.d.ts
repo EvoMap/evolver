@@ -33,6 +33,8 @@ export interface AutoExecTask {
     /** Optional explicit strategy preset name for this task; wins over daemon default and meta-signal auto-detection. */
     strategyName?: string;
     validationCmds?: readonly string[];
+    /** Set by the receiver: which filing of this queue id this task is (see AutoExecVerdict). */
+    generation?: string;
     /** Frozen external execution binding; bound tasks never fall back to unbound execution. */
     execution_binding?: ExecutionBindingInput;
 }
@@ -55,6 +57,14 @@ export interface AutoExecVerdict {
     failureKind?: ExecutionFailureKind;
     exitCode?: number | null;
     usedAssetIds?: readonly string[];
+    /** The capsule this cycle produced. A hub task is completed by handing this id back. */
+    resultAssetId?: string;
+    /**
+     * Which filing of this queue id produced the verdict. A task id can be claimed, run and
+     * claimed again; without this, a late result from the first run would be handed to the
+     * second claim as if it were its own.
+     */
+    generation?: string;
 }
 /**
  * Reuse-before-solve seam (#110): given the task's signals, resolve hub candidates worth competing in the
@@ -72,6 +82,7 @@ export interface HubReuseContext {
 }
 export type HubReuseSeam = (signals: readonly string[], ctx?: HubReuseContext) => Promise<readonly GeneCandidateInput[]>;
 export interface AutoExecDeps {
+    benchmark?: import('../assetstore/sourceQualification.js').BenchmarkContext;
     engine: CycleEngine;
     store: AssetStoreProvider;
     provenance?: ProvenanceStore;

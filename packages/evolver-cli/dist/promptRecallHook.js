@@ -235,14 +235,19 @@ function localRecallFilesWithinBudget(store) {
 function yieldToEventLoop() {
     return new Promise((resolve) => setImmediate(resolve));
 }
-async function selectPromptGenes(prompt, store, review, provenance, maxGenes, budget) {
+async function selectPromptGenes(prompt, store, review, provenance, maxGenes, budget, benchmark) {
     const tokenSegments = promptTokenSegments(prompt);
     const promptTokens = tokenSegments.flat();
     if (promptTokens.length === 0)
         return [];
     const promptIndex = buildPromptSequenceIndex(tokenSegments);
     const boundedPrompt = promptTokens.join(' ');
-    const approved = await assetstore.listApprovedGenes(store, review, PROMPT_RECALL_SCAN_LIMIT, provenance);
+    const receipts = new Map();
+    const approved = await assetstore.listApprovedGenes(store, review, PROMPT_RECALL_SCAN_LIMIT, provenance, {
+        ...(benchmark ? { benchmark } : {}),
+        onQualification: (values) => { for (const receipt of values)
+            receipts.set(receipt.assetId, receipt); },
+    });
     if (selectionExpired(budget))
         return [];
     const ranked = [];
@@ -264,6 +269,7 @@ async function selectPromptGenes(prompt, store, review, provenance, maxGenes, bu
                 literalHits,
                 semanticScore,
                 assetKey: String(gene.asset_id).slice(0, 128),
+                ...(receipts.has(gene.asset_id) ? { sourceQualification: receipts.get(gene.asset_id) } : {}),
             });
         }
         if ((index + 1) % PROMPT_RECALL_YIELD_EVERY_GENES === 0) {
@@ -277,7 +283,7 @@ async function selectPromptGenes(prompt, store, review, provenance, maxGenes, bu
     ranked.sort((left, right) => (right.literalHits - left.literalHits
         || right.semanticScore - left.semanticScore
         || left.assetKey.localeCompare(right.assetKey)));
-    return ranked.slice(0, maxGenes);
+    return ranked.slice(0, benchmark ? Math.min(maxGenes, 8) : maxGenes);
 }
 function renderGeneLine(gene) {
     const id = (typeof gene['id'] === 'string' ? gene['id'] : String(gene.asset_id)).slice(0, 128);
@@ -334,6 +340,7 @@ function logPromptRecallSelections(genes, mode, sessionId, env, injectedLog) {
                     attribution: 'correlational_local',
                     origin: 'local',
                     literal_hits: ranked.literalHits,
+                    ...(ranked.sourceQualification ? assetstore.compactQualificationReceipts([ranked.sourceQualification]) : {}),
                 },
             });
         }
@@ -401,7 +408,7 @@ export async function runPromptRecallHook(argv, deps = {}) {
         const review = deps.review ?? assetstore.reviewLedgerForStore(store);
         const provenance = deps.provenance ?? assetstore.provenanceStoreForStore(store);
         const timeoutMs = deps.selectionTimeoutMs ?? PROMPT_RECALL_SELECTION_TIMEOUT_MS;
-        const ranked = await withSelectionBudget(timeoutMs, [], (budget) => selectPromptGenes(prompt, store, review, provenance, promptRecallMaxGenes(env), budget));
+        const ranked = await withSelectionBudget(timeoutMs, [], (budget) => selectPromptGenes(prompt, store, review, provenance, promptRecallMaxGenes(env), budget, assetstore.benchmarkContext(env['EVOLVER_BENCHMARK_ID'])));
         if (ranked.length > 0) {
             const rendered = renderPromptRecallContext(ranked);
             if (rendered.text) {

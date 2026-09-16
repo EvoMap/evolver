@@ -8,6 +8,7 @@ import { type GeneResolver, type ValidateHook, type AgentRunnerOptions, type Age
 import type { PersonalityStore } from '../personality/store.js';
 import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
 import type { ExecutionObserver } from './claudeBridge.js';
+import { type BenchmarkContext } from '../assetstore/sourceQualification.js';
 /**
  * Resolve a gene's strategy from the store and whether it is safe to EMBED into an autonomous agent's prompt —
  * the exec-side link from #30 (provenance ledger) and the review-state gate to #45 (requireTrustedGene gate). A
@@ -16,7 +17,7 @@ import type { ExecutionObserver } from './claudeBridge.js';
  * is quarantined until a human approves). Both default-open, so cycle-self-produced/local genes are unaffected;
  * only hub-ingested (untrusted) and auto-distilled (unreviewed) drafts are withheld. Looks up by id or asset_id.
  */
-export declare function makeTrustedGeneResolver(store: AssetStoreProvider, provenance?: ProvenanceStore, review?: ReviewLedger, includeProbation?: boolean): GeneResolver;
+export declare function makeTrustedGeneResolver(store: AssetStoreProvider, provenance?: ProvenanceStore, review?: ReviewLedger, includeProbation?: boolean, benchmark?: BenchmarkContext): GeneResolver;
 export interface AutonomousSafety {
     /** Deny-by-default repo allowlist (#41). Required — an empty array refuses everything. */
     allowedRoots: readonly string[];
@@ -56,6 +57,7 @@ export declare function resolveAutonomousAgentOptions(runner: RunnerName | undef
  * provenance (#45/#30). Pass the result as runEvolutionCycle's `execute`.
  */
 export declare function makeSafeExecute(repo: string, store: AssetStoreProvider, safety: AutonomousSafety, opts?: {
+    benchmark?: BenchmarkContext;
     provenance?: ProvenanceStore;
     review?: ReviewLedger;
     validate?: ValidateHook;

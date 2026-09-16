@@ -161,11 +161,13 @@ export function buildEvolverTools(deps) {
     // cannot know the agent's transcript filename, so the agent must pass its session key for the loop to close;
     // without it the value.inject is attribution-only (recorded, but auto-recall cannot correlate it to a session).
     const injectedSig = new Set();
-    const emitInject = async (geneIds, sessionId) => {
+    const emitInject = async (geneIds, assetIds, sessionId, sourceQualifications) => {
         if (!deps.ingestor || geneIds.length === 0)
             return false;
         const cycleId = deps.cycleId ?? 'mcp';
-        const sig = `${sessionId ?? ''}|${[...geneIds].join(',')}`;
+        // 资格收据每次fresh读取，但资格更新或排序变化不是一次新的Gene注入。
+        // 用真实content-addressed集合去重，避免logical id/分隔符碰撞或元数据变化重复计数。
+        const sig = JSON.stringify([sessionId ?? '', [...new Set(assetIds)].sort()]);
         if (injectedSig.has(sig))
             return true; // already recorded this (session, gene set) on this connection
         injectedSig.add(sig);
@@ -173,7 +175,8 @@ export function buildEvolverTools(deps) {
             await deps.ingestor.ingest({
                 type: ops.VALUE_INJECT_EVENT,
                 human: { title: `mcp injected ${geneIds.length} gene(s)`, detail: `cycle ${cycleId}` },
-                payload: { geneIds: [...geneIds], cycleId, ...(sessionId ? { sessionId } : {}) },
+                payload: { geneIds: sourceQualifications ? sourceQualifications.map((item) => item.assetId) : [...geneIds], cycleId,
+                    ...(sessionId ? { sessionId } : {}), ...(sourceQualifications ? assetstore.compactQualificationReceipts(sourceQualifications) : {}) },
             });
             return true;
         }
@@ -246,7 +249,15 @@ export function buildEvolverTools(deps) {
                 const sessionId = typeof a['sessionId'] === 'string' && a['sessionId'].trim() ? a['sessionId'].trim() : undefined;
                 const review = assetstore.reviewLedgerForStore(deps.store);
                 const provenance = assetstore.provenanceStoreForStore(deps.store);
-                const genes = await assetstore.listApprovedGenes(deps.store, review, limit, provenance);
+                const benchmark = assetstore.benchmarkContext(process.env['EVOLVER_BENCHMARK_ID']);
+                if (benchmark && (limit < 1 || limit > 8))
+                    throw new Error('benchmark_recall_limit_must_be_1_to_8');
+                if (benchmark && [sessionId, deps.cycleId].some((id) => id !== undefined && Buffer.byteLength(id, 'utf8') > 128))
+                    throw new Error('benchmark_correlation_id_too_long');
+                let sourceQualifications;
+                const genes = await assetstore.listApprovedGenes(deps.store, review, limit, provenance, {
+                    ...(benchmark ? { benchmark } : {}), onQualification: (receipts) => { sourceQualifications = receipts; },
+                });
                 const primed = genes.map((g) => {
                     const r = g;
                     const id = typeof r['id'] === 'string' ? r['id'] : String(r['asset_id']);
@@ -258,9 +269,10 @@ export function buildEvolverTools(deps) {
                         ...(Array.isArray(r['strategy']) ? { strategy: r['strategy'] } : {}),
                     };
                 });
-                const injected = await emitInject(primed.map((p) => p.id), sessionId);
+                const injected = await emitInject(primed.map((p) => p.id), primed.map((p) => p.asset_id), sessionId, sourceQualifications);
                 return {
                     genes: primed,
+                    ...(sourceQualifications ? { sourceQualifications } : {}),
                     count: primed.length,
                     injected,
                     correlated: injected && sessionId !== undefined, // auto-recall can tie this inject to the session only with a sessionId

@@ -28,6 +28,9 @@ type CycleExecute = (mutation: never, decision: {
     };
 };
 export interface ThesisCommandDeps {
+    env?: Readonly<NodeJS.ProcessEnv>;
+    provenance?: assetstore.ProvenanceStore;
+    review?: assetstore.ReviewLedger;
     /** evolver-arm store (the learned-gene pool). Default: the live asset store. */
     pool?: assetstore.AssetStoreProvider;
     /** Inject a deterministic agent for tests / a dry simulation. Default: makeSafeExecute against `--repo` (live). */

@@ -2,6 +2,7 @@ import { LocalJsonlProvider } from './localJsonl.js';
 import { ReviewLedger } from './reviewLedger.js';
 import { ProvenanceStore } from './provenance.js';
 import { assetsDir } from '../events/paths.js';
+import { assessSourceEligibility } from './sourceQualification.js';
 // Scan window before review filtering — the local gene pool is bounded; mirrors makeTrustedGeneResolver's
 // `list('Gene', 1000)`. Scanning wider than maxGenes then filtering means a quarantined draft sitting in the
 // top-N can never crowd an approved gene out of the result (filter-then-bound, not bound-then-filter).
@@ -64,20 +65,29 @@ export async function pendingGeneReviewRecords(store, review) {
     }
     return genes;
 }
-export async function listApprovedGenes(store, review, maxGenes, provenance = provenanceStoreForStore(store)) {
+export async function listApprovedGenes(store, review, maxGenes, provenance = provenanceStoreForStore(store), options = {}) {
     const all = await store.list('Gene', GENE_SCAN_LIMIT);
     const trust = provenance.snapshot();
     const reviewed = review.snapshot();
     const approved = [];
+    const receipts = [];
     for (const g of all) {
         if (trust.get(String(g.asset_id))?.trusted === false)
             continue; // hub-untrusted → withhold until promoted
         const reviewRecord = reviewed.get(String(g.asset_id));
         if (reviewRecord !== undefined && reviewRecord.state !== 'approved')
             continue; // quarantined/rejected draft → withhold
+        if (options.benchmark) {
+            const decision = assessSourceEligibility(g, trust.get(g.asset_id), options.benchmark);
+            if (!decision.allowed)
+                continue;
+            receipts.push({ ...decision, assetId: g.asset_id, benchmarkId: options.benchmark.benchmarkId });
+        }
         approved.push(g);
         if (approved.length >= maxGenes)
             break;
     }
+    if (options.benchmark)
+        options.onQualification?.(receipts);
     return approved;
 }

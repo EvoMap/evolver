@@ -1654,12 +1654,15 @@ export async function runInject(argv, deps = {}) {
     const ingestor = deps.ingestor ?? new events.Ingestor({ path: deps.eventsPath ?? events.rootEventsPath() });
     const review = deps.review ?? reviewLedgerForStore(store); // co-located with the store, not pinned to live dir
     const provenance = deps.provenance ?? provenanceStoreForStore(store); // co-located with the store, not pinned to live dir
-    const maxGenes = deps.maxGenes ?? 8;
+    const maxGenes = process.env['EVOLVER_BENCHMARK_ID'] !== undefined ? Math.min(deps.maxGenes ?? 8, 8) : (deps.maxGenes ?? 8);
     const hardCap = deps.tokenBudgetHardCap ?? 8000;
     // Gene pool → injection candidates: the most recent TRUSTED + REVIEW-APPROVED local genes (bounded), rendered as
     // compact hint lines. The provenance gate keeps untrusted hub assets out until promotion; the review gate (A2a)
     // keeps auto-distilled UNPROVEN drafts out until approval.
-    const genes = await listApprovedGenes(store, review, maxGenes, provenance);
+    let sourceQualifications;
+    const genes = await listApprovedGenes(store, review, maxGenes, provenance, {
+        onQualification: (receipts) => { sourceQualifications = receipts; },
+    });
     const rendered = genes.map((g) => renderSessionGene(g, contentMode, hardCap * 4));
     const geneLines = rendered.map((gene) => gene.text);
     const geneIds = genes.map((g) => (typeof g['id'] === 'string' ? String(g['id']) : String(g.asset_id)));
@@ -1677,6 +1680,10 @@ export async function runInject(argv, deps = {}) {
     // readHookInput. Default (no flag, no seam) never touches stdin — so a plain `evolver inject session-start` and
     // the test suite can never block on a stdin read (the Windows CI hang this guards against).
     const sessionId = deps.sessionId ?? ((fromHookStdin || deps.readHookInput) ? await readHookSessionId(deps.readHookInput) : undefined);
+    if (sourceQualifications && [sessionId, deps.cycleId].some((id) => id !== undefined && Buffer.byteLength(id, 'utf8') > 128)) {
+        process.stderr.write('inject session-start: benchmark关联ID超过审计预算，未注入。\n');
+        return 1;
+    }
     const compose = (count) => {
         injectedInfo = undefined;
         return hooks.composeSessionStartWithRecap({ tokenBudgetHardCap: hardCap, preamble: SESSION_START_PREAMBLE }, { injectGenes: geneLines.slice(0, count), geneIds: geneIds.slice(0, count), successCount: summary.topGenes.length, summary }, {
@@ -1689,13 +1696,14 @@ export async function runInject(argv, deps = {}) {
         const content = rendered.slice(0, count).map((gene) => gene.content);
         return { ...injectedInfo, geneIds: geneIds.slice(0, count), contentSchema: 'session-gene-content.v1', content,
             omittedByBudget: rendered.length - count + content.filter((gene) => gene.omissionReason === 'budget').length,
+            ...(sourceQualifications ? { sourceQualifications: sourceQualifications.slice(0, count) } : {}),
         };
     };
     let inj = compose(rendered.length);
     const tokenLimitedCount = inj.genes.length;
     let low = 0;
     let high = inj.genes.length;
-    // Find the largest whole-gene prefix whose content receipts fit
+    // Find the largest whole-gene prefix whose content and qualification receipts fit
     // the actual writer envelope, before any prompt bytes reach the runtime.
     while (low < high) {
         const count = Math.ceil((low + high) / 2);

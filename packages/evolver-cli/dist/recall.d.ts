@@ -20,6 +20,8 @@ export declare function sessionIdFromTranscript(p: string): string | undefined;
 export declare function pickInjectEvent(evts: readonly events.ReportEvent[], sessionId?: string): events.ReportEvent | undefined;
 export declare function geneIdsOf(e: events.ReportEvent | undefined): string[];
 export declare function geneFromAsset(a: assetstore.AssetRecord): ops.GeneRecallInput;
+/** 仅来源资格事件中的实际 canonical 引用保留版本身份，历史和独立手动参数仍按 logical ID 归因。 */
+export declare function geneFromRecallSelection(asset: assetstore.AssetRecord, requestedId: string, inject?: events.ReportEvent): ops.GeneRecallInput | null;
 export declare function resolveGene(store: Pick<assetstore.AssetStoreProvider, 'get' | 'list'>, id: string): Promise<assetstore.AssetRecord | null>;
 export declare function runRecall(argv: readonly string[], deps?: RecallCliDeps): Promise<number>;
 /** Registry-shaped handler (argv -> exit code). */

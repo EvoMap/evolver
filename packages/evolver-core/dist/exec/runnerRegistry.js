@@ -4,6 +4,8 @@
 // module never imports back from claudeBridge, so the dependency is one-directional (no cycle). Pure/seam-able:
 // nothing here spawns a real agent in tests except through spawnCapture, which the bridge injects fakes around.
 import { spawn } from 'node:child_process';
+// Type-only in the other direction, so registering the runner introduces no import cycle.
+import { makeLlmHeadlessRunner } from './llmRunner.js';
 import { join as joinPath, delimiter as pathDelimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, } from 'node:fs';
@@ -1058,6 +1060,10 @@ const RUNNER_SPECS = {
     codex: { name: 'codex', makeRunner: makeCodexHeadlessRunner, envAllow: { prefixes: ['OPENAI_', 'CODEX_'] } },
     // cursor keeps only its OWN auth env (CURSOR_); like every runner it never inherits another's vendor key.
     cursor: { name: 'cursor', makeRunner: makeCursorHeadlessRunner, envAllow: { prefixes: ['CURSOR_'] } },
+    // The only runner that spawns nothing. A node with no agent CLI installed still has to be
+    // able to do the work it claimed, so this one talks to a model and edits the workspace
+    // itself through its own bounded tools — see llmRunner.ts.
+    llm: { name: 'llm', makeRunner: (opts) => makeLlmHeadlessRunner(opts), envAllow: { prefixes: ['EVOLVER_LLM_'], keys: ['OPENAI_API_KEY'] } },
     gemini: {
         name: 'gemini',
         makeRunner: makeGeminiHeadlessRunner,

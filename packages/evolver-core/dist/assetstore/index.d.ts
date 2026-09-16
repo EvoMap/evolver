@@ -8,6 +8,7 @@ export * from './assetSidecarRecovery.js';
 export * from './remoteStub.js';
 export * from './learningHistory.js';
 export * from './provenance.js';
+export * from './sourceQualification.js';
 export * from './assetSyncLedger.js';
 export * from './reviewLedger.js';
 export * from './reviewFilter.js';

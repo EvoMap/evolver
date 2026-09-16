@@ -1,3 +1,4 @@
+import { parseSourceQualifications } from './sourceQualification.js';
 export class CorruptAssetSidecarError extends Error {
     sidecar;
     reason;
@@ -65,6 +66,9 @@ export function parseProvenanceRecord(value) {
     const frozenContentId = stringField(record, 'frozenContentId');
     if (frozenContentId !== undefined && !/^sha256:[0-9a-f]{64}$/.test(frozenContentId))
         return null;
+    const qualifications = record['sourceQualifications'] === undefined ? undefined : parseSourceQualifications(record['sourceQualifications'], assetId);
+    if (qualifications === null)
+        return null;
     return {
         assetId,
         source,
@@ -75,6 +79,7 @@ export function parseProvenanceRecord(value) {
         ...(promotedBy ? { promotedBy } : {}),
         ...(reason ? { reason } : {}),
         ...(frozenContentId ? { frozenContentId } : {}),
+        ...(qualifications ? { sourceQualifications: qualifications } : {}),
     };
 }
 export function parseReviewRecord(value) {

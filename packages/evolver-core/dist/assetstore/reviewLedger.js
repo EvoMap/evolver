@@ -35,6 +35,11 @@ export class ReviewLedger {
         this.path = join(baseDir, 'review.jsonl');
         this.lockPath = join(baseDir, '.assetstore.lock');
     }
+    /** 只用于轮询变化提示；审批判断仍须读取加锁的权威 snapshot。 */
+    revision() {
+        assertAssetStoreDirectory(dirname(this.path));
+        return regularFileFingerprint(this.path);
+    }
     static isHuman(s) { return s === 'approved' || s === 'rejected'; }
     /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
     static keep(existing, r) {

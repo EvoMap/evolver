@@ -20,6 +20,8 @@
  *    UN-quarantined, so it is immediately part of the rendered set.
  *  - actor.human.review.approve          : a human approved a quarantined draft (`evolver review --approve`) — it
  *    now passes the read-side review gate (A2a), so the rendered set genuinely changed (A2b).
+ *  - actor.human.review.reject           : 内容审核拒绝后移除原来可注入的经验。
+ *  - actor.human.source.qualify          : source eligibility changed, including revocation.
  * NOT subscribed: `gene.distilled`. An auto-distilled draft enters QUARANTINED, and the read side (A2a) withholds
  * it until approved — so re-rendering on distill would only ever be a no-op. The meaningful change is the APPROVE
  * above. Subscribing to this exact set (not all events) keeps the observer quiet on unrelated traffic.
@@ -29,6 +31,8 @@ export const GENE_SET_CHANGE_EVENT_TYPES = [
     'capsule.produced',
     'actor.human.teach',
     'actor.human.review.approve',
+    'actor.human.review.reject',
+    'actor.human.source.qualify',
 ];
 /** Default debounce window — a cycle emits several gene-set-change events in quick succession; coalesce them
  *  into a single rewrite rather than re-rendering the file once per event. */
@@ -37,7 +41,7 @@ export const DEFAULT_CURSOR_REWRITE_DEBOUNCE_MS = 2_000;
  * Build the cursor rewrite observer. Subscribes to the gene-set-change event types only. On each such event it
  * (re)arms a debounce timer; when the timer fires it calls `rewrite()` once for the whole burst. Because the bus
  * dispatches asynchronously and the debounce is timer-based, the observer's own `handle` returns immediately
- * (just arming the timer) — the actual rewrite runs on the timer and reports its own errors to `onError`.
+ * (just arming the timer) — the actual rewrite runs on the timer and retains errors for `flush()`.
  *
  * idempotent=false: a rewrite has an external side effect (a file write), so the bus must not assume free re-run.
  */
@@ -47,6 +51,8 @@ export function cursorRewriteObserver(deps) {
     let timer;
     let armedAt;
     let lastError;
+    let inFlight;
+    let stopped = false;
     const meta = {
         name: 'cursor-rewrite',
         eventTypes: GENE_SET_CHANGE_EVENT_TYPES,
@@ -58,17 +64,43 @@ export function cursorRewriteObserver(deps) {
     async function fire() {
         timer = undefined;
         armedAt = undefined;
-        try {
-            const changed = await deps.rewrite();
-            if (changed !== false && deps.onChange)
-                await deps.onChange();
-            lastError = undefined;
+        // Serialize writes so an older read cannot overwrite a newer revocation.
+        const previous = inFlight;
+        const current = (async () => {
+            await previous;
+            try {
+                const changed = await deps.rewrite();
+                if (changed !== false && deps.onChange)
+                    await deps.onChange();
+                lastError = undefined;
+            }
+            catch (error) {
+                lastError = error;
+            }
+        })();
+        inFlight = current;
+        await current;
+        if (inFlight === current)
+            inFlight = undefined;
+    }
+    async function flush() {
+        if (timer) {
+            clearTimeout(timer);
+            timer = undefined;
+            armedAt = undefined;
+            await fire();
         }
-        catch (e) {
-            lastError = e;
+        while (inFlight)
+            await inFlight;
+        if (lastError) {
+            const error = lastError;
+            lastError = undefined;
+            throw error instanceof Error ? error : new Error(String(error));
         }
     }
     function arm() {
+        if (stopped)
+            return;
         armedAt = now();
         if (timer)
             clearTimeout(timer);
@@ -84,18 +116,11 @@ export function cursorRewriteObserver(deps) {
         },
         /** Force any pending debounced rewrite to run now and await it (graceful shutdown / tests). Re-throws the
          *  last rewrite error so a broken rewrite is not silently swallowed when explicitly flushed. */
-        async flush() {
-            if (timer) {
-                clearTimeout(timer);
-                timer = undefined;
-                armedAt = undefined;
-                await fire();
-            }
-            if (lastError) {
-                const e = lastError;
-                lastError = undefined;
-                throw e instanceof Error ? e : new Error(String(e));
-            }
+        flush,
+        invalidate: arm,
+        async stop() {
+            stopped = true;
+            await flush();
         },
         /** Whether a rewrite is currently armed (debounce in flight). */
         pending() { return armedAt !== undefined; },

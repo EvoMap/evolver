@@ -3,3 +3,4 @@ export * from './types.js';
 export * from './evidenceSummary.js';
 export * from './adapters.js';
 export * from './cursorState.js';
+export * from './referenceToolEvents.js';

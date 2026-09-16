@@ -225,8 +225,8 @@ export declare function cursorRunnerArgs(opts?: AgentRunnerOptions, resume?: Age
  * bridge refuses built-in autonomous Cursor until host containment is verified.
  */
 export declare function makeCursorHeadlessRunner(opts?: AgentRunnerOptions, platform?: NodeJS.Platform): AgentRunner;
-/** A built-in coding-agent harness (#66). */
-export type RunnerName = 'claude' | 'codex' | 'cursor' | 'gemini';
+/** A built-in coding-agent harness (#66), or the CLI-free model runner. */
+export type RunnerName = 'claude' | 'codex' | 'cursor' | 'gemini' | 'llm';
 /** A harness runner: how to launch it + which env auth prefixes it (and ONLY it) may keep (#66). */
 export interface AgentRunnerSpec {
     name: RunnerName;

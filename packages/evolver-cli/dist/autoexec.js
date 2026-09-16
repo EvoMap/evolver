@@ -22,6 +22,7 @@ import { runTranscriptDistillTick, transcriptDistillMode } from './autoDistillTr
 import { runSessionIngestTick, scanSessionDirs } from './sessionIngest.js';
 import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
 import { resolveAtpAutoDeliver } from './atpAutoDeliver.js';
+import { memoryEventsFromCycleLog, resolveTaskReceiver } from './taskReceiver.js';
 import { createAtpClientFromEnv, getAtpConsent, resolveAtpHome, resolveAtpSenderId } from './atp.js';
 import { AtpAutoBuyer } from './atpAutoBuyer.js';
 import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
@@ -177,6 +178,18 @@ function parseAutoExecClaim(name) {
         };
     }
     return encodedName.endsWith('.json') ? { name, originalName: encodedName, phase: 'legacy' } : null;
+}
+/**
+ * Whether a claim for this queue id is already checked out to the exec pass. The name has
+ * to match on both ends — `--hub-1` is a prefix of `--hub-10`, and treating one task as
+ * another's execution either strands it until its commitment lapses or runs it twice.
+ */
+export function hasInflightClaim(dirs, queueTaskId) {
+    // `.json` is the pre-suffix layout a running daemon may still have on disk after an
+    // upgrade; parseAutoExecClaim reads those as legacy claims, so this has to see them too.
+    const suffixes = [CLAIMED_TASK_SUFFIX, STARTED_TASK_SUFFIX, '.json'];
+    return readdirSync(dirs.inflight)
+        .some((name) => suffixes.some((suffix) => name.endsWith(`--${queueTaskId}${suffix}`)));
 }
 function taskClaimName(originalName) {
     return `${randomUUID()}--${originalName.slice(0, -'.json'.length)}${CLAIMED_TASK_SUFFIX}`;
@@ -341,9 +354,25 @@ export async function autoExecPass(dirs, runOne, options = {}) {
     cleanupOrphanReceiptArtifacts(dirs);
     return out;
 }
+/**
+ * Which repo Hub tasks land in. A Hub task does not say which one it belongs to, so a
+ * multi-repo allowlist cannot be spread across — one receiver serves one repo. Silently
+ * taking the first is a guess the operator never made, so EVOLVER_TASK_RECEIVER_REPO lets
+ * them say; it must still be allowlisted, or the receiver has no repo and stays off.
+ */
+export function taskReceiverRepo(env, allowedRoots) {
+    const chosen = env['EVOLVER_TASK_RECEIVER_REPO']?.trim();
+    if (!chosen)
+        return allowedRoots[0];
+    return allowedRoots.includes(chosen) ? chosen : undefined;
+}
+/** Runners cleared to take work off the queue, rather than only keeping the daemon alive. */
+export function canExecuteQueue(runner) {
+    return runner === 'gemini' || runner === 'llm';
+}
 /** Keep unsupported built-in runners away from the execution queue without stopping the resident daemon. */
 export function runnerBoundAutoExecPass(runner, dirs, runOne) {
-    return () => autoExecPass(dirs, runOne, { executePendingTasks: runner === 'gemini' });
+    return () => autoExecPass(dirs, runOne, { executePendingTasks: canExecuteQueue(runner) });
 }
 const ATP_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,47}$/;
 function atpCapabilityGaps(signals) {
@@ -579,7 +608,8 @@ async function emitReuseHit(ingestor, hit) {
 /** Build the same event for byte-budget admission and durable emission. */
 export function injectEvent(info) {
     const payload = {
-        geneIds: info.geneIds,
+        geneIds: info.sourceQualifications ? info.sourceQualifications.map((item) => item.assetId) : info.geneIds,
+        ...(info.sourceQualifications ? assetstore.compactQualificationReceipts(info.sourceQualifications) : {}),
         ...(info.contentSchema ? { contentSchema: info.contentSchema } : {}),
         ...(info.content ? { content: info.content } : {}),
         ...(info.omittedByBudget !== undefined ? { omittedByBudget: info.omittedByBudget } : {}),
@@ -1499,8 +1529,8 @@ export async function runAutoExec(argv) {
     const home = argv.find((a) => !a.startsWith('-')) ?? join(events.evomapHome(), 'autoexec');
     const dirs = ensureAutoExecDirs(home);
     const cfg = readAutoExecConfig(home);
-    if (cfg.runner !== 'gemini') {
-        process.stderr.write('evolver autoexec: execute queue is disabled for the configured built-in runner; non-execution daemon duties remain active. Set "runner":"gemini" only after reviewing its experimental capability boundary\n');
+    if (!canExecuteQueue(cfg.runner)) {
+        process.stderr.write('evolver autoexec: execute queue is disabled for the configured built-in runner; non-execution daemon duties remain active. Set "runner":"llm" (no agent CLI needed) or "runner":"gemini" after reviewing its experimental capability boundary\n');
     }
     // Solo mode (--solo): the "constrained wild" profile. Hard-cut network + ATP
     // at the SOURCE — in-process, before any resolve* below reads its env gate — so
@@ -1589,6 +1619,7 @@ export async function runAutoExec(argv) {
     };
     const deps = withAutoExecSelectionConfig({
         engine, store, provenance, review, personality: personalityStore, memoryGraph,
+        ...(process.env['EVOLVER_BENCHMARK_ID'] !== undefined ? { benchmark: assetstore.benchmarkContext(process.env['EVOLVER_BENCHMARK_ID']) } : {}),
         executionBinding: {
             journal: new exec.ExecutionBindingJournal(ingestor),
             authority: executionBindingAuthority,
@@ -1666,9 +1697,23 @@ export async function runAutoExec(argv) {
     const antiGeneDistill = resolveAutoDistillAntiGene(process.env, { store, review, ingestor });
     const transcriptDistill = resolveAutoDistillTranscript(process.env, { store, review, ingestor });
     const atpAutoDeliver = resolveAtpAutoDeliver(process.env);
+    const taskReceiver = resolveTaskReceiver(process.env, {
+        repo: taskReceiverRepo(process.env, cfg.allowedRoots),
+        queueDir: dirs.tasks,
+        memoryEvents: () => memoryEventsFromCycleLog(events.readEvents(events.rootEventsPath())),
+        // An unreadable inflight directory is not an empty one: answering "nothing is running"
+        // there would hand the executor a task it may already be running. Say "busy" instead —
+        // a task that waits one beat is recoverable, one run twice is not.
+        inFlight: (queueTaskId) => { try {
+            return hasInflightClaim(dirs, queueTaskId);
+        }
+        catch {
+            return true;
+        } },
+    });
     const uninstallBrokenPipeGuards = installAutoexecBrokenPipeGuards();
     const reuseEnabled = process.env['EVOLVER_REUSE_BEFORE_SOLVE'] === '1' && hubLink !== undefined;
-    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${reuseEnabled ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} semantic-idf=${semanticIdfOn ? 'on' : 'off'} selection-policy=${selectionPolicy} selection-guard=${selectionGuard} selection-floor=${selectionFloor === undefined ? 'unset' : selectionFloor} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} learning-trace=${learningTrace.enabled ? `on(upload=${learningTrace.upload})` : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`}\n`);
+    process.stdout.write(`evolver autoexec: runner=${cfg.runner} queue=${dirs.tasks} allowlist=${JSON.stringify(cfg.allowedRoots)} poll=${cfg.pollMs}ms reuse=${reuseEnabled ? 'on' : 'off'} reuse-signal=${reuseSignalOn ? 'on' : 'off'} semantic-idf=${semanticIdfOn ? 'on' : 'off'} selection-policy=${selectionPolicy} selection-guard=${selectionGuard} selection-floor=${selectionFloor === undefined ? 'unset' : selectionFloor} probation=${probationOn ? 'on' : 'off'} questions=${hubQuestionLink ? 'on' : 'off'} permit=${solidifyPermit ? 'on' : 'off'} value-digest=${digest.enabled ? 'on' : 'off'} reflection=${reflection.enabled ? 'on' : 'off'} learning-trace=${learningTrace.enabled ? `on(upload=${learningTrace.upload})` : 'off'} memory-event-mirror=${memoryEventMirror.enabled ? 'on' : `off(${memoryEventMirror.reason ?? 'no_hub'})`} cursor-rewrite=${cursorRewrite.enabled ? 'on' : `off(${cursorRewrite.reason})`} auto-distill=${distill.enabled ? 'on' : 'off'} auto-distill-llm=${llmDistill.enabled ? llmDistill.mode : 'off'} auto-distill-anti-gene=${antiGeneDistill.enabled ? antiGeneDistill.mode : 'off'} auto-distill-transcript=${transcriptDistill.enabled ? transcriptDistill.mode : 'off'} atp-autodeliver=${atpAutoDeliver.enabled ? 'on' : `off(${atpAutoDeliver.reason})`} task-receiver=${taskReceiver.enabled ? `on(repo=${taskReceiverRepo(process.env, cfg.allowedRoots)})` : `off(${taskReceiver.reason})`}\n`);
     if (cfg.allowedRoots.length === 0)
         process.stdout.write('  (allowlist empty → deny-by-default: nothing runs until you add a repo to config.json)\n');
     // Single-instance lock (#106): a second daemon on the same home would double-process the queue. That is harmless
@@ -1720,11 +1765,20 @@ export async function runAutoExec(argv) {
     const guardedAntiGeneDistill = antiGeneDistill.enabled ? exec.singleFlight(() => antiGeneDistill.tick()) : null;
     const guardedTranscriptDistill = transcriptDistill.enabled ? exec.singleFlight(() => transcriptDistill.tick()) : null;
     const guardedAtpAutoDeliver = atpAutoDeliver.enabled ? exec.singleFlight(() => atpAutoDeliver.tick()) : null;
+    const guardedTaskReceiver = taskReceiver.enabled ? exec.singleFlight(() => taskReceiver.tick()) : null;
     if (distill.observer)
         distill.observer.kick(); // recover any un-acked backlog from a prior run (restart)
     // One idle-aware resident beat runs the exec pass, ATP auto-delivery, THEN the distill scan (single-flight
     // guarded). Idle-aware pacing (#106): an idle machine polls more often, an active one backs off to the base
     // cadence. Off via EVOLVER_IDLE_AWARE=0 → fixed cfg.pollMs (exactly the previous behavior).
+    const completionLine = (ack, assetId) => {
+        if (ack.completed)
+            return 'reported';
+        // The asset outlived the claim: name it, or the work is lost with no way back to it.
+        if (ack.error === 'commitment_expired')
+            return `commitment expired, asset ${assetId} not sent`;
+        return `${ack.pending ? 'owed, will retry' : 'failed'} ${ack.error ?? ''}`;
+    };
     const tick = async (beat) => {
         let failed = false;
         const r = await guarded();
@@ -1735,6 +1789,33 @@ export async function runAutoExec(argv) {
             // default / not in allowlist) is a no-op, not a broken edit.
             if (r.some((v) => v.status === 'failed'))
                 failed = true;
+            // A claim is a promise. The Hub only learns it was kept when the produced capsule
+            // comes back — but a cycle solo rollback is about to revert has not kept it, and the
+            // Hub cannot take a completion back. Stay silent and let the commitment expire.
+            // Only a registered claim is Hub work: the `hub-` prefix is a naming convention a
+            // local task may also use, and reporting its capsule would complete someone's task
+            // with an unrelated asset. The generation narrows it further — a queue id can be
+            // claimed, run and claimed again, and a result from the earlier filing is not this
+            // claim's to hand over.
+            const hubDone = r.flatMap((v) => {
+                const claim = v.status === 'solidified' && v.resultAssetId ? taskReceiver.claimFor(v.taskId) : null;
+                if (!claim || !v.resultAssetId)
+                    return [];
+                if (claim.generation !== v.generation) {
+                    process.stdout.write(`  task-complete: ${claim.hubTaskId} result is from an earlier claim (${v.generation ?? 'none'} ≠ ${claim.generation}); not reporting it\n`);
+                    return [];
+                }
+                return [{ hubTaskId: claim.hubTaskId, resultAssetId: v.resultAssetId, generation: claim.generation }];
+            });
+            if (failed && solo && hubDone.length > 0) {
+                process.stdout.write(`  task-complete: holding ${hubDone.length} report(s) — this cycle rolls back\n`);
+            }
+            else {
+                for (const task of hubDone) {
+                    const ack = await taskReceiver.complete(task.hubTaskId, task.resultAssetId, task.generation);
+                    process.stdout.write(`  task-complete: ${task.hubTaskId} ${completionLine(ack, task.resultAssetId)}\n`);
+                }
+            }
         }
         // Evidence-based auto-promote (#306 phase 2): after a pass, a probation gene that has proven itself (>= K clean
         // successes, 0 failures) is auto-approved — the cross-AI loop self-closes without a human quality gate. Bad ones
@@ -1746,6 +1827,45 @@ export async function runAutoExec(argv) {
                     process.stdout.write(`  auto-promote: ${promoted.length} probation gene(s) proven → approved\n`);
             }
             catch { /* never break the loop on a promotion side-effect */ }
+        }
+        // Take work before delivering it: a task claimed this beat lands in the queue the
+        // next pass reads, and the Hub only accepts delivery for tasks this node holds.
+        // Debts before new work, and outside the receive switch: a claim taken by an earlier run
+        // still owes the Hub its report, and a delivery the Hub never acknowledged gets
+        // re-dispatched when the commitment expires. Turning the receiver off stops new work
+        // only. A debt this beat just created is not due yet, so it waits for the next one.
+        const requeued = await taskReceiver.retryQueueWrites();
+        if (requeued.retried > 0 || requeued.dropped > 0)
+            process.stdout.write(`  task-receiver: requeued=${requeued.queued}/${requeued.retried} still-unqueued=${requeued.pending}${requeued.dropped > 0 ? ` dropped=${requeued.dropped}` : ''}\n`);
+        const owed = await taskReceiver.retryCompletions();
+        if (owed.retried > 0)
+            process.stdout.write(`  task-complete: retried=${owed.retried} reported=${owed.completed} abandoned=${owed.abandoned} owed=${owed.pending}${owed.unrecorded > 0 ? ` unrecorded=${owed.unrecorded}` : ''}\n`);
+        for (const gone of owed.abandonedTasks) {
+            // Dropped from the ledger after the retry budget: nothing will mention it again.
+            process.stdout.write(`  task-complete: GAVE UP on ${gone.taskId} (asset ${gone.resultAssetId}) — ${gone.lastError}\n`);
+        }
+        if (guardedTaskReceiver) {
+            const t = await guardedTaskReceiver();
+            if (t && !('skipped' in t) && t.claimed && t.task) {
+                process.stdout.write(`  task-receiver: ${t.reason} ${t.task.task_id}${t.commitmentDeadline ? ` until=${t.commitmentDeadline}` : ''}\n`);
+            }
+            else if (t && !('skipped' in t) && t.reason === 'claim_failed') {
+                process.stdout.write(`  task-receiver: claim failed ${t.task?.task_id ?? ''} ${t.error ?? ''}\n`);
+            }
+            else if (t && !('skipped' in t) && t.reason === 'expired') {
+                process.stdout.write(`  task-receiver: commitment on ${t.task?.task_id ?? ''} already expired, not resuming\n`);
+            }
+            else if (t && !('skipped' in t) && t.reason === 'fetch_failed') {
+                process.stdout.write(`  task-receiver: fetch failed ${t.error ?? ''}\n`);
+            }
+            else if (t && !('skipped' in t) && t.reason === 'queue_failed') {
+                process.stdout.write(`  task-receiver: claimed ${t.task?.task_id ?? ''} but could not queue it — ${t.error ?? ''}\n`);
+            }
+            else if (t && !('skipped' in t) && (t.seen > 0 || (t.rejected ?? 0) > 0)) {
+                // The Hub had work but none of it was ours to take. Saying so is the only
+                // way an operator can tell "fetching works" from "nothing ever ran".
+                process.stdout.write(`  task-receiver: none (seen=${t.seen}${t.rejected ? ` rejected=${t.rejected}` : ''})\n`);
+            }
         }
         if (guardedAtpAutoDeliver) {
             const d = await guardedAtpAutoDeliver();
@@ -1795,7 +1915,9 @@ export async function runAutoExec(argv) {
             process.stderr.write(`[Solo] 连续失败 ${soloState.consecutiveFailures} 次达阈值，熔断停机（非盲重生）。\n`);
             // Stop scheduling, release the lock, and exit non-zero. Detached so we
             // don't await our own loop.stop() from inside a tick.
-            void loop.stop().then(() => { cleanupAutoexecRuntime(); process.exit(1); });
+            void stopRuntime().catch((error) => {
+                process.stderr.write(`[Solo] shutdown drain failed: ${error instanceof Error ? error.message : String(error)}\n`);
+            }).finally(() => { cleanupAutoexecRuntime(); process.exit(1); });
         }
     };
     // Heartbeat (#106): record liveness + pacing on the AE spine for the WebUI console, THROTTLED so a fast poll does
@@ -1803,6 +1925,7 @@ export async function runAutoExec(argv) {
     const heartbeatMinMs = Math.max(0, Number(process.env['EVOLVER_HEARTBEAT_MS'] ?? 60_000));
     let lastBeatAt = 0;
     let lastIntensity = '';
+    await cursorRewrite.start?.();
     const loop = startResidentLoop({
         tick: solo ? soloTick : tick,
         basePollMs: cfg.pollMs,
@@ -1823,5 +1946,14 @@ export async function runAutoExec(argv) {
     });
     // SIGINT/SIGTERM drain the in-flight beat before cleanup. SIGHUP cannot hot-reload this composition safely,
     // so it is explicit and non-destructive: keep running until the operator performs a normal restart.
-    return await waitForAutoexecShutdown({ stop: loop.stop, cleanup: cleanupAutoexecRuntime });
+    async function stopRuntime() {
+        try {
+            await loop.stop();
+            await bus.drain();
+        }
+        finally {
+            await cursorRewrite.stop?.();
+        }
+    }
+    return await waitForAutoexecShutdown({ stop: stopRuntime, cleanup: cleanupAutoexecRuntime });
 }

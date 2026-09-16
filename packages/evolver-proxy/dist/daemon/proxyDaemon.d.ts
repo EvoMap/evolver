@@ -11,6 +11,11 @@ export declare const DEFAULT_IPC_PORT = 19820;
 export type HubAuthFailurePolicy = 'deny' | 'warn';
 export declare function resolveHubAuthFailurePolicy(env?: Record<string, string | undefined>): HubAuthFailurePolicy;
 export interface ProxyDaemonDeps {
+    /** operator配置，不能由单次搜索请求关闭。 */
+    benchmarkId?: string;
+    sourceProvenance?: assetstore.ProvenanceStore;
+    /** benchmark自定义provider必须接入审核账本；缺账本不等于Gene没有审核记录。 */
+    sourceReview?: assetstore.ReviewLedger;
     hub: HubCapability;
     /** Immutable Hub selection for IPC callers that must fail closed across public/private runtimes. */
     hubMode?: 'public' | 'private';
@@ -148,6 +153,9 @@ export declare class ProxyDaemon {
     readonly sync: SyncEngine;
     readonly lifecycle: LifecycleManager;
     private readonly assetStore;
+    private readonly benchmark;
+    private readonly sourceProvenance;
+    private readonly sourceReview;
     private readonly referenceStore;
     private readonly remoteAssetById;
     private readonly reuseResultReporter;
@@ -246,6 +254,9 @@ export declare class ProxyDaemon {
     private markHubAuthFailed;
     private hubAuthFailureBody;
     private localSearchAssets;
+    private qualifyAssets;
+    private respondAssetSearch;
+    private qualifyFetch;
     private localFetchAssets;
     private handleProxyRoute;
     private searchAssets;

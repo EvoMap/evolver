@@ -8,6 +8,7 @@ import { assertCapsuleGeneBinding, FrozenAssetIdCollisionError, InvalidFrozenPut
 import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, truncateUtf8SuffixDurable, withAssetStoreLock, } from './assetStoreStorage.js';
 import { assertTrustSidecarHealthy, parseProvenanceRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 import { computeAssetId } from '../wire/index.js';
+import { parseSourceQualifications, qualifySource } from './sourceQualification.js';
 export const UNVERIFIED_V1_IMPORT_REASON = 'unverified_v1_import';
 const UNVERIFIED_WRITE_PENDING_REASON = 'unverified_hub_write_pending';
 function unverifiedStageAction(current, source, frozenContentId) {
@@ -109,6 +110,15 @@ export class ProvenanceWritePendingError extends Error {
         this.name = 'ProvenanceWritePendingError';
     }
 }
+export class SourceQualificationProvenanceRequiredError extends Error {
+    assetId;
+    code = 'SOURCE_QUALIFICATION_PROVENANCE_REQUIRED';
+    constructor(assetId) {
+        super('source qualification requires existing provenance');
+        this.assetId = assetId;
+        this.name = 'SourceQualificationProvenanceRequiredError';
+    }
+}
 function immutableRecord(record) {
     return Object.freeze({ ...record });
 }
@@ -128,6 +138,11 @@ export class ProvenanceStore {
         ensureAssetStoreDirectory(baseDir);
         this.path = join(baseDir, 'provenance.jsonl');
         this.lockPath = join(baseDir, '.assetstore.lock');
+    }
+    /** A cheap change hint; readers must still use the locked snapshot before consuming records. */
+    revision() {
+        assertAssetStoreDirectory(dirname(this.path));
+        return regularFileFingerprint(this.path);
     }
     rebuildIndex(state) {
         const next = new Map();
@@ -155,8 +170,18 @@ export class ProvenanceStore {
             return read(this.index);
         });
     }
-    appendUnderLock(full) {
-        const stored = immutableRecord(full);
+    appendUnderLock(full, replaceQualifications = false) {
+        // 普通trust写入可能携带旧snapshot；它必须保留锁内fresh资格，只有qualify能替换。
+        // 即使不采用caller字段，也拒绝malformed内容，避免把错误输入静默当作有效写入。
+        if (full.sourceQualifications !== undefined && parseSourceQualifications(full.sourceQualifications, full.assetId) === null) {
+            throw new Error('invalid_source_qualification');
+        }
+        const qualifications = replaceQualifications ? full.sourceQualifications : this.index.get(full.assetId)?.sourceQualifications;
+        const parsed = qualifications === undefined ? undefined : parseSourceQualifications(qualifications, full.assetId);
+        if (parsed === null)
+            throw new Error('invalid_source_qualification');
+        const { sourceQualifications: _callerQualifications, ...provenance } = full;
+        const stored = immutableRecord({ ...provenance, ...(parsed ? { sourceQualifications: parsed } : {}) });
         appendUtf8Durable(this.path, `${JSON.stringify(stored)}\n`);
         this.index.set(stored.assetId, stored);
         this.fileState = regularFileFingerprint(this.path);
@@ -281,6 +306,50 @@ export class ProvenanceStore {
     /** One linearizable trust snapshot for bounded batch readers. */
     snapshot() {
         return this.withFreshRead((index) => new Map(index));
+    }
+    /** 指定历史证据的只读追溯，不将旧资格恢复为当前状态。 */
+    qualificationHistory(assetId, benchmarkId, evidenceDigest) {
+        return this.withFreshRead(() => {
+            if (this.fileState === 'missing')
+                return [];
+            const raw = readUtf8Regular(this.path);
+            if (raw === null)
+                return [];
+            const parsed = parseSidecarJsonl(raw, parseProvenanceRecord);
+            assertTrustSidecarHealthy('provenance', parsed);
+            const matches = new Map();
+            for (const record of parsed.records) {
+                if (record.assetId !== assetId)
+                    continue;
+                for (const item of record.sourceQualifications ?? []) {
+                    if (item.benchmarkId === benchmarkId && item.evidenceDigest === evidenceDigest) {
+                        matches.set(JSON.stringify(item), item);
+                        if (matches.size > 20)
+                            matches.delete(matches.keys().next().value);
+                    }
+                }
+            }
+            return [...matches.values()].slice(-20);
+        });
+    }
+    /** operator确认的资格仅附加到现有provenance，不创建或修改trust/ReviewLedger状态。 */
+    qualify(value, by, reason, exceptionReason) {
+        const qualification = qualifySource(value, by, reason, new Date(this.now()).toISOString(), exceptionReason);
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            const current = this.index.get(qualification.assetId);
+            if (!current)
+                throw new SourceQualificationProvenanceRequiredError(qualification.assetId);
+            const existing = (current.sourceQualifications ?? []).filter((item) => item.benchmarkId !== qualification.benchmarkId);
+            if (existing.length >= 8)
+                throw new Error('source_qualification_capacity_exceeded');
+            this.appendUnderLock({
+                ...current,
+                at: qualification.at, sourceQualifications: [...existing, qualification],
+            }, true);
+            return qualification;
+        });
     }
     /** Compare and append one trust decision under the same cross-process lock. */
     changeTrust(assetId, trusted, by, reason) {

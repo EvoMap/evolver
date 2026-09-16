@@ -11,7 +11,7 @@ export const ATP_AUTODELIVER_LEDGER_MAX_ENTRIES = 500;
 // capped. The first 429 waits BASE; subsequent ones BASE*2^(hits-1) up to CAP.
 export const ATP_AUTODELIVER_COOLDOWN_BASE_MS = 5 * 60_000; // 5 min
 export const ATP_AUTODELIVER_COOLDOWN_CAP_MS = 6 * 60 * 60_000; // 6 h
-const EMPTY_TICK = { checked: 0, delivered: 0, skippedTasks: 0, terminalFailures: 0, transientFailures: 0, cooldownFailures: 0 };
+const EMPTY_TICK = { checked: 0, delivered: 0, skippedTasks: 0, skippedForeign: 0, terminalFailures: 0, transientFailures: 0, cooldownFailures: 0 };
 export function isAtpAutoDeliverEnabled(env = process.env) {
     const raw = (env['EVOLVER_ATP_AUTODELIVER'] ?? 'on').toLowerCase().trim();
     return raw !== 'off' && raw !== '0' && raw !== 'false';
@@ -38,6 +38,24 @@ export async function runAtpAutoDeliverTick(deps = {}) {
     const nowMs = deps.nowMs ?? (() => Date.now());
     const log = deps.log ?? (() => { });
     const out = { ...EMPTY_TICK };
+    // The identity that filters has to BE the identity that submits. The client is the one
+    // that will be on the wire, so when it can name itself it decides — a caller-supplied
+    // nodeId only fills in for a client that cannot, and a caller that disagrees with the
+    // credentials is a misconfiguration whose every delivery the Hub would reject anyway.
+    // Called defensively: a client from before this method existed is a stranger, not a
+    // crash. It delivers nothing either way, but it fails the check rather than the process.
+    const nodeId = typeof client.nodeId === 'function' ? client.nodeId() : undefined;
+    if (deps.nodeId && nodeId && deps.nodeId !== nodeId) {
+        log(`[ATP-AutoDeliver] refusing to deliver: asked to act as ${deps.nodeId} with ${nodeId}'s credentials`);
+        return out;
+    }
+    // Only the submitting client's own credentials can say whose work this is. An env or
+    // caller-supplied id is unbound to them, and filtering by one identity while submitting
+    // as another is the separation this check exists to stop. Fail closed, loudly.
+    if (!nodeId) {
+        log('[ATP-AutoDeliver] the hub client cannot name the node it authenticates as; refusing to deliver (ownership cannot be checked)');
+        return out;
+    }
     try {
         const listed = await client.listMyTasks(deps.limit ?? 20);
         if (!listed.ok)
@@ -66,6 +84,15 @@ export async function runAtpAutoDeliverTick(deps = {}) {
             }
             if (!taskString(task, 'result_asset_id') && !taskString(task, 'resultAssetId')) {
                 out.skippedTasks += 1;
+                continue;
+            }
+            // /a2a/task/my answers with every task this node can see, including ones another
+            // node claimed. Delivering someone else's work is what the Hub rejects (#1168).
+            // A task that names no claimant proves nothing either: "not visibly someone else's"
+            // is not "ours", so only an explicit match gets delivered.
+            const claimedBy = taskString(task, 'claimed_by') ?? taskString(task, 'claimedBy');
+            if (claimedBy !== nodeId) {
+                out.skippedForeign += 1;
                 continue;
             }
             const status = taskString(task, 'status') ?? taskString(task, 'task_status');

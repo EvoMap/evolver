@@ -1,0 +1,2 @@
+import type { AssetTrustDeps } from './assetTrust.js';
+export declare function runSourceQualificationCommand(argv: readonly string[], deps: AssetTrustDeps, actorId: (env: Record<string, string | undefined>) => string): Promise<number>;

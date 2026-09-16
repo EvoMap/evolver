@@ -5,3 +5,5 @@ export * from './antiGeneBenchmark.js';
 export * from './antiGeneRollout.js';
 export * from './triggerShift.js';
 export * from './selectionFlatAbstention.js';
+export * from './referenceAccess.js';
+export * from './referenceAccessController.js';

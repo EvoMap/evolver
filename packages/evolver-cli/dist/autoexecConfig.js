@@ -10,7 +10,7 @@ const MAX_VALIDATION_COMMAND_LENGTH = 300;
 const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SECRET_TEXT_RE = /(?:\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:sk|gh[oprsu])_[A-Za-z0-9_-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
 function parseRunner(value) {
-    return value === 'codex' || value === 'cursor' || value === 'gemini' ? value : 'claude';
+    return value === 'codex' || value === 'cursor' || value === 'gemini' || value === 'llm' ? value : 'claude';
 }
 function isSafeValidationCommand(value) {
     if (typeof value !== 'string')

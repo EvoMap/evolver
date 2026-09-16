@@ -15,6 +15,7 @@ export const EVENT_TYPES = [
     'actor.human.nudge', 'actor.human.intervene', 'actor.human.teach', 'actor.human.observe',
     'actor.human.review.approve', 'actor.human.review.reject',
     'actor.human.trust.promote', 'actor.human.trust.revoke',
+    'actor.human.source.qualify',
     'actor.human.sidecar.recover',
     'gene.distilled', 'gene.distill_shadowed',
     'anti_gene.distilled', 'anti_gene.distill_shadowed',
@@ -23,6 +24,7 @@ export const EVENT_TYPES = [
     'material.batch_ready',
     'value.reuse_hit', 'value.inject', 'value.reuse_outcome', 'value.recall',
     'execution.binding.created', 'execution.started', 'execution.decision', 'execution.terminal', 'execution.recovered',
+    'execution.reference_access',
     // K_auto EvidenceProjection: coordinate-level partial revocation over (version, claim, scope, runtime,
     // verifier). A revoked event distrusts one (coordinate, value) pair; a reinstated event withdraws it. The
     // authoritative root-event stream is the single source of truth (see algo/kautoProjection.projectRevocations).

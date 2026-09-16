@@ -547,6 +547,7 @@ async function processMaterial(material, opts, deps) {
             engine: deps.engine,
             store: deps.store,
             provenance: deps.provenance,
+            ...(process.env['EVOLVER_BENCHMARK_ID'] !== undefined ? { benchmark: assetstore.benchmarkContext(process.env['EVOLVER_BENCHMARK_ID']) } : {}),
             review: deps.review,
             personality: deps.personality,
             memoryGraph: deps.memoryGraph,

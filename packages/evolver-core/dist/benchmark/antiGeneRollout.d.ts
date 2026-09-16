@@ -1,5 +1,7 @@
 import type { AssetStoreProvider } from '../assetstore/provider.js';
 import { ReviewLedger } from '../assetstore/reviewLedger.js';
+import { ProvenanceStore } from '../assetstore/provenance.js';
+import { type BenchmarkContext } from '../assetstore/sourceQualification.js';
 import type { ReportEvent } from '../events/reports.js';
 import { type CycleInput } from '../algo/cycleEngine.js';
 import type { GepCategory } from '../wire/index.js';
@@ -58,6 +60,8 @@ export interface AntiGeneRolloutReport {
     taskResultsTruncated?: number;
 }
 export interface AntiGeneRolloutExecuteContext {
+    benchmark?: BenchmarkContext;
+    provenance?: ProvenanceStore;
     arm: AntiGeneRolloutArm;
     task: AntiGeneRolloutTask;
     store: AssetStoreProvider;
@@ -67,10 +71,12 @@ export interface AntiGeneRolloutExecuteContext {
 export type AntiGeneRolloutExecuteFactory = (context: AntiGeneRolloutExecuteContext) => CycleInput['execute'];
 export interface AntiGeneRolloutDeps {
     store: AssetStoreProvider;
+    provenance?: ProvenanceStore;
     review?: ReviewLedger;
     makeExecute: AntiGeneRolloutExecuteFactory;
 }
 export interface AntiGeneRolloutOptions {
+    benchmark?: BenchmarkContext;
     minSamples?: number;
     minFailureDelta?: number;
     now?: () => number;
