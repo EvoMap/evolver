@@ -1,8 +1,9 @@
 import { assetstore, hub } from '@evomap/evolver-core';
+import { type LocalPublishVerifierClient } from './localPublishBinding.js';
 type WritableLike = {
     write(chunk: string): unknown;
 };
-type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'gene_unproven' | 'insufficient_credits' | 'unsafe_validation_command';
+type ContractReason = 'missing_id' | 'cli_unavailable' | 'auth_required' | 'not_found' | 'network_error' | 'unsupported' | 'internal_error' | 'redaction_unavailable' | 'leak_detected' | 'schema_invalid' | 'bundle_required' | 'quality_gate_failed' | 'gene_unproven' | 'insufficient_credits' | 'unsafe_validation_command' | 'verification_required';
 export interface ReuseParseResult {
     ok: boolean;
     assetId?: string;
@@ -18,6 +19,7 @@ export interface PublishParseResult {
     dryRun?: boolean;
     repair?: boolean;
     noRecipe?: boolean;
+    reverify?: boolean;
     jsonOut?: boolean;
     reason?: ContractReason;
     message?: string;
@@ -31,7 +33,7 @@ interface GateSummary {
     quality_evidence?: PublishQualityEvidenceSource;
     validation_command?: 'pass' | 'fail';
 }
-type PublishQualityEvidenceSource = 'local_history' | 'bundle_seed' | 'none' | 'unavailable';
+type PublishQualityEvidenceSource = 'local_history' | 'bundle_seed' | 'reference_integrity' | 'none' | 'unavailable';
 interface PublishAssetSummary {
     asset_id?: string;
     type?: assetstore.AssetKind;
@@ -63,6 +65,8 @@ interface ContractHubTransport {
     composeRecipe?(payload: hub.RecipeComposeInput): Promise<hub.RecipeComposeResult>;
 }
 interface PrivateContractProxy {
+    authorizeAssetPublication?: LocalPublishVerifierClient['authorizeAssetPublication'];
+    reverifyAssets?: LocalPublishVerifierClient['reverifyAssets'];
     status(): Promise<unknown>;
     fetchAsset(args: {
         assetId: string;
@@ -96,6 +100,7 @@ export declare function runPublishCommand(args: readonly string[], deps?: CliCon
 export declare function parseReuseArgs(args: readonly string[]): ReuseParseResult;
 export declare function parsePublishArgs(args: readonly string[]): PublishParseResult;
 export declare function buildPublishBundle(refs: readonly string[], deps?: CliContractDeps): Promise<PublishBundleResult>;
+export declare function assessPublishRecords(original: assetstore.AssetRecord[], deps: CliContractDeps): Promise<PublishBundleResult>;
 /** Resolve `<asset_id|logical_id|path>` the way publish does. Shared so `asset-repair` speaks the same refs. */
 export declare function loadAssetRef(ref: string, deps: CliContractDeps): Promise<assetstore.AssetRecord>;
 export declare function hasExplicitValidatePass(body: unknown): boolean;

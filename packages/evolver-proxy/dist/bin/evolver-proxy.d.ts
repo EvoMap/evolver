@@ -106,6 +106,8 @@ export declare function createVerifiedPublicSender(initialNodeId?: string): Veri
 export declare function adoptVerifiedPublicNodeId(store: mailbox.MailboxStore, selection: PublicNodeSecretSelection, sender: VerifiedPublicSender, nodeId: string): void;
 export interface HubRuntime {
     hub: ProxyDaemonDeps['hub'];
+    /** Identity used by this connected runtime, including explicit credential overrides not yet persisted to the store. */
+    currentNodeId?: () => string | undefined;
     hello: (opts: {
         rotate: boolean;
         evolverVersion?: string;

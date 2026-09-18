@@ -2,6 +2,31 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+export function safeReverificationRecovery(value) {
+    const input = recordValue(value);
+    const ids = (candidate) => Array.isArray(candidate)
+        ? [...new Set(candidate.slice(0, 2).filter((id) => typeof id === 'string' && /^sha256:[0-9a-f]{64}$/.test(id)))] : [];
+    return {
+        stored: typeof input['stored'] === 'boolean' ? input['stored'] : null,
+        binding_registered: typeof input['binding_registered'] === 'boolean' ? input['binding_registered'] : null,
+        source_asset_ids: ids(input['source_asset_ids']),
+        asset_ids: ids(input['asset_ids']),
+    };
+}
+const REVERIFICATION_FAILURE_REASONS = new Set([
+    'proxy_hub_mode_mismatch', 'bundle_persistence_unsupported',
+    ...['invalid_options', 'pair_required', 'unavailable', 'aborted', 'timeout', 'failed', 'invalid_wire',
+        'invalid_validation', 'candidate_changed', 'execution_failed', 'execution_mismatch', 'execution_unsafe',
+        'leak_blocked'].map((reason) => `publish_reverification_${reason}`),
+]);
+export class ProxyReverificationError extends Error {
+    recovery;
+    constructor(reason, recovery) {
+        super(REVERIFICATION_FAILURE_REASONS.has(reason) ? reason : 'publish_reverification_failed');
+        this.name = 'ProxyReverificationError';
+        this.recovery = safeReverificationRecovery(recovery);
+    }
+}
 export class EvolverProxyClient {
     baseUrl;
     token;
@@ -81,6 +106,52 @@ export class EvolverProxyClient {
     }
     submitAssetBundle(bundle) {
         return this.call('POST', '/asset/submit', this.modeBoundBody(bundle));
+    }
+    authorizeAssetPublication(bundle, opts = {}) {
+        return this.call('POST', '/asset/authorize-publish', this.modeBoundBody(bundle), {
+            signal: this.verificationSignal(opts.signal),
+        });
+    }
+    async reverifyAssets(input, opts = {}) {
+        // 重新执行不是只读重试：连接失败或凭据轮换后也不能自动重复一次宿主执行。
+        const connection = this.connectionSnapshot();
+        const bounded = { signal: this.verificationSignal(opts.signal) };
+        const sourceIds = input.assets.slice(0, 2).map((asset) => recordValue(asset)['asset_id']);
+        let attempted = false;
+        try {
+            if (bounded.signal.aborted)
+                throw new Error('publish_reverification_aborted');
+            if (this.expectedHubMode === 'private')
+                await this.verifyExpectedHubMode(connection, bounded);
+            if (bounded.signal.aborted)
+                throw new Error('publish_reverification_aborted');
+            attempted = true;
+            const result = await this.callOnce('POST', '/asset/reverify', this.modeBoundBody(input), bounded, connection);
+            if (!result.ok) {
+                const body = recordValue(result.parsed);
+                throw new ProxyReverificationError(typeof body['error'] === 'string' ? body['error'] : '', {
+                    ...safeReverificationRecovery(body), source_asset_ids: sourceIds,
+                });
+            }
+            return this.acceptResult(result, '/asset/reverify');
+        }
+        catch (error) {
+            if (error instanceof ProxyReverificationError)
+                throw error;
+            const reason = bounded.signal.aborted
+                ? (bounded.signal.reason instanceof Error && bounded.signal.reason.name === 'TimeoutError'
+                    ? 'publish_reverification_timeout' : 'publish_reverification_aborted')
+                : error instanceof Error ? error.message : '';
+            // 发出请求后丢失响应，不能推断宿主未登记或未写入；禁止凭据刷新重试。
+            throw new ProxyReverificationError(reason, {
+                stored: attempted ? null : false, binding_registered: attempted ? null : false,
+                source_asset_ids: sourceIds,
+            });
+        }
+    }
+    verificationSignal(signal) {
+        const deadline = AbortSignal.timeout(30_000);
+        return signal ? AbortSignal.any([signal, deadline]) : deadline;
     }
     /** Pre-publish dry-run: the hub runs its quality + content-safety gate but stores nothing and charges no credits. */
     validateAsset(asset) {

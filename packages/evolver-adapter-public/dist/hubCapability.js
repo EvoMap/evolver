@@ -172,6 +172,8 @@ export class PublicHubCapability {
                     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
                 };
             }
+            if (isNodeMergedResponse(body, payload))
+                return helloResultFromBody(200, body);
             if (payload['error'])
                 return { ok: false, error: String(payload['error']), ...(retryAfterMs !== undefined ? { retryAfterMs } : {}), ...(rateLimitUntilMs !== undefined ? { rateLimitUntilMs } : {}) };
             const nodeId = stringField(payload, 'your_node_id')
@@ -203,8 +205,12 @@ export class PublicHubCapability {
             };
         }
         catch (err) {
-            if (err instanceof AuthError)
-                return { ok: false, authError: true, error: `hub auth error ${err.status}`, httpStatus: err.status };
+            if (err instanceof AuthError) {
+                const result = helloResultFromBody(err.status, asRecord(err.body) ?? {});
+                return result.error === 'node_merged'
+                    ? result
+                    : { ok: false, authError: true, error: `hub auth error ${err.status}`, httpStatus: err.status };
+            }
             if (err instanceof HubClientError)
                 return helloResultFromBody(err.status, asRecord(err.body) ?? {});
             if (isHubUnreachableError(err))
@@ -229,8 +235,12 @@ export class PublicHubCapability {
             return heartbeatResultFromBody(200, body);
         }
         catch (err) {
-            if (err instanceof AuthError)
-                return { ok: false, authError: true, error: `hub auth error ${err.status}` };
+            if (err instanceof AuthError) {
+                const result = heartbeatResultFromBody(err.status, asRecord(err.body) ?? {});
+                return result.error === 'node_merged'
+                    ? result
+                    : { ok: false, authError: true, error: `hub auth error ${err.status}` };
+            }
             if (err instanceof HubClientError)
                 return heartbeatResultFromBody(err.status, asRecord(err.body) ?? {});
             if (isHubUnreachableError(err))
@@ -1568,9 +1578,12 @@ function helloResultFromBody(httpStatus, body) {
     const payload = asRecord(body['payload']) ?? body;
     const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');
     const rateLimitUntilMs = numberField(payload, 'rate_limit_until_ms') ?? numberField(payload, 'rateLimitUntilMs');
-    const status = stringField(payload, 'status');
-    const error = stringField(payload, 'error') ?? stringField(payload, 'reason') ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
-    const details = payload['details'] ?? body['details'];
+    const nodeMerged = isNodeMergedResponse(body, payload);
+    const status = nodeMerged ? 'node_merged' : stringField(payload, 'status');
+    const error = nodeMerged
+        ? 'node_merged'
+        : stringField(payload, 'error') ?? stringField(payload, 'reason') ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
+    const details = nodeMerged ? undefined : payload['details'] ?? body['details'];
     const authError = httpStatus === 401 || httpStatus === 403 || status === 'auth_failed' || status === 'invalid_secret';
     return {
         ok: false,
@@ -1591,9 +1604,13 @@ function hubUnreachableRetryAfterMs(err) {
 function heartbeatResultFromBody(httpStatus, body) {
     const payload = asRecord(body['payload']) ?? body;
     const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');
-    const status = stringField(payload, 'status');
-    const error = stringField(payload, 'error') ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
-    const details = payload['details'] ?? body['details'];
+    const nodeMerged = isNodeMergedResponse(body, payload);
+    const status = nodeMerged ? 'node_merged' : stringField(payload, 'status');
+    const error = nodeMerged
+        ? 'node_merged'
+        : stringField(payload, 'error') ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
+    const details = nodeMerged ? undefined : payload['details'] ?? body['details'];
+    const authError = httpStatus === 401 || httpStatus === 403;
     const ack = asRecord(payload['last_update_ack']);
     const forceUpdate = forceUpdateFromRecord(asRecord(payload['force_update']));
     const rawCapabilityGaps = payload['capability_gaps'] ?? payload['capabilityGaps'];
@@ -1607,6 +1624,7 @@ function heartbeatResultFromBody(httpStatus, body) {
         && !error;
     return {
         ok,
+        ...(authError ? { authError: true } : {}),
         ...(httpStatus >= 400 ? { httpStatus } : {}),
         ...(error ? { error } : {}),
         ...(details !== undefined ? { details } : {}),
@@ -1619,6 +1637,21 @@ function heartbeatResultFromBody(httpStatus, body) {
         ...(forceUpdate ? { forceUpdate } : {}),
         ...(capabilityGaps !== undefined ? { capabilityGaps } : {}),
     };
+}
+function isNodeMergedResponse(body, payload) {
+    return [
+        payload['error'],
+        payload['reason'],
+        payload['status'],
+        body['error'],
+        body['reason'],
+        body['status'],
+    ].some((value) => {
+        if (typeof value !== 'string')
+            return false;
+        const code = value.trim();
+        return code === 'node_merged' || code.startsWith('node_merged:');
+    });
 }
 function forceUpdateFromRecord(value) {
     if (!value)

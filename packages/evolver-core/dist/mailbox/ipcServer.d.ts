@@ -13,6 +13,8 @@ export interface IpcServerOptions {
         receiptId: string;
         stored: boolean;
     }) => void;
+    /** 宿主安全准入发生在 durable send 前；抛错不得留下 pending 消息。 */
+    beforeSend?: (envelope: Envelope) => void | Promise<void>;
     onAuthFailure?: () => void;
 }
 export interface IpcRouteContext {
@@ -41,6 +43,7 @@ export declare class MailboxIpcServer {
     private readonly runtimeNamespace;
     private readonly extraRoutes;
     private readonly onSend;
+    private readonly beforeSend;
     private readonly onAuthFailure;
     constructor(opts: IpcServerOptions);
     listen(port?: number): Promise<number>;

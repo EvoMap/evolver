@@ -1,5 +1,5 @@
 import { reference, assetstore, mailbox as mb } from '@evomap/evolver-core';
-import type { EvolverProxyClient } from './proxyClient.js';
+import { type EvolverProxyClient } from './proxyClient.js';
 /** Minimal root_events writer the reuse-feedback path needs (#268). Structural so the stdio server can pass the
  *  real `events.Ingestor` and tests can pass a fake — tools.ts stays decoupled from the concrete class. */
 export interface ReuseHitIngestor {

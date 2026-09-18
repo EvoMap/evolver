@@ -1,12 +1,14 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { inspect, format } from 'node:util';
-import { assetrepair, assetstore, events, hub, wire, algo, verify } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, resolveHubUrl, } from '@evomap/evolver-adapter-public';
+import { assetrepair, assetstore, events, hub, wire, algo, verify, reference } from '@evomap/evolver-core';
+import { hasReferenceEvidenceMode, validateReferencePublishBundle, validReferenceReceipt } from './referencePublish.js';
+import { AuthError, HubClientError, HubFetch, HubUnreachableError, connectPublicHub, gepEnvelope, globalFetchLike, isHubDryRunEnabled, resolveHubUrl, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { resolveAtpSenderId } from './atp.js';
 import { storeRepairedAsset } from './repairedAssetStore.js';
 import { resolveExplicitNodeCredentials, resolveIdentityHome } from './identityHome.js';
+import { LocalPublishBindingError, reverifyPublishBundle, withLocalPublishBinding, } from './localPublishBinding.js';
 const REUSE_CONTRACT = 'reuse.v1';
 const PUBLISH_CONTRACT = 'publish.v1';
 const REVERSIBILITY = 'irreversible';
@@ -19,6 +21,8 @@ const PUBLISH_USAGE = [
     'usage: evolver publish --asset <gene_id_or_path> --asset <capsule_id_or_path> --json [--dry-run] [--repair] [--no-recipe]',
     '       evolver publish --gene <id_or_path> --capsule <id_or_path> --json [--dry-run] [--no-recipe]',
     '       evolver publish --gene <id_or_path> --auto-pair --json [--dry-run] [--no-recipe]',
+    '       evolver publish --gene <id_or_path> --capsule <id_or_path> --reverify --json [--no-recipe]',
+    '       --reverify 明确请求本机宿主重新验证并保存新资产；不改写原资产，不与 --dry-run/--repair 合用。',
 ].join('\n');
 const ASSET_FLAGS = new Set(['--asset', '--gene', '--capsule', '--event']);
 const STABLE_CONTRACT_REASONS = new Set([
@@ -37,6 +41,7 @@ const STABLE_CONTRACT_REASONS = new Set([
     'gene_unproven',
     'insufficient_credits',
     'unsafe_validation_command',
+    'verification_required',
 ]);
 const HUB_METADATA_KEYS = new Set([
     'credit_cost',
@@ -136,7 +141,7 @@ export async function runPublishCommand(args, deps = {}) {
     }
     const parsed = parsePublishArgs(args);
     if (!parsed.ok || !parsed.assetRefs) {
-        return writeJson(out, publishFailure(parsed.reason ?? 'bundle_required', parsed.message ?? publishReasonMessage('bundle_required'), { retryable: false }), 1, deps);
+        return writeJson(out, publishFailure(parsed.reason ?? 'bundle_required', parsed.message ?? publishReasonMessage('bundle_required'), { retryable: false, mode: parsed.dryRun ? 'dry_run' : 'publish' }), 1, deps);
     }
     const assetRefs = parsed.assetRefs;
     let runtimeDeps;
@@ -152,15 +157,37 @@ export async function runPublishCommand(args, deps = {}) {
             mode: parsed.dryRun ? 'dry_run' : 'publish',
         }), 1, deps);
     }
-    const write = (value, code) => writeJson(out, value, code, runtimeDeps);
+    if (parsed.reverify && isHubDryRunEnabled(runtimeDeps.env ?? {})) {
+        return writeJson(out, publishFailure('unsupported', '--reverify cannot be combined with HUB_DRY_RUN', {
+            retryable: false, mode: 'dry_run',
+        }), 1, runtimeDeps);
+    }
+    let reverification;
+    const write = (value, code) => writeJson(out, reverification && asRecord(value) ? { ...asRecord(value), reverification } : value, code, runtimeDeps);
     return withMachineJsonConsole(Boolean(parsed.jsonOut), runtimeDeps, async () => {
         try {
             const effectiveRefs = parsed.autoPair
                 ? await autoPairPublishRefs(assetRefs, parsed.geneRef, runtimeDeps)
                 : assetRefs;
-            const bundle = await buildPublishBundle(effectiveRefs, runtimeDeps);
+            let bundle = await buildPublishBundle(effectiveRefs, runtimeDeps);
             if (!bundle.ok) {
                 return write(publishFailure(bundle.reason, bundle.message, { retryable: false, gates: bundle.gates }), 1);
+            }
+            const referenceOnly = bundle.gates.quality_evidence === 'reference_integrity';
+            if (referenceOnly && (parsed.reverify || parsed.repair || configuredHubMode(runtimeDeps.env ?? {}) === 'private')) {
+                return write(publishFailure('unsupported', 'reference publication requires the public Hub and immutable assets; execution reverify and repair are not supported', {
+                    retryable: false, mode: parsed.dryRun ? 'dry_run' : 'publish', gates: bundle.gates,
+                }), 1);
+            }
+            if (parsed.reverify && bundle.blockReasons.every((reason) => reason === 'gene_unproven')) {
+                const verified = await reverifyPublishBundle(bundle.original, runtimeDeps.env ?? {}, runtimeDeps.resolveProxyClient);
+                reverification = {
+                    applied: true, original_assets_unchanged: true, stored: verified.stored,
+                    source_asset_ids: verified.sourceAssetIds, asset_ids: verified.assets.map((asset) => asset.asset_id),
+                };
+                bundle = await assessPublishRecords(verified.assets.map(normalizeAsset), runtimeDeps);
+                if (!bundle.ok)
+                    return write(publishFailure(bundle.reason, bundle.message, { retryable: false, gates: bundle.gates }), 1);
             }
             if (bundle.blockReasons.length > 0) {
                 if (parsed.dryRun)
@@ -175,7 +202,7 @@ export async function runPublishCommand(args, deps = {}) {
                 }), 1);
             }
             const transport = deps.transport ?? createDefaultTransport(runtimeDeps, {
-                composeRecipe: parsed.noRecipe !== true,
+                composeRecipe: !referenceOnly && parsed.noRecipe !== true,
             });
             const validate = deps.validate ?? transport.validate;
             // A field-level refusal is a defect in the RECORD, not a verdict on the work in it. Read the Hub's own
@@ -215,6 +242,11 @@ export async function runPublishCommand(args, deps = {}) {
                     ...repairEnvelopeField(validationAttempt),
                 }), 1);
             }
+            if (referenceOnly && !validReferenceReceipt(validation.body, bundle.sanitized, true)) {
+                return write(publishFailure('quality_gate_failed', 'reference validation response does not attest the submitted non-execution pair', {
+                    retryable: false, mode: parsed.dryRun ? 'dry_run' : 'publish', gates: { ...bundle.gates, quality: 'fail' },
+                }), 1);
+            }
             if (parsed.dryRun)
                 return write(dryRunEnvelope(bundle, validationCredits, undefined, validationAttempt), 0);
             const publish = deps.publish ?? transport.publish;
@@ -235,6 +267,20 @@ export async function runPublishCommand(args, deps = {}) {
                     ...(publishCredits ? { credits: publishCredits } : {}),
                     ...repairEnvelopeField(repairApplied),
                 }), 1);
+            }
+            if (referenceOnly) {
+                if (!validReferenceReceipt(published.body, bundle.sanitized, false)) {
+                    return write(publishFailure('quality_gate_failed', 'reference publication lacks a matching stored_reference receipt; persistence is unconfirmed', {
+                        retryable: false, mode: 'publish', gates: { ...bundle.gates, quality: 'fail' }, assets: bundle.assets,
+                    }), 1);
+                }
+                const payload = payloadRecord(published.body);
+                return write({
+                    ok: true, contract: PUBLISH_CONTRACT, mode: 'publish', status: 'stored_reference',
+                    reversibility: REVERSIBILITY, evidence_mode: 'reference_only', ...reference.REFERENCE_ELIGIBILITY,
+                    bundle_id: payload['bundle_id'], gene_asset_id: payload['gene_asset_id'], capsule_asset_id: payload['capsule_asset_id'],
+                    credit_reward: 0, gates: bundle.gates, assets: bundle.assets,
+                }, 0);
             }
             // The repaired records are what the network now holds. Persist them so the local library and the Hub do
             // not silently diverge; a storage failure is reported, never fatal — the publish already happened.
@@ -292,10 +338,10 @@ export async function runPublishCommand(args, deps = {}) {
         }
         catch (err) {
             const failure = classifyError(err, 'publish', runtimeDeps.env ?? process.env);
-            return write(publishFailure(failure.reason, failure.message, {
-                retryable: failure.retryable,
-                mode: parsed.dryRun ? 'dry_run' : 'publish',
-            }), 1);
+            return write({ ...publishFailure(failure.reason, failure.message, {
+                    retryable: failure.retryable,
+                    mode: parsed.dryRun ? 'dry_run' : 'publish',
+                }), ...(err instanceof LocalPublishBindingError && err.recovery ? { recovery: err.recovery } : {}) }, 1);
         }
     });
 }
@@ -443,6 +489,7 @@ export function parsePublishArgs(args) {
     let dryRun = false;
     let repair = false;
     let noRecipe = false;
+    let reverify = false;
     let jsonOut = false;
     for (let i = 0; i < args.length; i++) {
         const token = args[i];
@@ -466,6 +513,10 @@ export function parsePublishArgs(args) {
         }
         if (token === '--no-recipe') {
             noRecipe = true;
+            continue;
+        }
+        if (token === '--reverify') {
+            reverify = true;
             continue;
         }
         const equalFlag = [...ASSET_FLAGS].find((flag) => token.startsWith(`${flag}=`));
@@ -512,6 +563,10 @@ export function parsePublishArgs(args) {
     }
     if (!jsonOut)
         return { ok: false, reason: 'unsupported', message: 'publish requires --json' };
+    if (reverify && (dryRun || repair))
+        return {
+            ok: false, dryRun, reason: 'unsupported', message: '--reverify cannot be combined with --dry-run or --repair; verification never runs implicitly',
+        };
     if (autoPair && (geneCount !== 1 || !geneRef || capsuleRef || hasUntypedAsset)) {
         return { ok: false, reason: 'bundle_required', message: '--auto-pair requires exactly one explicit --gene and no --asset or --capsule' };
     }
@@ -528,6 +583,7 @@ export function parsePublishArgs(args) {
         dryRun,
         repair,
         ...(noRecipe ? { noRecipe: true } : {}),
+        ...(reverify ? { reverify: true } : {}),
         jsonOut,
     };
 }
@@ -550,12 +606,26 @@ export async function buildPublishBundle(refs, deps = {}) {
             gates: reason === 'schema_invalid' ? { schema: 'fail' } : {},
         };
     }
+    return assessPublishRecords(original, deps);
+}
+export async function assessPublishRecords(original, deps) {
     const bundleCheck = checkBundle(original);
     if (!bundleCheck.ok)
         return { ok: false, reason: 'bundle_required', message: bundleCheck.message, gates: { schema: 'pass', bundle: 'fail' } };
+    const referenceOnly = hasReferenceEvidenceMode(original);
+    if (referenceOnly) {
+        try {
+            validateReferencePublishBundle(original);
+        }
+        catch (error) {
+            const message = error instanceof Error && /^reference_[a-z_]+$/.test(error.message)
+                ? error.message : 'reference_integrity_invalid';
+            return { ok: false, reason: 'schema_invalid', message, gates: { schema: 'fail', quality: 'fail' } };
+        }
+    }
     let sanitized;
     try {
-        sanitized = sanitizePublishBundle(original);
+        sanitized = referenceOnly ? structuredClone(original) : sanitizePublishBundle(original);
     }
     catch {
         return { ok: false, reason: 'redaction_unavailable', message: 'redaction unavailable', gates: { redaction: 'unavailable' } };
@@ -571,7 +641,9 @@ export async function buildPublishBundle(refs, deps = {}) {
     // leaks to the Hub and comes back as an opaque `quality_gate_failed` after a
     // round-trip. Assessing the gene's outcome evidence here fails fast, locally,
     // with a precise reason. Read-only: aggregates the local capsule history.
-    const geneEvidence = await assessPublishGeneEvidence(original, deps);
+    const geneEvidence = referenceOnly
+        ? { eligible: true, source: 'reference_integrity' }
+        : await assessPublishGeneEvidence(original, deps);
     const geneProven = geneEvidence?.eligible ?? true;
     // Local quality gate: validation command safety check.
     // Only applies to Gene assets. Checks that all validation commands are safe
@@ -727,6 +799,10 @@ function checkValidationCommands(original) {
 }
 function sanitizePublishBundle(original) {
     const sanitized = original.map((asset) => hub.sanitizeAsset(stripPublishMetadata(asset)));
+    // 已绑定记录的 business-id 引用同样属于完整内容，不能在验证后改成另一种引用并重算资产。
+    // 脱敏若真正改变内容，后续 host ledger 会要求重新验证；人工无声明路径保留旧引用规范化。
+    if (hub.requiresPublishBinding(original))
+        return sanitized;
     const finalGeneIdByOriginalRef = new Map();
     for (let i = 0; i < original.length; i++) {
         const source = original[i];
@@ -1006,6 +1082,8 @@ function dryRunEnvelope(bundle, credits, blockDetail, repairAttempt) {
         mode: 'dry_run',
         reversibility: REVERSIBILITY,
         blocked: bundle.blockReasons.length > 0,
+        ...(bundle.gates.quality_evidence === 'reference_integrity'
+            ? { evidence_mode: 'reference_only', ...reference.REFERENCE_ELIGIBILITY } : {}),
         block_reasons: bundle.blockReasons,
         ...(blockDetails.length > 0 ? { block_details: blockDetails } : {}),
         assets: bundle.assets,
@@ -1156,7 +1234,7 @@ function createDefaultTransport(deps, opts = {}) {
     return {
         fetchAssetById: (assetId) => connected.hub.fetchAssetById(assetId),
         validate: (bundle) => call('/a2a/validate', 'validate', bundle),
-        publish: (bundle) => call('/a2a/publish', 'publish', bundle),
+        publish: (bundle) => withLocalPublishBinding(bundle, env, (authorized) => call('/a2a/publish', 'publish', authorized), deps.resolveProxyClient),
         ...(opts.composeRecipe === false ? {} : {
             composeRecipe: (payload) => hub.composeRecipeAfterAssetPublish(connected.hub, payload),
         }),
@@ -1282,6 +1360,9 @@ function privatePublishExplicitFailure(body) {
     return root['ok'] === false || root['stored'] === false || payload['ok'] === false || payload['stored'] === false;
 }
 function privateProxyFailure(err) {
+    if (err instanceof Error && /^publish_(?:binding|reverification|verification)_/.test(err.message)) {
+        return { ok: false, status: 422, body: { ok: false, reason: 'verification_required' } };
+    }
     return { ok: false, status: isAuthLikeError(err) ? 401 : 0 };
 }
 function isAuthLikeError(err) {
@@ -1289,6 +1370,8 @@ function isAuthLikeError(err) {
     return /oauth|login|credential|auth|401|403|node_secret/i.test(message);
 }
 function classifyError(err, command, env = {}) {
+    if (err instanceof LocalPublishBindingError)
+        return { reason: 'verification_required', message: err.message, retryable: false };
     if (err instanceof ContractError)
         return { reason: err.reason, message: err.safeMessage, retryable: err.reason === 'network_error' };
     if (err instanceof AuthError)
@@ -1366,6 +1449,7 @@ function publishReasonMessage(reason, env = {}) {
         gene_unproven: 'gene has no proven success yet — run it to a successful outcome before publishing',
         insufficient_credits: 'insufficient credits',
         unsafe_validation_command: 'validation command contains unsafe patterns (e.g., node -e, shell metacharacters) blocked by sandbox security policy',
+        verification_required: '资产需要当前本机宿主验证；请使用 --reverify 或本机重新验证接口',
     };
     return map[reason] ?? map.internal_error;
 }

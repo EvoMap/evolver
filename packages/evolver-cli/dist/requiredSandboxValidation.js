@@ -17,10 +17,15 @@ export async function runRequiredSandboxedValidation(commands, cwd, options = {}
             })),
             skipped: [],
             isolated: false,
+            isolationTier: 'none',
         };
     }
     const safeCommands = sanitizedPlan.map((command) => command.value);
-    const result = await runner(safeCommands, cwd, { ...options, requireIsolation: true });
+    // AutoExec、distill 与 workflow 共用此入口。默认接受 no-network 的独立根、只读源码和断网边界，
+    // 不要求宿主能够只读重挂整棵文件系统或提供聚合 cgroup 限额。调用方明确要求 read-only 时不能降档；
+    // 实际采用的档位由 core 回执报告，不能用这里的最低要求代替。无效的运行时值原样交给 core 拒绝。
+    const minimumIsolation = options.minimumIsolation === undefined ? 'no-network' : options.minimumIsolation;
+    const result = await runner(safeCommands, cwd, { ...options, requireIsolation: true, minimumIsolation });
     const sanitized = verify.sanitizeExecutionPayload(result);
     if (!sanitized.blocked)
         return sanitized.value;

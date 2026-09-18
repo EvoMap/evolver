@@ -5,9 +5,11 @@
 // module hardens EXECUTION: blocked node eval-flags, shell-metachar rejection, a fresh wiped temp cwd,
 // a scrubbed env (no secrets leak in), and a SIGKILL timeout. Output is folded + truncated.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { PRIVATE_ROOT_GUARDIAN, privateRootFilesystemSetup, privateRootPathsAllowed, sourceHasNestedMounts } from './privateRootFilesystem.js';
+import { trustedValidationRuntime } from './trustedValidationRuntime.js';
 import { classifyNodeValidationInvocation, isNodeExecutable, nodeFlagViolation, SHELL_METACHARS, tokenizeValidationCommand, } from './validation.js';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 120_000;
@@ -172,6 +174,17 @@ export function isolationCommand(bin, args, opts) {
     if (opts.readOnlyFilesystem && (!opts.readOnlyRoot || !opts.cwd)) {
         throw new Error('read-only filesystem isolation requires readOnlyRoot and cwd');
     }
+    if (opts.privateRootFilesystem) {
+        if (!opts.writableTmpDir || !opts.readOnlyRoot || !opts.cwd) {
+            throw new Error('private-root filesystem isolation requires writableTmpDir, readOnlyRoot and cwd');
+        }
+        if (opts.readOnlyFilesystem || !privateRootPathsAllowed(opts.readOnlyRoot, opts.cwd, opts.writableTmpDir)) {
+            throw new Error('private-root filesystem isolation has conflicting or unsafe paths');
+        }
+        return trustedValidationRuntime(PRIVATE_ROOT_GUARDIAN, [opts.javascriptRuntime && process.versions['bun'] ? 'bun' : 'native', SYSTEM_UNSHARE, '-r', '-m', '-n', '-p', '-i', '-u', '--fork', '--kill-child', '--', SYSTEM_SH, '-c',
+            privateRootFilesystemSetup(RESOURCE_LIMITS.scratchBytes, TRUSTED_SYSTEM_PATH), 'sh',
+            opts.writableTmpDir, opts.readOnlyRoot, opts.cwd, bin, ...args]);
+    }
     const flags = ['-r'];
     if (opts.hideHomeSecrets || opts.readOnlyFilesystem)
         flags.push('-m');
@@ -227,6 +240,25 @@ function scrubEnv(allow) {
             out[k] = v;
     }
     return out;
+}
+/** Resolve bare tools only through the same trusted PATH exposed inside the cage. */
+function privateRootExecutable(executable, cwd) {
+    const candidates = isAbsolute(executable)
+        ? [executable]
+        : executable.includes('/')
+            ? [resolve(cwd, executable)]
+            : TRUSTED_SYSTEM_PATH.split(':').map((directory) => join(directory, executable));
+    for (const candidate of candidates) {
+        try {
+            if (lstatSync(realpathSync(candidate)).isFile()) {
+                // Preserve the requested basename: multicall tools such as Ubuntu's
+                // coreutils dispatch from argv[0], even when their canonical file is shared.
+                return candidate;
+            }
+        }
+        catch { /* try the next trusted PATH entry */ }
+    }
+    throw new Error('private-root executable is not a regular file on the trusted path');
 }
 /**
  * 终止完整的验证进程树，而不只是启动器。POSIX 启动器会独立成组，
@@ -342,8 +374,25 @@ export function makeSandboxRunner(opts = {}) {
             }
         }
         // Isolation (#26): fail-safe — if we can't actually create the namespaces, refuse rather than run un-isolated.
-        if ((opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem) && !(opts.unshareCheck ?? unshareNetAvailable)()) {
+        if ((opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.privateRootFilesystem) && !(opts.unshareCheck ?? unshareNetAvailable)()) {
             return deny('rejected: requested namespace isolation is unavailable');
+        }
+        let privatePaths;
+        if (opts.privateRootFilesystem) {
+            try {
+                const source = opts.readOnlyRoot ?? opts.cwd;
+                if (!source || !opts.cwd || !opts.writableTmpDir)
+                    return deny('rejected: private-root paths are required');
+                privatePaths = { root: realpathSync(source), cwd: realpathSync(opts.cwd), scratch: realpathSync(opts.writableTmpDir) };
+                if (!Object.values(privatePaths).every((path) => lstatSync(path).isDirectory())
+                    || !privateRootPathsAllowed(privatePaths.root, privatePaths.cwd, privatePaths.scratch)
+                    || sourceHasNestedMounts(privatePaths.root, readFileSync('/proc/self/mountinfo', 'utf8'))) {
+                    return deny('rejected: private-root paths overlap or source contains nested mounts');
+                }
+            }
+            catch {
+                return deny('rejected: private-root source mount topology is unavailable');
+            }
         }
         const resourceGroup = opts.resourceLimits
             ? (opts.resourceGroupFactory ?? createSandboxResourceGroup)()
@@ -353,13 +402,15 @@ export function makeSandboxRunner(opts = {}) {
         const ownTemp = !opts.cwd;
         let cwd;
         try {
-            cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), 'evo-sbx-'));
+            cwd = privatePaths?.cwd ?? opts.cwd ?? mkdtempSync(join(tmpdir(), 'evo-sbx-'));
         }
         catch (e) {
             resourceGroup?.cleanup();
             return deny(`temp dir failed: ${e instanceof Error ? e.message : 'err'}`, 1);
         }
         let cleaned = false;
+        let launcherCleanup;
+        let launcherCleanupFailed = false;
         const cleanup = () => {
             if (cleaned)
                 return;
@@ -368,6 +419,12 @@ export function makeSandboxRunner(opts = {}) {
                 clearTimeout(timeoutTimer);
             removeAbortListener();
             resourceGroup?.cleanup();
+            try {
+                launcherCleanup?.();
+            }
+            catch {
+                launcherCleanupFailed = true;
+            }
             if (ownTemp) {
                 try {
                     rmSync(cwd, { recursive: true, force: true });
@@ -376,33 +433,46 @@ export function makeSandboxRunner(opts = {}) {
             }
         };
         // Resolve 'node' to the running binary so spawn(shell:false) works on Windows too (where bare 'node' would ENOENT).
-        const bin = isNodeExecutable(executable) ? process.execPath : executable;
         try {
-            const { cmd: spawnCmd, args: spawnArgs } = isolationCommand(bin, args, {
+            const requestedBin = isNodeExecutable(executable) ? process.execPath : executable;
+            const bin = opts.privateRootFilesystem ? privateRootExecutable(requestedBin, cwd) : requestedBin;
+            const bunInterpreter = process.platform === 'linux' && process.versions['bun'] && isNodeExecutable(executable)
+                && (opts.readOnlyFilesystem || opts.privateRootFilesystem);
+            // `node script` must not acquire Bun's automatic dotenv/config/preload/install behavior.
+            const workloadArgs = bunInterpreter ? ['--no-env-file', '--config=/dev/null', '--no-install', ...args] : args;
+            const launch = isolationCommand(bin, workloadArgs, {
                 noNetwork: opts.noNetwork,
                 hideHomeSecrets: opts.hideHomeSecrets,
                 readOnlyFilesystem: opts.readOnlyFilesystem,
-                writableTmpDir: opts.writableTmpDir,
-                readOnlyRoot: opts.readOnlyRoot ?? cwd,
+                privateRootFilesystem: opts.privateRootFilesystem,
+                javascriptRuntime: isNodeExecutable(executable),
+                writableTmpDir: privatePaths?.scratch ?? opts.writableTmpDir,
+                readOnlyRoot: privatePaths?.root ?? opts.readOnlyRoot ?? cwd,
                 cwd,
             });
+            launcherCleanup = launch.cleanup;
+            const { cmd: spawnCmd, args: spawnArgs, env: launcherEnv, cwd: launcherCwd } = launch;
             const env = scrubEnv(envAllow);
-            if (opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.resourceLimits) {
+            Object.assign(env, launcherEnv);
+            // A compiled Bun executable needs runtime mode when acting as the selected JavaScript interpreter.
+            if (bunInterpreter)
+                env['BUN_BE_BUN'] = '1';
+            if (opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.privateRootFilesystem || opts.resourceLimits) {
                 env['PATH'] = TRUSTED_SYSTEM_PATH;
             }
-            if (opts.readOnlyFilesystem) {
+            if (opts.readOnlyFilesystem || opts.privateRootFilesystem) {
                 Object.assign(env, { TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp' });
             }
             const limited = resourceGroup ? resourceLimitedCommand(spawnCmd, spawnArgs, resourceGroup.procsFile) : { cmd: spawnCmd, args: spawnArgs };
             const child = spawn(limited.cmd, limited.args, {
                 shell: false,
-                cwd,
+                cwd: launcherCwd ?? cwd,
                 env,
                 // POSIX 依靠 detached 进程组执行整树终止；Windows 的 taskkill 直接沿父子树追踪，保持启动器附着可
                 // 避免兜底终止时产生孤儿进程。
                 detached: process.platform !== 'win32',
                 windowsHide: true,
-                stdio: [opts.readOnlyFilesystem ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+                stdio: [opts.readOnlyFilesystem || opts.privateRootFilesystem ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             });
             let childClosed = false;
             let out = '';
@@ -414,7 +484,7 @@ export function makeSandboxRunner(opts = {}) {
                 if (terminationStarted)
                     await waitForProcessTreeExit(child.pid);
                 cleanup();
-                finish(result);
+                finish(launcherCleanupFailed ? { exitCode: 126, stdout: '[sandbox] trusted runtime cleanup failed' } : result);
             };
             // 先注册生命周期处理器，再暴露 AbortSignal 监听器，堵住快速命令退出后 runner 尚未观察 close
             // 事件、调用方却已经 abort 的竞态窗口。

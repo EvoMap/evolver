@@ -1,5 +1,6 @@
-import { assetstore, events, verify, type hub as hubNs } from '@evomap/evolver-core';
+import { assetstore, events, verify, hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
+import { type LocalPublishVerifierResolver } from './localPublishBinding.js';
 export interface RecipeCliDeps {
     hub?: RecipeHub;
     store?: assetstore.AssetStoreProvider;
@@ -9,6 +10,8 @@ export interface RecipeCliDeps {
     ingestor?: events.Ingestor;
     review?: assetstore.ReviewLedger;
     runValidation?: typeof verify.runSandboxedValidation;
+    /** 仅可信宿主/test composition 可以提供；manifest 和外部 receipt 不能注入此授权。 */
+    resolvePublishVerifier?: LocalPublishVerifierResolver;
     connectHub?: (opts: ConnectPublicOptions) => {
         hub: PublicHubCapability;
         auth: hubNs.AuthProvider;
@@ -53,6 +56,7 @@ export interface RecipeFromSkillsOptions {
     manifestPath: string;
     publish: boolean;
     jsonOut: boolean;
+    reverify?: boolean;
 }
 export interface RecipeSearchOptions {
     sub: 'search';

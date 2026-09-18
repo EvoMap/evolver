@@ -1,4 +1,5 @@
 import { type ReferenceScope } from '../reference/guard.js';
+import { type AssetRecord } from '../assetstore/provider.js';
 import type { HubCapability, HubBindings, PublishReceipt } from './capability.js';
 import { type LeakCheckMode } from './sanitize.js';
 /** publish 回执非 accepted → 抛此错; SyncEngine 据 terminal 决定是否重试. */
@@ -12,6 +13,8 @@ export declare class PublishRejectedError extends Error {
 /** makeHubBindings options. Pre-publish sanitize is on by default (both public + private adapters share this single chokepoint). */
 export interface HubBindingsOptions {
     referenceScope?: ReferenceScope;
+    /** 由 composition root 从宿主 durable ledger 验证，不能把客户端 receipt 当作授权。 */
+    verifyPublishBinding?: (bundle: readonly AssetRecord[], receipt: unknown) => void | Promise<void>;
     sanitize?: {
         /** Default true: deep-redact + leak-scan before egress. Off = raw publish (tests / special cases only). */
         enabled?: boolean;

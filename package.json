@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver",
-  "version": "2.0.37",
+  "version": "2.0.38",
   "private": false,
   "type": "module",
   "description": "Evolver v2 public distribution package.",
@@ -32,13 +32,13 @@
     "node": "^22.13.0 || >=23.4.0"
   },
   "dependencies": {
-    "@evomap/evolver-cli": "2.0.37",
-    "@evomap/evolver-mcp": "2.0.37",
-    "@evomap/evolver-proxy": "2.0.37",
-    "@evomap/evolver-core": "2.0.37",
-    "@evomap/evolver-adapter-public": "2.0.37",
-    "@evomap/evolver-runtime-adapters": "2.0.37",
-    "@evomap/evolver-webui": "2.0.37"
+    "@evomap/evolver-cli": "2.0.38",
+    "@evomap/evolver-mcp": "2.0.38",
+    "@evomap/evolver-proxy": "2.0.38",
+    "@evomap/evolver-core": "2.0.38",
+    "@evomap/evolver-adapter-public": "2.0.38",
+    "@evomap/evolver-runtime-adapters": "2.0.38",
+    "@evomap/evolver-webui": "2.0.38"
   },
   "publishConfig": {
     "access": "public",

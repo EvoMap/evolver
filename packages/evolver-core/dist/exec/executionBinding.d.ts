@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Ingestor } from '../events/ingest.js';
 import type { PolicyViolation } from './policy/constraints.js';
+import type { ValidationIsolationTier } from '../verify/sandboxedValidation.js';
 import { type ProofOfWork } from '../schema/proofOfWork.js';
 export declare const executionBindingInputSchema: z.ZodObject<{
     schema_version: z.ZodLiteral<"execution-binding.v1">;
@@ -325,6 +326,10 @@ export interface ValidatorEvidence {
         reason: 'missing_script';
     }[];
     isolated: boolean;
+    /** Absent in legacy receipts; never infer the stronger tier from `isolated` alone. */
+    isolationTier?: ValidationIsolationTier;
+    /** Keep sandbox setup/cleanup failures actionable after journal replay. */
+    failureReason?: 'sandbox_setup_failed' | 'sandbox_cleanup_failed';
 }
 export interface ProofReference {
     kind: ProofOfWork['kind'];

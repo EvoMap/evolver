@@ -662,6 +662,7 @@ export function createProxyDaemonDeps(options) {
     const hubAuthFailurePolicy = resolveHubAuthFailurePolicy(env);
     return {
         hub: options.runtime.hub,
+        ...(options.runtime.currentNodeId ? { currentNodeId: options.runtime.currentNodeId } : {}),
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
         store: options.store,
         ipcToken: options.ipcToken,
@@ -703,7 +704,14 @@ function resolveNativePublishExecutionVerifier(env) {
     const configuredRoot = env['EVOLVER_PUBLISH_VALIDATION_ROOT']?.trim();
     if (!configuredRoot)
         return undefined;
-    const validationRoot = resolve(configuredRoot);
+    let validationRoot;
+    try {
+        validationRoot = realpathSync(resolve(configuredRoot));
+    }
+    catch {
+        return undefined;
+    }
+    const rootFingerprint = hubNs.publishBindingDigest('publish-validation-root.v1', validationRoot);
     return async (input, signal) => {
         const commands = Array.isArray(input.validation)
             ? input.validation.filter((value) => typeof value === 'string').map((value) => value.trim()).filter(Boolean)
@@ -715,7 +723,9 @@ function resolveNativePublishExecutionVerifier(env) {
             || commands.some((command) => command.length > 180
                 || !verify.isValidationCommandAllowed(command)
                 || verify.sanitizeExecutionCommand(command).blocked)
-            || signal.aborted)
+            || signal.aborted
+            || !hubNs.isPublishVerificationRequest(input['verification_request'])
+            || input['verification_request'].validationDigest !== hubNs.publishBindingDigest('publish-validation.v1', commands))
             return null;
         const result = await verify.runSandboxedValidation(commands, validationRoot, {
             requireIsolation: true,
@@ -724,6 +734,7 @@ function resolveNativePublishExecutionVerifier(env) {
         if (signal.aborted || !result.passed || result.results.length !== commands.length)
             return null;
         return {
+            binding: { request: structuredClone(input['verification_request']), rootFingerprint },
             validation: commands,
             trace: result.results.map((row) => ({
                 command: row.cmd,
@@ -1210,6 +1221,7 @@ export async function connectHubRuntime(deps) {
         });
         return {
             hub: runtime.hub,
+            currentNodeId: deps.senderId,
             hello: runtime.hello,
             heartbeat: (opts) => runtime.hub.heartbeat(opts),
             helloMode: 'enterprise_token',
@@ -1254,6 +1266,7 @@ export async function connectHubRuntime(deps) {
     }));
     return {
         hub,
+        currentNodeId: senderId,
         atp: new AtpHubClient({ baseUrl: deps.hubUrl, auth, fetchFn: globalFetchLike, senderId }),
         hello,
         heartbeat: (opts) => hub.heartbeat(opts),

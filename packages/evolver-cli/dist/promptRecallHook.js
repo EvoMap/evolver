@@ -23,6 +23,7 @@ const PROMPT_RECALL_SIGNAL_ALIAS_TOKENS = 12;
 const PROMPT_RECALL_TOKEN_CHARS = 96;
 const PROMPT_RECALL_GENE_FIELD_CHARS = 512;
 const PROMPT_RECALL_YIELD_EVERY_GENES = 8;
+const NON_SPACE_SCRIPT = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Thai}]/u;
 const PROMPT_RECALL_LOCAL_FILES = [
     'genes.jsonl',
     'capsules.jsonl',
@@ -134,6 +135,63 @@ function promptTokenSegments(prompt) {
         tailTokens,
     ];
 }
+function promptLiteralSegments(prompt) {
+    const limit = PROMPT_RECALL_MATCH_CHARS;
+    const segments = prompt.length <= limit
+        ? [prompt]
+        : [prompt.slice(0, limit / 2), prompt.slice(-limit / 2)];
+    // Keep the windows separate: a signal must never span the omitted middle. Bound normalization expansion too.
+    return segments.flatMap((segment, index) => {
+        const normalized = segment.toLowerCase().normalize('NFKC');
+        if (segments.length === 1 && normalized.length > limit) {
+            return [
+                { text: normalized.slice(0, limit / 2), cutStart: false, cutEnd: true },
+                { text: normalized.slice(-limit / 2), cutStart: true, cutEnd: false },
+            ];
+        }
+        const maxChars = limit / segments.length;
+        const isTail = index > 0;
+        return [{
+                // Preserve the real prompt end when normalization expands the tail window.
+                text: isTail ? normalized.slice(-maxChars) : normalized.slice(0, maxChars),
+                cutStart: isTail,
+                cutEnd: !isTail && (normalized.length > maxChars || segments.length > 1),
+            }];
+    }).filter((segment) => NON_SPACE_SCRIPT.test(segment.text));
+}
+function hasNonSpaceLetter(text) {
+    return Array.from(text).some((character) => NON_SPACE_SCRIPT.test(character) && /\p{L}/u.test(character));
+}
+function containsNonSpaceLiteral(segments, alias) {
+    const literal = alias.toLowerCase().normalize('NFKC');
+    if (!NON_SPACE_SCRIPT.test(literal))
+        return false;
+    // Script_Extensions also includes shared punctuation and combining marks, which are not useful signals alone.
+    if (!hasNonSpaceLetter(literal) || /^\p{M}/u.test(literal))
+        return false;
+    const characters = Array.from(literal);
+    const runs = literal.match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+    if (runs.length > PROMPT_RECALL_SIGNAL_ALIAS_TOKENS
+        || runs.some((run) => run.length > PROMPT_RECALL_TOKEN_CHARS))
+        return false;
+    const needsBoundary = (character) => /[\p{L}\p{N}\p{M}]/u.test(character)
+        && !NON_SPACE_SCRIPT.test(character);
+    const leftBoundary = needsBoundary(characters[0]);
+    const rightBoundary = needsBoundary(characters.at(-1));
+    for (const { text, cutStart, cutEnd } of segments) {
+        for (let at = text.indexOf(literal); at !== -1; at = text.indexOf(literal, at + 1)) {
+            if ((at === 0 && cutStart) || (at + literal.length === text.length && cutEnd))
+                continue;
+            const before = Array.from(text.slice(Math.max(0, at - 2), at)).at(-1) ?? '';
+            const after = String.fromCodePoint(text.codePointAt(at + literal.length) ?? 0);
+            // Mixed aliases retain Latin word boundaries; a Thai/Kana combining mark must not be cut off.
+            if ((!leftBoundary || !needsBoundary(before))
+                && (!rightBoundary || !needsBoundary(after)) && !/\p{M}/u.test(after))
+                return true;
+        }
+    }
+    return false;
+}
 function buildPromptSequenceIndex(segments) {
     const root = { children: new Map() };
     for (const tokens of segments) {
@@ -173,10 +231,11 @@ function boundedSignalPatterns(gene) {
 }
 /**
  * V1 required a real local signals_match hit before prompt-time injection. Keep that conservative gate: aliases
- * separated by `|` are matched as normalized token sequences, while regex-looking patterns are never evaluated
+ * separated by `|` are matched as normalized token sequences, with bounded literal matching for scripts that
+ * do not require spaces between words. Regex-looking patterns are never evaluated
  * (a persisted pattern must not be able to run an expensive regular expression on a private prompt).
  */
-function literalSignalHits(promptIndex, patterns) {
+function literalSignalHits(promptIndex, patterns, literalSegments) {
     let hits = 0;
     for (const pattern of patterns) {
         const aliases = pattern.split('|', PROMPT_RECALL_SIGNAL_ALIASES + 1).slice(0, PROMPT_RECALL_SIGNAL_ALIASES);
@@ -186,7 +245,8 @@ function literalSignalHits(promptIndex, patterns) {
                 || trimmed.length > PROMPT_RECALL_SIGNAL_ALIAS_CHARS
                 || (trimmed.startsWith('/') && trimmed.lastIndexOf('/') > 0))
                 return false;
-            return containsSequence(promptIndex, normalizedAliasTokens(trimmed));
+            return containsSequence(promptIndex, normalizedAliasTokens(trimmed))
+                || (literalSegments.length > 0 && containsNonSpaceLiteral(literalSegments, trimmed));
         });
         if (matched)
             hits += 1;
@@ -238,7 +298,8 @@ function yieldToEventLoop() {
 async function selectPromptGenes(prompt, store, review, provenance, maxGenes, budget, benchmark) {
     const tokenSegments = promptTokenSegments(prompt);
     const promptTokens = tokenSegments.flat();
-    if (promptTokens.length === 0)
+    const literalSegments = promptLiteralSegments(prompt);
+    if (promptTokens.length === 0 && literalSegments.length === 0)
         return [];
     const promptIndex = buildPromptSequenceIndex(tokenSegments);
     const boundedPrompt = promptTokens.join(' ');
@@ -256,7 +317,7 @@ async function selectPromptGenes(prompt, store, review, provenance, maxGenes, bu
             return [];
         const gene = approved[index];
         const signalsMatch = boundedSignalPatterns(gene);
-        const literalHits = literalSignalHits(promptIndex, signalsMatch);
+        const literalHits = literalSignalHits(promptIndex, signalsMatch, literalSegments);
         if (literalHits > 0) {
             const semanticScore = signals.tagOverlapScore(promptTokens, {
                 signalsMatch,
@@ -398,8 +459,16 @@ export async function runPromptRecallHook(argv, deps = {}) {
             throw new Error('unexpected hook event');
         }
         const prompt = input.prompt;
-        if (typeof prompt !== 'string' || prompt.trim().length < 8)
+        if (typeof prompt !== 'string')
             throw new Error('prompt is not recallable');
+        const trimmedPrompt = prompt.trim();
+        if (trimmedPrompt.length < 8) {
+            const normalizedPrompt = trimmedPrompt.toLowerCase().normalize('NFKC');
+            if (!hasNonSpaceLetter(normalizedPrompt)
+                || (normalizedPrompt.match(/[\p{L}\p{N}]/gu)?.length ?? 0) < 2) {
+                throw new Error('prompt is not recallable');
+            }
+        }
         const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
         // These cold-loaded JSONL files are parsed synchronously inside the existing store/ledger APIs. Preflight
         // their footprint before entering those APIs so an append-only sidecar cannot defeat the hook deadline.

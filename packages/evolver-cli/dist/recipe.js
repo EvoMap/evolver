@@ -2,14 +2,15 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { assetstore, events, mailbox, verify } from '@evomap/evolver-core';
+import { assetstore, events, mailbox, verify, hub as hubNs } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion, resolveHubUrl } from '@evomap/evolver-adapter-public';
-import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { loadEnvFileFromEnv, safeReverificationRecovery } from '@evomap/evolver-mcp';
 import { resolveExplicitNodeCredentials } from './identityHome.js';
 import { getCliVersion } from './version.js';
 import { parseSkillMd, reverseDistill, synthesizeGene } from './skill2gep.js';
 import { recordSkillDistillation } from './skillDistill.js';
-import { buildPublishBundle } from './cliContracts.js';
+import { assessPublishRecords, buildPublishBundle } from './cliContracts.js';
+import { LocalPublishBindingError, reverifyPublishBundle, withLocalPublishBinding, } from './localPublishBinding.js';
 const MAX_RECIPE_STEPS = 20;
 const MAX_RECIPE_VALIDATION_COMMANDS = 5;
 const MAX_RECIPE_INPUT_BYTES = 1024 * 1024;
@@ -333,9 +334,29 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
             capsuleId: res.capsuleId,
         });
     }
-    const publishPrepared = await prepareRecipeFromSkillsAssets(distilled, store, dryRun ? undefined : hub, deps.env ?? process.env, io);
+    const publishPrepared = await prepareRecipeFromSkillsAssets(distilled, store, dryRun ? undefined : hub, deps.env ?? process.env, io, {
+        reverify: opts.reverify === true,
+        ...(deps.resolvePublishVerifier ? { resolvePublishVerifier: deps.resolvePublishVerifier } : {}),
+    });
     if (!publishPrepared.ok) {
-        io.err(publishPrepared.error);
+        const failure = {
+            ...recipeFromSkillsPayload({
+                ok: false, mode: 'failed', title: loaded.value.title, publish: opts.publish,
+                steps: publishPrepared.completedSteps, error: publishPrepared.reason,
+            }),
+            failedPosition: publishPrepared.failedPosition,
+            ...(publishPrepared.recovery ? { recovery: publishPrepared.recovery,
+                recovery_action: 'inspect_assets_and_ledger_before_retry' } : {}),
+        };
+        if (opts.jsonOut)
+            io.log(JSON.stringify(failure, null, 2));
+        else {
+            io.err(publishPrepared.error);
+            // 文本调用者同样需要前序结果和三态写入信息；只输出已收敛的安全恢复字段。
+            if (publishPrepared.recovery || publishPrepared.completedSteps.length > 0) {
+                io.err(JSON.stringify(failure, null, 2));
+            }
+        }
         return 1;
     }
     steps.splice(0, steps.length, ...publishPrepared.value.steps);
@@ -355,6 +376,8 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
                 io.log('[recipe from-skills] dry-run: would publish the recipe after creation.');
             else
                 io.log('[recipe from-skills] dry-run: would leave the recipe as draft.');
+            if (opts.reverify)
+                io.log('[recipe from-skills] dry-run: --reverify would request additional local-host validation; no host request was sent.');
         }
         return 0;
     }
@@ -369,7 +392,19 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
         ...(loaded.value.pricePerExecution !== undefined ? { pricePerExecution: loaded.value.pricePerExecution } : {}),
     };
     createRequest.idempotencyKey = recipeIdempotencyKey('create', createRequest);
-    const createReceipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.create(createRequest), io);
+    let createReceipt;
+    try {
+        createReceipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills', () => hub.recipes.create(createRequest), io);
+    }
+    catch (error) {
+        if (!opts.jsonOut)
+            throw error;
+        io.log(JSON.stringify(recipeFromSkillsPayload({
+            ok: false, mode: 'failed', title: loaded.value.title, publish: opts.publish,
+            steps: distilled, error: 'create_failed',
+        }), null, 2));
+        return 1;
+    }
     const recipeId = createReceipt.recipeId;
     if (createReceipt.status !== 'draft') {
         if (opts.jsonOut) {
@@ -589,49 +624,92 @@ function preflightRecipeFromSkillsSteps(steps) {
     }
     return { ok: true, value: prepared };
 }
-async function prepareRecipeFromSkillsAssets(distilled, store, hub, env, io) {
+async function prepareRecipeFromSkillsAssets(distilled, store, hub, env, io, options) {
     const steps = [];
     const prepared = [];
     const publishedByBundle = new Map();
+    const reverifiedBySource = new Map();
     for (const step of distilled) {
-        const bundle = await buildPublishBundle([step.geneAssetId, step.capsuleId], { assetStore: store, env });
-        if (!bundle.ok) {
-            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.reason}` };
-        }
-        if (bundle.blockReasons.length > 0) {
-            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.blockReasons.join(',')}` };
-        }
-        const gene = bundle.sanitized.find((asset) => asset.type === 'Gene');
-        const capsule = bundle.sanitized.find((asset) => asset.type === 'Capsule');
-        if (!gene?.asset_id || !capsule?.asset_id) {
-            return { ok: false, error: `recipe from-skills step ${step.position + 1} asset bundle is missing Gene or Capsule` };
-        }
-        const bundleKey = `${gene.asset_id}\n${capsule.asset_id}`;
-        let geneAssetId = publishedByBundle.get(bundleKey);
-        if (!geneAssetId && hub) {
-            const receipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills asset publish', () => hub.publish(bundle.sanitized), io);
-            if (!assetPublishSucceeded(receipt, bundle.sanitized)) {
-                const duplicateIsIncomplete = receipt.status === 'rejected' &&
-                    (receipt.reason === 'already_published' || receipt.reason === 'duplicate');
-                return {
-                    ok: false,
-                    error: duplicateIsIncomplete
+        let recovery;
+        const fail = (error, reason = 'asset_prepare_failed') => ({
+            ok: false, error, reason, completedSteps: [...prepared], failedPosition: step.position,
+            ...(recovery ? { recovery } : {}),
+        });
+        try {
+            let bundle = await buildPublishBundle([step.geneAssetId, step.capsuleId], { assetStore: store, env });
+            if (!bundle.ok) {
+                return fail(`recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.reason}`);
+            }
+            let reverification;
+            if (hub && options.reverify && bundle.blockReasons.every((reason) => reason === 'gene_unproven')) {
+                const sourceKey = hubNs.publishBundleDigest(bundle.original);
+                let reverified = reverifiedBySource.get(sourceKey);
+                if (!reverified) {
+                    reverified = await reverifyPublishBundle(bundle.original, env, options.resolvePublishVerifier);
+                    reverifiedBySource.set(sourceKey, reverified);
+                }
+                reverification = {
+                    sourceAssetIds: [...reverified.sourceAssetIds],
+                    assetIds: reverified.assets.map((asset) => asset.asset_id),
+                    stored: reverified.stored,
+                };
+                recovery = safeReverificationRecovery({
+                    stored: reverified.stored, binding_registered: true,
+                    source_asset_ids: reverified.sourceAssetIds, asset_ids: reverification.assetIds,
+                });
+                bundle = await assessPublishRecords(reverified.assets, { assetStore: store, env });
+                if (!bundle.ok) {
+                    return fail(`recipe from-skills step ${step.position + 1} reverified asset bundle rejected: ${bundle.reason}`);
+                }
+            }
+            if (bundle.blockReasons.length > 0) {
+                return fail(`recipe from-skills step ${step.position + 1} asset bundle rejected: ${bundle.blockReasons.join(',')}`);
+            }
+            const publishAssets = bundle.sanitized;
+            const gene = publishAssets.find((asset) => asset.type === 'Gene');
+            const capsule = publishAssets.find((asset) => asset.type === 'Capsule');
+            if (!gene?.asset_id || !capsule?.asset_id) {
+                return fail(`recipe from-skills step ${step.position + 1} asset bundle is missing Gene or Capsule`);
+            }
+            const bundleKey = `${gene.asset_id}\n${capsule.asset_id}`;
+            let geneAssetId = publishedByBundle.get(bundleKey);
+            if (!geneAssetId && hub) {
+                const receipt = await callRecipeWithAuthRetry(hub, 'recipe from-skills asset publish', () => withLocalPublishBinding(publishAssets, env, (authorized) => hub.publish(authorized), options.resolvePublishVerifier), io);
+                if (!assetPublishSucceeded(receipt, publishAssets)) {
+                    const duplicateIsIncomplete = receipt.status === 'rejected' &&
+                        (receipt.reason === 'already_published' || receipt.reason === 'duplicate');
+                    return fail(duplicateIsIncomplete
                         ? `recipe from-skills step ${step.position + 1} duplicate asset publish did not identify the published Gene and Capsule bundle`
-                        : `recipe from-skills step ${step.position + 1} asset publish rejected: ${receipt.reason ?? receipt.status}`,
-                };
+                        : `recipe from-skills step ${step.position + 1} asset publish rejected: ${receipt.reason ?? receipt.status}`);
+                }
+                geneAssetId = publishedGeneAssetId(receipt, gene.asset_id);
+                if (!geneAssetId) {
+                    return fail(`recipe from-skills step ${step.position + 1} duplicate asset publish did not identify the published Gene`);
+                }
+                publishedByBundle.set(bundleKey, geneAssetId);
             }
-            geneAssetId = publishedGeneAssetId(receipt, gene.asset_id);
-            if (!geneAssetId) {
-                return {
-                    ok: false,
-                    error: `recipe from-skills step ${step.position + 1} duplicate asset publish did not identify the published Gene`,
-                };
-            }
-            publishedByBundle.set(bundleKey, geneAssetId);
+            geneAssetId ??= gene.asset_id;
+            steps.push({ assetId: geneAssetId, assetType: 'Gene', position: step.position });
+            prepared.push({
+                ...step,
+                geneId: typeof gene['id'] === 'string' ? gene['id'] : geneAssetId,
+                geneAssetId,
+                capsuleId: typeof capsule['id'] === 'string' ? capsule['id'] : capsule.asset_id,
+                ...(reverification ? { reverification } : {}),
+            });
         }
-        geneAssetId ??= gene.asset_id;
-        steps.push({ assetId: geneAssetId, assetType: 'Gene', position: step.position });
-        prepared.push({ ...step, geneAssetId });
+        catch (error) {
+            if (error instanceof LocalPublishBindingError) {
+                recovery = error.recovery ?? recovery;
+                return fail(error.message, error.reason);
+            }
+            // 网络/存储异常可能包含私有路径或响应；保留固定分类，不反射原始 message/body。
+            return fail(error instanceof AuthError
+                ? `recipe Hub auth failed (HTTP ${error.status}); run "evolver login" or refresh EVOMAP_NODE_SECRET`
+                : error instanceof HubClientError
+                    ? `recipe Hub call failed (HTTP ${error.status}); 请先核对资产及发布状态，勿盲目重试`
+                    : `recipe from-skills step ${step.position + 1}: asset_prepare_failed; 请先核对资产及发布状态，勿盲目重试`);
+        }
     }
     return { ok: true, value: { steps, distilled: prepared } };
 }
@@ -887,6 +965,7 @@ function recipeFromSkillsPayload(opts) {
             geneId: step.geneId,
             geneAssetId: step.geneAssetId,
             capsuleId: step.capsuleId,
+            ...(step.reverification ? { reverification: step.reverification } : {}),
         })),
     };
 }
@@ -949,6 +1028,7 @@ function parseFromSkillsArgs(args) {
             manifestPath,
             publish: args.includes('--publish'),
             jsonOut: args.includes('--json'),
+            ...(args.includes('--reverify') ? { reverify: true } : {}),
         },
     };
 }
@@ -1378,8 +1458,9 @@ function recipeUsage() {
         'Recipe subcommands:',
         '  evolver recipe build --title <title> --genes <asset_id,...> [--description <text>] [--price <n>] [--publish]',
         '      Creates a draft recipe by default. --publish is explicit.',
-        '  evolver recipe from-skills --manifest <file> [--publish] [--json]',
+        '  evolver recipe from-skills --manifest <file> [--reverify] [--publish] [--json]',
         '      Distills ordered SKILL.md steps with execution evidence, then creates a recipe.',
+        '      --reverify explicitly reruns validation under the local host before publishing fresh assets; dry-run never calls the host.',
         '  evolver recipe reuse --id <recipe_id> [--input <json-object>] [--json]',
         '  evolver recipe search [--q <text>] [--limit <n>] [--json]',
         `      Default agent lookup. Express a hit with \`${RECIPE_REUSE_COMMAND}\`. Gene/Capsule search is fallback.`,

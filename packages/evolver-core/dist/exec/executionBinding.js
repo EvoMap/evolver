@@ -114,7 +114,16 @@ const validatorEvidenceSchema = z.object({
     }).strict()).max(64),
     skipped: z.array(z.object({ cmd: z.string().max(400), script: z.string().max(400), reason: z.literal('missing_script') }).strict()).max(64),
     isolated: z.boolean(),
-}).strict();
+    isolationTier: z.enum(['none', 'no-network', 'read-only']).optional(),
+    failureReason: z.enum(['sandbox_setup_failed', 'sandbox_cleanup_failed']).optional(),
+}).strict().superRefine((evidence, ctx) => {
+    if (evidence.isolationTier !== undefined && evidence.isolated !== (evidence.isolationTier !== 'none')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['isolationTier'], message: 'isolation tier contradicts isolated flag' });
+    }
+    if (evidence.failureReason !== undefined && evidence.passed) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['failureReason'], message: 'sandbox failure contradicts successful validation' });
+    }
+});
 const provenanceSchema = z.object({
     gene_ids: boundedStringArray,
     capsule_ids: boundedStringArray,

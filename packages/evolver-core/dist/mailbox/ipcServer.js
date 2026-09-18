@@ -48,6 +48,7 @@ export class MailboxIpcServer {
     runtimeNamespace;
     extraRoutes;
     onSend;
+    beforeSend;
     onAuthFailure;
     constructor(opts) {
         this.store = opts.store;
@@ -57,6 +58,7 @@ export class MailboxIpcServer {
         this.runtimeNamespace = opts.runtimeNamespace;
         this.extraRoutes = opts.extraRoutes ?? [];
         this.onSend = opts.onSend;
+        this.beforeSend = opts.beforeSend;
         this.onAuthFailure = opts.onAuthFailure;
         this.server = createServer((req, res) => { void this.handle(req, res); });
     }
@@ -149,6 +151,9 @@ export class MailboxIpcServer {
                     }
                     env = { ...env, ttlAt: body.expires_at };
                 }
+                await this.beforeSend?.(env);
+                if (requestAbort.signal.aborted)
+                    throw new Error('ipc_request_aborted');
                 const r = this.store.send(env);
                 if (r.stored)
                     this.onSend?.(env, r);

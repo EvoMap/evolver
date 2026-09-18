@@ -8,5 +8,7 @@ export * from './assetCallLog.js';
 export * from './hubReview.js';
 export * from './reuseDecision.js';
 export * from './conversationDistiller.js';
+export * from './publishBinding.js';
+export * from './publishReverification.js';
 export * from './recipeCompose.js';
 export * from './questionGenerator.js';

@@ -17,6 +17,8 @@ export interface ProxyDaemonDeps {
     /** benchmark自定义provider必须接入审核账本；缺账本不等于Gene没有审核记录。 */
     sourceReview?: assetstore.ReviewLedger;
     hub: HubCapability;
+    /** Identity actually presented by the connected Hub runtime; terminal lifecycle state is scoped to it. */
+    currentNodeId?: () => string | undefined;
     /** Immutable Hub selection for IPC callers that must fail closed across public/private runtimes. */
     hubMode?: 'public' | 'private';
     /** 二选一: 传 storePath 让 ProxyDaemon 建 store, 或传已建 store(供 hub senderId 共享同一 node_id). */
@@ -175,6 +177,7 @@ export declare class ProxyDaemon {
     private readonly assetSubmitResponseTimeoutMs;
     private readonly hubAuthFailurePolicy;
     private readonly synchronousAssetSubmitScope;
+    private readonly publishBindingLedger;
     private readonly shadowMode;
     private readonly assetSearchCache;
     private readonly assetSearchInflight;

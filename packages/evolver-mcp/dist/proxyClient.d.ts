@@ -46,8 +46,27 @@ export interface ProxyFetchArgs {
 }
 export interface ProxyAssetBundle {
     assets: unknown[];
+    /** 宿主签发的 sidecar，proxy 必须验证自己的 durable ledger；客户端不自签。 */
+    publish_receipt?: unknown;
     expected_hub_mode?: 'public' | 'private';
     compose_recipe?: boolean;
+}
+export interface ProxyAssetReverification {
+    assets: unknown[];
+    persist?: boolean;
+    expected_hub_mode?: 'public' | 'private';
+}
+/** 仅用于恢复诊断，不是执行凭证或发布授权；null 表示本次调用无法确认。 */
+export interface ProxyReverificationRecovery {
+    stored: boolean | null;
+    binding_registered: boolean | null;
+    source_asset_ids: string[];
+    asset_ids: string[];
+}
+export declare function safeReverificationRecovery(value: unknown): ProxyReverificationRecovery;
+export declare class ProxyReverificationError extends Error {
+    readonly recovery: ProxyReverificationRecovery;
+    constructor(reason: string, recovery: unknown);
 }
 export interface ProxyReuseResultArgs {
     assetId: string;
@@ -98,6 +117,13 @@ export declare class EvolverProxyClient {
     discoverAgentsForTask(args: ProxyAgentDiscoverArgs): Promise<unknown>;
     submitAsset(asset: unknown): Promise<unknown>;
     submitAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;
+    authorizeAssetPublication(bundle: ProxyAssetBundle, opts?: {
+        signal?: AbortSignal;
+    }): Promise<unknown>;
+    reverifyAssets(input: ProxyAssetReverification, opts?: {
+        signal?: AbortSignal;
+    }): Promise<unknown>;
+    private verificationSignal;
     /** Pre-publish dry-run: the hub runs its quality + content-safety gate but stores nothing and charges no credits. */
     validateAsset(asset: unknown): Promise<unknown>;
     validateAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;

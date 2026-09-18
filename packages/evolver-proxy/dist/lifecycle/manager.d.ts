@@ -52,6 +52,8 @@ export interface HeartbeatTickResult {
 export interface LifecycleDeps {
     store: MailboxStore;
     auth: AuthProvider;
+    /** Identity actually presented by the connected Hub runtime. Falls back to store.node_id for direct callers. */
+    currentNodeId?: () => string | undefined;
     /**
      * 注入: 真实 /a2a/hello 调用(adapter 实现, M6-6); rotate=true 时请求轮换 secret.
      * evolverVersion 传入当前节点版本, adapter 在 hello/heartbeat wire 体里上报(hub 观测 fleet 版本分布, #108).
@@ -80,8 +82,10 @@ export interface LifecycleDeps {
 export declare class LifecycleManager {
     private readonly deps;
     private reauthInProgress;
+    private terminalReason;
     constructor(deps: LifecycleDeps);
     get nodeId(): string | undefined;
+    get isTerminal(): boolean;
     /** 当前上报版本(供 force_update 决策 / hub fleet 观测). */
     get version(): string | undefined;
     /** 注册. 尊重 hub hello 限流窗口; 成功持久化 node_id + 清 reauth 退避. 随报当前版本(hub 观测 fleet). */
@@ -104,6 +108,8 @@ export declare class LifecycleManager {
     private persistCapabilityGaps;
     private heartbeatOptions;
     private callHello;
+    private markNodeMergedTerminal;
+    private currentNodeId;
     private handleLastUpdateAck;
     private maybeTriggerForceUpdate;
 }

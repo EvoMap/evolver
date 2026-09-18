@@ -9,6 +9,7 @@ import { reportPendingSelfUpdateLastUpdate, reportSelfUpdateLastUpdate } from '.
 import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
+import { PublishBindingLedger } from './publishBindingLedger.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
 export const DEFAULT_IPC_PORT = 19820;
@@ -112,6 +113,7 @@ export class ProxyDaemon {
     assetSubmitResponseTimeoutMs;
     hubAuthFailurePolicy;
     synchronousAssetSubmitScope;
+    publishBindingLedger;
     shadowMode;
     assetSearchCache = new Map();
     assetSearchInflight = new Map();
@@ -164,6 +166,11 @@ export class ProxyDaemon {
         if (!existingSynchronousAssetSubmitScope) {
             this.store.setState(SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY, this.synchronousAssetSubmitScope);
         }
+        this.publishBindingLedger = new PublishBindingLedger(this.store, JSON.stringify([
+            this.synchronousAssetSubmitScope, deps.runtimeNamespace ?? 'default', deps.hubMode ?? 'public',
+            // 保留既有 enforce 域；shadow 签发记录不能在切换模式后成为真实发布授权。
+            ...(shadow ? ['shadow'] : []),
+        ]));
         const assetStoreDir = deps.assetStoreDir ?? (deps.storePath ? join(dirname(deps.storePath), 'assets') : undefined);
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
         this.sourceProvenance = deps.sourceProvenance ?? (this.benchmark && this.assetStore instanceof assetstore.LocalJsonlProvider
@@ -179,6 +186,7 @@ export class ProxyDaemon {
         const hubBindings = hubNs.makeHubBindings(hubToUse, {
             referenceScope: this.referenceStore?.scope,
             ...(deps.publishSanitizeEnv ? { sanitize: { env: deps.publishSanitizeEnv } } : {}),
+            verifyPublishBinding: (bundle, receipt) => { this.publishBindingLedger.verify(bundle, receipt); },
         });
         this.proxyHandler = hubBindings.asProxyHandler();
         const proxyHandler = this.proxyHandler;
@@ -276,6 +284,7 @@ export class ProxyDaemon {
         });
         this.lifecycle = new LifecycleManager({
             store: this.store, auth: hubToUse.auth, hello: deps.hello, heartbeat: deps.heartbeat, now: this.now,
+            ...(deps.currentNodeId ? { currentNodeId: deps.currentNodeId } : {}),
             ...(deps.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: deps.heartbeatIntervalMs } : {}),
             ...(deps.evolverVersion ? { evolverVersion: deps.evolverVersion } : {}),
             ...(deps.helloMode ? { helloMode: deps.helloMode } : {}),
@@ -328,6 +337,12 @@ export class ProxyDaemon {
                     if (result.stored && env.handler === 'proxy')
                         this.notifyNewOutbound();
                 },
+                beforeSend: (envelope) => {
+                    if (envelope.type !== 'asset_submit')
+                        return;
+                    const { assets, publishReceipt } = hubNs.splitAssetSubmitPayload(envelope.payload);
+                    this.publishBindingLedger.verify(assets, publishReceipt);
+                },
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
                 extraRoutes: [(ctx) => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx))],
             });
@@ -337,6 +352,8 @@ export class ProxyDaemon {
             }
             catch { /* local discovery publishing must not block daemon startup */ }
             await this.lifecycle.doHello();
+            if (this.lifecycle.isTerminal)
+                this.nextHeartbeatAt = Number.POSITIVE_INFINITY;
             this.lifecycleArmed = true;
             this.drainProxyTraceBackfill();
             try {
@@ -512,7 +529,7 @@ export class ProxyDaemon {
      * flight from overwriting this reschedule. No-op until the daemon is started.
      */
     pokeHeartbeatLoop() {
-        if (!this.started)
+        if (!this.started || this.lifecycle.isTerminal)
             return;
         this.heartbeatGeneration += 1;
         this.heartbeatFailures = 0;
@@ -1207,11 +1224,29 @@ export class ProxyDaemon {
                     ctx.json(400, { error: 'mode=sync requires a full asset bundle' });
                     return true;
                 }
+                if (body['publish_receipt'] !== undefined) {
+                    try {
+                        this.publishBindingLedger.verify(outboundBundle, body['publish_receipt']);
+                    }
+                    catch {
+                        ctx.json(422, { error: 'publish_binding_invalid', stored: false, queued: false });
+                        return true;
+                    }
+                }
                 await this.publishAssetSubmitSynchronously(ctx, outboundBundle, hubNs.recipeComposeRequested(body));
+                return true;
+            }
+            let publishReceipt;
+            try {
+                publishReceipt = this.publishBindingLedger.verify(outboundBundle, body['publish_receipt']);
+            }
+            catch {
+                ctx.json(422, { error: 'publish_binding_invalid', stored: false, queued: false });
                 return true;
             }
             const payload = {
                 assets: outboundBundle,
+                ...(publishReceipt ? { publish_receipt: publishReceipt } : {}),
                 compose_recipe: hubNs.recipeComposeRequested(body),
                 [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
             };
@@ -1301,6 +1336,110 @@ export class ProxyDaemon {
             }
             return true;
         }
+        if (ctx.route === 'POST /asset/authorize-publish') {
+            const body = asRecord(await ctx.readJson());
+            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
+                ctx.json(409, { error: 'proxy_hub_mode_mismatch', binding_verified: false });
+                return true;
+            }
+            if (ctx.signal?.aborted || this.publishAbortController.signal.aborted) {
+                ctx.json(503, { ok: false, error: 'publish_binding_aborted', binding_verified: false, stored: false, queued: false });
+                return true;
+            }
+            try {
+                if (!Array.isArray(body['assets']) || body['assets'].length === 0 || body['assets'].length > MAX_ASSET_SUBMIT_ITEMS) {
+                    throw new Error('publish_binding_invalid_bundle');
+                }
+                const bundle = body['assets'].map((asset) => {
+                    const normalized = assetstore.normalizeForPut(asset);
+                    // SDK 检查不包含本地 Gene 注解；ledger 仍绑定未删减的完整规范化记录。
+                    if (!normalized.verified || !wire.validateWireDeep(normalized.record.type === 'Gene' ? wire.stripGeneHints(normalized.record) : normalized.record).ok) {
+                        throw new Error('publish_binding_invalid_bundle');
+                    }
+                    return normalized.record;
+                });
+                const authorization = this.publishBindingLedger.verify(bundle);
+                ctx.json(200, { ok: true, binding_verified: authorization !== undefined,
+                    binding_required: hubNs.requiresPublishBinding(bundle), bundle_digest: hubNs.publishBundleDigest(bundle) });
+            }
+            catch {
+                ctx.json(422, { ok: false, error: 'publish_binding_invalid', binding_verified: false, stored: false, queued: false });
+            }
+            return true;
+        }
+        if (ctx.route === 'POST /asset/reverify') {
+            const body = asRecord(await ctx.readJson());
+            let stored = false;
+            let bindingRegistered = false;
+            let sourceAssetIds = [];
+            let assetIds = [];
+            const safeIds = (ids) => ids.slice(0, 2).filter((id) => /^sha256:[0-9a-f]{64}$/.test(id));
+            const fail = (status, error) => {
+                if (!ctx.signal?.aborted)
+                    ctx.json(status, {
+                        ok: false, error, publishable: false, stored, queued: false,
+                        binding_registered: bindingRegistered, source_asset_ids: sourceAssetIds, asset_ids: assetIds,
+                    });
+                return true;
+            };
+            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
+                return fail(409, 'proxy_hub_mode_mismatch');
+            }
+            if (Object.keys(body).some((key) => !['assets', 'persist', 'expected_hub_mode'].includes(key))
+                || (body['persist'] !== undefined && typeof body['persist'] !== 'boolean')) {
+                return fail(422, 'publish_reverification_invalid_options');
+            }
+            if (!Array.isArray(body['assets']))
+                return fail(422, 'publish_reverification_pair_required');
+            if (!this.deps.publishExecutionVerifier)
+                return fail(409, 'publish_reverification_unavailable');
+            const signal = AbortSignal.any([this.publishAbortController.signal, ...(ctx.signal ? [ctx.signal] : [])]);
+            if (signal.aborted)
+                return fail(503, 'publish_reverification_aborted');
+            if (body['persist'] === true && typeof this.assetStore?.putBundle !== 'function') {
+                return fail(422, 'bundle_persistence_unsupported');
+            }
+            const sanitizeEnv = this.deps.publishSanitizeEnv ?? process.env;
+            let candidate;
+            try {
+                candidate = hubNs.preparePublishReverification(body['assets'], sanitizeEnv);
+            }
+            catch (error) {
+                return fail(422, error instanceof Error && /^publish_reverification_[a-z_]{1,70}$/.test(error.message)
+                    ? error.message : 'publish_reverification_invalid_wire');
+            }
+            sourceAssetIds = safeIds(candidate.sourceAssetIds);
+            const request = hubNs.createPublishVerificationRequest(candidate.input, candidate.validation, this.publishBindingLedger.runtimeDomain, randomUUID());
+            const verified = await resolveVerifiedExecution(this.deps.publishExecutionVerifier, { validation: candidate.validation, verification_request: Object.freeze(request) }, candidate.validation, this.deps.publishExecutionVerifierTimeoutMs, [signal]);
+            if (signal.aborted)
+                return fail(503, 'publish_reverification_aborted');
+            if (!verified)
+                return fail(422, 'publish_reverification_execution_failed');
+            try {
+                const result = hubNs.completePublishReverification(candidate, verified, sanitizeEnv);
+                assetIds = safeIds(result.assets.map((asset) => asset.asset_id));
+                // 登记与资产持久化是独立状态，写入抛错后不得声称没有副作用或撤销合法回执。
+                bindingRegistered = null;
+                this.publishBindingLedger.register(result.publish_receipt, result.assets);
+                bindingRegistered = true;
+                if (signal.aborted)
+                    return fail(503, 'publish_reverification_aborted');
+                if (body['persist'] === true) {
+                    stored = null;
+                    await this.assetStore.putBundle(result.assets);
+                    stored = true;
+                }
+                if (signal.aborted)
+                    return fail(503, 'publish_reverification_aborted');
+                this.publishBindingLedger.verify(result.assets, result.publish_receipt);
+                ctx.json(200, { ok: true, status: 'reverified', ...result, stored, binding_registered: bindingRegistered, queued: false, publishable: true });
+                return true;
+            }
+            catch (error) {
+                return fail(422, error instanceof Error && /^publish_reverification_[a-z_]{1,70}$/.test(error.message)
+                    ? error.message : 'publish_reverification_failed');
+            }
+        }
         if (ctx.route === 'POST /conversation/distill') {
             const body = (await ctx.readJson());
             const publishRequested = body['publish'] === true;
@@ -1325,7 +1464,7 @@ export class ProxyDaemon {
             if (publishRequested && abortPublish())
                 return true;
             const verifiedExecution = publishRequested
-                ? await resolveVerifiedExecutionAfterPreflight(this.deps.publishExecutionVerifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal, ...(ctx.signal ? [ctx.signal] : [])])
+                ? await resolveVerifiedExecutionAfterPreflight(this.deps.publishExecutionVerifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal, ...(ctx.signal ? [ctx.signal] : [])], this.publishBindingLedger.runtimeDomain)
                 : undefined;
             if (publishRequested && abortPublish())
                 return true;
@@ -1334,6 +1473,9 @@ export class ProxyDaemon {
                 persist: body.persist === true,
                 store: this.assetStore,
                 ...(verifiedExecution ? { verifiedExecution } : {}),
+                registerPublishReceipt: (receipt, bundle) => this.publishBindingLedger.register(receipt, bundle),
+                ...(publishRequested ? { publishSignal: AbortSignal.any([this.publishAbortController.signal, ...(ctx.signal ? [ctx.signal] : [])]) } : {}),
+                ...(this.deps.publishSanitizeEnv ? { publishSanitizeEnv: this.deps.publishSanitizeEnv } : {}),
             });
             if (publishRequested && abortPublish())
                 return true;
@@ -1369,12 +1511,19 @@ export class ProxyDaemon {
                     ctx.json(401, this.hubAuthFailureBody({ publish_status: 'failed', queued: false, stored: false }));
                     return true;
                 }
+                if (!distill.publish_receipt) {
+                    ctx.json(422, { error: 'publish_binding_missing', stored: false, queued: false });
+                    return true;
+                }
+                this.publishBindingLedger.register(distill.publish_receipt, [distill.gene, distill.capsule]);
+                this.publishBindingLedger.verify([distill.gene, distill.capsule], distill.publish_receipt);
                 const env = mailbox.createEnvelope({
                     type: 'asset_submit',
                     payload: {
                         source: 'conversation_distillation',
                         distill_id: distill.distill_id,
                         assets: [distill.gene, distill.capsule],
+                        publish_receipt: distill.publish_receipt,
                         compose_recipe: body['publish_recipe'] !== false,
                         title: typeof body.title === 'string' ? body.title : undefined,
                         description: typeof body.summary === 'string' ? body.summary : undefined,
@@ -1568,7 +1717,7 @@ export class ProxyDaemon {
         }
         const results = [];
         for (const item of classified.items) {
-            const converted = await convertLegacyLooseAsset(item, this.deps.publishExecutionVerifier, this.deps.publishExecutionVerifierTimeoutMs, ctx.signal, this.publishAbortController.signal);
+            const converted = await convertLegacyLooseAsset(item, this.deps.publishExecutionVerifier, this.deps.publishExecutionVerifierTimeoutMs, this.publishBindingLedger, this.deps.publishSanitizeEnv, ctx.signal, this.publishAbortController.signal);
             if (!converted.ok) {
                 results.push({ ok: false, error: converted.error, statusCode: 422 });
                 continue;
@@ -1615,6 +1764,7 @@ export class ProxyDaemon {
     }
     createSynchronousAssetSubmitEnvelope(bundle, source, now, composeRecipe = true) {
         const canonicalBundle = [...bundle].sort(compareSynchronousAssetSubmitAssets);
+        const publishReceipt = this.publishBindingLedger.verify(canonicalBundle);
         const runtimeNamespace = this.deps.runtimeNamespace ?? 'default';
         const idempotencyKey = synchronousAssetSubmitKey(this.synchronousAssetSubmitScope, runtimeNamespace, this.currentHubMode(), canonicalBundle);
         return mailbox.createEnvelope({
@@ -1623,6 +1773,7 @@ export class ProxyDaemon {
             payload: {
                 ...(source ? { source } : {}),
                 assets: canonicalBundle,
+                ...(publishReceipt ? { publish_receipt: publishReceipt } : {}),
                 compose_recipe: composeRecipe,
                 [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
             },
@@ -2101,7 +2252,9 @@ function classifySynchronousAssetSubmit(items) {
         const bundle = [];
         for (let index = 0; index < items.length; index += 1) {
             const item = items[index];
-            if (!wire.validateWire(item).ok) {
+            // 保持既有人工 wire 的结构分类合同；完整 schema/执行授权属于各自明确的准入门。
+            // Gene 本地 hints 只从检查副本剥离，不改变 ledger 绑定的实际记录。
+            if (!wire.validateWire(item['type'] === 'Gene' ? wire.stripGeneHints(item) : item).ok) {
                 return { ok: false, error: `asset ${index}: malformed V2 wire asset` };
             }
             try {
@@ -2182,10 +2335,17 @@ async function resolveVerifiedExecution(verifier, input, expectedValidation, tim
             return undefined;
         if (candidate.trace.some((row, index) => row.command.trim() !== expectedValidation[index]))
             return undefined;
+        if (!hubNs.isPublishVerificationRequest(input['verification_request'])
+            || !hubNs.isPublishVerificationEvidence(candidate.binding)
+            || wire.canonicalize(candidate.binding.request) !== wire.canonicalize(input['verification_request']))
+            return undefined;
         // Compare the authoritative raw receipt first, then cross the common execution-evidence outlet exactly once.
         // A command that required redaction no longer identifies the executed program and must not unlock publication.
-        const sanitized = verify.sanitizeExecutionPayload({ ...candidate, validation: expectedValidation });
-        return sanitized.blocked ? undefined : sanitized.value;
+        const sanitized = verify.sanitizeExecutionPayload({
+            trace: candidate.trace, validation: expectedValidation,
+            ...(candidate.blast_radius ? { blast_radius: candidate.blast_radius } : {}),
+        });
+        return sanitized.blocked ? undefined : { ...sanitized.value, binding: structuredClone(candidate.binding) };
     }
     catch {
         return undefined;
@@ -2214,28 +2374,35 @@ function declaredValidationCommands(input) {
     }
     return commands;
 }
-async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs, parentSignals = []) {
+async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs, parentSignals = [], runtimeDomain = 'standalone', genePolicy) {
     if (!verifier)
         return undefined;
     if (parentSignals.some((signal) => signal.aborted))
         return undefined;
-    const preflight = await hubNs.distillConversation(input, { persist: false });
+    const preflight = await hubNs.distillConversation(input, { persist: false, ...(genePolicy ? { genePolicy } : {}) });
     if (parentSignals.some((signal) => signal.aborted) || !preflight.ok || !preflight.quality.ok)
         return undefined;
     const validation = declaredValidationCommands(input);
     if (!validation)
         return undefined;
     // 只把通过质量与命令策略预检的最小验证输入交给宿主，绝不转发调用方的 execution/status/trace。
-    return resolveVerifiedExecution(verifier, { validation }, validation, timeoutMs, parentSignals);
+    const verificationRequest = Object.freeze(hubNs.createConversationVerificationRequest(input, validation, runtimeDomain, randomUUID(), genePolicy));
+    return resolveVerifiedExecution(verifier, { validation, verification_request: verificationRequest }, validation, timeoutMs, parentSignals);
 }
-async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTimeoutMs, ...parentSignals) {
+async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTimeoutMs, ledger, sanitizeEnv = process.env, ...parentSignals) {
     const normalized = legacyLooseDistillInput(value);
     if (!normalized.ok)
         return normalized;
+    const genePolicy = {
+        ...(normalized.constraints ? { constraints: normalized.constraints } : {}),
+        ...(normalized.category ? { category: normalized.category } : {}),
+    };
     try {
-        const verifiedExecution = await resolveVerifiedExecutionAfterPreflight(verifyExecution, normalized.input, verifyExecutionTimeoutMs, parentSignals.filter((signal) => signal !== undefined));
+        const verifiedExecution = await resolveVerifiedExecutionAfterPreflight(verifyExecution, normalized.input, verifyExecutionTimeoutMs, parentSignals.filter((signal) => signal !== undefined), ledger?.runtimeDomain, genePolicy);
         const distilled = await hubNs.distillConversation(normalized.input, {
             persist: false,
+            publishSanitizeEnv: sanitizeEnv,
+            genePolicy,
             ...(verifiedExecution ? { verifiedExecution } : {}),
         });
         if (!distilled.ok)
@@ -2251,17 +2418,20 @@ async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTi
                     : 'legacy_distill_quality_gate',
             };
         }
-        const gene = {
-            ...distilled.gene,
-            ...(normalized.constraints
-                ? { constraints: mergeLegacyConstraints(distilled.gene['constraints'], normalized.constraints) }
-                : {}),
-            ...(normalized.category ? { category: normalized.category } : {}),
-        };
-        const bundle = [gene, distilled.capsule].map(deterministicDistilledAsset);
+        const sanitized = hubNs.sanitizeBundle([distilled.gene, distilled.capsule].map(deterministicDistilledAsset), { env: sanitizeEnv });
+        if (sanitized.blocked)
+            return { ok: false, error: 'legacy_distill_leak_blocked' };
+        const bundle = sanitized.bundle;
         if (!bundle.every((asset) => wire.validateWire(asset).ok)) {
             return { ok: false, error: 'legacy_distill_invalid_wire_output' };
         }
+        if (!verifiedExecution?.binding || !ledger)
+            return { ok: false, error: 'legacy_distill_binding_missing' };
+        const receipt = hubNs.createPublishBindingReceipt(bundle, verifiedExecution.binding, {
+            validation: verifiedExecution.validation, trace: verifiedExecution.trace,
+        });
+        ledger.register(receipt, bundle);
+        ledger.verify(bundle, receipt);
         return { ok: true, bundle };
     }
     catch {
@@ -2357,19 +2527,6 @@ function parseLegacyConstraints(value) {
             ...(typeof maxFiles === 'number' ? { max_files: maxFiles } : {}),
             ...(normalizedPaths ? { forbidden_paths: normalizedPaths } : {}),
         },
-    };
-}
-function mergeLegacyConstraints(base, legacy) {
-    const current = isRecordValue(base) ? base : {};
-    const currentMax = Number.isInteger(current['max_files']) && Number(current['max_files']) > 0
-        ? Number(current['max_files'])
-        : 20;
-    const currentPaths = Array.isArray(current['forbidden_paths'])
-        ? current['forbidden_paths'].filter((path) => typeof path === 'string')
-        : [];
-    return {
-        max_files: Math.min(currentMax, legacy.max_files ?? currentMax),
-        forbidden_paths: uniqueStrings([...currentPaths, ...(legacy.forbidden_paths ?? [])]),
     };
 }
 function parseLegacyCategory(value) {

@@ -21,6 +21,8 @@ export interface SandboxOptions {
     hideHomeSecrets?: boolean;
     /** Remount the inherited filesystem read-only inside the mount namespace, leaving only an isolated /tmp writable. */
     readOnlyFilesystem?: boolean;
+    /** Minimal chroot with a read-only source bind, private HOME/devices/processes, and no inherited host root. */
+    privateRootFilesystem?: boolean;
     /** Host scratch directory exposed as the sandbox's only writable filesystem. */
     writableTmpDir?: string;
     /** Read-only checkout root remounted at its original absolute path after HOME and /tmp are hidden. */
@@ -53,12 +55,17 @@ export declare function isolationCommand(bin: string, args: readonly string[], o
     noNetwork?: boolean;
     hideHomeSecrets?: boolean;
     readOnlyFilesystem?: boolean;
+    privateRootFilesystem?: boolean;
+    javascriptRuntime?: boolean;
     writableTmpDir?: string;
     readOnlyRoot?: string;
     cwd?: string;
 }): {
     cmd: string;
     args: string[];
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+    cleanup?: () => void;
 };
 /** Whether unprivileged user+mount+net namespaces (`unshare -r -m -n`) work here (cached) — covers both isolation modes. */
 export declare function unshareNetAvailable(): boolean;

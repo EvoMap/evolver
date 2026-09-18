@@ -79,6 +79,13 @@ function validationCommandDisplay(cmd) {
 }
 export function summarizeSandboxedValidation(result) {
     const parts = [];
+    if (result.failureReason)
+        parts.push(result.failureReason);
+    if (result.isolationTier !== undefined) {
+        parts.push(result.isolationTier === 'no-network'
+            ? 'isolation: no-network (private root, read-only source; no aggregate cgroup limits)'
+            : `isolation: ${result.isolationTier}`);
+    }
     if (result.skipped.length > 0) {
         const skipped = result.skipped.map((item) => clippedValidationText(`node ${item.script} (${item.reason})`));
         parts.push(`skipped ${result.skipped.length} validation command(s): ${skipped.join('; ')}`);
@@ -1661,6 +1668,8 @@ export async function runAutoExec(argv) {
                     results: r.results,
                     skipped: r.skipped,
                     isolated: r.isolated,
+                    ...(r.isolationTier !== undefined ? { isolationTier: r.isolationTier } : {}),
+                    ...(r.failureReason !== undefined ? { failureReason: r.failureReason } : {}),
                 },
             };
         },

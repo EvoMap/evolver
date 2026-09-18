@@ -6,11 +6,75 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isolationCommand, makeSandboxRunner, sandboxResourceLimitsAvailable, unshareNetAvailable, } from './sandboxRunner.js';
+import { isolationCommand, makeSandboxRunner, sandboxResourceLimitsAvailable, } from './sandboxRunner.js';
 import { runValidation, tokenizeValidationCommand, validationScriptPath, } from './validation.js';
 import { sanitizeExecutionCommand, sanitizeExecutionPayload } from './executionRedaction.js';
+import { trustedValidationRuntime } from './trustedValidationRuntime.js';
+// Keep the public helper available, but never scan an untrusted tree inside validation's daemon path.
+export { treeFingerprint } from './validationTreeFingerprint.js';
 let readOnlyIsolationAvailableCache;
 let readOnlyFilesystemIsolationAvailableCache;
+let privateRootIsolationAvailableCache;
+/** Probe the complete fallback boundary, not merely whether a network namespace can be created. */
+export function privateRootIsolationAvailable() {
+    if (process.platform !== 'linux')
+        return false;
+    if (privateRootIsolationAvailableCache !== undefined)
+        return privateRootIsolationAvailableCache;
+    let probeRoot;
+    const runtimeCleanups = [];
+    try {
+        probeRoot = mkdtempSync('/var/tmp/evolver-private-root-probe-');
+        const cwd = join(probeRoot, 'source');
+        const scratch = join(probeRoot, 'session');
+        mkdirSync(cwd);
+        mkdirSync(scratch);
+        const probe = isolationCommand(process.execPath, ['--version'], {
+            noNetwork: true,
+            hideHomeSecrets: true,
+            privateRootFilesystem: true,
+            javascriptRuntime: true,
+            writableTmpDir: scratch,
+            readOnlyRoot: cwd,
+            cwd,
+        });
+        if (probe.cleanup)
+            runtimeCleanups.push(probe.cleanup);
+        // The outer process holds the launcher's parent-liveness pipe until the probe exits. On timeout it is
+        // killed, closing that pipe so the guardian also tears down the probe's complete namespace tree.
+        const supervise = "const {spawn}=require('node:child_process'); const child=spawn(process.argv[1],process.argv.slice(2),{stdio:['pipe','ignore','ignore']}); child.on('error',()=>process.exit(1)); child.on('close',code=>process.exit(code??1));";
+        const outer = trustedValidationRuntime(supervise, [probe.cmd, ...probe.args]);
+        runtimeCleanups.push(outer.cleanup);
+        privateRootIsolationAvailableCache = spawnSync(outer.cmd, outer.args, {
+            cwd: outer.cwd,
+            env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', ...outer.env },
+            timeout: 5_000,
+            stdio: 'ignore',
+        }).status === 0;
+    }
+    catch {
+        privateRootIsolationAvailableCache = false;
+    }
+    finally {
+        for (const cleanup of runtimeCleanups) {
+            try {
+                cleanup();
+            }
+            catch {
+                privateRootIsolationAvailableCache = false;
+            }
+        }
+        if (probeRoot) {
+            try {
+                rmSync(probeRoot, { recursive: true, force: true });
+            }
+            catch {
+                privateRootIsolationAvailableCache = false;
+            }
+        }
+    }
+    return privateRootIsolationAvailableCache;
+}
 export function readOnlyFilesystemIsolationAvailable() {
     if (process.platform !== 'linux')
         return false;
@@ -36,6 +100,7 @@ export function readOnlyFilesystemIsolationAvailable() {
             env: {
                 HOME: process.env.HOME ?? probeHome,
                 PATH: process.env.PATH ?? '/usr/bin:/bin',
+                ...(process.versions['bun'] ? { BUN_BE_BUN: '1' } : {}),
             },
             input: '\n',
             timeout: 5_000,
@@ -51,6 +116,12 @@ export function readOnlyFilesystemIsolationAvailable() {
     }
     return readOnlyFilesystemIsolationAvailableCache;
 }
+/** What this host can actually build, strongest first. Callers log it to explain a downgrade. */
+export function availableIsolationTier() {
+    if (readOnlyIsolationAvailable())
+        return 'read-only';
+    return privateRootIsolationAvailable() ? 'no-network' : 'none';
+}
 export function readOnlyIsolationAvailable() {
     if (process.platform !== 'linux')
         return false;
@@ -58,6 +129,27 @@ export function readOnlyIsolationAvailable() {
         return readOnlyIsolationAvailableCache;
     readOnlyIsolationAvailableCache = sandboxResourceLimitsAvailable() && readOnlyFilesystemIsolationAvailable();
     return readOnlyIsolationAvailableCache;
+}
+const TIER_RANK = { none: 0, 'no-network': 1, 'read-only': 2 };
+function meetsFloor(tier, floor) {
+    return TIER_RANK[tier] >= TIER_RANK[floor];
+}
+/**
+ * The `unshareCheck` seam predates tiers and callers still rely on its exact meaning: a true probe under
+ * `requireIsolation` stood for the full cage, and without it for the network-only one. Keep that mapping verbatim
+ * so overriding the probe still describes the same two worlds it always did.
+ */
+function resolveIsolationTier(opts) {
+    if (opts.isolationProbe)
+        return opts.isolationProbe();
+    if (opts.unshareCheck) {
+        if (!opts.unshareCheck())
+            return 'none';
+        return opts.requireIsolation ? 'read-only' : 'no-network';
+    }
+    if (opts.requireIsolation && readOnlyIsolationAvailable())
+        return 'read-only';
+    return privateRootIsolationAvailable() ? 'no-network' : 'none';
 }
 function validationReadOnlyRoot(cwd) {
     let current = resolve(cwd);
@@ -74,7 +166,7 @@ function skippedCommand(cmd, script, reason) {
     return { cmd, script, reason };
 }
 /**
- * Validate the script target before it reaches the runner. The runner's mount namespace is read-only, not a chroot,
+ * Validate the script target before it reaches the runner. The full read-only tier retains the host root,
  * so lexical containment alone is insufficient: a path inside the checkout may resolve through a symlink outside it.
  * Symlink script entries are rejected outright, and the canonical target is checked immediately before execution.
  */
@@ -126,11 +218,14 @@ function classifyValidationScript(cmd, script, validationCwd, readOnlyRoot) {
  */
 export async function runSandboxedValidation(cmds, cwd, opts = {}) {
     if (opts.signal?.aborted)
-        return { passed: false, cancelled: true, score: 0.2, results: [], skipped: [], isolated: false };
-    const isolationCheck = opts.unshareCheck ?? (opts.requireIsolation ? readOnlyIsolationAvailable : unshareNetAvailable);
-    const isolated = isolationCheck();
-    if (opts.requireIsolation && !isolated) {
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated: false };
+        return { passed: false, cancelled: true, score: 0.2, results: [], skipped: [], isolated: false, isolationTier: 'none' };
+    const tier = resolveIsolationTier(opts);
+    const isolated = tier !== 'none';
+    // `tier === 'none'` is rejected on its own, not just via the floor: the floor comes from the caller, and a
+    // JavaScript caller can hand us 'none' past the type. requireIsolation must never be satisfiable by no boundary.
+    const validFloor = opts.minimumIsolation === undefined || opts.minimumIsolation === 'read-only' || opts.minimumIsolation === 'no-network';
+    if (opts.requireIsolation && (!validFloor || tier === 'none' || !meetsFloor(tier, opts.minimumIsolation ?? 'read-only'))) {
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated: false, isolationTier: 'none' };
     }
     let validationCwd = resolve(cwd);
     let readOnlyRoot = opts.readOnlyRoot ? resolve(opts.readOnlyRoot) : validationReadOnlyRoot(validationCwd);
@@ -141,16 +236,16 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
         readOnlyRoot = realpathSync(readOnlyRoot);
     }
     catch {
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated };
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated, isolationTier: tier };
     }
     if (dirname(readOnlyRoot) === readOnlyRoot || !pathIsWithin(readOnlyRoot, validationCwd)) {
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated };
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated, isolationTier: tier };
     }
     // ONLY a truly empty command set is a vacuous pass (nothing to verify). A non-empty set with blank entries is a
     // malformed plan, NOT a pass: blanks are kept (trimmed to '') so they fall outside the allowlist and fail, rather
     // than being silently dropped into a pass (Bugbot).
     if (cmds.length === 0)
-        return { passed: true, cancelled: false, score: 0.95, results: [], skipped: [], isolated };
+        return { passed: true, cancelled: false, score: 0.95, results: [], skipped: [], isolated, isolationTier: tier };
     const list = cmds.map((c) => String(c ?? '').trim());
     const sanitizedPlan = list.map((command) => sanitizeExecutionCommand(command));
     if (sanitizedPlan.some((command) => command.changed || command.blocked)) {
@@ -170,6 +265,7 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
             })),
             skipped: [],
             isolated,
+            isolationTier: tier,
         };
     }
     // Validation plans may reference repo-relative scripts that do not exist in this checkout; skip those, but never
@@ -194,16 +290,21 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
         runnable.push(cmd);
     }
     if (runnable.length === 0)
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped, isolated };
-    const scratch = isolated && opts.requireIsolation
-        ? mkdtempSync('/var/tmp/evolver-validation-')
-        : undefined;
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped, isolated, isolationTier: tier };
+    let scratch;
+    try {
+        scratch = isolated ? mkdtempSync('/var/tmp/evolver-validation-') : undefined;
+    }
+    catch {
+        return { passed: false, cancelled: opts.signal?.aborted === true, failureReason: 'sandbox_setup_failed', score: 0.2, results: [], skipped, isolated, isolationTier: tier };
+    }
     const runner = makeSandboxRunner({
         cwd: validationCwd,
         noNetwork: isolated,
         hideHomeSecrets: isolated,
-        readOnlyFilesystem: isolated && opts.requireIsolation,
-        resourceLimits: isolated && opts.requireIsolation,
+        readOnlyFilesystem: tier === 'read-only',
+        privateRootFilesystem: tier === 'no-network',
+        resourceLimits: tier === 'read-only',
         writableTmpDir: scratch,
         readOnlyRoot,
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
@@ -232,21 +333,32 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
     let results;
     let passed;
     let cancelled;
+    let cleaned = true;
     try {
         ({ results, passed, cancelled } = await runValidation({ commands: runnable.map((cmd) => ({ cmd })), allowlist }, guardedRunner, opts.signal));
     }
     finally {
-        if (scratch)
-            rmSync(scratch, { recursive: true, force: true });
+        if (scratch) {
+            try {
+                rmSync(scratch, { recursive: true, force: true });
+            }
+            catch {
+                cleaned = false;
+            }
+        }
     }
-    const complete = skipped.length === 0 && !cancelled;
+    // Both isolated tiers prevent source mutations at the mount boundary. No host-side content scan or mutable
+    // retry baseline is needed; even a failed or cancelled validator leaves the caller's source bytes untouched.
+    const complete = skipped.length === 0 && !cancelled && cleaned;
     return sanitizeExecutionPayload({
         passed: passed && complete,
         cancelled,
+        ...(!cleaned ? { failureReason: 'sandbox_cleanup_failed' } : {}),
         score: passed && complete ? 0.95 : 0.2,
         results,
         skipped,
         isolated,
+        isolationTier: tier,
     }).value;
 }
 function pathIsWithin(root, target) {

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops } from '@evomap/evolver-core';
+import { ProxyReverificationError, safeReverificationRecovery } from './proxyClient.js';
 import { buildEvolverPrimer } from './primer.js';
 const str = (v) => (typeof v === 'string' ? v : String(v ?? ''));
 const strArray = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string') : undefined;
@@ -589,6 +590,48 @@ export function buildEvolverTools(deps) {
                 ...(typeof a['description'] === 'string' ? { description: a['description'] } : {}),
                 ...agentSearchArgs(a),
             }),
+        }, {
+            name: 'evolver_asset_reverify',
+            description: '明确请求本机隔离宿主重新执行 Gene+Capsule 的 validation；返回新资产与本机回执，不改写原资产、不发布到 Hub。可选 persist 写入新记录。没有已启用的 native verifier 时明确拒绝，不信任旧 trace 或外部回执。',
+            annotations: LOCAL_WRITE,
+            inputSchema: {
+                type: 'object', required: ['assets'], additionalProperties: false,
+                properties: {
+                    assets: {
+                        type: 'array', minItems: 2, maxItems: 2,
+                        items: { type: 'object', required: ['type'], properties: { type: { enum: ['Gene', 'Capsule'] } } },
+                        allOf: [
+                            { contains: { type: 'object', required: ['type'], properties: { type: { const: 'Gene' } } } },
+                            { contains: { type: 'object', required: ['type'], properties: { type: { const: 'Capsule' } } } },
+                        ],
+                    },
+                    persist: { type: 'boolean', default: false },
+                },
+            },
+            handler: async (a) => {
+                if (!Array.isArray(a['assets']) || a['assets'].length !== 2
+                    || a['assets'].some((asset) => !asset || typeof asset !== 'object' || Array.isArray(asset))
+                    || a['assets'].filter((asset) => record(asset)['type'] === 'Gene').length !== 1
+                    || a['assets'].filter((asset) => record(asset)['type'] === 'Capsule').length !== 1
+                    || (a['persist'] !== undefined && typeof a['persist'] !== 'boolean')
+                    || Object.keys(a).some((key) => !['assets', 'persist'].includes(key))) {
+                    throw new Error('asset reverify requires exactly one Gene and Capsule and optional boolean persist');
+                }
+                try {
+                    return await deps.proxy.reverifyAssets({ assets: a['assets'], persist: a['persist'] === true }, {
+                        signal: AbortSignal.timeout(30_000),
+                    });
+                }
+                catch (error) {
+                    if (!(error instanceof ProxyReverificationError))
+                        throw error;
+                    // server/stdio 将异常转为 isError 文本；只编码白名单恢复字段，不能丢失不确定写入状态。
+                    throw new Error(JSON.stringify({
+                        ok: false, error: error.message, recovery: safeReverificationRecovery(error.recovery),
+                        recovery_action: 'inspect_assets_and_ledger_before_retry',
+                    }));
+                }
+            },
         }, {
             name: 'evolver_asset_validate',
             description: '通过本机 evolver-proxy 对 PHub 做发布前 dry-run 校验: 先执行与发布相同的本地脱敏/泄漏拦截, 再跑 hub 端质量门禁 + 内容安全扫描, 不落库、不计费. 返回 {valid, reason?}. 建议在 evolver_asset_publish 前调用. Capsule.gene 须非空或 ad-hoc.',
