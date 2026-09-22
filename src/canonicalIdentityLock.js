@@ -298,7 +298,8 @@ function prepareOwnerFile(lockDir, token) {
       mode: PRIVATE_FILE_MODE,
       flag: 'wx',
     });
-    descriptor = fs.openSync(preparedOwnerFile, 'r');
+    // Windows requires a writable handle for FlushFileBuffers/fdatasync.
+    descriptor = fs.openSync(preparedOwnerFile, 'r+');
     fs.fdatasyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = null;
