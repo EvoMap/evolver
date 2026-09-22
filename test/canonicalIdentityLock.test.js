@@ -177,6 +177,28 @@ test('partial owner preparation failure never exposes a canonical lock', () => {
   }
 });
 
+test('prepares owner files with a writable descriptor for fdatasync', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'canonical-lock-fdatasync-'));
+  const nodeIdFile = path.join(root, 'node_id');
+  const lock = require('../src/canonicalIdentityLock');
+  const originalOpenSync = fs.openSync;
+  let stagedOwnerFlags = null;
+
+  try {
+    fs.openSync = function captureStagedOwnerFlags(file, flags, ...args) {
+      if (String(file).endsWith('.tmp')) stagedOwnerFlags = flags;
+      return originalOpenSync.call(fs, file, flags, ...args);
+    };
+
+    const release = lock.acquireCanonicalIdentityLock(nodeIdFile);
+    release();
+    assert.equal(stagedOwnerFlags, 'r+');
+  } finally {
+    fs.openSync = originalOpenSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('release cleanup failure leaves canonical path available to a successor', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'canonical-lock-release-'));
   const nodeIdFile = path.join(root, 'node_id');
