@@ -1,3 +1,4 @@
+import { hub } from '@evomap/evolver-core';
 export class UnknownToolError extends Error {
     name;
     constructor(name) {
@@ -36,6 +37,10 @@ export class EvolverMcpServer {
             return { ok: true, result: await tool.handler(args) };
         }
         catch (e) {
+            if (e instanceof hub.RecipeExecutionError)
+                return { ok: false, error: e.code, code: e.code, status: e.status, ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) };
+            if (name.startsWith('evolver_recipe_'))
+                return { ok: false, error: 'recipe_execution_failed', code: 'recipe_execution_failed', status: 502 };
             return { ok: false, error: e instanceof Error ? e.message : String(e) };
         }
     }

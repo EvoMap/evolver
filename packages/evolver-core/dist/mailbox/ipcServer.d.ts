@@ -9,6 +9,7 @@ export interface IpcServerOptions {
     /** When set, every mailbox route is pinned to this daemon namespace. */
     runtimeNamespace?: string;
     extraRoutes?: IpcRouteHandler[];
+    routeBodyLimits?: Readonly<Record<string, number>>;
     onSend?: (envelope: Envelope, result: {
         receiptId: string;
         stored: boolean;
@@ -41,6 +42,7 @@ export declare class MailboxIpcServer {
     private readonly host;
     private readonly now;
     private readonly runtimeNamespace;
+    private readonly routeBodyLimits;
     private readonly extraRoutes;
     private readonly onSend;
     private readonly beforeSend;

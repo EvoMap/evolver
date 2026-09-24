@@ -1,9 +1,13 @@
+import type { WorkspaceLease } from './workspaceLease.js';
+import type { WorkspaceRecovery } from './workspaceRecovery.js';
 import { spawn } from 'node:child_process';
 export declare const DEFAULT_TIMEOUT_MS = 600000;
 export declare const MAX_AGENT_SESSION_ID_CHARS = 128;
 /** Per-stream stdout/stderr capture ceiling. A child can emit indefinitely without growing the parent heap. */
 export declare const DEFAULT_MAX_CAPTURE_BYTES = 1048576;
 export interface AgentRunContext {
+    /** Capability for a reserved private workspace. Required by the built-in LLM writer. */
+    workspaceLease?: WorkspaceLease;
     cwd: string;
     timeoutMs?: number;
     /** Cooperative cancellation. The runner kills the whole spawned process tree when aborted. */
@@ -28,6 +32,8 @@ export declare class AgentSessionResumeError extends Error {
 /** Validate before spawn so malformed or cross-harness session targets always fail closed. */
 export declare function validateAgentSessionResume(resume: AgentSessionResume, expectedRunner: RunnerName): AgentSessionResume;
 export interface AgentRunResult {
+    /** Host-only recovery details; preserve original failureKind/error when recovery is incomplete. */
+    workspaceRecovery?: WorkspaceRecovery;
     ok: boolean;
     output: string;
     error?: string;

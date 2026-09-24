@@ -46,6 +46,7 @@ export class MailboxIpcServer {
     host;
     now;
     runtimeNamespace;
+    routeBodyLimits;
     extraRoutes;
     onSend;
     beforeSend;
@@ -56,6 +57,9 @@ export class MailboxIpcServer {
         this.host = opts.host ?? '127.0.0.1';
         this.now = opts.now ?? (() => Date.now());
         this.runtimeNamespace = opts.runtimeNamespace;
+        this.routeBodyLimits = { ...opts.routeBodyLimits };
+        if (Object.values(this.routeBodyLimits).some((limit) => !Number.isSafeInteger(limit) || limit < 1))
+            throw new Error('invalid IPC route body limit');
         this.extraRoutes = opts.extraRoutes ?? [];
         this.onSend = opts.onSend;
         this.beforeSend = opts.beforeSend;
@@ -126,7 +130,7 @@ export class MailboxIpcServer {
                     now,
                     store: this.store,
                     signal: requestAbort.signal,
-                    readJson: () => this.readJson(req),
+                    readJson: () => this.readJson(req, this.routeBodyLimits[route] ?? MAX_BODY),
                     json: (code, body) => this.json(res, code, body),
                 });
                 if (handled)
@@ -241,14 +245,14 @@ export class MailboxIpcServer {
             res.off('close', abortIfResponseOpen);
         }
     }
-    readJson(req) {
+    readJson(req, maxBody = MAX_BODY) {
         return new Promise((resolve, reject) => {
             let size = 0;
             let overflow = false;
             const chunks = [];
             req.on('data', (c) => {
                 size += c.length;
-                if (size > MAX_BODY) {
+                if (size > maxBody) {
                     overflow = true;
                     return;
                 } // 不 destroy socket: 继续 drain 以保证能回 400

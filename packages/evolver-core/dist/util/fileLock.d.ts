@@ -1,3 +1,4 @@
+import type { BigIntStats } from 'node:fs';
 export declare function syncSleep(ms: number): void;
 export type FileLockProcessStartIdentity = {
     readonly source: 'linux-proc';
@@ -76,6 +77,7 @@ export declare function _setFileLockTestHooksForTest(hooks?: {
     beforeGuardianReclaim?: (guardianPath: string, lockPath: string) => void;
     beforeMutationGuardRelease?: (mutationGuardPath: string, lockPath: string) => void;
 }): void;
+export declare function statRegularFileIdentity(path: string): BigIntStats;
 /**
  * Pre-arm an acquired lock with the exact child PID generation while retaining local ownership.
  * A controller can therefore keep mutating its journal, while a hard controller crash cannot make

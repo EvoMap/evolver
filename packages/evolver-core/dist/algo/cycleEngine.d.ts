@@ -1,3 +1,4 @@
+import type { WorkspaceRecovery } from '../exec/workspaceRecovery.js';
 import type { Ingestor } from '../events/ingest.js';
 import type { ProblemPattern } from '../schema/problem.js';
 import type { GepCategory, Mutation, Capsule, EvolutionEvent } from '../wire/index.js';
@@ -20,6 +21,8 @@ export interface TriggerEval {
 }
 export type ExecutionFailureKind = 'spawn_failed' | 'timeout' | 'cancelled' | 'permission_denied' | 'non_zero_exit' | 'invalid_output' | 'runtime_error';
 export interface ExecutionResult {
+    /** Host-only retained workspace recovery; never persisted as learning evidence. */
+    workspaceRecovery?: WorkspaceRecovery;
     outcome: {
         status: 'success' | 'failed';
         score: number;

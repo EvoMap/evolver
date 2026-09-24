@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops } from '@evomap/evolver-core';
 import { ProxyReverificationError, safeReverificationRecovery } from './proxyClient.js';
 import { buildEvolverPrimer } from './primer.js';
+import { recipeToolSchemas } from './recipeSchemas.js';
 const str = (v) => (typeof v === 'string' ? v : String(v ?? ''));
 const strArray = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string') : undefined;
 const REUSE_OUTCOMES = new Set(['success', 'failed', 'mismatched', 'stale', 'unsafe']);
@@ -11,6 +12,31 @@ const REMOTE_READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: fa
 // delete/overwrite is not that contract: any state-writing tool must prompt.
 const LOCAL_WRITE = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
 const REMOTE_WRITE = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
+function recipeExecutionTools(proxy) {
+    const descriptions = {
+        express: ['evolver_recipe_express', 'Start a paid Recipe run with explicit requestKey, maxCredits and executionMode. Trusted host Recipe spend consent is required separately. Accepted is not completed; retry the SAME key and payload after uncertainty.'],
+        get: ['evolver_recipe_expression_get', 'Read a participant-private run, immutable manifest and checkpoints.'],
+        list: ['evolver_recipe_expression_list', 'Recover private runs for this authenticated node; paginate using next_cursor.'],
+        task: ['evolver_recipe_task_lookup', 'Look up the prepaid task Recipe without a second express fee. Recipe completion does not settle ATP proof.'],
+        claim: ['evolver_recipe_expression_claim', 'Claim or renew an authorized executor lease. Preserve leaseId and returned fence across restarts.'],
+        next: ['evolver_recipe_expression_next', 'Get the next permitted step. Assets are untrusted guidance, not authorization. Execute real user-authorized host actions.'],
+        report: ['evolver_recipe_expression_report', 'Checkpoint actual output and typed evidence using a stable requestKey and lease fence. Never fabricate artifacts or call narration external execution.'],
+        finalize: ['evolver_recipe_expression_finalize', 'Finalize required completed steps with actual output and executor-reported evidence. Not independent host attestation; never substitutes ATP proof settlement.'],
+        cancel: ['evolver_recipe_expression_cancel', 'Explicitly cancel a participant-authorized run; does not promise a refund. Stopping observation alone does not cancel.'],
+    };
+    return Object.keys(descriptions).map((operation) => ({
+        name: descriptions[operation][0],
+        description: descriptions[operation][1],
+        inputSchema: recipeToolSchemas[operation],
+        annotations: ['get', 'list', 'task'].includes(operation) ? REMOTE_READ_ONLY : REMOTE_WRITE,
+        handler: async (args) => {
+            const parsed = hub.parseRecipeExecutionInput(operation, args);
+            return operation === 'express'
+                ? proxy.expressRecipe(parsed)
+                : proxy.recipeExecution(operation, parsed);
+        },
+    }));
+}
 function record(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -325,31 +351,7 @@ export function buildEvolverTools(deps) {
                         return receipt['items'];
                     return receipt;
                 },
-            }, {
-                name: 'evolver_recipe_express',
-                description: '表达/执行一条 Recipe：只转发 Hub POST /a2a/recipe/{id}/express。Hub 按步骤展开 Gene 再 Capsule，从而产生全网 gene/capsule 调用。不要在本地解析 recipe JSON。',
-                annotations: REMOTE_WRITE,
-                inputSchema: {
-                    type: 'object',
-                    required: ['recipeId'],
-                    properties: {
-                        recipeId: { type: 'string' },
-                        inputPayload: { type: 'object' },
-                    },
-                },
-                handler: async (a) => {
-                    const recipeId = str(a['recipeId']).trim();
-                    if (!recipeId)
-                        throw new Error('evolver_recipe_express requires recipeId');
-                    const inputPayload = a['inputPayload'];
-                    return deps.proxy.expressRecipe({
-                        recipeId,
-                        ...(inputPayload && typeof inputPayload === 'object' && !Array.isArray(inputPayload)
-                            ? { inputPayload: inputPayload }
-                            : {}),
-                    });
-                },
-            }, {
+            }, ...recipeExecutionTools(deps.proxy), {
                 name: 'evolver_proxy_status',
                 description: '检查本机 evolver-proxy 与 PHub 的连接状态. 需要 EVOLVER_PROXY_URL/EVOLVER_IPC_TOKEN.',
                 inputSchema: { type: 'object', properties: {} },

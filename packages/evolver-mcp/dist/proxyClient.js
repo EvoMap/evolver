@@ -1,3 +1,4 @@
+import { hub } from '@evomap/evolver-core';
 import { lstatSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -69,12 +70,81 @@ export class EvolverProxyClient {
         });
     }
     expressRecipe(args) {
-        const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
-        return this.call('POST', '/recipe/express', {
-            recipe_id: args.recipeId,
-            ...(args.inputPayload ? { input_payload: args.inputPayload } : {}),
-            ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
-        });
+        return this.recipeExecution('express', args);
+    }
+    async recipeExecution(operation, input) {
+        const parsed = hub.parseRecipeExecutionInput(operation, input);
+        let result;
+        try {
+            result = await this.callRecipe(operation, parsed);
+        }
+        catch (error) {
+            if (error instanceof hub.RecipeExecutionError)
+                throw error;
+            throw new hub.RecipeExecutionError('recipe_proxy_unreachable', 503);
+        }
+        const validated = hub.recipeExecutionResponses[operation].safeParse(result);
+        if (!validated.success)
+            throw new hub.RecipeExecutionError(`recipe_${operation}_response_invalid`, 502);
+        return validated.data;
+    }
+    async callRecipe(operation, input) {
+        let connection = this.connectionSnapshot();
+        let identity;
+        try {
+            identity = await this.recipeIdentity(connection);
+        }
+        catch (error) {
+            if (error instanceof hub.RecipeExecutionError && error.status !== 401)
+                throw error;
+            if (!this.reloadFromSettings(connection))
+                throw error;
+            connection = this.connectionSnapshot();
+            identity = await this.recipeIdentity(connection);
+        }
+        const body = { ...recordValue(this.modeBoundBody(input)), expected_recipe_scope: identity.scope };
+        const path = `/recipe/${operation}`;
+        let result;
+        try {
+            result = await this.callOnce('POST', path, body, {}, connection, true);
+        }
+        catch {
+            if (!this.reloadFromSettings(connection))
+                throw new hub.RecipeExecutionError('recipe_proxy_unreachable', 503);
+            connection = this.connectionSnapshot();
+            await this.assertRecipeIdentity(connection, identity);
+            return this.recipeResult(await this.callOnce('POST', path, body, {}, connection, true), path);
+        }
+        if (result.status === 401 && this.reloadFromSettings(connection)) {
+            connection = this.connectionSnapshot();
+            await this.assertRecipeIdentity(connection, identity);
+            result = await this.callOnce('POST', path, body, {}, connection, true);
+        }
+        return this.recipeResult(result, path);
+    }
+    async recipeIdentity(connection) {
+        const response = await this.callOnce('GET', '/proxy/status', undefined, {}, connection, true);
+        if (!response.ok)
+            throw new hub.RecipeExecutionError('recipe_proxy_identity_unavailable', response.status);
+        const status = recordValue(response.parsed);
+        const mode = status['hub_mode'];
+        const node = status['node_id'];
+        const scope = status['recipe_execution_scope'];
+        if (typeof mode !== 'string' || mode !== (this.expectedHubMode ?? 'public'))
+            throw new hub.RecipeExecutionError('proxy_hub_mode_mismatch', 409);
+        if (typeof node !== 'string' || !node || typeof scope !== 'string' || !scope)
+            throw new hub.RecipeExecutionError('recipe_identity_scope_required', 409);
+        return { mode, node, scope };
+    }
+    async assertRecipeIdentity(connection, original) {
+        const next = await this.recipeIdentity(connection);
+        if (next.mode !== original.mode || next.node !== original.node || next.scope !== original.scope)
+            throw new hub.RecipeExecutionError('recipe_identity_scope_mismatch', 409);
+    }
+    recipeResult(result, path) {
+        if (result.ok)
+            return result.parsed;
+        throw this.proxyError(result, path);
     }
     fetchAsset(args) {
         const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
@@ -234,7 +304,7 @@ export class EvolverProxyClient {
         }
         return result.parsed;
     }
-    async callOnce(method, path, body, opts, connection) {
+    async callOnce(method, path, body, opts, connection, preserveHttpStatus = false) {
         const res = await this.fetchFn(`${connection.baseUrl}${path}`, {
             method,
             headers: {
@@ -245,23 +315,38 @@ export class EvolverProxyClient {
             ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
         });
-        return { ok: res.ok, status: res.status, parsed: await res.json() };
+        let parsed;
+        try {
+            parsed = await res.json();
+        }
+        catch (error) {
+            if (!preserveHttpStatus)
+                throw error;
+        }
+        return { ok: res.ok, status: res.status, parsed };
     }
     connectionSnapshot() {
         return { baseUrl: this.baseUrl, token: this.token };
     }
-    reloadFromSettings() {
+    reloadFromSettings(failedConnection = this.connectionSnapshot()) {
         const next = this.reloadSettings?.();
         if (!next)
             return false;
         const nextBaseUrl = next.baseUrl.replace(/\/+$/, '');
-        if (nextBaseUrl === this.baseUrl && next.token === this.token)
+        if (nextBaseUrl === failedConnection.baseUrl && next.token === failedConnection.token)
             return false;
         this.baseUrl = nextBaseUrl;
         this.token = next.token;
         return true;
     }
     proxyError(result, path) {
+        if (path.startsWith('/recipe/')) {
+            const body = recordValue(result.parsed);
+            const value = body['code'] ?? body['error'];
+            const code = typeof value === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : 'recipe_proxy_request_failed';
+            const delay = body['retryAfterMs'];
+            return new hub.RecipeExecutionError(code, result.status, typeof delay === 'number' && Number.isFinite(delay) && delay >= 0 ? delay : undefined);
+        }
         const message = result.parsed && typeof result.parsed === 'object' && !Array.isArray(result.parsed) && typeof result.parsed.error === 'string'
             ? result.parsed.error
             : `evolver proxy ${result.status} ${path}`;

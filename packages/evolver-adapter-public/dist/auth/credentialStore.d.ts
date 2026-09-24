@@ -1,5 +1,5 @@
 import { linkSync, renameSync } from 'node:fs';
-import type { hub } from '@evomap/evolver-core';
+import { hub } from '@evomap/evolver-core';
 export interface CredentialStoreOptions {
     /**
      * Test seam for the Windows policy; defaults to the current platform.
@@ -86,6 +86,7 @@ export declare class CredentialStore {
     private unlinkIfSameFile;
     private secureWindowsDirectory;
     private secureWindowsFile;
+    private assertWindowsFileIdentity;
     private clearDarwinAcl;
     private assertSafeDarwinAncestor;
     private assertTrustedDarwinFile;

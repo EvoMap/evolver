@@ -18,4 +18,5 @@ export * from './learningPacketSink.js';
 export * from './learningPacketFeedback.js';
 export * from './atp.js';
 export * from './pricing/modelPrices.js';
+export { recipeHubError } from './recipeExecution.js';
 export * from './connect.js';

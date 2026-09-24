@@ -18,6 +18,8 @@ export function searchQueryToFetchWire(q) {
     const out = {};
     if (q.signalsAny && q.signalsAny.length > 0)
         out['signals'] = q.signalsAny;
+    if (q.text)
+        out['query'] = q.text;
     if (q.kind)
         out['kind'] = q.kind;
     if (q.category)

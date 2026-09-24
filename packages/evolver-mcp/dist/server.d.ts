@@ -9,6 +9,9 @@ export interface ToolCallResult {
     ok: boolean;
     result?: unknown;
     error?: string;
+    code?: string;
+    status?: number;
+    retryAfterMs?: number;
 }
 export declare class UnknownToolError extends Error {
     readonly name: string;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "2.0.38",
-  "releaseTag": "v2.0.38",
+  "version": "2.0.39",
+  "releaseTag": "v2.0.39",
   "channel": "latest",
   "publicRepo": "EvoMap/evolver",
   "publicBranch": "v2-beta"

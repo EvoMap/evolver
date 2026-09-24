@@ -11,6 +11,7 @@ export declare const DEFAULT_IPC_PORT = 19820;
 export type HubAuthFailurePolicy = 'deny' | 'warn';
 export declare function resolveHubAuthFailurePolicy(env?: Record<string, string | undefined>): HubAuthFailurePolicy;
 export interface ProxyDaemonDeps {
+    recipeExecutionDirectory?: string;
     /** operator配置，不能由单次搜索请求关闭。 */
     benchmarkId?: string;
     sourceProvenance?: assetstore.ProvenanceStore;
@@ -167,6 +168,7 @@ export declare class ProxyDaemon {
     private readonly publishRecallVerifier;
     private readonly proxyHandler;
     private readonly hub;
+    private readonly recipeGovernance;
     private readonly recipeComposeStarted;
     private ipc;
     private readonly now;
@@ -260,6 +262,7 @@ export declare class ProxyDaemon {
     private qualifyAssets;
     private respondAssetSearch;
     private qualifyFetch;
+    private recallAssets;
     private localFetchAssets;
     private handleProxyRoute;
     private searchAssets;

@@ -6,6 +6,7 @@ import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, search
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
 import { getWorkspaceKeychainMode } from './auth/workspaceKeychain.js';
 import { agentDirectoryFailure, parsePublicAgentPage, parsePublicAgentProfile, paginatePublicAgentPage, mergePublicAgentPages, publicAgentSearchQuery, publicTaskDiscoveryQuery, PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES, unsupportedPublicAvailability, unsupportedPublicSort, withDirectoryTimeout, } from './agentDirectory.js';
+import { createRecipeExecution } from './recipeExecution.js';
 import { assetMatchesId, stripHubDeliveryMetadataForIntegrity } from './hubReuse.js';
 export const INBOUND_LIMIT = 100;
 export const OUTBOUND_MAX_BATCH = 50;
@@ -114,6 +115,7 @@ export class PublicHubCapability {
         this.opts = opts;
         this.auth = opts.auth;
         this.http = new HubFetch({ baseUrl: opts.baseUrl, auth: opts.auth, fetchFn: opts.fetchFn, senderId: opts.senderId });
+        this.recipes.execution = createRecipeExecution(opts);
     }
     evolverVersionForWire(explicitVersion) {
         const antiAbuse = this.opts.antiAbuse;
@@ -138,7 +140,7 @@ export class PublicHubCapability {
             const evolverVersion = this.evolverVersionForWire(opts.evolverVersion);
             const body = await this.http.call('POST', '/a2a/hello', gepEnvelope('hello', {
                 rotate_secret: opts.rotate,
-                capabilities: { supported_types: ['publish', 'fetch', 'mailbox', 'questions'] },
+                capabilities: { supported_types: ['publish', 'fetch', 'mailbox', 'questions'], recipe_execution: { version: 1, modes: ['caller'] } },
                 agent_name: '@evomap/evolver-proxy',
                 status: 'active',
                 timestamp: new Date().toISOString(),
@@ -712,22 +714,11 @@ export class PublicHubCapability {
         return recipeSearchReceiptFromBody(body);
     }
     async expressRecipe(recipeId, request = {}) {
-        if (isHubDryRunEnabled()) {
-            return dryRunRecipeReceipt('express_recipe', recipeId, { input_payload: request.inputPayload ?? {} });
-        }
-        const sender = this.opts.senderId();
-        const body = await this.http.call('POST', `/a2a/recipe/${encodeURIComponent(recipeId)}/express`, {
-            ...(sender ? { node_id: sender } : {}),
-            input_payload: request.inputPayload ?? {},
-        });
-        const payload = recipePayload(body);
-        const organismId = recipeOrganismIdFromPayload(payload);
-        const receipt = recipeReceiptFromBody(body);
-        return {
-            ...receipt,
-            recipeId: receipt.recipeId ?? recipeId,
-            ...(organismId ? { organismId } : {}),
-        };
+        const input = hubNs.parseRecipeExecutionInput('express', { ...request, recipeId });
+        if (isHubDryRunEnabled())
+            throw new Error('recipe_execution_disabled_in_dry_run');
+        const receipt = await hubNs.requireRecipeExecution(this.recipes.execution).invoke('express', input);
+        return { recipeId, organismId: receipt.organism.id, status: receipt.status, raw: receipt };
     }
     task = {
         claim: async (taskId) => {
@@ -949,15 +940,6 @@ function isRecipeLikeRecord(value) {
     return Boolean(stringField(value, 'id')
         ?? stringField(value, 'recipe_id')
         ?? stringField(value, 'recipeId'));
-}
-function recipeOrganismIdFromPayload(payload) {
-    const flatId = stringField(payload, 'organism_id') ?? stringField(payload, 'organismId');
-    if (flatId)
-        return flatId;
-    const organism = asRecord(payload['organism']);
-    return organism
-        ? stringField(organism, 'id') ?? stringField(organism, 'organism_id') ?? stringField(organism, 'organismId')
-        : undefined;
 }
 function recipeSearchQuery(request) {
     return {

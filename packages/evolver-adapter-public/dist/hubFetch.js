@@ -17,7 +17,7 @@ const HUB_OPERATION_TIMEOUT_KEYS = {
     poll: 'pollMs',
     hello: 'helloMs',
 };
-const DEFAULT_AUTH_TIMEOUT_MS = 20_000;
+export const HUB_AUTH_TIMEOUT_MS = 20_000;
 const DEFAULT_DEADLINE_SCHEDULER = {
     set(callback, delayMs) {
         const timer = setTimeout(callback, delayMs);
@@ -139,6 +139,27 @@ function mergeRequestHeaders(requestHeaders, signedHeaders) {
  * 401/403→AuthError(reauth), 4xx→HubClientError(终态), 5xx→重试.
  * 非 JSON Hub 响应(WAF/HTML/captive portal/gateway text)→HubUnreachableError, 不触发 auth recovery.
  */
+export async function authenticateHubRequest(deps, method, path, bodyObj) {
+    const operation = hubOperationForRequest(path, bodyObj);
+    const draft = bodyObj !== undefined ? JSON.stringify(bodyObj) : '';
+    const authDeadline = createHubDeadline(deps.deadlineScheduler ?? DEFAULT_DEADLINE_SCHEDULER, method, path, operation, deps.authTimeoutMs ?? HUB_AUTH_TIMEOUT_MS);
+    try {
+        return await awaitWithAbort(deps.auth.authenticate({ method, path, ...(draft ? { body: draft } : {}), signal: authDeadline.signal }), authDeadline.signal);
+    }
+    catch (error) {
+        if (isAuthTransportTimeout(error)) {
+            throw new HubUnreachableError('hub authentication timed out', {
+                context: `${method} ${path}`,
+                retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+                operation,
+            });
+        }
+        throw error;
+    }
+    finally {
+        authDeadline.dispose();
+    }
+}
 export class HubFetch {
     deps;
     operationTimeouts;
@@ -150,25 +171,7 @@ export class HubFetch {
     }
     async call(method, path, bodyObj, query, requestHeaders) {
         const operation = hubOperationForRequest(path, bodyObj);
-        const draft = bodyObj !== undefined ? JSON.stringify(bodyObj) : '';
-        const authDeadline = createHubDeadline(this.deadlineScheduler, method, path, operation, this.deps.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
-        let signed;
-        try {
-            signed = await awaitWithAbort(this.deps.auth.authenticate({ method, path, ...(draft ? { body: draft } : {}), signal: authDeadline.signal }), authDeadline.signal);
-        }
-        catch (error) {
-            if (isAuthTransportTimeout(error)) {
-                throw new HubUnreachableError('hub authentication timed out', {
-                    context: `${method} ${path}`,
-                    retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
-                    operation,
-                });
-            }
-            throw error;
-        }
-        finally {
-            authDeadline.dispose();
-        }
+        const signed = await authenticateHubRequest({ auth: this.deps.auth, authTimeoutMs: this.deps.authTimeoutMs, deadlineScheduler: this.deadlineScheduler }, method, path, bodyObj);
         const timeoutMs = this.operationTimeouts[HUB_OPERATION_TIMEOUT_KEYS[operation]];
         const deadline = createHubDeadline(this.deadlineScheduler, method, path, operation, timeoutMs);
         try {

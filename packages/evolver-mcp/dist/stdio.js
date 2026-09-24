@@ -73,7 +73,7 @@ async function handle(req) {
         try {
             const r = await server.callTool(name, args);
             ok(id, {
-                content: [{ type: 'text', text: r.ok ? JSON.stringify(r.result, null, 2) : (r.error ?? 'tool failed') }],
+                content: [{ type: 'text', text: r.ok ? JSON.stringify(r.result, null, 2) : r.code ? JSON.stringify({ error: r.error, code: r.code, status: r.status, retryAfterMs: r.retryAfterMs }) : (r.error ?? 'tool failed') }],
                 isError: !r.ok,
             });
         }

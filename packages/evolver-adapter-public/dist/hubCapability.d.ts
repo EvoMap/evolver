@@ -1,5 +1,5 @@
 import { reference, type hub } from '@evomap/evolver-core';
-import { type FetchLike } from './hubFetch.js';
+import { type FetchLike, type HubDeadlineScheduler } from './hubFetch.js';
 import { type AntiAbuseTelemetryOptions } from './antiAbuseTelemetry.js';
 export declare const INBOUND_LIMIT = 100;
 export declare const OUTBOUND_MAX_BATCH = 50;
@@ -74,6 +74,8 @@ export interface PublicHubOptions {
     auth: hub.AuthProvider;
     fetchFn: FetchLike;
     senderId: () => string | undefined;
+    authTimeoutMs?: number;
+    deadlineScheduler?: HubDeadlineScheduler;
     /** task.subscribe 轮询节奏(默认 10s). */
     subscribePollMs?: number;
     /** Public Hub anti-abuse heartbeat metadata. Defaults to env-controlled heartbeat mode. */

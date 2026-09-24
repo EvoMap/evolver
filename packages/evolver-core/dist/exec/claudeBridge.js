@@ -1,3 +1,4 @@
+import { reservePrivateWorkspace, workspaceLeaseWasClaimed } from './workspaceLease.js';
 // The Claude Code execution bridge — the REAL implementation of CycleEngine's `execute` seam (ported from
 // v1's exec bridge, EVOLVE_EXEC_BRIDGE-gated). It renders the mutation into an instruction, runs a coding
 // agent against a working directory, measures proof-of-work from the git diff, and (optionally) runs a
@@ -14,7 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, resolve as resolvePath, sep, join as joinPath } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync, } from 'node:fs';
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync, } from 'node:fs';
 import { renderExecPrompt } from './prompt.js';
 import { parseGitShortstat, gitDiffProof } from './proofOfWork.js';
 // Policy enforcement core (#107): checkPolicy runs the always-on global guards (blast hard cap +
@@ -104,7 +105,8 @@ function assertPathAbsent(path) {
 function reserveWorktreePath() {
     // The random 0700 container is atomically created by the OS. The git destination remains absent inside it,
     // so `git worktree add` cannot adopt an attacker-precreated path from the shared temp directory.
-    const container = mkdtempSync(joinPath(tmpdir(), 'evolver-wt-'));
+    const privateWorkspace = reservePrivateWorkspace('evolver-wt-');
+    const container = privateWorkspace.container;
     const containerStat = lstatSync(container);
     if (containerStat.isSymbolicLink() || !containerStat.isDirectory()) {
         throw new UnsafeWorktreePathError('temporary reservation is not a real directory');
@@ -113,6 +115,7 @@ function reserveWorktreePath() {
     assertPathAbsent(workDir);
     return {
         container,
+        bindWorkspace: privateWorkspace.bind,
         containerDev: containerStat.dev,
         containerIno: containerStat.ino,
         workDir,
@@ -439,6 +442,8 @@ function createExecutionDeadline(parentSignal, maxRuntimeMs) {
         },
     };
 }
+class WorkspaceRecoveryIncompleteError extends Error {
+}
 class AgentRunBeforeManagedWorktreeError extends Error {
     constructor() {
         super('agent run failed before a managed worktree was created');
@@ -463,6 +468,7 @@ function cancelledExecutionResult(run) {
         strongEvidence: false,
         failureKind: 'cancelled',
         exitCode: run?.exitCode ?? null,
+        ...(run?.workspaceRecovery ? { workspaceRecovery: run.workspaceRecovery } : {}),
         ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
     };
 }
@@ -472,6 +478,7 @@ function timedOutExecutionResult(run) {
         strongEvidence: false,
         failureKind: 'timeout',
         exitCode: run?.exitCode ?? null,
+        ...(run?.workspaceRecovery ? { workspaceRecovery: run.workspaceRecovery } : {}),
         ...(run ? { sessionLog: run.error ? `${run.output}\n${run.error}` : run.output } : {}),
     };
 }
@@ -482,6 +489,7 @@ function failedProofExecutionResult(run, error, proofOfWork) {
         strongEvidence: false,
         failureKind: run.failureKind ?? 'runtime_error',
         exitCode: run.exitCode ?? null,
+        ...(run.workspaceRecovery ? { workspaceRecovery: run.workspaceRecovery } : {}),
         sessionLog: run.error ? `${run.output}\n${run.error}` : run.output,
     };
 }
@@ -491,6 +499,7 @@ function failedAgentRunResult(run) {
         strongEvidence: false,
         ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
         ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+        ...(run.workspaceRecovery ? { workspaceRecovery: run.workspaceRecovery } : {}),
         sessionLog: run.error ? `${run.output}\n${run.error}` : run.output,
     };
 }
@@ -610,11 +619,9 @@ export function makeClaudeExecBridge(opts, internal) {
     //  - cursor: gated UNCONDITIONALLY. cursor-agent base `-p` already has write+shell access, its skipPermissions
     //    path is refused by runnerRegistry, and the runner is an unverified scaffold (#66/#181), so we do not let
     //    default cursor touch the real tree until run-verified. (Bugbot High #181)
-    //  - llm: deliberately NOT here. It spawns nothing and has no shell; its whole reach is three tools whose every
-    //    path is resolved against the run's cwd and refused outside it, so containment is in the runner rather than
-    //    in a throwaway worktree. That is what lets a node with no agent CLI execute at all.
+    // LLM filesystem rollback also needs an exclusively owned worktree, not a shared user checkout.
     // Built-in Claude and Codex are fail-closed above.
-    const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini';
+    const needsIsolation = opts.runner === 'cursor' || opts.runner === 'gemini' || opts.runner === 'llm';
     if (!opts.agent && needsIsolation && opts.isolation !== 'worktree') {
         throw new UnsandboxedFullAccessRequiresIsolationError();
     }
@@ -673,6 +680,12 @@ export function makeClaudeExecBridge(opts, internal) {
             const managedWorktreeName = managedCursorIsolation ? `evolver-${randomUUID()}` : undefined;
             let result;
             let observedRun;
+            let agentStarted = false;
+            let agentSettled = false;
+            let runWorkspaceLease;
+            const unsettledWorkspaceWriter = () => (opts.runner === 'llm' || workspaceLeaseWasClaimed(runWorkspaceLease)) && agentStarted && !agentSettled;
+            const retainWorkspace = () => unsettledWorkspaceWriter()
+                || (observedRun?.workspaceRecovery !== undefined && observedRun.workspaceRecovery.status !== 'restored');
             let patchRef;
             let ownsPatchRef = false;
             let preservePatchRef = false;
@@ -704,20 +717,33 @@ export function makeClaudeExecBridge(opts, internal) {
                 }
                 if (!reservation)
                     assertRepoCwdStillAllowed();
-                const run = await executionDeadline.run(() => agent(prompt, {
-                    cwd: workDir,
-                    timeoutMs,
-                    ...(agentEnv ? { env: agentEnv } : {}),
-                    ...(executionDeadline.signal ? { signal: executionDeadline.signal } : {}),
-                    ...(resume ? { resume } : {}),
-                    ...(managedWorktreeName ? { managedWorktreeName } : {}),
-                }));
+                if (reservation && worktreeIdentity)
+                    runWorkspaceLease = reservation.bindWorkspace(workDir);
+                const run = await executionDeadline.run(() => {
+                    agentStarted = true;
+                    return Promise.resolve().then(() => agent(prompt, {
+                        cwd: workDir,
+                        ...(runWorkspaceLease ? { workspaceLease: runWorkspaceLease } : {}),
+                        timeoutMs,
+                        ...(agentEnv ? { env: agentEnv } : {}),
+                        ...(executionDeadline.signal ? { signal: executionDeadline.signal } : {}),
+                        ...(resume ? { resume } : {}),
+                        ...(managedWorktreeName ? { managedWorktreeName } : {}),
+                    })).then((value) => {
+                        agentSettled = true;
+                        observedRun = value;
+                        return value;
+                    }, (error) => { agentSettled = true; throw error; });
+                });
                 observedRun = run;
                 await executionDeadline.run(() => opts.executionObserver?.onToolDecision?.({
                     tool_name: 'agent_runner',
                     decision: 'allowed',
                     status: run.ok ? 'completed' : 'failed',
                 }, executionDeadline.signal));
+                // Conflicting files are not this run's proof of work. Preserve them without diffing or cleanup.
+                if (run.workspaceRecovery && run.workspaceRecovery.status !== 'restored')
+                    throw new WorkspaceRecoveryIncompleteError();
                 if (managedWorktreeName) {
                     try {
                         assertRepoCwdStillAllowed();
@@ -933,6 +959,7 @@ export function makeClaudeExecBridge(opts, internal) {
                     ...(run.failureKind !== undefined ? { failureKind: run.failureKind } : {}),
                     ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
                     ...(run.sessionId ? { nativeSessionId: run.sessionId } : {}),
+                    ...(run.workspaceRecovery ? { workspaceRecovery: run.workspaceRecovery } : {}),
                     // On a FAILED outcome, hand the agent transcript (stdout + stderr) to the cycle engine as host-side
                     // triage context (#279): an empty transcript -> host_no_transcript, a provider-error string ->
                     // host_provider_error. Omitted on success (failure-only context; never persisted).
@@ -949,6 +976,9 @@ export function makeClaudeExecBridge(opts, internal) {
                 else if (error instanceof AgentRunBeforeManagedWorktreeError && observedRun) {
                     result = failedAgentRunResult(observedRun);
                 }
+                else if (error instanceof WorkspaceRecoveryIncompleteError && observedRun) {
+                    result = failedAgentRunResult(observedRun);
+                }
                 else if (error instanceof GitProofError && observedRun) {
                     result = failedProofExecutionResult(observedRun, error, failedProof);
                 }
@@ -962,7 +992,7 @@ export function makeClaudeExecBridge(opts, internal) {
                             // Preserve the primary execution error; the verified worktree remains diagnosable.
                         }
                     }
-                    if (reservation) {
+                    if (reservation && !retainWorkspace()) {
                         try {
                             assertRepoCwdStillAllowed();
                             await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);
@@ -983,6 +1013,11 @@ export function makeClaudeExecBridge(opts, internal) {
                 }
             }
             let cleanupError;
+            if (unsettledWorkspaceWriter() && !result.workspaceRecovery) {
+                result.workspaceRecovery = {
+                    status: 'failed', restored: [], conflicts: [], failed: [{ path: '.', reason: 'runner_not_settled' }], workspace: workDir,
+                };
+            }
             if (managedCursorIdentity) {
                 try {
                     assertRepoCwdStillAllowed();
@@ -992,7 +1027,7 @@ export function makeClaudeExecBridge(opts, internal) {
                     cleanupError = error;
                 }
             }
-            if (reservation) {
+            if (reservation && !retainWorkspace() && (!result.workspaceRecovery || result.workspaceRecovery.status === 'restored')) {
                 try {
                     assertRepoCwdStillAllowed();
                     await cleanupWorktreeReservation(reservation, worktreeIdentity, git, repoCwd);

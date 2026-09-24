@@ -1,3 +1,5 @@
+export * from './recipeExecution.js';
+export * from './recipeExecutionGovernance.js';
 export * from './capability.js';
 export * from './agentDirectory.js';
 export * from './fake.js';
@@ -12,3 +14,5 @@ export * from './publishBinding.js';
 export * from './publishReverification.js';
 export * from './recipeCompose.js';
 export * from './questionGenerator.js';
+export * from './windowsPrivateAcl.js';
+export * from './windowsPowerShell.js';

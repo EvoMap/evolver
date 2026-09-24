@@ -1,3 +1,7 @@
+import { type Workspace } from './llmWorkspace.js';
+export { workspaceAt, type Workspace } from './llmWorkspace.js';
+export { reservePrivateWorkspace, type WorkspaceLease } from './workspaceLease.js';
+export type { WorkspaceRecovery } from './workspaceRecovery.js';
 import type { AgentRunner, AgentRunnerOptions } from './runnerRegistry.js';
 export declare const LLM_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 export declare const LLM_DEFAULT_MODEL = "gpt-4.1";
@@ -7,30 +11,20 @@ export interface LlmRunnerConfig {
     apiKey: string;
     maxTurns: number;
     maxFileBytes: number;
+    /** Operator-configured headers; names are case-insensitive and override the defaults. */
+    extraHeaders?: Readonly<Record<string, string>>;
 }
 /** Why this node cannot run a model, in the words an operator needs to fix it. */
 export declare class LlmRunnerNotConfiguredError extends Error {
     constructor(missing: string);
 }
 export declare function readLlmRunnerConfig(env?: NodeJS.ProcessEnv): LlmRunnerConfig;
-/**
- * The model's reach. Every path is resolved against the run's own directory and refused
- * if it lands outside — the model never names a file this run was not given.
- */
-export interface Workspace {
-    list(dir: string): string;
-    read(path: string): string;
-    write(path: string, content: string): string;
-    touched(): string[];
-    /** Put back every file this run changed. A failed run must leave no half-done edit. */
-    undo(): void;
-}
-export declare function workspaceAt(root: string, maxFileBytes?: number): Workspace;
 export type FetchLike = (url: string, init: {
     method: string;
     headers: Record<string, string>;
     body: string;
     signal?: AbortSignal;
+    redirect?: 'error';
 }) => Promise<{
     ok: boolean;
     status: number;
@@ -39,7 +33,8 @@ export type FetchLike = (url: string, init: {
 export interface LlmRunnerDeps {
     config?: LlmRunnerConfig;
     fetchFn?: FetchLike;
-    workspace?: (cwd: string) => Workspace;
+    /** Trusted host decorator. The supplied workspace already holds the run's validated lease. */
+    workspace?: (cwd: string, ownedWorkspace: Workspace) => Workspace;
 }
 /**
  * Build a runner that drives a model through the workspace tools. `opts` is accepted for

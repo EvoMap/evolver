@@ -48,7 +48,10 @@ export interface RecipeBuildOptions {
 export interface RecipeReuseOptions {
     sub: 'reuse';
     recipeId: string;
-    inputPayload: Record<string, unknown>;
+    inputPayload: hubNs.RecipeJson;
+    requestKey: string;
+    maxCredits: number;
+    executionMode: 'caller' | 'provider';
     jsonOut: boolean;
 }
 export interface RecipeFromSkillsOptions {

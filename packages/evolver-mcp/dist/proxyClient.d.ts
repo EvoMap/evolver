@@ -1,4 +1,4 @@
-import type { reference } from '@evomap/evolver-core';
+import { hub, type reference } from '@evomap/evolver-core';
 export interface ProxyFetch {
     (url: string, init: {
         method: string;
@@ -34,11 +34,7 @@ export interface ProxyRecipeSearchArgs {
     sort?: string;
     expectedHubMode?: 'public' | 'private';
 }
-export interface ProxyRecipeExpressArgs {
-    recipeId: string;
-    inputPayload?: Record<string, unknown>;
-    expectedHubMode?: 'public' | 'private';
-}
+export type ProxyRecipeExpressArgs = hub.RecipeExecutionInputs['express'];
 export interface ProxyFetchArgs {
     assetId?: string;
     assetIds?: string[];
@@ -110,7 +106,12 @@ export declare class EvolverProxyClient {
     }): Promise<unknown>;
     search(args: ProxySearchArgs): Promise<unknown>;
     searchRecipes(args: ProxyRecipeSearchArgs): Promise<unknown>;
-    expressRecipe(args: ProxyRecipeExpressArgs): Promise<unknown>;
+    expressRecipe(args: ProxyRecipeExpressArgs): Promise<hub.RecipeExecutionOutputs['express']>;
+    recipeExecution<K extends hub.RecipeExecutionOperation>(operation: K, input: hub.RecipeExecutionInputs[K]): Promise<hub.RecipeExecutionOutputs[K]>;
+    private callRecipe;
+    private recipeIdentity;
+    private assertRecipeIdentity;
+    private recipeResult;
     fetchAsset(args: ProxyFetchArgs): Promise<unknown>;
     searchAgents(args: ProxyAgentSearchArgs): Promise<unknown>;
     getAgentProfile(agentId: string, timeoutMs?: number): Promise<unknown>;

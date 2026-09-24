@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
-import { basename, dirname, resolve, win32 } from 'node:path';
-import { POWERSHELL_ENV_SCRIPT_COMMAND, windowsAclFailureDetail, } from './windowsPowerShell.js';
+import { basename, dirname, resolve } from 'node:path';
+import { hub, util } from '@evomap/evolver-core';
+import { windowsAclFailureDetail } from './windowsPowerShell.js';
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 export class CredentialStoreError extends Error {
@@ -29,7 +30,7 @@ export class CredentialStore {
         this.path = resolve(path);
         this.platform = options.platform ?? process.platform;
         this.windowsAclOps = this.platform === 'win32'
-            ? (options.windowsAclOps ?? new PowerShellWindowsAclOps())
+            ? (options.windowsAclOps ?? createWindowsCredentialAclOps())
             : undefined;
         this.darwinAclReader = options.darwinAclReader ?? readDarwinAcl;
         this.windowsParentStateReader = options.windowsParentStateReader ?? parentSecurityStates;
@@ -170,9 +171,9 @@ export class CredentialStore {
                 }
                 return false;
             }
-            this.verifySavedFile(temporaryIdentity);
             if (!replaceExisting)
                 this.unlinkIfSameFile(temporaryPath, temporaryIdentity);
+            this.verifySavedFile(temporaryIdentity);
             temporaryIdentity = null;
             this.syncDirectory(directory);
             return true;
@@ -330,12 +331,15 @@ export class CredentialStore {
         }
     }
     openCredentialFile() {
-        const before = safeLstat(this.path);
-        if (!before)
+        const entry = safeLstat(this.path);
+        if (!entry)
             return null;
-        if (before.isSymbolicLink() || !before.isFile()) {
+        if (entry.isSymbolicLink() || !entry.isFile()) {
             throw new CredentialStoreError('credential entry is a symlink or not a regular file');
         }
+        const before = credentialFileStat(this.path);
+        if (before.nlink !== 1n)
+            throw new CredentialStoreError('credential entry has multiple hardlinks');
         let fd;
         try {
             fd = openSync(this.path, constants.O_RDONLY | optionalConstant('O_NOFOLLOW') | optionalConstant('O_NONBLOCK'));
@@ -349,8 +353,9 @@ export class CredentialStore {
         }
         try {
             const opened = bigFstat(fd);
-            const after = bigLstat(this.path);
+            const after = credentialFileStat(this.path);
             if (!opened.isFile() || after.isSymbolicLink() || !after.isFile() ||
+                opened.nlink !== 1n || after.nlink !== 1n ||
                 !sameIdentity(before, opened) || !sameIdentity(opened, after)) {
                 throw new CredentialStoreError('credential entry changed during validation');
             }
@@ -398,13 +403,7 @@ export class CredentialStore {
             catch (cause) {
                 throw windowsCredentialStoreError('Windows credential file ACL is not trusted', cause);
             }
-            const pathStat = bigLstat(this.path);
-            const fdStat = bigFstat(fd);
-            if (pathStat.isSymbolicLink() || !pathStat.isFile() || !fdStat.isFile() ||
-                !sameIdentity(pathStat, identity) || !sameIdentity(fdStat, identity)) {
-                throw new CredentialStoreError('credential file changed during read-only ACL validation');
-            }
-            return fdStat;
+            return this.assertWindowsFileIdentity(this.path, fd, identity);
         }
         if (stat.uid !== BigInt(currentUid())) {
             throw new CredentialStoreError('credential file is not owned by the current user');
@@ -493,7 +492,9 @@ export class CredentialStore {
     }
     unlinkIfSameFile(path, identity) {
         const stat = safeLstat(path);
-        if (!stat || stat.isSymbolicLink() || !stat.isFile() || !sameIdentity(stat, identity))
+        if (!stat || stat.isSymbolicLink() || !stat.isFile())
+            return;
+        if (!sameIdentity(credentialFileStat(path), identity))
             return;
         unlinkSync(path);
     }
@@ -538,6 +539,7 @@ export class CredentialStore {
         catch (cause) {
             throw windowsCredentialStoreError('Windows credential file ACL is not trusted', cause);
         }
+        this.assertWindowsFileIdentity(path, fd, identity);
         if (isCredentialPath && this.securedCredentialState &&
             sameSecurityState(this.securedCredentialState, before))
             return;
@@ -547,14 +549,19 @@ export class CredentialStore {
         catch (cause) {
             throw windowsCredentialStoreError('Windows file ACL could not be secured', cause);
         }
-        const pathStat = bigLstat(path);
-        const fdStat = bigFstat(fd);
-        if (pathStat.isSymbolicLink() || !pathStat.isFile() || !fdStat.isFile() ||
-            !sameIdentity(pathStat, identity) || !sameIdentity(fdStat, identity)) {
-            throw new CredentialStoreError('credential file changed while securing its Windows ACL');
-        }
+        const fdStat = this.assertWindowsFileIdentity(path, fd, identity);
         if (isCredentialPath)
             this.securedCredentialState = securityStateOf(fdStat);
+    }
+    assertWindowsFileIdentity(path, fd, identity) {
+        const pathStat = credentialFileStat(path);
+        const fdStat = bigFstat(fd);
+        if (pathStat.isSymbolicLink() || !pathStat.isFile() || !fdStat.isFile() ||
+            pathStat.nlink !== 1n || fdStat.nlink !== 1n ||
+            !sameIdentity(pathStat, identity) || !sameIdentity(fdStat, identity)) {
+            throw new CredentialStoreError('credential file changed during Windows ACL validation');
+        }
+        return fdStat;
     }
     clearDarwinAcl(fd, identity, kind) {
         if (this.platform !== 'darwin')
@@ -700,347 +707,17 @@ export class CredentialStore {
         return this.platform !== 'win32';
     }
 }
+function createWindowsCredentialAclOps() {
+    try {
+        return new hub.PowerShellWindowsAclOps();
+    }
+    catch (cause) {
+        throw new CredentialStoreError(cause instanceof Error ? cause.message : 'Windows ACL policy is unavailable', { cause });
+    }
+}
 function windowsCredentialStoreError(message, cause) {
     const detail = cause instanceof Error ? windowsAclFailureDetail(cause) : '';
     return new CredentialStoreError(detail ? `${message} (${detail})` : message, { cause });
-}
-const WINDOWS_ACL_SCRIPT = String.raw `
-$ErrorActionPreference = 'Stop'
-# Progress records can be serialized as CLIXML onto redirected stderr and
-# obscure the actual failure. Suppress them so stderr carries only real errors.
-$ProgressPreference = 'SilentlyContinue'
-
-function ConvertTo-OneLineAclDiagnostic([object]$Value) {
-  if ($null -eq $Value) { return '' }
-  return ([string]$Value -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+', ' ').Trim()
-}
-
-function Throw-CredentialAclFailure(
-  [string]$Reason,
-  [string]$Path = '',
-  [string]$Sid = '',
-  [object]$Rights = $null,
-  [string]$Principal = ''
-) {
-  $parts = @($Reason)
-  $safePath = ConvertTo-OneLineAclDiagnostic $Path
-  $safeSid = ConvertTo-OneLineAclDiagnostic $Sid
-  $safeRights = ConvertTo-OneLineAclDiagnostic $Rights
-  $safePrincipal = ConvertTo-OneLineAclDiagnostic $Principal
-  if (-not [string]::IsNullOrWhiteSpace($safePath)) { $parts += ('path=' + $safePath) }
-  if (-not [string]::IsNullOrWhiteSpace($safeSid)) { $parts += ('sid=' + $safeSid) }
-  if (-not [string]::IsNullOrWhiteSpace($safePrincipal)) { $parts += ('principal=' + $safePrincipal) }
-  if (-not [string]::IsNullOrWhiteSpace($safeRights)) { $parts += ('rights=' + $safeRights) }
-  throw ($parts -join '; ')
-}
-
-# Windows PowerShell can serialize ordinary error-stream writes as CLIXML when
-# stderr is redirected. Write the terminating exception directly to native stderr so
-# Node receives the actionable message rather than only a serialized record.
-trap {
-  $message = ConvertTo-OneLineAclDiagnostic $_.Exception.Message
-  if ([string]::IsNullOrWhiteSpace($message)) { $message = 'Credential ACL check failed' }
-  [Console]::Error.WriteLine($message)
-  exit 1
-}
-
-$Target = [Environment]::GetEnvironmentVariable('EVOMAP_CREDENTIAL_ACL_TARGET', 'Process')
-$Kind = [Environment]::GetEnvironmentVariable('EVOMAP_CREDENTIAL_ACL_KIND', 'Process')
-if ([string]::IsNullOrEmpty($Target) -or
-    ($Kind -ne 'assert-parent' -and $Kind -ne 'assert-create-parent' -and
-     $Kind -ne 'assert-file' -and $Kind -ne 'directory' -and $Kind -ne 'file')) {
-  throw 'Invalid credential ACL input'
-}
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$trustedSids = @(
-  $sid.Value,
-  'S-1-5-18',
-  'S-1-5-32-544',
-  'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
-)
-$dangerousRights = [System.Security.AccessControl.FileSystemRights](
-  [System.Security.AccessControl.FileSystemRights]::Delete -bor
-  [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-  [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-  [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-)
-$dangerousFileRights = [System.Security.AccessControl.FileSystemRights](
-  [System.Security.AccessControl.FileSystemRights]::WriteData -bor
-  [System.Security.AccessControl.FileSystemRights]::AppendData -bor
-  [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
-  [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
-  [System.Security.AccessControl.FileSystemRights]::Delete -bor
-  [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-  [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-)
-
-function Assert-TrustedParent([string]$ParentPath, [bool]$StrictCreate) {
-  $full = [System.IO.Path]::GetFullPath($ParentPath)
-  $root = [System.IO.Path]::GetPathRoot($full)
-  if ([string]::IsNullOrEmpty($root) -or $root -notmatch '^[A-Za-z]:\\$') {
-    Throw-CredentialAclFailure -Reason 'Credential parent must be on a local drive' -Path $full
-  }
-  if ([System.IO.DriveInfo]::new($root).DriveType -ne [System.IO.DriveType]::Fixed) {
-    Throw-CredentialAclFailure -Reason 'Credential parent must be on a fixed local drive' -Path $full
-  }
-  $current = $root
-  $relative = $full.Substring($root.Length)
-  $segments = $relative.Split(
-    [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar),
-    [System.StringSplitOptions]::RemoveEmptyEntries
-  )
-  $paths = @($root)
-  foreach ($segment in $segments) {
-    $current = [System.IO.Path]::Combine($current, $segment)
-    $paths += $current
-  }
-  $trimSeparators = [char[]]@(
-    [System.IO.Path]::DirectorySeparatorChar,
-    [System.IO.Path]::AltDirectorySeparatorChar
-  )
-  $finalParent = $full.TrimEnd($trimSeparators)
-  foreach ($current in $paths) {
-    $isCreateParent = $StrictCreate -and [string]::Equals(
-      $current.TrimEnd($trimSeparators),
-      $finalParent,
-      [System.StringComparison]::OrdinalIgnoreCase
-    )
-    $attributes = [System.IO.File]::GetAttributes($current)
-    if ((($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) -or
-        (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
-      Throw-CredentialAclFailure -Reason 'Credential parent contains a reparse point or non-directory' -Path $current
-    }
-    $parentAcl = [System.IO.Directory]::GetAccessControl($current)
-    $ownerSid = $parentAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
-    if ($trustedSids -notcontains $ownerSid.Value) {
-      Throw-CredentialAclFailure -Reason 'Credential parent has an untrusted owner' -Path $current -Sid $ownerSid.Value
-    }
-    $parentRules = @($parentAcl.GetAccessRules(
-      $true,
-      $true,
-      [System.Security.Principal.SecurityIdentifier]
-    ))
-    foreach ($parentRule in $parentRules) {
-      if ($parentRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-        continue
-      }
-      $rights = $parentRule.FileSystemRights
-      $inheritOnly = (($parentRule.PropagationFlags -band
-        [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
-      $containerInherit = (($parentRule.InheritanceFlags -band
-        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit) -ne 0)
-      $objectInherit = (($parentRule.InheritanceFlags -band
-        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit) -ne 0)
-      $hasGranularDanger = (($rights -band $dangerousRights) -ne 0)
-      $hasCreateDanger = (($rights -band (
-        [System.Security.AccessControl.FileSystemRights]::CreateDirectories -bor
-        [System.Security.AccessControl.FileSystemRights]::CreateFiles
-      )) -ne 0)
-      $hasCompositeDanger =
-        (($rights -band [System.Security.AccessControl.FileSystemRights]::Write) -eq
-          [System.Security.AccessControl.FileSystemRights]::Write) -or
-        (($rights -band [System.Security.AccessControl.FileSystemRights]::Modify) -eq
-          [System.Security.AccessControl.FileSystemRights]::Modify) -or
-        (($rights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq
-          [System.Security.AccessControl.FileSystemRights]::FullControl)
-      if ($inheritOnly) {
-        $dangerousGrant = $isCreateParent -and ($containerInherit -or $objectInherit) -and
-          ($hasGranularDanger -or $hasCreateDanger -or $hasCompositeDanger)
-      } else {
-        $dangerousGrant = $hasGranularDanger -or ($isCreateParent -and $hasCreateDanger)
-      }
-      if (-not $dangerousGrant) { continue }
-      $parentRuleSid = $parentRule.IdentityReference
-      if (-not ($parentRuleSid -is [System.Security.Principal.SecurityIdentifier])) {
-        Throw-CredentialAclFailure -Reason 'Credential parent contains an unresolvable write principal' -Path $current -Principal $parentRule.IdentityReference.Value -Rights $rights
-      }
-      if ($trustedSids -notcontains $parentRuleSid.Value) {
-        Throw-CredentialAclFailure -Reason 'Credential parent grants write access to an untrusted principal' -Path $current -Sid $parentRuleSid.Value -Rights $rights
-      }
-    }
-  }
-}
-
-function Assert-TrustedFile([string]$FilePath) {
-  $attributes = [System.IO.File]::GetAttributes($FilePath)
-  if ((($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) -or
-      (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
-    Throw-CredentialAclFailure -Reason 'Credential file is a reparse point or not a regular file' -Path $FilePath
-  }
-  $fileAcl = [System.IO.File]::GetAccessControl($FilePath)
-  $ownerSid = $fileAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
-  if ($trustedSids -notcontains $ownerSid.Value) {
-    Throw-CredentialAclFailure -Reason 'Credential file has an untrusted owner' -Path $FilePath -Sid $ownerSid.Value
-  }
-  $fileRules = @($fileAcl.GetAccessRules(
-    $true,
-    $true,
-    [System.Security.Principal.SecurityIdentifier]
-  ))
-  foreach ($fileRule in $fileRules) {
-    if ($fileRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-      continue
-    }
-    $rights = $fileRule.FileSystemRights
-    $hasGranularDanger = (($rights -band $dangerousFileRights) -ne 0)
-    $hasCompositeDanger =
-      (($rights -band [System.Security.AccessControl.FileSystemRights]::Write) -eq
-        [System.Security.AccessControl.FileSystemRights]::Write) -or
-      (($rights -band [System.Security.AccessControl.FileSystemRights]::Modify) -eq
-        [System.Security.AccessControl.FileSystemRights]::Modify) -or
-      (($rights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq
-        [System.Security.AccessControl.FileSystemRights]::FullControl)
-    if (-not ($hasGranularDanger -or $hasCompositeDanger)) { continue }
-    $fileRuleSid = $fileRule.IdentityReference
-    if (-not ($fileRuleSid -is [System.Security.Principal.SecurityIdentifier])) {
-      Throw-CredentialAclFailure -Reason 'Credential file contains an unresolvable write principal' -Path $FilePath -Principal $fileRule.IdentityReference.Value -Rights $rights
-    }
-    if ($trustedSids -notcontains $fileRuleSid.Value) {
-      Throw-CredentialAclFailure -Reason 'Credential file grants write access to an untrusted principal' -Path $FilePath -Sid $fileRuleSid.Value -Rights $rights
-    }
-  }
-}
-
-function Test-CanonicalCredentialAcl(
-  [System.Security.AccessControl.FileSystemSecurity]$CandidateAcl,
-  [System.Security.Principal.SecurityIdentifier]$ExpectedOwner,
-  [System.Security.AccessControl.InheritanceFlags]$ExpectedInheritance
-) {
-  try {
-    $candidateRules = @($CandidateAcl.GetAccessRules(
-      $true,
-      $true,
-      [System.Security.Principal.SecurityIdentifier]
-    ))
-    if (-not $CandidateAcl.AreAccessRulesProtected -or $candidateRules.Count -ne 1) {
-      return $false
-    }
-    $candidateOwner = $CandidateAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
-    $candidateRule = $candidateRules[0]
-    $candidateRuleSid = $candidateRule.IdentityReference
-    return (
-      $candidateOwner.Value -eq $ExpectedOwner.Value -and
-      $candidateRuleSid.Value -eq $ExpectedOwner.Value -and
-      $candidateRule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
-      $candidateRule.FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl -and
-      $candidateRule.InheritanceFlags -eq $ExpectedInheritance -and
-      $candidateRule.PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None -and
-      -not $candidateRule.IsInherited
-    )
-  } catch {
-    return $false
-  }
-}
-
-if ($Kind -eq 'assert-parent' -or $Kind -eq 'assert-create-parent') {
-  # Existing entries only require protection against replacement. Immediately
-  # before mkdir, also reject principals that could atomically squat the name.
-  Assert-TrustedParent $Target ($Kind -eq 'assert-create-parent')
-  exit 0
-}
-
-if ($Kind -eq 'assert-file') {
-  # Fail-closed: refuse untrusted write/modify/delete grants before Set-Acl
-  # and before trusting file content. Do not migrate unsafe grants in place.
-  Assert-TrustedFile $Target
-  exit 0
-}
-
-$expectedInheritance = if ($Kind -eq 'directory') {
-  [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-} else {
-  [System.Security.AccessControl.InheritanceFlags]::None
-}
-$acl = if ($Kind -eq 'directory') {
-  [System.IO.Directory]::GetAccessControl($Target)
-} else {
-  [System.IO.File]::GetAccessControl($Target)
-}
-if (Test-CanonicalCredentialAcl $acl $sid $expectedInheritance) {
-  exit 0
-}
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($rule in @($acl.GetAccessRules(
-  $true,
-  $true,
-  [System.Security.Principal.SecurityIdentifier]
-))) { [void]$acl.RemoveAccessRuleSpecific($rule) }
-$access = [System.Security.AccessControl.FileSystemAccessRule]::new(
-  $sid,
-  [System.Security.AccessControl.FileSystemRights]::FullControl,
-  $expectedInheritance,
-  [System.Security.AccessControl.PropagationFlags]::None,
-  [System.Security.AccessControl.AccessControlType]::Allow
-)
-[void]$acl.AddAccessRule($access)
-if ($Kind -eq 'directory') {
-  [System.IO.Directory]::SetAccessControl($Target, $acl)
-  $verified = [System.IO.Directory]::GetAccessControl($Target)
-} else {
-  [System.IO.File]::SetAccessControl($Target, $acl)
-  $verified = [System.IO.File]::GetAccessControl($Target)
-}
-if (-not (Test-CanonicalCredentialAcl $verified $sid $expectedInheritance)) {
-  Throw-CredentialAclFailure -Reason 'Credential ACL verification failed' -Path $Target -Sid $sid.Value
-}
-`;
-class PowerShellWindowsAclOps {
-    executable;
-    systemRoot;
-    constructor() {
-        const systemRoot = process.env['SystemRoot'];
-        if (!systemRoot || !win32.isAbsolute(systemRoot)) {
-            throw new CredentialStoreError('Windows SystemRoot is unavailable or invalid');
-        }
-        this.systemRoot = systemRoot;
-        this.executable = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    }
-    secureDirectory(path) {
-        this.run(path, 'directory');
-    }
-    secureFile(path) {
-        this.run(path, 'file');
-    }
-    assertTrustedParent(path, strictCreate) {
-        this.run(path, strictCreate ? 'assert-create-parent' : 'assert-parent');
-    }
-    assertTrustedFile(path) {
-        this.run(path, 'assert-file');
-    }
-    run(path, kind) {
-        try {
-            execFileSync(this.executable, [
-                '-NoLogo',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy', 'Bypass',
-                // Keep the trusted constant script out of stdin: Windows PowerShell 5.1
-                // can wait indefinitely for redirected stdin on hosted runners.
-                '-Command', POWERSHELL_ENV_SCRIPT_COMMAND,
-            ], {
-                encoding: 'utf8',
-                env: {
-                    SystemRoot: this.systemRoot,
-                    EVOMAP_CREDENTIAL_ACL_TARGET: path,
-                    EVOMAP_CREDENTIAL_ACL_KIND: kind,
-                    EVOMAP_CREDENTIAL_ACL_SCRIPT: WINDOWS_ACL_SCRIPT,
-                },
-                shell: false,
-                // Capture both streams rather than discarding them: the script's own
-                // message names which path level and which SID failed, and without it
-                // every rejection is indistinguishable from "PowerShell is missing".
-                // The script prints nothing on success, so this stays quiet normally.
-                stdio: ['ignore', 'pipe', 'pipe'],
-                timeout: 15_000,
-                windowsHide: true,
-            });
-        }
-        catch (cause) {
-            const detail = windowsAclFailureDetail(cause);
-            throw new Error(detail ? `${kind} check failed: ${detail}` : `${kind} check failed`, { cause });
-        }
-    }
 }
 function readDarwinAcl(path) {
     return execFileSync('/bin/ls', ['-lde', path], {
@@ -1066,6 +743,17 @@ function currentUid() {
 }
 function optionalConstant(name) {
     return constants[name] ?? 0;
+}
+function credentialFileStat(path) {
+    try {
+        return util.statRegularFileIdentity(path);
+    }
+    catch (cause) {
+        if (cause instanceof util.UnsafeLockPathError) {
+            throw new CredentialStoreError(`credential file identity changed: ${cause.reason}`, { cause });
+        }
+        throw cause;
+    }
 }
 function bigLstat(path) {
     return lstatSync(path, { bigint: true });

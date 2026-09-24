@@ -7,6 +7,7 @@ import { LifecycleManager } from '../lifecycle/manager.js';
 import { executeForceUpdate } from '../selfUpdate/executor.js';
 import { reportPendingSelfUpdateLastUpdate, reportSelfUpdateLastUpdate } from '../selfUpdate/lastUpdate.js';
 import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
+import { invokeRecipeIpc, recipeIpcScope } from './recipeExecution.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
 import { PublishBindingLedger } from './publishBindingLedger.js';
@@ -103,6 +104,7 @@ export class ProxyDaemon {
     publishRecallVerifier;
     proxyHandler;
     hub;
+    recipeGovernance;
     recipeComposeStarted = new Set();
     ipc;
     now;
@@ -144,6 +146,7 @@ export class ProxyDaemon {
     publishAbortController = new AbortController();
     constructor(deps) {
         this.deps = deps;
+        this.recipeGovernance = new hubNs.RecipeExecutionGovernance(deps.recipeExecutionDirectory);
         this.benchmark = assetstore.benchmarkContext(deps.benchmarkId ?? process.env['EVOLVER_BENCHMARK_ID']);
         this.now = deps.now ?? (() => Date.now());
         this.random = deps.random ?? Math.random;
@@ -344,6 +347,7 @@ export class ProxyDaemon {
                     this.publishBindingLedger.verify(assets, publishReceipt);
                 },
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
+                routeBodyLimits: hubNs.recipeIpcBodyLimits,
                 extraRoutes: [(ctx) => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx))],
             });
             const port = await this.listenIpc(this.ipc);
@@ -860,6 +864,17 @@ export class ProxyDaemon {
         const qualified = this.qualifyAssets(assets);
         return { ...qualified, missing: ids.filter((id) => !qualified.assets.some((asset) => assetMatchesId(asset, id))) };
     }
+    async recallAssets(query) {
+        try {
+            return await this.deps.hub.fetch(query);
+        }
+        catch (error) {
+            if (!isAuthLikeError(error))
+                throw error;
+            this.markHubAuthFailed(error);
+            return null;
+        }
+    }
     async localFetchAssets(ids) {
         const assets = [];
         const missing = [];
@@ -892,6 +907,7 @@ export class ProxyDaemon {
                 hub_mode: this.deps.hubMode ?? 'public',
                 runtime_namespace: this.deps.runtimeNamespace ?? 'default',
                 node_id: this.lifecycle.nodeId ?? null,
+                recipe_execution_scope: recipeIpcScope(this.hub.recipes?.execution),
                 outbound_pending: this.store.countPending('proxy', this.deps.runtimeNamespace),
                 inbound_pending: this.store.countPending('agent', this.deps.runtimeNamespace) + this.store.countPending('core', this.deps.runtimeNamespace),
                 last_sync_at: this.store.getState('sync:last_sync_at') ?? null,
@@ -1078,29 +1094,10 @@ export class ProxyDaemon {
             });
             return true;
         }
-        if (ctx.route === 'POST /recipe/express') {
-            const body = asRecord(await ctx.readJson());
-            if (hubModeMismatch(body['expected_hub_mode'], this.deps.hubMode)) {
-                ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
-                return true;
-            }
-            const recipes = this.hub.recipes;
-            if (!recipes) {
-                ctx.json(501, { error: 'recipe_unsupported' });
-                return true;
-            }
-            const recipeId = typeof body['recipe_id'] === 'string'
-                ? body['recipe_id']
-                : typeof body['recipeId'] === 'string'
-                    ? body['recipeId']
-                    : '';
-            if (!recipeId.trim()) {
-                ctx.json(400, { error: 'recipe_id_required' });
-                return true;
-            }
-            const inputPayload = asRecord(body['input_payload']) ?? asRecord(body['inputPayload']) ?? {};
-            const receipt = await recipes.express(recipeId.trim(), { inputPayload });
-            ctx.json(200, receipt);
+        const recipeOperation = ctx.route.startsWith('POST /recipe/') ? ctx.route.slice('POST /recipe/'.length) : '';
+        if (Object.hasOwn(hubNs.recipeExecutionSchemas, recipeOperation)) {
+            const receipt = await invokeRecipeIpc(this.hub.recipes, this.recipeGovernance, recipeOperation, await ctx.readJson(), this.deps.hubMode);
+            ctx.json(receipt.status, receipt.body);
             return true;
         }
         if (ctx.route === 'POST /asset/fetch') {
@@ -1135,6 +1132,29 @@ export class ProxyDaemon {
                     auth_status: HUB_AUTH_FAILED,
                     warning: HUB_AUTH_FAILURE_WARNING,
                 });
+                return true;
+            }
+            const recallText = typeof body.text === 'string' && body.text.trim() ? body.text.trim() : undefined;
+            const recallSignals = Array.isArray(body.signals) ? body.signals.filter((s) => typeof s === 'string') : [];
+            if (ids.length === 0 && (recallText !== undefined || recallSignals.length > 0)) {
+                const recalled = await this.recallAssets({
+                    ...(recallText !== undefined ? { text: recallText } : {}),
+                    ...(recallSignals.length > 0 ? { signalsAny: recallSignals } : {}),
+                    ...(typeof body.limit === 'number' ? { limit: body.limit } : {}),
+                });
+                if (recalled === null) {
+                    if (this.hubAuthFailurePolicy === 'deny') {
+                        ctx.json(401, this.hubAuthFailureBody());
+                        return true;
+                    }
+                    ctx.json(200, {
+                        assets: [], missing: [], query: body,
+                        degraded: true, local_fallback: true,
+                        auth_status: HUB_AUTH_FAILED, warning: HUB_AUTH_FAILURE_WARNING,
+                    });
+                    return true;
+                }
+                ctx.json(200, { ...this.qualifyFetch([], recalled, []), query: body, recalled_by: recallText !== undefined ? 'text' : 'signals' });
                 return true;
             }
             const assets = [];

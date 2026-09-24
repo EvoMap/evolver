@@ -251,9 +251,38 @@ function assertRegularOwnerStat(stat) {
     if (stat.size > BigInt(MAX_LOCK_OWNER_BYTES))
         throw new UnsafeLockPathError('owner_too_large');
 }
+export function statRegularFileIdentity(path) {
+    const before = lstatSync(path, { bigint: true });
+    if (process.platform !== 'win32')
+        return before;
+    if (before.isSymbolicLink())
+        throw new UnsafeLockPathError('symlink');
+    if (!before.isFile())
+        throw new UnsafeLockPathError('not_regular_file');
+    const fd = openSync(path, constants.O_RDONLY | noFollowFlag());
+    try {
+        const opened = fstatSync(fd, { bigint: true });
+        const after = lstatSync(path, { bigint: true });
+        if (after.isSymbolicLink())
+            throw new UnsafeLockPathError('symlink');
+        if (!opened.isFile() || !after.isFile())
+            throw new UnsafeLockPathError('not_regular_file');
+        if (before.ino !== opened.ino || after.ino !== opened.ino
+            || before.dev !== after.dev || (after.dev !== 0n && after.dev !== opened.dev)
+            || before.ctimeNs !== after.ctimeNs || after.ctimeNs !== opened.ctimeNs
+            || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs
+            || before.nlink !== after.nlink || after.nlink !== opened.nlink) {
+            throw new UnsafeLockPathError('path_changed');
+        }
+        return opened;
+    }
+    finally {
+        closeSync(fd);
+    }
+}
 function currentOwnerStat(path) {
     try {
-        const stat = lstatSync(path, { bigint: true });
+        const stat = statRegularFileIdentity(path);
         assertRegularOwnerStat(stat);
         return stat;
     }

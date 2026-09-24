@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { assetstore, events, mailbox, verify, hub as hubNs } from '@evomap/evolver-core';
+import { assetstore, events, mailbox, verify, hub as recipeExecution, hub as hubNs } from '@evomap/evolver-core';
+import { runRecipeConsentCommand } from './recipeConsent.js';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion, resolveHubUrl } from '@evomap/evolver-adapter-public';
-import { loadEnvFileFromEnv, safeReverificationRecovery } from '@evomap/evolver-mcp';
+import { loadEnvFileFromEnv, loadEnvFileFromEnvOrThrow, safeReverificationRecovery } from '@evomap/evolver-mcp';
 import { resolveExplicitNodeCredentials } from './identityHome.js';
 import { getCliVersion } from './version.js';
 import { parseSkillMd, reverseDistill, synthesizeGene } from './skill2gep.js';
@@ -40,13 +41,25 @@ export async function runRecipeCommand(argv, deps = {}) {
     const parsed = parseRecipeArgs(argv);
     const err = deps.err ?? ((line) => { process.stderr.write(`${line}\n`); });
     const log = deps.log ?? ((line) => { process.stdout.write(`${line}\n`); });
+    if (argv[0] === 'consent') {
+        try {
+            return runRecipeConsentCommand(argv.slice(1), deps.env ?? process.env, { log });
+        }
+        catch (error) {
+            err(recipeErrorMessage(error));
+            return 1;
+        }
+    }
     if (!parsed.ok) {
         err(`${parsed.error}\n${recipeUsage()}`);
         return 1;
     }
     try {
         const env = deps.env ?? process.env;
-        loadEnvFileFromEnv(env);
+        if (parsed.value.sub === 'reuse')
+            loadEnvFileFromEnvOrThrow(env);
+        else
+            loadEnvFileFromEnv(env);
         if (isHubDryRunEnabled(env)) {
             if (parsed.value.sub === 'build')
                 return await runRecipeBuildDryRun(parsed.value, deps.store, { log, err });
@@ -56,6 +69,9 @@ export async function runRecipeCommand(argv, deps = {}) {
                 return runRecipeSearchDryRun(parsed.value, { log });
             return runRecipeReuseDryRun(parsed.value, { log });
         }
+        const governance = new recipeExecution.RecipeExecutionGovernance(recipeExecution.recipeStateDirectory(env));
+        if (parsed.value.sub === 'reuse')
+            governance.assertSpendAllowed(parsed.value.maxCredits);
         const hub = deps.hub ?? createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
         await recipeIdentityBootstraps.get(hub)?.();
         if (!hub.recipes) {
@@ -68,7 +84,7 @@ export async function runRecipeCommand(argv, deps = {}) {
             return await runRecipeFromSkills(parsed.value, hub, deps, { log, err }, false);
         if (parsed.value.sub === 'search')
             return await runRecipeSearch(parsed.value, hub, { log, err });
-        return await runRecipeReuse(parsed.value, hub, { log, err });
+        return await runRecipeReuse(parsed.value, hub, { log, err }, governance);
     }
     catch (e) {
         err(recipeErrorMessage(e));
@@ -488,12 +504,12 @@ async function runRecipeFromSkills(opts, hub, deps, io, dryRun) {
     }
     return 0;
 }
-async function runRecipeReuse(opts, hub, io) {
-    await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.get(opts.recipeId), io);
-    const receipt = await callRecipeWithAuthRetry(hub, 'recipe reuse', () => hub.recipes.express(opts.recipeId, { inputPayload: opts.inputPayload }), io);
-    io.log(`[recipe reuse] Expressed recipe ${terminalSafeText(opts.recipeId)}.`);
+async function runRecipeReuse(opts, hub, io, governance) {
+    const { sub: _sub, jsonOut: _jsonOut, ...input } = opts;
+    const receipt = await governance.invoke(hub.recipes?.execution, 'express', input);
+    io.log(`[recipe reuse] Accepted run ${terminalSafeText(receipt.organism.id)}; not completed. Preserve request key ${terminalSafeText(opts.requestKey)} for retries. Use private lifecycle tools for authorized host execution.`);
     if (opts.jsonOut)
-        io.log(terminalSafeJson(receipt.raw, 2));
+        io.log(terminalSafeJson(receipt, 2));
     return 0;
 }
 async function recipeStepsFromLocalAssets(assetIds, store) {
@@ -1050,7 +1066,32 @@ function parseSearchArgs(args) {
     };
 }
 function parseReuseArgs(args) {
-    const recipeId = flagValue(args, '--id') ?? firstPositional(args);
+    const allowed = new Set(['--id', '--input', '--request-key', '--max-credits', '--execution-mode', '--json']);
+    const seen = new Set();
+    const positional = [];
+    for (let index = 0; index < args.length; index++) {
+        const token = args[index];
+        if (!token.startsWith('--')) {
+            positional.push(token);
+            continue;
+        }
+        const name = token.split('=')[0];
+        if (!allowed.has(name) || seen.has(name))
+            return { ok: false, error: `unknown or duplicate recipe reuse option: ${name}` };
+        seen.add(name);
+        if (name === '--json') {
+            if (token.includes('='))
+                return { ok: false, error: '--json does not accept a value' };
+        }
+        else if (!token.includes('=')) {
+            if (!args[index + 1] || args[index + 1].startsWith('--'))
+                return { ok: false, error: `${name} requires a value` };
+            index++;
+        }
+    }
+    if (positional.length > 1 || (positional.length && seen.has('--id')))
+        return { ok: false, error: 'recipe reuse accepts exactly one recipe id' };
+    const recipeId = flagValue(args, '--id') ?? positional[0];
     if (!recipeId)
         return { ok: false, error: 'recipe reuse requires --id <recipe_id>' };
     if (recipeId.length > MAX_ID_LENGTH)
@@ -1059,7 +1100,19 @@ function parseReuseArgs(args) {
     const input = inputRaw === null ? { ok: true, value: {} } : parseJsonObject(inputRaw);
     if (!input.ok)
         return input;
-    return { ok: true, value: { sub: 'reuse', recipeId, inputPayload: input.value, jsonOut: args.includes('--json') } };
+    const maxCredits = flagValue(args, '--max-credits');
+    try {
+        const execution = recipeExecution.parseRecipeExecutionInput('express', {
+            recipeId, inputPayload: input.value,
+            requestKey: flagValue(args, '--request-key') ?? undefined,
+            maxCredits: maxCredits === null || !maxCredits.trim() ? undefined : Number(maxCredits),
+            executionMode: flagValue(args, '--execution-mode') ?? undefined,
+        });
+        return { ok: true, value: { sub: 'reuse', ...execution, inputPayload: execution.inputPayload ?? {}, jsonOut: args.includes('--json') } };
+    }
+    catch (error) {
+        return { ok: false, error: `${recipeErrorMessage(error)}; reuse requires --request-key <stable-intent-key> --max-credits <ceiling> --execution-mode caller|provider` };
+    }
 }
 function splitIds(raw) {
     return raw.split(',').map((s) => s.trim()).filter(Boolean).filter((s) => s.length <= MAX_ID_LENGTH);
@@ -1077,9 +1130,6 @@ function flagValue(args, flag) {
             return token.slice(flag.length + 1);
     }
     return null;
-}
-function firstPositional(args) {
-    return args.find((a) => typeof a === 'string' && !a.startsWith('--')) ?? null;
 }
 function firstSearchPositional(args) {
     for (let i = 0; i < args.length; i += 1) {

@@ -34,6 +34,7 @@ export interface HubOperationTimeouts {
     helloMs: number;
 }
 export type HubOperation = 'general' | 'search' | 'heartbeat' | 'poll' | 'hello';
+export declare const HUB_AUTH_TIMEOUT_MS = 20000;
 export interface HubDeadlineScheduler {
     set(callback: () => void, delayMs: number): unknown;
     clear(handle: unknown): void;
@@ -90,6 +91,7 @@ export interface HubFetchDeps {
  * 401/403→AuthError(reauth), 4xx→HubClientError(终态), 5xx→重试.
  * 非 JSON Hub 响应(WAF/HTML/captive portal/gateway text)→HubUnreachableError, 不触发 auth recovery.
  */
+export declare function authenticateHubRequest(deps: Pick<HubFetchDeps, 'auth' | 'authTimeoutMs' | 'deadlineScheduler'>, method: string, path: string, bodyObj?: Record<string, unknown>): Promise<hub.SignedRequest>;
 export declare class HubFetch {
     private readonly deps;
     private readonly operationTimeouts;

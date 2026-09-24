@@ -5,7 +5,7 @@
 // module hardens EXECUTION: blocked node eval-flags, shell-metachar rejection, a fresh wiped temp cwd,
 // a scrubbed env (no secrets leak in), and a SIGKILL timeout. Output is folded + truncated.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PRIVATE_ROOT_GUARDIAN, privateRootFilesystemSetup, privateRootPathsAllowed, sourceHasNestedMounts } from './privateRootFilesystem.js';
@@ -92,6 +92,27 @@ function currentCgroupPath() {
     const path = resolve(CGROUP_ROOT, relativePath);
     return pathIsWithin(CGROUP_ROOT, path) ? path : null;
 }
+/** Host configuration only: a delegated ancestor can distribute controllers while the daemon lives in a leaf. */
+function sandboxCgroupParent() {
+    const current = currentCgroupPath();
+    if (!current)
+        return null;
+    const parent = process.env['EVOLVER_SANDBOX_CGROUP_PARENT'] ?? current;
+    if (!isAbsolute(parent) || /[\0\r\n]/.test(parent) || resolve(parent) !== parent
+        || !pathIsWithin(CGROUP_ROOT, parent) || !pathIsWithin(parent, current))
+        return null;
+    // Do not follow aliases or accept a directory with forged controller files on a normal filesystem.
+    if (realpathSync(parent) !== parent || statfsSync(parent).type !== 0x63677270)
+        return null;
+    // The real hierarchy root has no cgroup.type; a namespaced mount root may still expose it.
+    const typeFile = join(parent, 'cgroup.type');
+    if ((parent !== CGROUP_ROOT || existsSync(typeFile)) && readFileSync(typeFile, 'utf8').trim() !== 'domain')
+        return null;
+    if (parent !== CGROUP_ROOT && readFileSync(join(parent, 'cgroup.procs'), 'utf8').trim() !== '')
+        return null;
+    const enabled = new Set(readFileSync(join(parent, 'cgroup.subtree_control'), 'utf8').trim().split(/\s+/));
+    return ['cpu', 'memory', 'pids'].every((controller) => enabled.has(controller)) ? parent : null;
+}
 /** Configure an already-created cgroup. Kept separate so limit values are testable without resource exhaustion. */
 export function configureSandboxResourceGroup(path) {
     try {
@@ -114,12 +135,14 @@ export function createSandboxResourceGroup() {
     if (process.platform !== 'linux' || !existsSync(join(CGROUP_ROOT, 'cgroup.controllers')))
         return null;
     let path = null;
+    let created = false;
     try {
-        const parent = currentCgroupPath();
+        const parent = sandboxCgroupParent();
         if (!parent)
             return null;
         path = join(parent, `evolver-validation-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         mkdirSync(path, { mode: 0o700 });
+        created = true;
         if (!configureSandboxResourceGroup(path))
             throw new Error('required cgroup v2 controllers are not delegated');
         let cleaned = false;
@@ -141,7 +164,7 @@ export function createSandboxResourceGroup() {
         };
     }
     catch {
-        if (path) {
+        if (path && created) {
             try {
                 writeFileSync(join(path, 'cgroup.kill'), '1');
             }

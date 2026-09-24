@@ -6,13 +6,14 @@
 // Wire protocol is OpenAI-compatible chat completions with tool calls — the one shape
 // nearly every vendor and gateway exposes, including Anthropic's compatibility endpoint.
 // Point EVOLVER_LLM_BASE_URL at whichever serves the model.
-import { existsSync, readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { validateHeaderName, validateHeaderValue } from 'node:http';
+import { workspaceAt } from './llmWorkspace.js';
+export { workspaceAt } from './llmWorkspace.js';
+export { reservePrivateWorkspace } from './workspaceLease.js';
 export const LLM_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 export const LLM_DEFAULT_MODEL = 'gpt-4.1';
 const DEFAULT_MAX_TURNS = 12;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024;
-const DEFAULT_MAX_LISTING = 200;
 /** Why this node cannot run a model, in the words an operator needs to fix it. */
 export class LlmRunnerNotConfiguredError extends Error {
     constructor(missing) {
@@ -30,93 +31,58 @@ export function readLlmRunnerConfig(env = process.env) {
         model: (env['EVOLVER_LLM_MODEL'] ?? LLM_DEFAULT_MODEL).trim(),
         maxTurns: positiveInt(env['EVOLVER_LLM_MAX_TURNS'], DEFAULT_MAX_TURNS),
         maxFileBytes: positiveInt(env['EVOLVER_LLM_MAX_FILE_BYTES'], DEFAULT_MAX_FILE_BYTES),
+        extraHeaders: readLlmRunnerHeaders(env['EVOLVER_LLM_HEADERS']),
     };
+}
+function invalidHeaders() {
+    // Neither JSON.parse nor HTTP validation diagnostics are safe to echo: headers may contain credentials.
+    return new Error('invalid EVOLVER_LLM_HEADERS; use one Name: value pair or a JSON object of string values with valid, unique HTTP header names');
+}
+function normalizeLlmRunnerHeaders(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input))
+        throw invalidHeaders();
+    const headers = new Map();
+    try {
+        for (const [name, value] of Object.entries(input)) {
+            validateHeaderName(name);
+            if (typeof value !== 'string')
+                throw invalidHeaders();
+            validateHeaderValue(name, value);
+            const key = name.toLowerCase();
+            if (headers.has(key))
+                throw invalidHeaders();
+            headers.set(key, value.trim());
+        }
+    }
+    catch {
+        throw invalidHeaders();
+    }
+    return Object.fromEntries(headers);
+}
+function readLlmRunnerHeaders(raw) {
+    if (!raw?.trim())
+        return {};
+    let input;
+    if (raw.trimStart().startsWith('{')) {
+        try {
+            input = JSON.parse(raw);
+        }
+        catch {
+            throw invalidHeaders();
+        }
+    }
+    else {
+        const colon = raw.indexOf(':');
+        if (colon < 1 || /[\r\n]/u.test(raw))
+            throw invalidHeaders();
+        // A single value may itself contain colons or commas. Multiple headers use JSON.
+        input = Object.fromEntries([[raw.slice(0, colon).trim(), raw.slice(colon + 1)]]);
+    }
+    return normalizeLlmRunnerHeaders(input);
 }
 function positiveInt(raw, fallback) {
     const parsed = Number(raw);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-/** Paths the model has no business in: repository plumbing and installed dependencies. */
-const OFF_LIMITS = new Set(['.git', 'node_modules']);
-/**
- * The real path of `target`, following symlinks. A file that does not exist yet resolves
- * through its nearest existing ancestor, so a link planted as a parent directory is caught
- * before anything is written through it.
- */
-function realPathOf(target) {
-    let existing = target;
-    const tail = [];
-    while (!existsSync(existing)) {
-        const parent = dirname(existing);
-        if (parent === existing)
-            return target;
-        tail.unshift(existing.slice(parent.length + 1));
-        existing = parent;
-    }
-    return resolve(realpathSync(existing), ...tail);
-}
-export function workspaceAt(root, maxFileBytes = DEFAULT_MAX_FILE_BYTES) {
-    const base = existsSync(root) ? realpathSync(resolve(root)) : resolve(root);
-    const original = new Map();
-    const contains = (path, raw) => {
-        const rel = relative(base, path);
-        if (rel.startsWith('..') || rel.split(sep).includes('..'))
-            throw new Error(`path escapes the workspace: ${String(raw)}`);
-        if (rel.split(sep).some((segment) => OFF_LIMITS.has(segment)))
-            throw new Error(`path is off limits: ${String(raw)}`);
-    };
-    const inside = (raw) => {
-        const target = resolve(base, String(raw ?? '.'));
-        contains(target, raw);
-        // Lexical containment is not containment: a symlink inside the workspace can point
-        // anywhere, and read/write follow it. The resolved path has to be inside too.
-        contains(realPathOf(target), raw);
-        return target;
-    };
-    return {
-        list(dir) {
-            const target = inside(dir);
-            const entries = readdirSync(target, { withFileTypes: true })
-                .filter((entry) => !OFF_LIMITS.has(entry.name))
-                .slice(0, DEFAULT_MAX_LISTING)
-                .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name));
-            return entries.length > 0 ? entries.join('\n') : '(empty)';
-        },
-        read(path) {
-            const target = inside(path);
-            if (statSync(target).size > maxFileBytes)
-                throw new Error(`file is larger than ${maxFileBytes} bytes`);
-            return readFileSync(target, 'utf8');
-        },
-        write(path, content) {
-            const target = inside(path);
-            const body = String(content ?? '');
-            if (Buffer.byteLength(body, 'utf8') > maxFileBytes)
-                throw new Error(`refusing to write more than ${maxFileBytes} bytes`);
-            // Remember what was there before the first change to each file, so a run that ends
-            // badly can put the workspace back exactly as it found it.
-            if (!original.has(target))
-                original.set(target, existsSync(target) ? readFileSync(target, 'utf8') : null);
-            mkdirSync(dirname(target), { recursive: true });
-            writeFileSync(target, body, 'utf8');
-            return `wrote ${Buffer.byteLength(body, 'utf8')} bytes`;
-        },
-        touched: () => [...original.keys()].map((path) => relative(base, path) || '.'),
-        undo() {
-            for (const [path, before] of original) {
-                try {
-                    if (before === null)
-                        rmSync(path, { force: true });
-                    else
-                        writeFileSync(path, before, 'utf8');
-                }
-                catch {
-                    // Best effort: a file we cannot put back is reported through the run's verdict.
-                }
-            }
-            original.clear();
-        },
-    };
 }
 const TOOLS = [
     { name: 'list_files', description: 'List the entries of a directory in the workspace.', properties: { path: { type: 'string', description: 'Directory relative to the workspace root. Defaults to the root.' } }, required: [] },
@@ -147,23 +113,51 @@ async function runLlmAgent(prompt, ctx, deps) {
         return { ok: false, output: '', error: 'cancelled', failureKind: 'cancelled' };
     let config;
     try {
-        config = deps.config ?? readLlmRunnerConfig(ctx.env ?? process.env);
+        const supplied = deps.config ?? readLlmRunnerConfig(ctx.env ?? process.env);
+        config = { ...supplied, extraHeaders: normalizeLlmRunnerHeaders(supplied.extraHeaders ?? {}) };
     }
     catch (error) {
         // Nothing was launched and nothing can be: the same shape as a missing CLI binary.
         return { ok: false, output: '', error: messageOf(error), failureKind: 'spawn_failed' };
     }
-    const workspace = (deps.workspace ?? ((cwd) => workspaceAt(cwd, config.maxFileBytes)))(ctx.cwd);
+    let workspace;
+    let ownedWorkspace;
+    try {
+        if (!ctx.workspaceLease)
+            throw new Error('llm writes require a private workspace lease; use worktree isolation');
+        ownedWorkspace = workspaceAt(ctx.cwd, config.maxFileBytes, ctx.workspaceLease);
+        workspace = deps.workspace ? deps.workspace(ctx.cwd, ownedWorkspace) : ownedWorkspace;
+    }
+    catch {
+        let recovery;
+        if (ownedWorkspace) {
+            try {
+                recovery = ownedWorkspace.undo() ?? { status: 'failed', restored: [], conflicts: [], failed: [{ path: '.', reason: 'recovery_unconfirmed' }] };
+            }
+            catch {
+                recovery = { status: 'failed', restored: [], conflicts: [], failed: [{ path: '.', reason: 'recovery_failed' }], workspace: ctx.cwd };
+            }
+        }
+        ownedWorkspace?.close?.();
+        return { ok: false, output: '', error: 'llm workspace unavailable; use an exclusively owned private workspace', failureKind: 'permission_denied', ...(recovery ? { workspaceRecovery: recovery } : {}) };
+    }
     const fetchFn = deps.fetchFn ?? globalThis.fetch;
     const deadline = abortAt(ctx);
     const messages = [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }];
-    // Whatever the run touched belongs to a finished task or to nobody: anything short of
-    // success puts the workspace back, so a cancelled or broken run leaves no half-done edit
-    // for the next attempt to build on.
     const abandon = (result) => {
-        const touched = workspace.touched();
-        workspace.undo();
-        return touched.length > 0 ? { ...result, output: `${result.output}\n(reverted ${touched.join(', ')})`.trim() } : result;
+        let recovery;
+        try {
+            recovery = workspace.undo() ?? { status: 'failed', restored: [], conflicts: [], failed: [{ path: '.', reason: 'recovery_unconfirmed' }] };
+        }
+        catch {
+            recovery = { status: 'failed', restored: [], conflicts: [], failed: [{ path: '.', reason: 'recovery_failed' }] };
+        }
+        const notes = [];
+        if (recovery.restored.length)
+            notes.push(`(reverted ${recovery.restored.join(', ')})`);
+        if (recovery.conflicts.length || recovery.failed.length)
+            notes.push('(workspace recovery incomplete; operator recovery required for retained workspace)');
+        return { ...result, output: [result.output, ...notes].filter(Boolean).join('\n'), workspaceRecovery: recovery };
     };
     try {
         for (let turn = 0; turn < config.maxTurns; turn += 1) {
@@ -174,7 +168,12 @@ async function runLlmAgent(prompt, ctx, deps) {
                 const touched = workspace.touched();
                 // A turn that changed nothing is not a finished task, however well it reads.
                 if (touched.length === 0)
-                    return { ok: false, output, error: 'the model finished without changing any file', failureKind: 'invalid_output' };
+                    return abandon({ ok: false, output, error: 'the model finished without changing any file', failureKind: 'invalid_output' });
+                if (deadline.signal.aborted)
+                    throw new Error('aborted');
+                workspace.complete?.();
+                if (workspace !== ownedWorkspace)
+                    ownedWorkspace.complete?.();
                 return { ok: true, output: output || `changed ${touched.join(', ')}` };
             }
             for (const call of reply.tool_calls) {
@@ -195,6 +194,12 @@ async function runLlmAgent(prompt, ctx, deps) {
     }
     finally {
         deadline.dispose();
+        try {
+            workspace.close?.();
+        }
+        finally {
+            ownedWorkspace.close?.();
+        }
     }
 }
 function runTool(workspace, call) {
@@ -221,24 +226,92 @@ function runTool(workspace, call) {
         return answer(`error: ${messageOf(error)}`);
     }
 }
+/** Reject the entire reply before any tool runs; rewriting generated code could silently change its meaning. */
+function rejectHeaderEcho(message, headers) {
+    const values = new Set();
+    for (const [name, value] of Object.entries(headers)) {
+        if (value)
+            values.add(value);
+        if (name === 'authorization' || name === 'proxy-authorization') {
+            const token = /^(?:Bearer|Basic)\s+(.+)$/iu.exec(value)?.[1];
+            if (token)
+                values.add(token);
+        }
+    }
+    if (values.size === 0)
+        return;
+    const protectedValues = [...values];
+    const pending = [message];
+    // Tool arguments are JSON inside a JSON string; inspect their decoded values too, including Unicode escapes.
+    if (Array.isArray(message.tool_calls)) {
+        for (const call of message.tool_calls) {
+            if (typeof call?.function?.arguments !== 'string')
+                continue;
+            try {
+                pending.push(JSON.parse(call.function.arguments));
+            }
+            catch { /* runTool reports malformed arguments safely */ }
+        }
+    }
+    while (pending.length > 0) {
+        const value = pending.pop();
+        if (typeof value === 'string') {
+            if (protectedValues.some((secret) => value.includes(secret))) {
+                throw new Error('llm response contains an EVOLVER_LLM_HEADERS value; response rejected');
+            }
+        }
+        else if (Array.isArray(value)) {
+            for (const entry of value)
+                pending.push(entry);
+        }
+        else if (value && typeof value === 'object') {
+            for (const [key, entry] of Object.entries(value))
+                pending.push(key, entry);
+        }
+    }
+}
 async function complete(fetchFn, config, messages, signal) {
-    const response = await fetchFn(`${config.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model: config.model, messages, tools: TOOLS, tool_choice: 'auto' }),
-        signal,
-    });
-    const text = await response.text();
+    const hasExtraHeaders = Object.keys(config.extraHeaders ?? {}).length > 0;
+    let response;
+    let text;
+    try {
+        response = await fetchFn(`${config.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}`, ...config.extraHeaders },
+            body: JSON.stringify({ model: config.model, messages, tools: TOOLS, tool_choice: 'auto' }),
+            signal,
+            // Fetch may forward custom credentials across origins on redirects. Require the final endpoint instead.
+            ...(hasExtraHeaders ? { redirect: 'error' } : {}),
+        });
+        text = await response.text();
+    }
+    catch (error) {
+        if (hasExtraHeaders)
+            throw new Error('llm request failed; check the endpoint and EVOLVER_LLM_HEADERS (transport details omitted)');
+        throw error;
+    }
     if (!response.ok)
-        throw new Error(`llm ${response.status}: ${text.slice(0, 300)}`);
-    const choice = JSON.parse(text).choices?.[0];
+        throw new Error(`llm ${response.status}: ${hasExtraHeaders ? 'request rejected (response body omitted because EVOLVER_LLM_HEADERS is configured)' : text.slice(0, 300)}`);
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        throw new Error('llm returned invalid JSON');
+    }
+    const choice = parsed.choices?.[0];
     if (!choice?.message)
         throw new Error('llm returned no message');
     // A reply cut off by the token limit or by a content filter is not an answer, however
     // complete it reads. Saying so beats reporting the truncated half as finished work.
     const reason = choice.finish_reason;
-    if (reason && reason !== 'stop' && reason !== 'tool_calls')
-        throw new Error(`llm stopped early: ${reason}`);
+    if (reason !== undefined && reason !== null && reason !== 'stop' && reason !== 'tool_calls') {
+        // Only protocol constants are safe diagnostics; arbitrary upstream values may echo credentials.
+        const diagnostic = reason === 'length' || reason === 'content_filter' || reason === 'function_call'
+            ? reason : 'unrecognized finish_reason';
+        throw new Error(`llm stopped early: ${diagnostic}`);
+    }
+    rejectHeaderEcho(choice.message, config.extraHeaders ?? {});
     return choice.message;
 }
 function abortAt(ctx) {

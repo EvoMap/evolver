@@ -154,6 +154,10 @@ OpenClaw旧skill、cron或shell脚本若期待裸命令打印GEP prompt或 `sess
 
 `autoexec` 是常驻守护进程。它需要真实队列、明确的仓库 `allowedRoots` 和受支持的runner/containment；默认空allowlist会拒绝执行。把one-shot脚本替换成常驻进程会改变启动、停止和重复实例语义，必须由operator审核，不能直接作为免配置修复。
 
+Linux/systemd 的完整 `read-only` validation 还需要空的委派 cgroup 父组。若 daemon 位于
+`payload` leaf，可通过 `EVOLVER_SANDBOX_CGROUP_PARENT` 指定其已启用 cpu/memory/pids 的祖先；
+部署条件和真实内核 smoke 见 [cgroup v2 委派说明](docs/sandbox-cgroup-delegation.md)。
+
 `WORKER_*`、V1 OpenClaw bridge和历史validator默认轮询/收益说明不能直接套用到V2。不要为恢复旧worker行为而开启buyer自动消费。已有的 `EVOLVER_ATP_AUTODELIVER` 与 `EVOLVER_ATP_AUTOBUY` 也代表不同的授权与工作流。
 
 <!-- v2-compatibility:end -->

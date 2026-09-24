@@ -1,4 +1,5 @@
 import type { AssetRecord } from '../assetstore/provider.js';
+export { checkEmbeddedSourceIntegrity } from './embeddedSource.js';
 export declare const REDACTED = "[REDACTED]";
 /** Apply every redaction pattern (secrets → [REDACTED]) then anonymize local paths (~/...) to a single string. */
 export declare function redactString(s: string): string;
@@ -9,7 +10,9 @@ export declare function redactDeep<T>(v: T): T;
  * change with it, otherwise the published body and id disagree. computeAssetId excludes the asset_id field by
  * default; on the rare null return we fall back to the original id.
  */
-export declare function sanitizeAsset(asset: AssetRecord): AssetRecord;
+export declare function sanitizeAsset(asset: AssetRecord, opts?: {
+    env?: Record<string, string | undefined>;
+}): AssetRecord;
 export interface Leak {
     type: string;
     value: string;
@@ -33,9 +36,9 @@ export declare function leakCheckModeFromEnv(env: Record<string, string | undefi
 export interface SanitizeBundleResult {
     /** The redacted bundle (asset_id recomputed). Redaction always happens regardless of mode (the leak-proof floor). */
     bundle: AssetRecord[];
-    /** strict mode + leak found → true: the chokepoint should refuse to publish (not retryable). */
+    /** Strict credential leaks or embedded-file integrity failure in ANY mode → refuse publication. */
     blocked: boolean;
-    /** Leaks found (scanned on the original content, before redaction). */
+    /** Original-content leaks plus mode-independent embedded_source_integrity diagnostics. */
     leaks: Leak[];
     mode: LeakCheckMode;
 }
@@ -43,6 +46,7 @@ export interface SanitizeBundleResult {
  * Pre-publish sanitize of a bundle (pure, never throws):
  * 1) mode != off: scan the ORIGINAL (pre-redaction) content for leaks; strict + found → blocked=true (chokepoint refuses); warn → flag only.
  * 2) REGARDLESS of mode, always deep-redact every asset + recompute asset_id (the leak-proof floor; off only skips the scan, not the redaction).
+ * 3) Embedded-file manifests must match their original UTF-8 hashes before AND after sanitization in every mode.
  */
 export declare function sanitizeBundle(bundle: readonly AssetRecord[], opts: {
     env: Record<string, string | undefined>;

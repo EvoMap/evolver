@@ -245,7 +245,11 @@ export interface RecipeFetchReceipt extends RecipeReceipt {
     recipe?: unknown;
 }
 export interface RecipeExpressRequest {
-    inputPayload?: Record<string, unknown>;
+    inputPayload?: import('./recipeExecution.js').RecipeJson;
+    requestKey?: string;
+    maxCredits?: number;
+    executionMode?: 'caller' | 'provider';
+    ttl?: number;
 }
 export interface RecipeExpressionReceipt extends RecipeReceipt {
     organismId?: string;
@@ -265,6 +269,7 @@ export interface RecipeSearchReceipt {
 }
 /** Optional Hub recipe/DNA capability. Core stays wire-agnostic; adapters own REST shape. */
 export interface RecipeCapability {
+    execution?: import('./recipeExecution.js').RecipeExecutionCapability;
     create(request: RecipeCreateRequest): Promise<RecipeReceipt>;
     publish(recipeId: string, options?: RecipePublishOptions): Promise<RecipeReceipt>;
     get(recipeId: string): Promise<RecipeFetchReceipt>;

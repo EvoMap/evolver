@@ -623,12 +623,19 @@ export async function assessPublishRecords(original, deps) {
             return { ok: false, reason: 'schema_invalid', message, gates: { schema: 'fail', quality: 'fail' } };
         }
     }
+    const sourceIntegrity = original.map(hub.checkEmbeddedSourceIntegrity).find((result) => !result.ok);
+    if (sourceIntegrity && !sourceIntegrity.ok) {
+        return { ok: false, reason: 'schema_invalid', message: sourceIntegrity.reason, gates: { schema: 'fail' } };
+    }
     let sanitized;
     try {
-        sanitized = referenceOnly ? structuredClone(original) : sanitizePublishBundle(original);
+        sanitized = referenceOnly ? structuredClone(original) : sanitizePublishBundle(original, deps.env ?? process.env);
     }
     catch {
         return { ok: false, reason: 'redaction_unavailable', message: 'redaction unavailable', gates: { redaction: 'unavailable' } };
+    }
+    if (sanitized.some((asset) => !hub.checkEmbeddedSourceIntegrity(asset).ok)) {
+        return { ok: false, reason: 'schema_invalid', message: 'embedded_source_sanitization_changed', gates: { schema: 'fail', redaction: 'fail' } };
     }
     const finalBundleCheck = checkBundle(sanitized);
     if (!finalBundleCheck.ok) {
@@ -797,8 +804,8 @@ function checkValidationCommands(original) {
         message: `validation command rejected: ${[...reasons].join(', ')}`,
     };
 }
-function sanitizePublishBundle(original) {
-    const sanitized = original.map((asset) => hub.sanitizeAsset(stripPublishMetadata(asset)));
+function sanitizePublishBundle(original, env) {
+    const sanitized = original.map((asset) => hub.sanitizeAsset(stripPublishMetadata(asset), { env }));
     // 已绑定记录的 business-id 引用同样属于完整内容，不能在验证后改成另一种引用并重算资产。
     // 脱敏若真正改变内容，后续 host ledger 会要求重新验证；人工无声明路径保留旧引用规范化。
     if (hub.requiresPublishBinding(original))
@@ -1029,9 +1036,8 @@ function checkBundle(bundle) {
     return { ok: true };
 }
 function finalPayloadLeakCheck(bundle, env) {
-    const result = hub.fullLeakCheck(JSON.stringify(bundle), env);
-    const hardLeaks = result.leaks.filter((leak) => leak.type !== 'local_path');
-    return { blocked: hardLeaks.length > 0 };
+    // The shared scan includes assembled source files; serialized fragments can hide scan-only matches.
+    return { blocked: hub.sanitizeBundle(bundle, { env, mode: 'strict' }).blocked };
 }
 async function assertNoLocalReuseIdConflict(asset, store) {
     if (asset.type !== 'Gene' && asset.type !== 'Capsule')
