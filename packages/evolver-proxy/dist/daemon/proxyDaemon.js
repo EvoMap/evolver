@@ -2535,7 +2535,8 @@ function legacyLooseDistillInput(value) {
     const validation = strictOptionalStringList(value, 'validation', 8, 180);
     const verification = strictOptionalStringList(value, 'verification', 8, 180);
     const artifacts = strictOptionalStringList(value, 'artifacts', 12, 240);
-    if (!signals.ok || !signalsMatch.ok || !validation.ok || !verification.ok || !artifacts.ok) {
+    const preconditions = strictOptionalStringList(value, 'preconditions', 8, 220);
+    if (!signals.ok || !signalsMatch.ok || !validation.ok || !verification.ok || !artifacts.ok || !preconditions.ok) {
         return { ok: false, error: 'legacy list fields must contain strings only' };
     }
     const constraints = parseLegacyConstraints(value['constraints']);
@@ -2555,6 +2556,7 @@ function legacyLooseDistillInput(value) {
         ...((signals.value ?? signalsMatch.value) ? { signals: signals.value ?? signalsMatch.value } : {}),
         ...((validation.value ?? verification.value) ? { validation: validation.value ?? verification.value } : {}),
         ...(artifacts.value ? { artifacts: artifacts.value } : {}),
+        ...(preconditions.value ? { preconditions: preconditions.value } : {}),
         ...strictForwardString(value, 'title'),
         ...strictForwardString(value, 'name'),
         ...strictForwardString(value, 'platform'),

@@ -13,6 +13,7 @@ export interface ConversationDistillInput {
     transcript?: unknown;
     conversation?: unknown;
     signals?: unknown;
+    preconditions?: unknown;
     strategy?: unknown;
     steps?: unknown;
     artifacts?: unknown;
@@ -54,6 +55,7 @@ interface NormalizedConversation {
     text: string;
     summary: string;
     signals: string[];
+    preconditions: string[];
     strategy: string[];
     artifacts: string[];
     execution: NormalizedExecution;

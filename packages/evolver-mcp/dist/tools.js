@@ -472,6 +472,7 @@ export function buildEvolverTools(deps) {
                     assistant_summary: { type: 'string' },
                     transcript: { type: 'string' },
                     signals: { type: 'array', items: { type: 'string' } },
+                    preconditions: { type: 'array', items: { type: 'string' }, description: 'When the capability applies, e.g. "Use when: …" / "Do not use when: …". Shown to the agent at reuse time; defaults to the signals.' },
                     strategy: { type: 'array', items: { type: 'string' } },
                     artifacts: { type: 'array', items: { type: 'string' } },
                     validation: { type: 'array', items: { type: 'string' } },
