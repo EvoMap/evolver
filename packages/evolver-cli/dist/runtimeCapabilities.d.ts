@@ -1,5 +1,5 @@
 type RuntimeCapabilityStatus = 'supported' | 'experimental' | 'unsupported';
-type RuntimeCapabilityId = 'claude-code' | 'codex' | 'cursor' | 'gemini' | 'antigravity' | 'kimi' | 'kiro' | 'opencode' | 'generic-chat';
+type RuntimeCapabilityId = 'claude-code' | 'codex' | 'cursor' | 'gemini' | 'antigravity' | 'kimi' | 'kiro' | 'opencode' | 'generic-chat' | 'llm';
 interface RuntimeCapability {
     status: RuntimeCapabilityStatus;
     evidence: string;

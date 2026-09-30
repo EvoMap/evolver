@@ -4,7 +4,7 @@ import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { Mutation } from '../wire/index.js';
 import type { GeneDecision } from '../algo/geneSelection.js';
 import type { ExecutionResult } from '../algo/cycleEngine.js';
-import { type GeneResolver, type ValidateHook, type AgentRunnerOptions, type AgentSessionResume, type RunnerName, type AgentRunner, type GitRunner } from './claudeBridge.js';
+import { type GeneResolver, type ValidateHook, type AgentRunnerOptions, type AgentSessionResume, type RunnerName, type AgentRunner, type GitRunner, type GitPatchWriter } from './claudeBridge.js';
 import type { PersonalityStore } from '../personality/store.js';
 import type { AgentRunTraceRecorder } from '../trace/learningTrace.js';
 import type { ExecutionObserver } from './claudeBridge.js';
@@ -19,6 +19,8 @@ import { type BenchmarkContext } from '../assetstore/sourceQualification.js';
  */
 export declare function makeTrustedGeneResolver(store: AssetStoreProvider, provenance?: ProvenanceStore, review?: ReviewLedger, includeProbation?: boolean, benchmark?: BenchmarkContext): GeneResolver;
 export interface AutonomousSafety {
+    /** Exact file acceptance cannot silently replace a selected Gene's command validation. */
+    declarativeValidationOnly?: boolean;
     /** Deny-by-default repo allowlist (#41). Required — an empty array refuses everything. */
     allowedRoots: readonly string[];
     /** Which built-in runner (#66). Default 'codex'. The same safety controls wrap whichever runner. cursor is a scaffold (unverified). */
@@ -66,6 +68,7 @@ export declare function makeSafeExecute(repo: string, store: AssetStoreProvider,
     personality?: PersonalityStore;
     agent?: AgentRunner;
     git?: GitRunner;
+    gitPatchWriter?: GitPatchWriter;
     /** Optional learning-trace recorder forwarded to the exec bridge (Learning Ops slice 2). */
     traceRecorder?: AgentRunTraceRecorder;
     executionObserver?: ExecutionObserver;

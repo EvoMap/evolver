@@ -58,6 +58,7 @@ export declare class HubUnreachableError extends Error {
         bodySnippet?: string;
         context?: string;
         retryAfterMs?: number;
+        retryAfterSource?: 'server' | 'local_backoff';
         operation?: HubOperation;
         timeoutMs?: number;
     };
@@ -68,6 +69,7 @@ export declare class HubUnreachableError extends Error {
         bodySnippet?: string;
         context?: string;
         retryAfterMs?: number;
+        retryAfterSource?: 'server' | 'local_backoff';
         operation?: HubOperation;
         timeoutMs?: number;
     });

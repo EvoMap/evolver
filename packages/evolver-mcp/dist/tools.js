@@ -3,11 +3,14 @@ import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops } from 
 import { ProxyReverificationError, safeReverificationRecovery } from './proxyClient.js';
 import { buildEvolverPrimer } from './primer.js';
 import { recipeToolSchemas } from './recipeSchemas.js';
+import { DISCOVERY_MAX_TIMEOUT_MS, discoveryTimeout, isDegradedDiscovery } from './discovery.js';
 const str = (v) => (typeof v === 'string' ? v : String(v ?? ''));
 const strArray = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string') : undefined;
 const REUSE_OUTCOMES = new Set(['success', 'failed', 'mismatched', 'stale', 'unsafe']);
 const LOCAL_READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
 const REMOTE_READ_ONLY = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+const DISCOVERY_HINT = ' 临时超时或服务不可用会有限重试，仍失败返回 search_status=degraded；这不代表没有匹配，可继续主任务。';
+const DISCOVERY_TIMEOUT_SCHEMA = { type: 'integer', minimum: 100, maximum: DISCOVERY_MAX_TIMEOUT_MS, description: 'Total discovery budget including retry, in milliseconds. Defaults to 20000; at most one transient retry.' };
 // Codex `auto` fail-closes when destructiveHint is true. MCP "destructive" as
 // delete/overwrite is not that contract: any state-writing tool must prompt.
 const LOCAL_WRITE = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false });
@@ -87,6 +90,13 @@ function proxyFallbackMetadata(value) {
     };
 }
 function proxySearchResult(value) {
+    if (isDegradedDiscovery(value)) {
+        const body = record(value);
+        if (!Array.isArray(body['results']) && !Array.isArray(body['assets']))
+            return value;
+        const results = resultArray(value);
+        return { ...body, results, assets: results };
+    }
     const results = resultArray(value);
     const metadata = proxyFallbackMetadata(value);
     return metadata ? { results, assets: results, ...metadata } : results;
@@ -313,7 +323,7 @@ export function buildEvolverTools(deps) {
         },
         ...(deps.proxy ? [{
                 name: 'evolver_recipe_search',
-                description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。旧客户端默认收到 Recipe 数组；设置 includePagination=true 可读取 nextCursor/hasMore。',
+                description: '默认第一步：通过本机 evolver-proxy 搜索 Hub 已发布 Recipe（有序 Gene/Capsule DNA）。命中后调用 evolver_recipe_express。无匹配时再 fallback 到 evolver_asset_search。旧客户端默认收到 Recipe 数组；设置 includePagination=true 可读取 nextCursor/hasMore。' + DISCOVERY_HINT,
                 annotations: REMOTE_READ_ONLY,
                 inputSchema: {
                     type: 'object',
@@ -324,6 +334,7 @@ export function buildEvolverTools(deps) {
                         limit: { type: 'number' },
                         cursor: { type: 'string' },
                         sort: { type: 'string' },
+                        timeoutMs: DISCOVERY_TIMEOUT_SCHEMA,
                         includePagination: {
                             type: 'boolean',
                             description: 'Set true to return the recipe page envelope with nextCursor/hasMore. The default array shape remains backwards compatible.',
@@ -338,7 +349,10 @@ export function buildEvolverTools(deps) {
                         ...(typeof a['limit'] === 'number' ? { limit: a['limit'] } : {}),
                         ...(typeof a['cursor'] === 'string' ? { cursor: a['cursor'] } : {}),
                         ...(typeof a['sort'] === 'string' ? { sort: a['sort'] } : {}),
+                        ...(a['timeoutMs'] !== undefined ? { timeoutMs: discoveryTimeout(a['timeoutMs']) } : {}),
                     }));
+                    if (isDegradedDiscovery(receipt) || receipt['degraded'] === true)
+                        return receipt;
                     if (includePagination && (Array.isArray(receipt['recipes'])
                         || Array.isArray(receipt['results'])
                         || Array.isArray(receipt['items'])))
@@ -361,9 +375,9 @@ export function buildEvolverTools(deps) {
         {
             name: 'evolver_asset_search',
             description: deps.proxy
-                ? 'Fallback：当 evolver_recipe_search 无匹配 Recipe 时，通过本机 evolver-proxy 直搜 PHub 经验资产(Gene/Capsule/EvolutionEvent)。AntiGene 是本地负经验资产, 会直接查本地库供人工 review. 真正复用应优先 evolver_recipe_express。'
+                ? 'Fallback：当 evolver_recipe_search 无匹配 Recipe 时，通过本机 evolver-proxy 直搜 PHub 经验资产(Gene/Capsule/EvolutionEvent)。AntiGene 是本地负经验资产, 会直接查本地库供人工 review. 真正复用应优先 evolver_recipe_express。' + DISCOVERY_HINT
                 : '搜索本地经验资产库(Gene/Capsule/EvolutionEvent/AntiGene). 支持 kind/信号/类目/gene 反查/文本. 联网 Recipe 搜索需要 evolver-proxy。',
-            inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: searchableKinds }, signalsAny: { type: 'array', items: { type: 'string' } }, category: { type: 'string' }, gene: { type: 'string' }, text: { type: 'string' }, limit: { type: 'number' } } },
+            inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: searchableKinds }, signalsAny: { type: 'array', items: { type: 'string' } }, category: { type: 'string' }, gene: { type: 'string' }, text: { type: 'string' }, limit: { type: 'number' }, ...(deps.proxy ? { timeoutMs: DISCOVERY_TIMEOUT_SCHEMA } : {}) } },
             annotations: deps.proxy ? REMOTE_READ_ONLY : LOCAL_READ_ONLY,
             handler: async (a) => {
                 if (deps.proxy && a['kind'] === 'AntiGene') {
@@ -384,6 +398,7 @@ export function buildEvolverTools(deps) {
                         ...(typeof a['gene'] === 'string' ? { gene: a['gene'] } : {}),
                         ...(typeof a['text'] === 'string' ? { text: a['text'] } : {}),
                         ...(typeof a['limit'] === 'number' ? { limit: a['limit'] } : {}),
+                        ...(a['timeoutMs'] !== undefined ? { timeoutMs: discoveryTimeout(a['timeoutMs']) } : {}),
                     }));
                 }
                 return deps.store.search({
@@ -557,26 +572,26 @@ export function buildEvolverTools(deps) {
     if (deps.proxy) {
         tools.push({
             name: 'evolver_agent_search',
-            description: '按自然语言 query 或 capability signals 搜索可协作 agent；结果来自 Hub，不代表实时可用，availability=unknown 时不得推断在线。',
+            description: '按自然语言 query 或 capability signals 搜索可协作 agent；结果来自 Hub，不代表实时可用，availability=unknown 时不得推断在线。' + DISCOVERY_HINT,
             inputSchema: agentDirectorySearchSchema(),
             annotations: REMOTE_READ_ONLY,
             handler: async (a) => deps.proxy.searchAgents(agentSearchArgs(a)),
         }, {
             name: 'evolver_agent_profile',
-            description: '读取 Hub 授权返回的最小安全 agent profile；不返回凭证、node secret、workspace path 或设备指纹。',
+            description: '读取 Hub 授权返回的最小安全 agent profile；不返回凭证、node secret、workspace path 或设备指纹。' + DISCOVERY_HINT,
             annotations: REMOTE_READ_ONLY,
             inputSchema: {
                 type: 'object',
                 required: ['agentId'],
                 properties: {
                     agentId: { type: 'string', minLength: 1, maxLength: hub.AGENT_DIRECTORY_MAX_AGENT_ID_LENGTH },
-                    timeoutMs: { type: 'integer', minimum: 100, maximum: hub.AGENT_DIRECTORY_MAX_TIMEOUT_MS },
+                    timeoutMs: DISCOVERY_TIMEOUT_SCHEMA,
                 },
             },
-            handler: async (a) => deps.proxy.getAgentProfile(str(a['agentId']), typeof a['timeoutMs'] === 'number' ? a['timeoutMs'] : undefined),
+            handler: async (a) => deps.proxy.getAgentProfile(str(a['agentId']), a['timeoutMs'] === undefined ? undefined : discoveryTimeout(a['timeoutMs'])),
         }, {
             name: 'evolver_agent_discover',
-            description: '按任务标题、描述和 capability signals 发现候选 agent；分页和排序由 Hub 执行。',
+            description: '按任务标题、描述和 capability signals 发现候选 agent；分页和排序由 Hub 执行。' + DISCOVERY_HINT,
             annotations: REMOTE_READ_ONLY,
             inputSchema: {
                 ...agentDirectorySearchSchema(),
@@ -672,7 +687,7 @@ function agentDirectorySearchSchema() {
             order: { type: 'string', enum: ['asc', 'desc'] },
             cursor: { type: 'string', maxLength: hub.AGENT_DIRECTORY_MAX_CURSOR_LENGTH },
             limit: { type: 'integer', minimum: 1, maximum: hub.AGENT_DIRECTORY_MAX_LIMIT },
-            timeoutMs: { type: 'integer', minimum: 100, maximum: hub.AGENT_DIRECTORY_MAX_TIMEOUT_MS },
+            timeoutMs: DISCOVERY_TIMEOUT_SCHEMA,
         },
     };
 }
@@ -685,6 +700,6 @@ function agentSearchArgs(args) {
         ...(typeof args['order'] === 'string' ? { order: args['order'] } : {}),
         ...(typeof args['cursor'] === 'string' ? { cursor: args['cursor'] } : {}),
         ...(typeof args['limit'] === 'number' ? { limit: args['limit'] } : {}),
-        ...(typeof args['timeoutMs'] === 'number' ? { timeoutMs: args['timeoutMs'] } : {}),
+        ...(args['timeoutMs'] !== undefined ? { timeoutMs: discoveryTimeout(args['timeoutMs']) } : {}),
     };
 }

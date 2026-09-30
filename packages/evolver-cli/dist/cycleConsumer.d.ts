@@ -59,6 +59,8 @@ export interface MaterialCycleOptions {
     target?: string;
     expectedEffect?: string;
     validationCmds?: readonly string[];
+    /** Independent operator acceptance for the opt-in LLM file executor. */
+    validationSpec?: verify.DeclarativeValidationSpec;
     validate?: exec.AutoExecDeps['validate'];
     runner?: RunnerName;
     /** Resume the single native Claude Code or Cursor session represented by each material. Default false. */
@@ -68,6 +70,7 @@ export interface MaterialCycleOptions {
     safety?: Partial<exec.AutonomousSafety>;
     agent?: exec.AgentRunner;
     git?: exec.GitRunner;
+    gitPatchWriter?: exec.GitPatchWriter;
 }
 export interface MaterialCycleWatchOptions extends MaterialCycleOptions {
     idleMs?: number;
@@ -91,6 +94,7 @@ export interface MaterialCycleDeps {
     runSandboxedValidation?: SandboxedValidationRunner;
     agent?: exec.AgentRunner;
     git?: exec.GitRunner;
+    gitPatchWriter?: exec.GitPatchWriter;
     safety?: Partial<exec.AutonomousSafety>;
     sleep?: SleepFn;
     watchStateWriter?: (path: string, state: MaterialCycleWatchState) => void;

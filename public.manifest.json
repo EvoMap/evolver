@@ -1,11 +1,11 @@
 {
   "package": "@evomap/evolver",
-  "version": "2.0.39",
+  "version": "2.0.40",
   "channel": "latest",
   "publicRepo": "EvoMap/evolver",
   "publicBranch": "v2-beta",
-  "releaseTag": "v2.0.39",
-  "releaseTitle": "Evolver v2 v2.0.39",
+  "releaseTag": "v2.0.40",
+  "releaseTitle": "Evolver v2 v2.0.40",
   "prerelease": false,
   "obfuscate": [
     "packages/evolver-core/dist/algo",

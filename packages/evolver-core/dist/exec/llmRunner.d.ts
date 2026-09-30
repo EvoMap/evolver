@@ -11,6 +11,7 @@ export interface LlmRunnerConfig {
     apiKey: string;
     maxTurns: number;
     maxFileBytes: number;
+    apiBackend?: 'chat-completions' | 'responses';
     /** Operator-configured headers; names are case-insensitive and override the defaults. */
     extraHeaders?: Readonly<Record<string, string>>;
 }
@@ -29,12 +30,15 @@ export type FetchLike = (url: string, init: {
     ok: boolean;
     status: number;
     text(): Promise<string>;
+    body?: ReadableStream<Uint8Array> | null;
 }>;
 export interface LlmRunnerDeps {
     config?: LlmRunnerConfig;
     fetchFn?: FetchLike;
     /** Trusted host decorator. The supplied workspace already holds the run's validated lease. */
     workspace?: (cwd: string, ownedWorkspace: Workspace) => Workspace;
+    /** Operator-owned exact relative paths. Omission retains the library's workspace-wide writer. */
+    writePaths?: readonly string[];
 }
 /**
  * Build a runner that drives a model through the workspace tools. `opts` is accepted for

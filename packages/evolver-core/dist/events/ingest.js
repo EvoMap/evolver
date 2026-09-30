@@ -7,6 +7,7 @@ import { createIssueDraftForEventBestEffort } from '../issueReporter/index.js';
 export const EVENT_TYPES = [
     'cycle.started', 'cycle.signals_collected', 'cycle.solidified', 'cycle.failed',
     'cycle.aborted', 'cycle.heartbeat', 'cycle.consumed',
+    'cycle.execution_admitted', 'cycle.validation',
     'decision.gene_selected', 'decision.triggered', 'decision.suppressed',
     'personality.selected', 'personality.risk_gated',
     'personality.mutated', 'personality.stats_updated', 'personality.pivoted',

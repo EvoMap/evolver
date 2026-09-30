@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync, } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync, writeSync, } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { acquireWorkspaceLease } from './workspaceLease.js';
 const JOURNAL_PREFIX = '.evolver-llm-recovery-';
@@ -53,6 +53,12 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
     const inside = (raw) => {
         const target = resolve(base, raw || '.');
         contains(target);
+        // Use one portable filename contract. Windows aliases can otherwise bypass .git/node_modules
+        // checks through ADS, device names or Win32 trailing-dot/space normalization.
+        if (/\p{Cc}|:/u.test(raw) || raw.split(/[\\/]/u).some((part) => part !== '.' && part !== '..'
+            && (/[. ]$/u.test(part) || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part)))) {
+            throw new Error('path is off limits');
+        }
         let ancestor = target;
         while (!existsSync(ancestor)) {
             const parent = dirname(ancestor);
@@ -192,15 +198,40 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
     };
     return {
         list(dir) {
-            const result = readdirSync(inside(dir), { withFileTypes: true }).filter((entry) => !forbidden(entry.name)).slice(0, 200)
+            const target = inside(dir);
+            const targetStat = lstatSync(target, { bigint: true });
+            if (!targetStat.isDirectory() || targetStat.isSymbolicLink())
+                throw new Error('linked directory is off limits');
+            if (target !== base)
+                assertParents({ before: null, parents: parentsOf(target) });
+            const result = readdirSync(target, { withFileTypes: true }).filter((entry) => !forbidden(entry.name)).slice(0, 200)
                 .map((entry) => entry.isDirectory() ? `${entry.name}/` : entry.name);
+            if (!sameIdentity(targetStat, lstatSync(target, { bigint: true })))
+                throw new Error('directory changed');
             return result.join('\n') || '(empty)';
         },
         read(path) {
             const target = inside(path);
-            if (statSync(target).size > maxFileBytes)
+            const initial = lstatSync(target, { bigint: true });
+            if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n)
+                throw new Error('linked or non-regular file is off limits');
+            if (initial.size > BigInt(maxFileBytes))
                 throw new Error(`file is larger than ${maxFileBytes} bytes`);
-            return readFileSync(target, 'utf8');
+            const parents = parentsOf(target);
+            const fd = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+            try {
+                if (!sameVersion(initial, fstatSync(fd, { bigint: true })))
+                    throw new Error('file changed');
+                assertParents({ before: null, parents });
+                const result = version(fd);
+                if (!sameVersion(result.stat, lstatSync(target, { bigint: true })))
+                    throw new Error('file changed');
+                assertParents({ before: null, parents });
+                return result.bytes.toString('utf8');
+            }
+            finally {
+                closeSync(fd);
+            }
         },
         write(path, content) {
             const target = inside(path);

@@ -4,3 +4,4 @@ export * from './rollback.js';
 export * from './sandboxRunner.js';
 export * from './sandboxedValidation.js';
 export * from './executionRedaction.js';
+export * from './declarativeValidation.js';

@@ -965,9 +965,23 @@ function recipeListFromRecord(value) {
     }
     return undefined;
 }
+class MalformedRecipeSearchPageError extends Error {
+    constructor() {
+        super('Hub recipe search page is malformed');
+        this.name = 'MalformedRecipeSearchPageError';
+    }
+}
 function recipeSearchReceiptFromBody(body) {
+    if (!asRecord(body))
+        throw new MalformedRecipeSearchPageError();
     const payload = recipePayload(body);
-    const recipes = recipeListFromRecord(payload) ?? recipeListFromRecord(body) ?? [];
+    const sources = [body, payload, asRecord(body['data']), asRecord(payload['data'])];
+    if (sources.some((source) => source?.['search_status'] === 'degraded' || source?.['retryable'] === true || source?.['complete'] === false)) {
+        throw new Error('recipe_search_degraded');
+    }
+    const recipes = recipeListFromRecord(payload) ?? recipeListFromRecord(body);
+    if (recipes === undefined)
+        throw new MalformedRecipeSearchPageError();
     const nextCursor = stringField(payload, 'next_cursor')
         ?? stringField(payload, 'nextCursor')
         ?? stringField(body, 'next_cursor')

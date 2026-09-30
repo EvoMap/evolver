@@ -37,6 +37,8 @@ export function makeTrustedGeneResolver(store, provenance, review, includeProbat
         // ACTIONS regardless of the prompt (#309). A REJECTED draft and an untrusted-origin (hub) gene stay withheld.
         const probationOk = includeProbation && review?.get(String(g.asset_id))?.state === 'quarantined';
         const info = {
+            ...((g['validation'] !== undefined && (!Array.isArray(g['validation']) || g['validation'].length > 0))
+                ? { requiresCommandValidation: true } : {}),
             strategy: asStrings(g['strategy']),
             preconditions: asStrings(g['preconditions']),
             ...(typeof summary === 'string' ? { summary } : {}),
@@ -129,10 +131,12 @@ export function makeSafeExecute(repo, store, safety, opts = {}) {
         throw new UnsupportedAutonomousCodexRunnerError();
     }
     return makeClaudeExecBridge({
+        ...(safety.declarativeValidationOnly ? { declarativeValidationOnly: true } : {}),
         cwd: repo,
         enabled: true,
         ...(opts.agent ? { agent: opts.agent } : {}),
         ...(opts.git ? { git: opts.git } : {}),
+        ...(opts.gitPatchWriter ? { gitPatchWriter: opts.gitPatchWriter } : {}),
         ...(opts.traceRecorder ? { traceRecorder: opts.traceRecorder } : {}),
         ...(opts.executionObserver ? { executionObserver: opts.executionObserver } : {}),
         ...(opts.executionLimits ? { executionLimits: opts.executionLimits } : {}),

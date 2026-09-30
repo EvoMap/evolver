@@ -4,3 +4,4 @@ export * from './shadowHub.js';
 export * from './shadowStore.js';
 export * from './shadowMailbox.js';
 export * from './redact.js';
+export * from './jevDecision.js';

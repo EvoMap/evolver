@@ -1,4 +1,5 @@
 import { hub } from '@evomap/evolver-core';
+import { DiscoveryError } from './discovery.js';
 export class UnknownToolError extends Error {
     name;
     constructor(name) {
@@ -37,8 +38,10 @@ export class EvolverMcpServer {
             return { ok: true, result: await tool.handler(args) };
         }
         catch (e) {
-            if (e instanceof hub.RecipeExecutionError)
+            if (e instanceof hub.RecipeExecutionError || e instanceof DiscoveryError)
                 return { ok: false, error: e.code, code: e.code, status: e.status, ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) };
+            if (name === 'evolver_recipe_search')
+                return { ok: false, error: 'discovery_failed', code: 'discovery_failed', status: 502 };
             if (name.startsWith('evolver_recipe_'))
                 return { ok: false, error: 'recipe_execution_failed', code: 'recipe_execution_failed', status: 502 };
             return { ok: false, error: e instanceof Error ? e.message : String(e) };

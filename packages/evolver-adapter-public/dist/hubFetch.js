@@ -151,6 +151,7 @@ export async function authenticateHubRequest(deps, method, path, bodyObj) {
             throw new HubUnreachableError('hub authentication timed out', {
                 context: `${method} ${path}`,
                 retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+                retryAfterSource: 'local_backoff',
                 operation,
             });
         }
@@ -228,7 +229,7 @@ export class HubFetch {
                 if (deadline.signal.aborted)
                     throw deadline.error;
                 if (isHubUnreachableError(err)) {
-                    throw new HubUnreachableError(`${method} ${path} failed before a Hub API response arrived`, { context: `${method} ${path}`, retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS });
+                    throw new HubUnreachableError(`${method} ${path} failed before a Hub API response arrived`, { context: `${method} ${path}`, retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS, retryAfterSource: 'local_backoff' });
                 }
                 throw err;
             }
@@ -239,7 +240,7 @@ export class HubFetch {
                 await drainHubResponse(res, { signal: deadline.signal });
                 if (deadline.signal.aborted)
                     throw deadline.error;
-                throw new HubUnreachableError(`${method} ${path} refused an unexpected Hub redirect`, { status: res.status, context: `${method} ${path}`, retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS });
+                throw new HubUnreachableError(`${method} ${path} refused an unexpected Hub redirect`, { status: res.status, context: `${method} ${path}`, retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS, retryAfterSource: retryAfterMs === undefined ? 'local_backoff' : 'server' });
             }
             const parsed = await readHubResponseJsonForClassification(res, deadline.signal);
             if (deadline.signal.aborted)
@@ -306,6 +307,7 @@ function createHubDeadline(scheduler, method, path, operation, timeoutMs) {
     const error = new HubUnreachableError(`${method} ${path} timed out after ${timeoutMs}ms`, {
         context: `${method} ${path}`,
         retryAfterMs: HUB_UNREACHABLE_BACKOFF_BASE_MS,
+        retryAfterSource: 'local_backoff',
         operation,
         timeoutMs,
     });
@@ -547,6 +549,7 @@ export async function throwIfHubUnreachableResponse(res, context = 'hub') {
         contentType,
         context,
         retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS,
+        retryAfterSource: retryAfterMs === undefined ? 'local_backoff' : 'server',
     });
 }
 async function readHubResponseJsonForClassification(res, signal) {
@@ -574,6 +577,7 @@ function throwIfParsedHubUnreachableResponse(res, parsed, context, retryAfterMs)
             contentType: contentType || 'unknown content-type',
             context,
             retryAfterMs: retryAfterMs ?? HUB_UNREACHABLE_BACKOFF_BASE_MS,
+            retryAfterSource: retryAfterMs === undefined ? 'local_backoff' : 'server',
         });
     }
 }

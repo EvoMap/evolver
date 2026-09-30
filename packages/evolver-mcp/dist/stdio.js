@@ -23,8 +23,8 @@ const store = new assetstore.LocalJsonlProvider(events.assetsDir());
 const mailboxPath = process.env['EVOLVER_MCP_MAILBOX'] ?? join(events.evomapHome(), 'mailbox', 'mcp.db');
 mkdirSync(dirname(mailboxPath), { recursive: true });
 const box = new mailbox.MailboxStore({ path: mailboxPath });
-// A configured proxy is authoritative. If it is temporarily unreachable or its Hub credential
-// was revoked, tool calls must surface that failure instead of silently switching to local mode.
+// A configured proxy is authoritative. Discovery may report an explicitly incomplete result
+// during an outage, but must never silently switch to local mode or hide rejected credentials.
 const proxy = proxyClientFromEnv(process.env);
 // Reuse-feedback wiring (#268): a root_events writer + a per-connection correlation id so a SUCCESS reuse_result
 // from THIS MCP agent credits the local experience loop (one stdio process ~ one MCP session).

@@ -4,7 +4,7 @@ import type { ReviewLedger } from '../assetstore/reviewLedger.js';
 import type { GeneCandidateInput, SelectionGuardMode } from '../algo/geneSelection.js';
 import type { CycleEngine, ExecutionFailureKind, ExecutionResult, SolidifyPermitGate } from '../algo/cycleEngine.js';
 import { type AutonomousSafety } from './autonomousCycle.js';
-import { type GitRunner, type ValidateHook } from './claudeBridge.js';
+import { type GitRunner, type GitPatchWriter, type ValidateHook } from './claudeBridge.js';
 import type { AgentRunner } from './runnerRegistry.js';
 import { type OpenPrLister } from './openPrRegistry.js';
 import type { ReuseOutcomeSummary, ReuseOutcomeEvent } from '../ops/reuseOutcomes.js';
@@ -150,6 +150,7 @@ export interface AutoExecDeps {
     agent?: AgentRunner;
     /** Test/custom seam: inject git instead of spawning git. */
     git?: GitRunner;
+    gitPatchWriter?: GitPatchWriter;
     /**
      * Learning trace (Learning Ops slice 2): when set, each task run gets its own AgentRunTraceRecorder
      * (traceId = the cycleId) emitting run.started/model.called/tool.failed/run.completed, and a

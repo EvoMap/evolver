@@ -6,6 +6,7 @@ import { MATERIAL_RUNTIME_SESSION_SNAPSHOT_SCHEMA, materialHasRuntimeSessionSnap
 import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 import { signalTokens } from './distillPrimitives.js';
 import { readEvents, showCycle } from './commands.js';
+import { prepareLlmCycle, readCycleValidationSpec } from './llmCycle.js';
 import { RUNTIME_CAPABILITY_MATRIX, runtimeCapabilities } from './runtimeCapabilities.js';
 import { parseRuntimeSessionSources } from './runtimeSessionSource.js';
 import { LocalMemoryGraph, resolveLocalMemoryUserIdentity } from './localMemoryGraph.js';
@@ -17,8 +18,8 @@ const DEFAULT_LIMIT = 5;
 const DEFAULT_WATCH_IDLE_MS = 1000;
 const DEFAULT_WATCH_MAX_IDLE_MS = 30_000;
 const DEFAULT_WATCH_BACKOFF = 2;
-const CYCLE_USAGE = 'usage: evolver cycle capabilities [--json] | evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--resume] [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--resume] [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini] [--validation-cmd <cmd>] [--timeout-ms N]\n';
-const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--resume] [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
+const CYCLE_USAGE = 'usage: evolver cycle capabilities [--json] | evolver cycle show <id> | evolver cycle status [--json] | evolver cycle recover [--limit N] [--json] | evolver cycle watch --repo <path> [--resume] [--idle-ms N] [--max-idle N] [--state-file <path>] [--validation-cmd <cmd>] [--timeout-ms N] [--json] | evolver cycle --repo <path> [--resume] [--limit N] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini|llm] [--validation-spec <file>] [--validation-cmd <cmd>] [--timeout-ms N]\n';
+const WATCH_USAGE = 'usage: evolver cycle watch --repo <path> [--resume] [--limit N] [--idle-ms N] [--max-idle-ms N] [--max-idle N] [--max-iterations N] [--state-file <path>] [--target <path>] [--expected-effect <text>] [--runner claude|codex|gemini|llm] [--validation-spec <file>] [--validation-cmd <cmd>] [--timeout-ms N] [--json]\n';
 class CycleWatchStateWriteError extends Error {
     constructor() {
         super('cycle watch state file write failed');
@@ -114,17 +115,23 @@ function parseRunner(value) {
     if (value === undefined || value === 'claude')
         return { ok: true, runner: 'claude' };
     if (value.trim() === '')
-        return { ok: false, error: 'runner value is required (supported: claude, codex, gemini)' };
-    if (value === 'codex' || value === 'gemini')
+        return { ok: false, error: 'runner value is required (supported: claude, codex, gemini, llm)' };
+    if (value === 'codex' || value === 'gemini' || value === 'llm')
         return { ok: true, runner: value };
     if (value === 'cursor' || value === 'antigravity' || value === 'kimi' || value === 'kiro' || value === 'opencode') {
         const capability = RUNTIME_CAPABILITY_MATRIX[value].execute;
         return { ok: false, error: `runner '${value}' execute capability is ${capability.status}: ${capability.evidence}` };
     }
-    return { ok: false, error: `unknown runner '${value}' (supported: claude, codex, gemini)` };
+    return { ok: false, error: `unknown runner '${value}' (supported: claude, codex, gemini, llm)` };
 }
 function resolveMaterialRunner(material, requestedRunner) {
     const sourceAgent = material.sourceAgent;
+    // Executor identity is explicit; the material remains attributed to its original runtime.
+    const sourceCapability = sourceAgent ? RUNTIME_CAPABILITY_MATRIX[sourceAgent] : undefined;
+    if (requestedRunner === 'llm' && material.sourceKind === 'runtime_session'
+        && sourceCapability && sourceCapability.ingest.status !== 'unsupported') {
+        return { ok: true, runner: 'llm' };
+    }
     let runner;
     switch (sourceAgent) {
         case 'claude-code':
@@ -157,6 +164,23 @@ function resolveMaterialRunner(material, requestedRunner) {
         };
     }
     return { ok: true, runner };
+}
+function cycleValidationSpec(flags, runner, resume, commands) {
+    if (runner !== 'llm') {
+        if ('validation-spec' in flags)
+            throw new Error('--validation-spec requires explicit --runner llm');
+        return undefined;
+    }
+    if (resume)
+        throw new Error('llm executes a new file task; native session resume is unsupported');
+    if (commands.length > 0)
+        throw new Error('--validation-spec cannot replace or combine with --validation-cmd; script validation still requires an OS sandbox');
+    if (!flags['validation-spec'])
+        throw new Error('--runner llm requires --validation-spec with independent expected file hashes');
+    const spec = readCycleValidationSpec(flags['validation-spec']);
+    exec.readLlmRunnerConfig();
+    verify.assertDeclarativeValidationAvailable(flags['repo']);
+    return spec;
 }
 function printRuntimeCapabilities() {
     for (const entry of runtimeCapabilities()) {
@@ -543,6 +567,35 @@ async function processMaterial(material, opts, deps) {
             ...(resume?.ok ? { resume: resume.resume } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
         };
+        if (opts.validationSpec) {
+            await deps.ingestor.ingest({
+                type: 'cycle.execution_admitted',
+                human: { title: 'LLM 文件执行准入', severity: 'info' },
+                payload: { cycleId, materialId: material.materialId, sourceAgent: material.sourceAgent, runner: runner.runner,
+                    validationSpec: opts.validationSpec, validationPlanDigest: verify.declarativeValidationDigest(opts.validationSpec) },
+                actor: { kind: 'machine' },
+            });
+        }
+        let validationEvidence;
+        const recordValidation = (input) => {
+            const validate = opts.validate?.(input);
+            if (!validate)
+                return () => ({ passed: false, score: 0.2 });
+            return async (mutation, decision, cwd, signal) => {
+                const result = await validate(mutation, decision, cwd, signal);
+                if (result.validator) {
+                    validationEvidence = structuredClone(result.validator);
+                    if (opts.validationSpec)
+                        await deps.ingestor.ingest({
+                            type: 'cycle.validation',
+                            human: { title: '独立文件验收回执', severity: result.passed ? 'info' : 'warn' },
+                            payload: { cycleId, materialId: material.materialId, runner: runner.runner, validator: validationEvidence },
+                            actor: { kind: 'machine' },
+                        });
+                }
+                return result;
+            };
+        };
         const verdict = await exec.runAutoExecTask({
             engine: deps.engine,
             store: deps.store,
@@ -555,9 +608,10 @@ async function processMaterial(material, opts, deps) {
             ...(deps.selectionPolicy !== 'engine-health' ? { selectionPolicy: deps.selectionPolicy } : {}),
             selectionGuard: deps.selectionGuard,
             ...(deps.selectionFloor !== undefined ? { selectionFloor: deps.selectionFloor } : {}),
-            ...(opts.validate ? { validate: opts.validate } : {}),
+            ...(opts.validate ? { validate: recordValidation } : {}),
             ...(opts.agent ? { agent: opts.agent } : {}),
             ...(opts.git ? { git: opts.git } : {}),
+            ...(opts.gitPatchWriter ? { gitPatchWriter: opts.gitPatchWriter } : {}),
         }, task, safety);
         const item = {
             materialId: material.materialId,
@@ -571,6 +625,9 @@ async function processMaterial(material, opts, deps) {
             signalCount: extracted.signals.length,
             signals: extracted.signals,
             runner: runner.runner,
+            ...(material.sourceAgent ? { sourceAgent: material.sourceAgent } : {}),
+            ...(opts.validationSpec ? { validationKind: 'exact_file_sha256', validationPlanDigest: verify.declarativeValidationDigest(opts.validationSpec) } : {}),
+            ...(validationEvidence ? { validationEvidence } : {}),
             ...(resume?.ok && verdict.status === 'solidified' ? { resumedSession: true } : {}),
         });
         ackOne(deps.consumer, material);
@@ -581,6 +638,10 @@ async function processMaterial(material, opts, deps) {
     }
 }
 export async function runMaterialCycleConsumer(opts, injectedDeps = {}) {
+    opts = prepareLlmCycle(opts);
+    // The LLM Git runner verifies executable repository configuration before claiming input.
+    if (opts.runner === 'llm')
+        await opts.git?.(['rev-parse', '--is-inside-work-tree'], opts.repo, opts.signal);
     const deps = resolveMaterialCycleDeps(injectedDeps);
     const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
     const claimed = deps.consumer.claim(CYCLE_GROUP, limit);
@@ -1040,6 +1101,14 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
             process.stderr.write(WATCH_USAGE);
             return 1;
         }
+        let validationSpec;
+        try {
+            validationSpec = cycleValidationSpec(flags, runner.runner, resume, validationCmds);
+        }
+        catch (error) {
+            process.stderr.write(`${error instanceof Error ? error.message : 'invalid LLM cycle configuration'}\n`);
+            return 1;
+        }
         const validate = makeCycleValidationHook(validationCmds, injectedDeps.validate, injectedDeps.runSandboxedValidation);
         const maxIdle = parseRequiredPositiveIntFlag(flags, 'max-idle');
         const maxIterations = parseRequiredPositiveIntFlag(flags, 'max-iterations');
@@ -1074,10 +1143,12 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
                 signal,
                 ...(timeoutMs !== undefined ? { timeoutMs } : {}),
                 ...(validationCmds.length > 0 ? { validationCmds } : {}),
+                ...(validationSpec ? { validationSpec } : {}),
                 ...(validate ? { validate } : {}),
                 safety: { ...injectedDeps.safety, signal },
                 ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
                 ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
+                ...(injectedDeps.gitPatchWriter ? { gitPatchWriter: injectedDeps.gitPatchWriter } : {}),
                 idleMs: parsePositiveInt(flags['idle-ms'], DEFAULT_WATCH_IDLE_MS),
                 maxIdleMs: parsePositiveInt(flags['max-idle-ms'], DEFAULT_WATCH_MAX_IDLE_MS),
                 ...(maxIdle !== undefined ? { maxIdle } : {}),
@@ -1192,6 +1263,14 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
         process.stderr.write(CYCLE_USAGE);
         return 1;
     }
+    let validationSpec;
+    try {
+        validationSpec = cycleValidationSpec(flags, runner.runner, resume, validationCmds);
+    }
+    catch (error) {
+        process.stderr.write(`${error instanceof Error ? error.message : 'invalid LLM cycle configuration'}\n`);
+        return 1;
+    }
     const validate = makeCycleValidationHook(validationCmds, injectedDeps.validate, injectedDeps.runSandboxedValidation);
     const cancellation = createProcessCancellation();
     const signal = combineSignals(cancellation.signal, injectedDeps.safety?.signal);
@@ -1207,10 +1286,12 @@ export async function runCycleCommand(argv, injectedDeps = {}) {
             signal,
             ...(timeoutMs !== undefined ? { timeoutMs } : {}),
             ...(validationCmds.length > 0 ? { validationCmds } : {}),
+            ...(validationSpec ? { validationSpec } : {}),
             ...(validate ? { validate } : {}),
             safety: { ...injectedDeps.safety, signal },
             ...(injectedDeps.agent ? { agent: injectedDeps.agent } : {}),
             ...(injectedDeps.git ? { git: injectedDeps.git } : {}),
+            ...(injectedDeps.gitPatchWriter ? { gitPatchWriter: injectedDeps.gitPatchWriter } : {}),
         }, injectedDeps);
     }
     finally {

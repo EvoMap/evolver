@@ -3,6 +3,8 @@ import type { GeneDecision } from '../algo/geneSelection.js';
 import type { PersonalityStateInput } from '../personality/schema.js';
 /** The slice of a selected gene that shapes the instruction (all optional — pass what the store has). */
 export interface GeneStrategyInfo {
+    /** A declarative file receipt must never stand in for this Gene's executable validation contract. */
+    requiresCommandValidation?: boolean;
     strategy?: readonly string[];
     preconditions?: readonly string[];
     summary?: string;

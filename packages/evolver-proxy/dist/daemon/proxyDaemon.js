@@ -10,6 +10,7 @@ import { backfillProxyTraceUploads } from '../llm/traceBackfill.js';
 import { invokeRecipeIpc, recipeIpcScope } from './recipeExecution.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
+import { classifyDiscoveryUpstreamError } from './discoveryErrors.js';
 import { PublishBindingLedger } from './publishBindingLedger.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
@@ -195,11 +196,16 @@ export class ProxyDaemon {
         const proxyHandler = this.proxyHandler;
         const syncProxyHandler = (envelope) => this.handleHubModeBoundOutbound(envelope);
         const assetByIdSource = isAssetByIdFetcher(deps.hub) ? deps.hub : (isAssetByIdFetcher(hubToUse) ? hubToUse : undefined);
+        // The hub is the authority on what it holds. A delivery bound to the
+        // requested id is handed on even when its body no longer hashes to that id:
+        // roughly a fifth of promoted assets are in that state, one of them saying
+        // so in its own payload (`payload_backfill_reason:
+        // hub_synthesized_from_outcome_fallback`), and refusing them client-side
+        // turned a hub data-integrity fault into "not retrievable" at the caller.
+        // The hub's own refusals — a row for a different asset, a revoked one —
+        // still stand, because those are the hub refusing, not us second-guessing.
         this.remoteAssetById = assetByIdSource
-            ? async (assetId) => {
-                const fetched = await assetByIdSource.fetchAssetById(assetId);
-                return assetMatchesId(fetched, assetId) ? fetched : null;
-            }
+            ? async (assetId) => assetByIdSource.fetchAssetById(assetId, { allowUnverifiedExactIdentity: true })
             : undefined;
         const publishRecallConfig = resolvePublishRecallConfig();
         this.publishRecallVerifier = deps.publishRecallVerifier ?? new PublishRecallVerifier({
@@ -1039,24 +1045,34 @@ export class ProxyDaemon {
                 return true;
             }
             try {
-                const results = await this.searchAssets(query);
-                this.respondAssetSearch(ctx, body, results, limit);
+                let remoteFailure;
+                const results = await this.searchAssets(query, (error) => {
+                    remoteFailure = error;
+                });
+                this.respondAssetSearch(ctx, body, results, limit, remoteFailure === undefined ? {} : assetSearchDegradedResponse(remoteFailure));
             }
             catch (error) {
-                if (!isAuthLikeError(error))
-                    throw error;
-                this.markHubAuthFailed(error);
-                if (this.hubAuthFailurePolicy === 'deny') {
-                    ctx.json(401, this.hubAuthFailureBody());
+                if (isAuthLikeError(error)) {
+                    this.markHubAuthFailed(error);
+                    if (this.hubAuthFailurePolicy === 'deny') {
+                        ctx.json(401, this.hubAuthFailureBody());
+                        return true;
+                    }
+                    const results = await this.localSearchAssets(query);
+                    this.respondAssetSearch(ctx, body, results, limit, {
+                        degraded: true,
+                        local_fallback: true,
+                        auth_status: HUB_AUTH_FAILED,
+                        warning: HUB_AUTH_FAILURE_WARNING,
+                    });
                     return true;
                 }
-                const results = await this.localSearchAssets(query);
-                this.respondAssetSearch(ctx, body, results, limit, {
-                    degraded: true,
-                    local_fallback: true,
-                    auth_status: HUB_AUTH_FAILED,
-                    warning: HUB_AUTH_FAILURE_WARNING,
-                });
+                const failure = classifyDiscoveryUpstreamError(error);
+                if (failure) {
+                    ctx.json(failure.status, failure.body);
+                    return true;
+                }
+                throw error;
             }
             return true;
         }
@@ -1085,7 +1101,17 @@ export class ProxyDaemon {
                 ...(cursor ? { cursor } : {}),
                 ...(sort ? { sort } : {}),
             };
-            const receipt = q ? await recipes.search(request) : await recipes.list(request);
+            let receipt;
+            try {
+                receipt = q ? await recipes.search(request) : await recipes.list(request);
+            }
+            catch (error) {
+                const failure = classifyDiscoveryUpstreamError(error);
+                if (!failure)
+                    throw error;
+                ctx.json(failure.status, failure.body);
+                return true;
+            }
             ctx.json(200, {
                 recipes: receipt.recipes,
                 ...(receipt.nextCursor ? { nextCursor: receipt.nextCursor } : {}),
@@ -1573,8 +1599,16 @@ export class ProxyDaemon {
                 respondAgentDirectory(ctx, parsed);
                 return true;
             }
-            const result = await directory.search(parsed.value);
-            respondAgentDirectory(ctx, result);
+            try {
+                const result = await directory.search(parsed.value);
+                respondAgentDirectory(ctx, result);
+            }
+            catch (error) {
+                const failure = classifyDiscoveryUpstreamError(error);
+                if (!failure)
+                    throw error;
+                ctx.json(failure.status, failure.body);
+            }
             return true;
         }
         if (ctx.route === 'POST /agent/profile') {
@@ -1590,8 +1624,16 @@ export class ProxyDaemon {
                 respondAgentDirectory(ctx, invalidAgentDirectoryRequest(error));
                 return true;
             }
-            const result = await directory.getProfile(agentId, { timeoutMs });
-            respondAgentDirectory(ctx, result);
+            try {
+                const result = await directory.getProfile(agentId, { timeoutMs });
+                respondAgentDirectory(ctx, result);
+            }
+            catch (error) {
+                const failure = classifyDiscoveryUpstreamError(error);
+                if (!failure)
+                    throw error;
+                ctx.json(failure.status, failure.body);
+            }
             return true;
         }
         if (ctx.route === 'POST /agent/discover') {
@@ -1615,12 +1657,20 @@ export class ProxyDaemon {
                 respondAgentDirectory(ctx, invalidAgentDirectoryRequest(error));
                 return true;
             }
-            const result = await directory.discoverForTask(request);
-            respondAgentDirectory(ctx, result);
+            try {
+                const result = await directory.discoverForTask(request);
+                respondAgentDirectory(ctx, result);
+            }
+            catch (error) {
+                const failure = classifyDiscoveryUpstreamError(error);
+                if (!failure)
+                    throw error;
+                ctx.json(failure.status, failure.body);
+            }
             return true;
         }
     }
-    async searchAssets(query) {
+    async searchAssets(query, onRemoteFailure) {
         const limit = Math.max(1, Math.min(Number(query.limit ?? 5), 25));
         const local = this.assetStore ? await this.assetStore.search(query) : [];
         if (query.kind === 'AntiGene')
@@ -1635,6 +1685,9 @@ export class ProxyDaemon {
                 throw error;
             if (localSafe.length === 0)
                 throw error;
+            if (onRemoteFailure && classifyDiscoveryUpstreamError(error)?.body.retryable !== true)
+                throw error;
+            onRemoteFailure?.(error);
             remote = [];
         }
         reference.assertExecutionEligible(remote, this.referenceStore?.scope);
@@ -2658,6 +2711,17 @@ function cachedSynchronousAssetSubmitFailure(outcome) {
 function isSynchronousAssetSubmitEnvelope(envelope) {
     return envelope.type === 'asset_submit'
         && envelope.idempotencyKey.startsWith(SYNC_ASSET_SUBMIT_PREFIX);
+}
+function assetSearchDegradedResponse(error) {
+    const classified = classifyDiscoveryUpstreamError(error);
+    return {
+        ...(classified ? { ...classified.body, status: classified.status } : {}),
+        search_status: 'degraded',
+        complete: false,
+        local_fallback: true,
+        source: 'local',
+        reason: classified?.body.error ?? 'remote_search_failed',
+    };
 }
 function isTerminalSynchronousPublishFailure(error) {
     if (error instanceof AuthError || errorName(error) === 'AuthError')

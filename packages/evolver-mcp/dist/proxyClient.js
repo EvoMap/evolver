@@ -3,6 +3,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { DiscoveryError, discoverWithRetry, discoveryHttpError, isDiscoveryPath } from './discovery.js';
 export function safeReverificationRecovery(value) {
     const input = recordValue(value);
     const ids = (candidate) => Array.isArray(candidate)
@@ -49,7 +50,7 @@ export class EvolverProxyClient {
     }
     search(args) {
         const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
-        return this.call('POST', '/asset/search', {
+        return this.discover('/asset/search', {
             ...(args.text ? { text: args.text } : {}),
             ...(args.signalsAny && args.signalsAny.length > 0 ? { signals: args.signalsAny } : {}),
             ...(args.kind ? { kind: args.kind } : {}),
@@ -57,17 +58,17 @@ export class EvolverProxyClient {
             ...(args.gene ? { gene: args.gene } : {}),
             ...(args.limit !== undefined ? { limit: args.limit } : {}),
             ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
-        });
+        }, args.timeoutMs);
     }
     searchRecipes(args) {
         const expectedHubMode = args.expectedHubMode ?? this.expectedHubMode;
-        return this.call('POST', '/recipe/search', {
+        return this.discover('/recipe/search', {
             ...(args.q ? { q: args.q } : {}),
             ...(args.limit !== undefined ? { limit: args.limit } : {}),
             ...(args.cursor ? { cursor: args.cursor } : {}),
             ...(args.sort ? { sort: args.sort } : {}),
             ...(expectedHubMode ? { expected_hub_mode: expectedHubMode } : {}),
-        });
+        }, args.timeoutMs);
     }
     expressRecipe(args) {
         return this.recipeExecution('express', args);
@@ -155,17 +156,20 @@ export class EvolverProxyClient {
         });
     }
     searchAgents(args) {
-        return this.call('POST', '/agent/search', agentDirectoryBody(args));
+        return this.discover('/agent/search', agentDirectoryBody(args), args.timeoutMs);
     }
     getAgentProfile(agentId, timeoutMs) {
-        return this.call('POST', '/agent/profile', { agent_id: agentId, ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}) });
+        return this.discover('/agent/profile', { agent_id: agentId, ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}) }, timeoutMs);
     }
     discoverAgentsForTask(args) {
-        return this.call('POST', '/agent/discover', {
+        return this.discover('/agent/discover', {
             title: args.title,
             ...(args.description ? { description: args.description } : {}),
             ...agentDirectoryBody(args),
-        });
+        }, args.timeoutMs);
+    }
+    discover(path, body, timeoutMs) {
+        return discoverWithRetry((signal) => this.call('POST', path, body, { signal }), timeoutMs);
     }
     submitAsset(asset) {
         // MCP publishing remains durable and outage-tolerant; the bare route is reserved for V1 synchronous callers.
@@ -255,7 +259,7 @@ export class EvolverProxyClient {
         let connection = this.connectionSnapshot();
         try {
             if (path !== '/proxy/status' && this.expectedHubMode === 'private') {
-                await this.verifyExpectedHubMode(connection, opts);
+                await this.verifyExpectedHubMode(connection, opts, isDiscoveryPath(path));
             }
             const result = await this.callOnce(method, path, body, opts, connection);
             if (result.ok)
@@ -282,18 +286,18 @@ export class EvolverProxyClient {
             throw err;
         }
     }
-    async verifyExpectedHubMode(connection, opts) {
+    async verifyExpectedHubMode(connection, opts, discovery = false) {
         // A proxy can restart on the same loopback URL with the same operator-supplied token. Verify every private
         // operation against the same immutable connection snapshot used for its payload. This prevents a concurrent
         // settings reload from moving the payload to an endpoint that the status probe never verified.
         const result = await this.callOnce('GET', '/proxy/status', undefined, opts, connection);
         if (!result.ok)
-            throw this.proxyError(result, '/proxy/status');
+            throw discovery ? discoveryHttpError(result.status, result.parsed) : this.proxyError(result, '/proxy/status');
         this.acceptResult(result, '/proxy/status');
     }
     async verifyReloadedHubMode(path, connection, opts) {
         if (path !== '/proxy/status' && this.expectedHubMode === 'private') {
-            await this.verifyExpectedHubMode(connection, opts);
+            await this.verifyExpectedHubMode(connection, opts, isDiscoveryPath(path));
         }
     }
     acceptResult(result, path) {
@@ -305,6 +309,7 @@ export class EvolverProxyClient {
         return result.parsed;
     }
     async callOnce(method, path, body, opts, connection, preserveHttpStatus = false) {
+        opts.signal?.throwIfAborted();
         const res = await this.fetchFn(`${connection.baseUrl}${path}`, {
             method,
             headers: {
@@ -320,8 +325,12 @@ export class EvolverProxyClient {
             parsed = await res.json();
         }
         catch (error) {
-            if (!preserveHttpStatus)
-                throw error;
+            if (!preserveHttpStatus) {
+                if (!isDiscoveryPath(path) || opts.signal?.aborted)
+                    throw error;
+                if (res.ok)
+                    throw new DiscoveryError('invalid_response', 502, false);
+            }
         }
         return { ok: res.ok, status: res.status, parsed };
     }
@@ -340,6 +349,8 @@ export class EvolverProxyClient {
         return true;
     }
     proxyError(result, path) {
+        if (isDiscoveryPath(path))
+            return discoveryHttpError(result.status, result.parsed);
         if (path.startsWith('/recipe/')) {
             const body = recordValue(result.parsed);
             const value = body['code'] ?? body['error'];

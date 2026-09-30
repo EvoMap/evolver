@@ -3,6 +3,14 @@ const experimental = (evidence) => ({ status: 'experimental', evidence });
 const unsupported = (evidence) => ({ status: 'unsupported', evidence });
 /** Product-level runtime matrix. A transcript parser never implies execution, verification, or resumability. */
 export const RUNTIME_CAPABILITY_MATRIX = {
+    llm: {
+        runtime: 'llm',
+        ingest: unsupported('explicit file executor; preserves the imported runtime Material sourceAgent'),
+        inject: unsupported('no native harness or injection installer'),
+        execute: experimental('opt-in --runner llm with an OpenAI-compatible provider and a frozen --validation-spec; bounded file tools only, no model-selected processes; live provider/release acceptance pending'),
+        verify: experimental('independent exact file SHA-256 acceptance on native Windows, Linux and macOS code paths; no script execution or OS sandbox claim; platform and published-artifact acceptance required'),
+        resume: unsupported('starts a new file task; interrupted cycles retain their original event/cleanup recovery boundary'),
+    },
     'claude-code': {
         runtime: 'claude-code',
         ingest: supported('normalized Claude Code JSONL adapter'),

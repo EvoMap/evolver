@@ -3,9 +3,8 @@
 // workspace itself through a small, bounded tool set. It is the difference between a
 // daemon that can take a task and one that can only watch tasks go by.
 //
-// Wire protocol is OpenAI-compatible chat completions with tool calls — the one shape
-// nearly every vendor and gateway exposes, including Anthropic's compatibility endpoint.
-// Point EVOLVER_LLM_BASE_URL at whichever serves the model.
+// The operator chooses Chat Completions (default) or Responses explicitly. The base
+// URL is used as configured; neither protocol, model nor version path is guessed.
 import { validateHeaderName, validateHeaderValue } from 'node:http';
 import { workspaceAt } from './llmWorkspace.js';
 export { workspaceAt } from './llmWorkspace.js';
@@ -14,6 +13,14 @@ export const LLM_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 export const LLM_DEFAULT_MODEL = 'gpt-4.1';
 const DEFAULT_MAX_TURNS = 12;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024;
+const MAX_TURNS = 64;
+const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
+const MAX_TOOL_CALLS = 64;
+const MAX_RESPONSE_ITEMS = 256;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const DEFAULT_TIMEOUT_MS = 600_000;
 /** Why this node cannot run a model, in the words an operator needs to fix it. */
 export class LlmRunnerNotConfiguredError extends Error {
     constructor(missing) {
@@ -25,14 +32,49 @@ export function readLlmRunnerConfig(env = process.env) {
     const apiKey = (env['EVOLVER_LLM_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '').trim();
     if (!apiKey)
         throw new LlmRunnerNotConfiguredError('an API key');
-    return {
+    return validatedConfig({
         apiKey,
         baseUrl: (env['EVOLVER_LLM_BASE_URL'] ?? LLM_DEFAULT_BASE_URL).trim().replace(/\/+$/u, ''),
         model: (env['EVOLVER_LLM_MODEL'] ?? LLM_DEFAULT_MODEL).trim(),
-        maxTurns: positiveInt(env['EVOLVER_LLM_MAX_TURNS'], DEFAULT_MAX_TURNS),
-        maxFileBytes: positiveInt(env['EVOLVER_LLM_MAX_FILE_BYTES'], DEFAULT_MAX_FILE_BYTES),
+        apiBackend: env['EVOLVER_LLM_API_BACKEND'],
+        maxTurns: configuredInt(env['EVOLVER_LLM_MAX_TURNS'], DEFAULT_MAX_TURNS),
+        maxFileBytes: configuredInt(env['EVOLVER_LLM_MAX_FILE_BYTES'], DEFAULT_MAX_FILE_BYTES),
         extraHeaders: readLlmRunnerHeaders(env['EVOLVER_LLM_HEADERS']),
-    };
+    });
+}
+function validatedConfig(config) {
+    const fail = () => { throw new Error('invalid llm runner configuration; use a valid HTTPS endpoint (HTTP is allowed only for a loopback address), model, API key, bounded integer limits and API backend chat-completions or responses'); };
+    const apiBackend = config.apiBackend === undefined ? 'chat-completions' : config.apiBackend;
+    if (apiBackend !== 'chat-completions' && apiBackend !== 'responses')
+        return fail();
+    if (typeof config.baseUrl !== 'string' || config.baseUrl.length > 2048)
+        return fail();
+    let url;
+    try {
+        url = new URL(config.baseUrl);
+    }
+    catch {
+        return fail();
+    }
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+    if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
+        || url.username || url.password || url.href.includes('?') || url.href.includes('#'))
+        return fail();
+    if (typeof config.model !== 'string' || !config.model.trim() || config.model.length > 256 || /\p{Cc}/u.test(config.model)
+        || typeof config.apiKey !== 'string' || !config.apiKey.trim() || config.apiKey.length > 16_384 || /\p{Cc}/u.test(config.apiKey)
+        || !Number.isSafeInteger(config.maxTurns) || config.maxTurns < 1 || config.maxTurns > MAX_TURNS
+        || !Number.isSafeInteger(config.maxFileBytes) || config.maxFileBytes < 1 || config.maxFileBytes > MAX_FILE_BYTES)
+        return fail();
+    try {
+        validateHeaderValue('authorization', `Bearer ${config.apiKey}`);
+    }
+    catch {
+        return fail();
+    }
+    const extraHeaders = normalizeLlmRunnerHeaders(config.extraHeaders ?? {});
+    if (Buffer.byteLength(JSON.stringify(extraHeaders)) > 16_384)
+        return fail();
+    return { ...config, apiBackend, baseUrl: url.href.replace(/\/+$/u, ''), model: config.model.trim(), apiKey: config.apiKey.trim(), extraHeaders };
 }
 function invalidHeaders() {
     // Neither JSON.parse nor HTTP validation diagnostics are safe to echo: headers may contain credentials.
@@ -80,9 +122,8 @@ function readLlmRunnerHeaders(raw) {
     }
     return normalizeLlmRunnerHeaders(input);
 }
-function positiveInt(raw, fallback) {
-    const parsed = Number(raw);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+function configuredInt(raw, fallback) {
+    return raw === undefined ? fallback : Number(raw);
 }
 const TOOLS = [
     { name: 'list_files', description: 'List the entries of a directory in the workspace.', properties: { path: { type: 'string', description: 'Directory relative to the workspace root. Defaults to the root.' } }, required: [] },
@@ -104,17 +145,32 @@ const SYSTEM_PROMPT = [
  * tool names to allowlist, because the tools are the three defined above.
  */
 export function makeLlmHeadlessRunner(_opts = {}, deps = {}) {
-    return async (prompt, ctx) => runLlmAgent(prompt, ctx, deps);
+    const writePaths = deps.writePaths === undefined ? undefined : Object.freeze([...deps.writePaths]);
+    if (writePaths && (writePaths.length === 0 || writePaths.length > 256 || new Set(writePaths).size !== writePaths.length
+        || writePaths.some((path) => typeof path !== 'string' || !path || path.length > 4096 || /[\\:]|\p{Cc}/u.test(path)
+            || path.split('/').some((part) => !part || part === '.' || part === '..')))) {
+        throw new Error('invalid llm write paths; use unique canonical relative paths');
+    }
+    const captured = { ...deps, ...(writePaths ? { writePaths } : {}) };
+    return async (prompt, ctx) => runLlmAgent(prompt, ctx, captured);
 }
 async function runLlmAgent(prompt, ctx, deps) {
     // A run that was cancelled before it started must not reach the model or the disk.
     // Adding a listener to an already-aborted signal never fires, so the state is checked.
     if (ctx.signal?.aborted)
         return { ok: false, output: '', error: 'cancelled', failureKind: 'cancelled' };
+    if (ctx.timeoutMs === 0)
+        return { ok: false, output: '', error: 'timed out', failureKind: 'timeout' };
+    if (ctx.timeoutMs !== undefined && (!Number.isSafeInteger(ctx.timeoutMs) || ctx.timeoutMs < 0 || ctx.timeoutMs > MAX_TIMEOUT_MS)) {
+        return { ok: false, output: '', error: 'invalid llm timeout; use a bounded non-negative integer', failureKind: 'spawn_failed' };
+    }
+    const startedAt = Date.now();
     let config;
     try {
         const supplied = deps.config ?? readLlmRunnerConfig(ctx.env ?? process.env);
-        config = { ...supplied, extraHeaders: normalizeLlmRunnerHeaders(supplied.extraHeaders ?? {}) };
+        config = validatedConfig(supplied);
+        if (typeof prompt !== 'string' || Buffer.byteLength(prompt) > MAX_REQUEST_BYTES)
+            throw new Error('llm prompt exceeds request byte limit');
     }
     catch (error) {
         // Nothing was launched and nothing can be: the same shape as a missing CLI binary.
@@ -142,8 +198,9 @@ async function runLlmAgent(prompt, ctx, deps) {
         return { ok: false, output: '', error: 'llm workspace unavailable; use an exclusively owned private workspace', failureKind: 'permission_denied', ...(recovery ? { workspaceRecovery: recovery } : {}) };
     }
     const fetchFn = deps.fetchFn ?? globalThis.fetch;
-    const deadline = abortAt(ctx);
+    const deadline = abortAt(ctx, startedAt);
     const messages = [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }];
+    const responseInput = messages.map((message) => ({ ...message }));
     const abandon = (result) => {
         let recovery;
         try {
@@ -161,16 +218,20 @@ async function runLlmAgent(prompt, ctx, deps) {
     };
     try {
         for (let turn = 0; turn < config.maxTurns; turn += 1) {
-            const reply = await complete(fetchFn, config, messages, deadline.signal);
+            deadline.check();
+            const completion = await complete(fetchFn, config, messages, responseInput, deadline.signal);
+            deadline.check();
+            const reply = completion.message;
             messages.push(reply);
+            if (completion.responseOutput)
+                responseInput.push(...completion.responseOutput);
             if (!reply.tool_calls || reply.tool_calls.length === 0) {
                 const output = (reply.content ?? '').trim();
                 const touched = workspace.touched();
                 // A turn that changed nothing is not a finished task, however well it reads.
                 if (touched.length === 0)
                     return abandon({ ok: false, output, error: 'the model finished without changing any file', failureKind: 'invalid_output' });
-                if (deadline.signal.aborted)
-                    throw new Error('aborted');
+                deadline.check();
                 workspace.complete?.();
                 if (workspace !== ownedWorkspace)
                     ownedWorkspace.complete?.();
@@ -178,9 +239,12 @@ async function runLlmAgent(prompt, ctx, deps) {
             }
             for (const call of reply.tool_calls) {
                 // Cancellation between turns must stop the writes too, not just the requests.
-                if (deadline.signal.aborted)
-                    throw new Error('aborted');
-                messages.push(runTool(workspace, call));
+                deadline.check();
+                const result = runTool(workspace, call, deps.writePaths);
+                rejectHeaderEcho(result, config.extraHeaders ?? {}, config.apiKey);
+                messages.push(result);
+                if (config.apiBackend === 'responses')
+                    responseInput.push({ type: 'function_call_output', call_id: call.id, output: result.content });
             }
         }
         return abandon({ ok: false, output: '', error: `gave up after ${config.maxTurns} turns without finishing`, failureKind: 'runtime_error' });
@@ -190,7 +254,7 @@ async function runLlmAgent(prompt, ctx, deps) {
             return abandon({ ok: false, output: '', error: 'timed out', failureKind: 'timeout' });
         if (ctx.signal?.aborted)
             return abandon({ ok: false, output: '', error: 'cancelled', failureKind: 'cancelled' });
-        return abandon({ ok: false, output: '', error: messageOf(error), failureKind: 'runtime_error' });
+        return abandon({ ok: false, output: '', error: redactSecrets(messageOf(error), config), failureKind: 'runtime_error' });
     }
     finally {
         deadline.dispose();
@@ -202,22 +266,20 @@ async function runLlmAgent(prompt, ctx, deps) {
         }
     }
 }
-function runTool(workspace, call) {
+function runTool(workspace, call, writePaths) {
     const answer = (content) => ({ role: 'tool', tool_call_id: call.id, name: call.function.name, content });
-    let args;
-    try {
-        args = JSON.parse(call.function.arguments || '{}');
-    }
-    catch {
-        return answer('error: arguments were not valid JSON');
-    }
+    // complete() validates the entire batch before the first tool can mutate the workspace.
+    const args = JSON.parse(call.function.arguments);
     try {
         if (call.function.name === 'list_files')
-            return answer(workspace.list(String(args['path'] ?? '.')));
+            return answer(workspace.list(args['path'] ?? '.'));
         if (call.function.name === 'read_file')
-            return answer(workspace.read(String(args['path'] ?? '')));
-        if (call.function.name === 'write_file')
-            return answer(workspace.write(String(args['path'] ?? ''), String(args['content'] ?? '')));
+            return answer(workspace.read(args['path']));
+        if (call.function.name === 'write_file') {
+            if (writePaths && !writePaths.includes(args['path']))
+                return answer('error: write path is not authorized by the validation plan');
+            return answer(workspace.write(args['path'], args['content']));
+        }
         return answer(`error: no such tool ${call.function.name}`);
     }
     catch (error) {
@@ -227,7 +289,23 @@ function runTool(workspace, call) {
     }
 }
 /** Reject the entire reply before any tool runs; rewriting generated code could silently change its meaning. */
-function rejectHeaderEcho(message, headers) {
+function credentialValues(config) {
+    const values = new Set([config.apiKey]);
+    for (const [name, value] of Object.entries(config.extraHeaders ?? {})) {
+        if (value)
+            values.add(value);
+        if (name === 'authorization' || name === 'proxy-authorization') {
+            const token = /^(?:Bearer|Basic)\s+(.+)$/iu.exec(value)?.[1];
+            if (token)
+                values.add(token);
+        }
+    }
+    return [...values].filter(Boolean);
+}
+function redactSecrets(message, config) {
+    return credentialValues(config).some((secret) => message.includes(secret)) ? 'llm operation failed (credential-bearing diagnostic omitted)' : message;
+}
+function rejectHeaderEcho(message, headers, apiKey) {
     const values = new Set();
     for (const [name, value] of Object.entries(headers)) {
         if (value)
@@ -238,26 +316,17 @@ function rejectHeaderEcho(message, headers) {
                 values.add(token);
         }
     }
-    if (values.size === 0)
-        return;
+    if (apiKey)
+        values.add(apiKey);
     const protectedValues = [...values];
     const pending = [message];
-    // Tool arguments are JSON inside a JSON string; inspect their decoded values too, including Unicode escapes.
-    if (Array.isArray(message.tool_calls)) {
-        for (const call of message.tool_calls) {
-            if (typeof call?.function?.arguments !== 'string')
-                continue;
-            try {
-                pending.push(JSON.parse(call.function.arguments));
-            }
-            catch { /* runTool reports malformed arguments safely */ }
-        }
-    }
     while (pending.length > 0) {
         const value = pending.pop();
         if (typeof value === 'string') {
             if (protectedValues.some((secret) => value.includes(secret))) {
-                throw new Error('llm response contains an EVOLVER_LLM_HEADERS value; response rejected');
+                throw new Error(Object.values(headers).some(Boolean)
+                    ? 'llm response contains an EVOLVER_LLM_HEADERS value; response rejected'
+                    : 'llm response contains a credential; response rejected');
             }
         }
         else if (Array.isArray(value)) {
@@ -265,33 +334,66 @@ function rejectHeaderEcho(message, headers) {
                 pending.push(entry);
         }
         else if (value && typeof value === 'object') {
+            // Both wire formats embed tool arguments as JSON strings. Inspect decoded
+            // values as well, so Unicode escaping cannot hide a credential in a write.
+            const argumentsJson = value['arguments'];
+            if (typeof argumentsJson === 'string') {
+                try {
+                    pending.push(JSON.parse(argumentsJson));
+                }
+                catch { /* message validation rejects malformed tool arguments */ }
+            }
             for (const [key, entry] of Object.entries(value))
                 pending.push(key, entry);
         }
     }
 }
-async function complete(fetchFn, config, messages, signal) {
-    const hasExtraHeaders = Object.keys(config.extraHeaders ?? {}).length > 0;
+async function complete(fetchFn, config, messages, responseInput, signal) {
+    const responses = config.apiBackend === 'responses';
+    const body = JSON.stringify(responses
+        ? { model: config.model, input: responseInput, tools: TOOLS.map((tool) => ({ type: tool.type, ...tool.function })), tool_choice: 'auto', store: false, include: ['reasoning.encrypted_content'] }
+        : { model: config.model, messages, tools: TOOLS, tool_choice: 'auto' });
+    if (Buffer.byteLength(body) > MAX_REQUEST_BYTES)
+        throw new Error('llm request exceeds byte limit');
     let response;
     let text;
     try {
-        response = await fetchFn(`${config.baseUrl}/chat/completions`, {
+        response = await awaitTransport(() => fetchFn(`${config.baseUrl}/${responses ? 'responses' : 'chat/completions'}`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}`, ...config.extraHeaders },
-            body: JSON.stringify({ model: config.model, messages, tools: TOOLS, tool_choice: 'auto' }),
+            body,
             signal,
             // Fetch may forward custom credentials across origins on redirects. Require the final endpoint instead.
-            ...(hasExtraHeaders ? { redirect: 'error' } : {}),
-        });
-        text = await response.text();
+            redirect: 'error',
+        }), signal, cancelResponseBody);
+        if (signal.aborted) {
+            cancelResponseBody(response);
+            throw new Error('aborted');
+        }
+        if (!response.ok) {
+            // Request cancellation, but an uncooperative stream must not prevent the
+            // runner from reporting failure and recovering its owned workspace.
+            cancelResponseBody(response);
+            // An HTTP body or status text may contain the Authorization header, even with no custom headers.
+            throw new Error(`llm ${Number.isInteger(response.status) ? response.status : 'request'}: request rejected (response body omitted)`);
+        }
     }
     catch (error) {
-        if (hasExtraHeaders)
-            throw new Error('llm request failed; check the endpoint and EVOLVER_LLM_HEADERS (transport details omitted)');
-        throw error;
+        const message = messageOf(error);
+        if (/^llm (?:\d{3}|request): request rejected \(response body omitted\)$/u.test(message))
+            throw error;
+        throw new Error('llm request failed; check endpoint and credentials (transport details omitted)');
     }
-    if (!response.ok)
-        throw new Error(`llm ${response.status}: ${hasExtraHeaders ? 'request rejected (response body omitted because EVOLVER_LLM_HEADERS is configured)' : text.slice(0, 300)}`);
+    try {
+        text = await boundedResponseText(response, signal);
+    }
+    catch (error) {
+        if (messageOf(error) === 'llm response exceeds byte limit')
+            throw error;
+        throw new Error('llm response could not be read (transport details omitted)');
+    }
+    if (signal.aborted)
+        throw new Error('aborted');
     let parsed;
     try {
         parsed = JSON.parse(text);
@@ -299,7 +401,12 @@ async function complete(fetchFn, config, messages, signal) {
     catch {
         throw new Error('llm returned invalid JSON');
     }
-    const choice = parsed.choices?.[0];
+    if (responses) {
+        // Cover metadata, reasoning and every output item before accepting any tool.
+        rejectHeaderEcho(parsed, config.extraHeaders ?? {}, config.apiKey);
+        return validatedResponse(parsed, responseInput);
+    }
+    const choice = parsed?.choices?.[0];
     if (!choice?.message)
         throw new Error('llm returned no message');
     // A reply cut off by the token limit or by a content filter is not an answer, however
@@ -311,15 +418,222 @@ async function complete(fetchFn, config, messages, signal) {
             ? reason : 'unrecognized finish_reason';
         throw new Error(`llm stopped early: ${diagnostic}`);
     }
-    rejectHeaderEcho(choice.message, config.extraHeaders ?? {});
-    return choice.message;
+    rejectHeaderEcho(choice.message, config.extraHeaders ?? {}, config.apiKey);
+    return { message: validatedMessage(choice.message) };
 }
-function abortAt(ctx) {
+function isRecord(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+/** Stateless Responses history is replayed verbatim, including opaque reasoning. */
+function validatedResponse(input, history) {
+    const invalid = () => { throw new Error('llm returned an incomplete, unsupported or malformed Responses response'); };
+    if (!isRecord(input) || input['object'] !== 'response' || typeof input['id'] !== 'string' || !input['id'] || input['id'].length > 256
+        || input['status'] !== 'completed' || input['error'] != null || input['incomplete_details'] != null
+        || !Array.isArray(input['output']) || input['output'].length === 0 || input['output'].length > MAX_RESPONSE_ITEMS)
+        return invalid();
+    const output = [];
+    const toolCalls = [];
+    const content = [];
+    const usedCalls = new Set(history.filter((item) => item['type'] === 'function_call').map((item) => item['call_id']));
+    for (const item of input['output']) {
+        if (!isRecord(item) || (item['status'] !== undefined && item['status'] !== 'completed')
+            || (item['id'] !== undefined && (typeof item['id'] !== 'string' || item['id'].length > 256)))
+            return invalid();
+        if (item['type'] === 'function_call') {
+            if (typeof item['call_id'] !== 'string' || usedCalls.has(item['call_id'])
+                || typeof item['name'] !== 'string' || !TOOLS.some((tool) => tool.function.name === item['name'])
+                || typeof item['arguments'] !== 'string')
+                return invalid();
+            usedCalls.add(item['call_id']);
+            toolCalls.push({ id: item['call_id'], function: { name: item['name'], arguments: item['arguments'] } });
+        }
+        else if (item['type'] === 'message') {
+            if (item['role'] !== 'assistant' || !Array.isArray(item['content']))
+                return invalid();
+            for (const part of item['content']) {
+                if (!isRecord(part) || part['type'] !== 'output_text' || typeof part['text'] !== 'string')
+                    return invalid();
+                content.push(part['text']);
+            }
+        }
+        else if (item['type'] === 'reasoning') {
+            if (!Array.isArray(item['summary']) || (item['encrypted_content'] != null && typeof item['encrypted_content'] !== 'string'))
+                return invalid();
+            for (const part of item['summary']) {
+                if (!isRecord(part) || part['type'] !== 'summary_text' || typeof part['text'] !== 'string')
+                    return invalid();
+            }
+            if (item['content'] !== undefined) {
+                if (!Array.isArray(item['content']))
+                    return invalid();
+                for (const part of item['content']) {
+                    if (!isRecord(part) || part['type'] !== 'reasoning_text' || typeof part['text'] !== 'string')
+                        return invalid();
+                }
+            }
+        }
+        else
+            return invalid();
+        output.push(item);
+    }
+    const text = content.join('\n');
+    if (!toolCalls.length && !text.trim())
+        return invalid();
+    // Reuse the same complete-batch argument validation and limits as Chat.
+    return { message: validatedMessage({ role: 'assistant', content: text, tool_calls: toolCalls }), responseOutput: output };
+}
+/** Stop awaiting an injected transport without claiming to undo its remote request. */
+function awaitTransport(operation, signal, onLateValue) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const onAbort = () => {
+            if (settled)
+                return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            reject(new Error('aborted'));
+        };
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        // Both handlers remain attached after abort to consume late rejections and
+        // cancel a response that becomes available only after local rollback.
+        try {
+            void Promise.resolve(operation()).then((value) => {
+                if (settled) {
+                    try {
+                        onLateValue?.(value);
+                    }
+                    catch { /* Best-effort disposal must not create an unhandled rejection. */ }
+                    return;
+                }
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                resolve(value);
+            }, (error) => {
+                if (settled)
+                    return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            });
+        }
+        catch (error) {
+            if (settled)
+                return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            reject(error);
+        }
+    });
+}
+function cancelResponseBody(response) {
+    try {
+        void response.body?.cancel().catch(() => undefined);
+    }
+    catch { /* An injected transport may throw while cancelling. */ }
+}
+async function boundedResponseText(response, signal) {
+    if (signal.aborted) {
+        cancelResponseBody(response);
+        throw new Error('aborted');
+    }
+    if (!response.body) {
+        // Compatibility for trusted injected transports. The production fetch always exposes a byte stream.
+        const text = await awaitTransport(() => response.text(), signal);
+        if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES)
+            throw new Error('llm response exceeds byte limit');
+        return text;
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let bytes = 0;
+    try {
+        while (true) {
+            if (signal.aborted)
+                throw new Error('aborted');
+            const chunk = await awaitTransport(() => reader.read(), signal);
+            if (signal.aborted)
+                throw new Error('aborted');
+            if (chunk.done)
+                break;
+            bytes += chunk.value.byteLength;
+            if (bytes > MAX_RESPONSE_BYTES)
+                throw new Error('llm response exceeds byte limit');
+            chunks.push(chunk.value);
+        }
+        return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes));
+    }
+    finally {
+        try {
+            void reader.cancel().catch(() => undefined);
+        }
+        catch { /* Cancellation cannot hold local rollback. */ }
+        try {
+            reader.releaseLock();
+        }
+        catch { /* A custom reader may refuse release; its pending operation stays observed. */ }
+    }
+}
+function validatedMessage(input) {
+    const invalid = () => { throw new Error('llm returned malformed message or tool arguments'); };
+    if (!input || typeof input !== 'object' || Array.isArray(input) || input.role !== 'assistant'
+        || (input.content !== undefined && input.content !== null && typeof input.content !== 'string')
+        || (input.reasoning_content !== undefined && input.reasoning_content !== null && typeof input.reasoning_content !== 'string'))
+        return invalid();
+    if (input.tool_calls !== undefined && input.tool_calls !== null && (!Array.isArray(input.tool_calls) || input.tool_calls.length > MAX_TOOL_CALLS))
+        return invalid();
+    const ids = new Set();
+    for (const call of input.tool_calls ?? []) {
+        if (!call || typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id)
+            || !call.function || typeof call.function.name !== 'string' || !call.function.name || call.function.name.length > 128
+            || typeof call.function.arguments !== 'string')
+            return invalid();
+        ids.add(call.id);
+        let args;
+        try {
+            args = JSON.parse(call.function.arguments);
+        }
+        catch {
+            return invalid();
+        }
+        if (!args || typeof args !== 'object' || Array.isArray(args))
+            return invalid();
+        const fields = args;
+        if ((call.function.name === 'read_file' || call.function.name === 'write_file')
+            && (typeof fields['path'] !== 'string' || !fields['path'] || fields['path'].length > 4096))
+            return invalid();
+        if (call.function.name === 'list_files' && fields['path'] !== undefined
+            && (typeof fields['path'] !== 'string' || fields['path'].length > 4096))
+            return invalid();
+        if (call.function.name === 'write_file' && typeof fields['content'] !== 'string')
+            return invalid();
+    }
+    // Preserve reasoning_content for providers that require it on later tool turns.
+    return input;
+}
+function abortAt(ctx, startedAt) {
     const controller = new AbortController();
-    const state = { signal: controller.signal, timedOut: false, dispose: () => { } };
+    const expiresAt = startedAt + (ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const state = { signal: controller.signal, timedOut: false, check: () => {
+            if (Date.now() >= expiresAt) {
+                state.timedOut = true;
+                controller.abort();
+            }
+            if (controller.signal.aborted)
+                throw new Error('aborted');
+        }, dispose: () => { } };
     const onAbort = () => controller.abort();
     ctx.signal?.addEventListener('abort', onAbort);
-    const timer = ctx.timeoutMs ? setTimeout(() => { state.timedOut = true; controller.abort(); }, ctx.timeoutMs) : null;
+    if (ctx.signal?.aborted)
+        controller.abort();
+    const timer = setTimeout(() => { state.timedOut = true; controller.abort(); }, Math.max(0, expiresAt - Date.now()));
     state.dispose = () => {
         if (timer)
             clearTimeout(timer);

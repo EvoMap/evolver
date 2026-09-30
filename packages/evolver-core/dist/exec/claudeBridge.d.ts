@@ -32,6 +32,8 @@ export interface ExecutionObserver {
     onProofReference?(reference: ProofReference, signal?: AbortSignal): Promise<void> | void;
 }
 export interface ExecBridgeOptions {
+    /** Operator chose exact file acceptance, without authorizing executable repository tests. */
+    declarativeValidationOnly?: boolean;
     /** Working directory the agent edits and git is measured in. */
     cwd: string;
     /** Default: headless `claude` runner. Inject a fake in tests. */

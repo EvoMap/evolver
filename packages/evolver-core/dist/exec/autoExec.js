@@ -266,6 +266,7 @@ export async function runAutoExecTask(deps, rawTask, safety) {
         ...(deps.personality ? { personality: deps.personality } : {}),
         ...(deps.agent ? { agent: deps.agent } : {}),
         ...(deps.git ? { git: deps.git } : {}),
+        ...(deps.gitPatchWriter ? { gitPatchWriter: deps.gitPatchWriter } : {}),
         ...(traceRecorder ? { traceRecorder } : {}),
         ...(executionObserver ? { executionObserver } : {}),
         ...(binding ? { executionLimits: {

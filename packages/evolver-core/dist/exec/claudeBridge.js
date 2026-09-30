@@ -654,6 +654,9 @@ export function makeClaudeExecBridge(opts, internal) {
         // Trust gate (finding #39.3): for unattended runs, only embed a gene we trust — an untrusted gene's strategy
         // is dropped so a poisoned strategy can't drive the autonomous agent (the run falls back to innovate).
         const gene = resolved && (!opts.requireTrustedGene || resolved.trusted === true) ? resolved : null;
+        if (opts.declarativeValidationOnly && (gene?.requiresCommandValidation || opts.validationCmds?.length)) {
+            throw new Error('declarative file acceptance cannot replace the selected Gene command validation; use a verified script sandbox');
+        }
         const prompt = renderExecPrompt({
             mutation,
             decision,

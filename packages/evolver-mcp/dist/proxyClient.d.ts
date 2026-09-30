@@ -25,6 +25,7 @@ export interface ProxySearchArgs {
     category?: string;
     gene?: string;
     limit?: number;
+    timeoutMs?: number;
     expectedHubMode?: 'public' | 'private';
 }
 export interface ProxyRecipeSearchArgs {
@@ -32,6 +33,7 @@ export interface ProxyRecipeSearchArgs {
     limit?: number;
     cursor?: string;
     sort?: string;
+    timeoutMs?: number;
     expectedHubMode?: 'public' | 'private';
 }
 export type ProxyRecipeExpressArgs = hub.RecipeExecutionInputs['express'];
@@ -116,6 +118,7 @@ export declare class EvolverProxyClient {
     searchAgents(args: ProxyAgentSearchArgs): Promise<unknown>;
     getAgentProfile(agentId: string, timeoutMs?: number): Promise<unknown>;
     discoverAgentsForTask(args: ProxyAgentDiscoverArgs): Promise<unknown>;
+    private discover;
     submitAsset(asset: unknown): Promise<unknown>;
     submitAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;
     authorizeAssetPublication(bundle: ProxyAssetBundle, opts?: {
