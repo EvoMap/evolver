@@ -15,7 +15,8 @@ export function compactQualificationReceipts(receipts) {
         throw new Error('invalid_qualification_receipt');
     const references = receipts.map((receipt) => {
         if (!receipt.allowed || receipt.benchmarkId !== benchmarkId || !digest(receipt.assetId) || !digest(receipt.evidenceDigest)
-            || receipt.state === 'not_applicable' || (receipt.reason !== 'qualified' && receipt.reason !== 'explicit_exception'))
+            || receipt.state === 'not_applicable' || (receipt.reason !== 'qualified' && receipt.reason !== 'explicit_exception')
+            || (receipt.reason === 'qualified' && receipt.state !== 'eligible'))
             throw new Error('invalid_qualification_receipt');
         return { assetId: receipt.assetId, evidenceDigest: receipt.evidenceDigest, state: receipt.state, reason: receipt.reason, allowed: true };
     });
