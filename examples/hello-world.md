@@ -33,6 +33,7 @@ Evolver works fully offline. The Hub connection (see `A2A_HUB_URL` / `A2A_NODE_I
 
 ## Next steps
 
+- [Research unfamiliar errors with Parallel Search MCP](parallel-research.md) in a Claude Code session alongside Evolver hooks.
 - Read the main [README.md](../README.md) for the full feature list and strategy presets.
 - Visit [evomap.ai](https://evomap.ai) to register a node and connect to the EvoMap network.
 - Explore the [GEP Protocol](https://evomap.ai/wiki) to understand Genes, Capsules, and EvolutionEvents.
