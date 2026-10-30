@@ -16,6 +16,10 @@ export interface ReuseOutcomeEvent {
     type: string;
     payload?: Record<string, unknown>;
 }
+type ReuseSummaryInput = {
+    type: string;
+    payload?: unknown;
+};
 export interface GeneReuseOutcome {
     assetId: string;
     /** Successful reuses (from `value.reuse_hit`). */
@@ -34,11 +38,12 @@ export interface ReuseOutcomeSummary {
      *  Mirrors summarizeRecall.pruneCandidates, but sourced from reuse outcomes across every runtime. */
     pruneCandidates: string[];
 }
-/**
- * Roll reuse signals up per gene from root_events: SUCCESS from `value.reuse_hit`, the negative verdicts from
- * `value.reuse_outcome`. Pure; deterministic ordering. Unknown/garbled payloads are skipped, never counted.
- */
 export declare function summarizeReuseOutcomes(events: readonly ReuseOutcomeEvent[]): ReuseOutcomeSummary;
+/** The same projection, yielding between bounded batches so a recall can abort without publishing partial counts. */
+export declare function summarizeReuseOutcomesAsync(events: readonly ReuseSummaryInput[], options?: {
+    signal?: AbortSignal;
+    deadlineAt?: number;
+}): Promise<ReuseOutcomeSummary>;
 /** Raw reuse tallies for one gene-id, kept as COUNTS (not a pre-collapsed sentiment) so a consumer that knows a
  *  gene's multiple ids can COMBINE them before computing sentiment (#268 Bugbot: events for one gene can split
  *  across its logical id and its content asset_id — averaging two sentiments would skew; summing counts is right). */
@@ -68,3 +73,4 @@ export declare const RECALL_WEIGHT = 0.5;
  * — it never reaches the quarantine path (summarizeReuseOutcomes reads only the reuse-outcome events, not recall).
  */
 export declare function recallCountsFromEvents(events: readonly ReuseOutcomeEvent[]): Map<string, ReuseCounts>;
+export {};

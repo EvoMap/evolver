@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { open, opendir, mkdir, lstat, link, unlink, rename } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { asyncFileLockOwners as retainedAuditOwners, asyncFileLockOwned, asyncFileLockKey } from '../util/asyncFileLockOwners.js';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { openWindowsAuditFile, withWindowsAuditLock } from './boundedAuditWindows.js';
@@ -12,6 +13,14 @@ export class AuditWriteSkipped extends Error {
         this.reason = reason;
     }
 }
+export class WindowsAuditNameBusyError extends AuditWriteSkipped {
+    status;
+    code = 'EBUSY';
+    constructor(status) {
+        super('windows_io_failed');
+        this.status = status;
+    }
+}
 /** Shared only by durable context preparation and its stdout admission callers. */
 export const DEFAULT_CONTEXT_PREPARATION_BUDGET_MS = 750;
 export class AuditBudget {
@@ -19,12 +28,11 @@ export class AuditBudget {
     deadline;
     constructor(options = {}, phase = 'audit') {
         this.options = options;
-        // Preparation may spend its own window; ordinary audit/projection/recovery
-        // retains the original 250ms default and 500ms cap. Shorter callers always win.
-        const preparing = phase === 'context_preparation';
-        const requested = options.deadlineAt ?? Date.now() + (preparing ? DEFAULT_CONTEXT_PREPARATION_BUDGET_MS : 250);
+        // Each protocol retains its admission cap; shorter callers always win.
+        const cap = phase === 'context_preparation' ? DEFAULT_CONTEXT_PREPARATION_BUDGET_MS : phase === 'experience' ? 30_000 : 500;
+        const requested = options.deadlineAt ?? Date.now() + (phase === 'audit' ? 250 : cap);
         const remaining = Number.isFinite(requested) ? requested - Date.now() : 0;
-        this.deadline = performance.now() + Math.max(0, Math.min(preparing ? DEFAULT_CONTEXT_PREPARATION_BUDGET_MS : 500, remaining));
+        this.deadline = performance.now() + Math.max(0, Math.min(cap, remaining));
     }
     check() {
         if (this.options.signal?.aborted || performance.now() >= this.deadline)
@@ -173,12 +181,19 @@ function dead(pid) {
         return error.code === 'ESRCH';
     }
 }
-const retainedAuditOwners = new Map();
+/**
+ * Async participant in util/fileLock's existing protocol: the same .lock/.mutation/.guardian names,
+ * POSIX publishes v1 PID/token owners and conservatively preserves live PIDs without shelling out
+ * for identity. Windows uses its fixed native process-start reader and v2 owners, so proven PID
+ * reuse is recoverable. Neither backend reclaims malformed/unverifiable owners or transfers ownership.
+ */
 const MAX_RETAINED_AUDIT_OWNERS = 64;
+/** Synchronous writers must not wait on a same-loop async owner's cleanup. */
+export const auditLockOwned = asyncFileLockOwned;
 /** Retain cleanup even when a best-effort caller discards its error/receipt. */
 export async function withAuditLock(path, budget, run) {
     budget.check();
-    const key = resolve(path);
+    const key = asyncFileLockKey(path);
     const owner = {};
     for (;;) {
         budget.check();
@@ -463,8 +478,13 @@ async function withAuditLockOwned(path, budget, run) {
             }
             if (await publish(path)) {
                 // A stale-reclaimer may have acquired the guard between the first check and publication.
-                if (await statIfPresent(guardPath) || await statIfPresent(guardianPath))
-                    throw new AuditWriteSkipped('mutation_busy');
+                if (await statIfPresent(guardPath) || await statIfPresent(guardianPath)) {
+                    // No callback has run. Withdraw only this owner's exact publication,
+                    // then retry acquisition within the same monotonic budget.
+                    await removeOwned(path);
+                    await budget.pause();
+                    continue;
+                }
                 budget.check();
                 return await run();
             }

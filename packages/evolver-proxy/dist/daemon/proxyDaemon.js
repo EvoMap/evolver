@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { reference, mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify } from '@evomap/evolver-core';
+import { reference, mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify, events } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, terminalHubRejection } from '@evomap/evolver-adapter-public';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
@@ -11,7 +11,9 @@ import { invokeRecipeIpc, recipeIpcScope } from './recipeExecution.js';
 import { hubAuthFailureHint } from './selectHub.js';
 import { CollaborationFacade } from './collaborationFacade.js';
 import { classifyDiscoveryUpstreamError } from './discoveryErrors.js';
+import { LOCAL_RECALL_STALE_MS, LOCAL_RECALL_TIMEOUT_MS, MAX_OUTSTANDING_LOCAL_READS, recallFromLocalStore, rootEventReuseTallies } from './localRecall.js';
 import { PublishBindingLedger } from './publishBindingLedger.js';
+import { recallContextOf } from './recallContext.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
 export const DEFAULT_IPC_PORT = 19820;
@@ -93,6 +95,11 @@ export class ProxyDaemon {
     sync;
     lifecycle;
     assetStore;
+    localReuseTallies;
+    localRecallTimeoutMs;
+    localRecallStartedAt;
+    localReadsOutstanding = 0;
+    localRecallCleanup = new Set();
     benchmark;
     sourceProvenance;
     sourceReview;
@@ -130,6 +137,7 @@ export class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     wakeRunnerPending = false;
     started = false;
+    feedbackRecovery;
     lifecycleArmed = false;
     lastTickAt;
     runtimeProcessIdentity = util.readFileLockProcessStartIdentity(process.pid);
@@ -178,9 +186,11 @@ export class ProxyDaemon {
         ]));
         const assetStoreDir = deps.assetStoreDir ?? (deps.storePath ? join(dirname(deps.storePath), 'assets') : undefined);
         this.assetStore = deps.assetStore ?? (assetStoreDir ? new assetstore.LocalJsonlProvider(assetStoreDir) : undefined);
-        this.sourceProvenance = deps.sourceProvenance ?? (this.benchmark && this.assetStore instanceof assetstore.LocalJsonlProvider
+        this.localReuseTallies = deps.localReuseTallies ?? rootEventReuseTallies();
+        this.localRecallTimeoutMs = deps.localRecallTimeoutMs ?? LOCAL_RECALL_TIMEOUT_MS;
+        this.sourceProvenance = deps.sourceProvenance ?? (this.assetStore instanceof assetstore.LocalJsonlProvider
             ? new assetstore.ProvenanceStore(this.assetStore.baseDir) : undefined);
-        this.sourceReview = deps.sourceReview ?? (this.benchmark && this.assetStore instanceof assetstore.LocalJsonlProvider
+        this.sourceReview = deps.sourceReview ?? (this.assetStore instanceof assetstore.LocalJsonlProvider
             ? new assetstore.ReviewLedger(this.assetStore.baseDir) : undefined);
         const referenceBase = assetStoreDir ?? deps.assetStore?.baseDir;
         this.referenceStore = referenceBase ? new reference.ReferenceStore(join(referenceBase, 'references')) : undefined;
@@ -405,6 +415,33 @@ export class ProxyDaemon {
         }
         throw new Error('proxy_ipc_safe_port_unavailable');
     }
+    drainTriggerFeedbackRecovery() {
+        if (!this.started || this.publishAbortController.signal.aborted || this.feedbackRecovery || !this.deps.triggerFeedback?.recover)
+            return;
+        const source = this.deps.triggerFeedback;
+        const recover = source.recover;
+        if (!recover)
+            return;
+        const signal = this.publishAbortController.signal;
+        const attempt = (async () => {
+            try {
+                const recovery = await recover.call(source, signal);
+                if (!this.started || signal.aborted || recovery['deferred'] === true)
+                    return;
+                const count = (key) => typeof recovery[key] === 'number' && Number.isSafeInteger(recovery[key]) && Number(recovery[key]) >= 0 && Number(recovery[key]) <= 800 ? recovery[key] : undefined;
+                const valid = ['scanned', 'localChanged', 'hubConfirmed', 'pending', 'blocked'].every((key) => count(key) !== undefined);
+                this.store.setState('trigger_feedback:last_recovery', JSON.stringify({ ok: recovery['ok'] === true && valid, partial: recovery['partial'] === true,
+                    scanned: count('scanned'), localChanged: count('localChanged'), hubConfirmed: count('hubConfirmed'), pending: count('pending'), blocked: count('blocked') }));
+            }
+            catch {
+                if (this.started && !signal.aborted)
+                    this.recordTickError('core', new Error('trigger_feedback_recovery_unverified'));
+            }
+        })();
+        this.feedbackRecovery = attempt;
+        void attempt.finally(() => { if (this.feedbackRecovery === attempt)
+            this.feedbackRecovery = undefined; });
+    }
     /** 单轮: core pump/TTL/wake + proxy 出站 + hub 入站 + 到点心跳. */
     async tick() {
         const errors = [];
@@ -419,6 +456,7 @@ export class ProxyDaemon {
         catch (err) {
             addFailure('core', this.recordTickError('core', err));
         }
+        this.drainTriggerFeedbackRecovery();
         let outbound = emptyOutboundResult();
         let heartbeat;
         try {
@@ -612,6 +650,8 @@ export class ProxyDaemon {
             await this.publishRecallVerifier.stop();
         }
         catch { /* best-effort verifier shutdown */ }
+        if (this.feedbackRecovery)
+            await this.feedbackRecovery;
         let stopError;
         try {
             await this.closeIpc();
@@ -846,17 +886,18 @@ export class ProxyDaemon {
         const local = this.assetStore ? await this.assetStore.search(query) : [];
         return local.filter((asset) => asset.type !== 'AntiGene').slice(0, limit);
     }
-    qualifyAssets(assets, limit = assets.length) {
+    qualifyAssets(assets, limit = assets.length, rawAssets) {
         if (!this.benchmark)
             return { assets: assets.slice(0, limit) };
         // 放在缓存、远端await之后；普通审批或cache TTL不能覆盖刚撤销的来源资格。
         const snapshot = this.sourceProvenance?.snapshot();
         const reviewed = this.sourceReview?.snapshot();
         const sourceQualifications = assets.map((asset) => {
-            const decision = assetstore.assessSourceEligibility(asset, snapshot?.get(asset.asset_id), this.benchmark);
-            const review = reviewed?.get(asset.asset_id);
-            const withheld = snapshot?.get(asset.asset_id)?.trusted === false ? 'trust_rejected'
-                : (review && review.state !== 'approved') || (reviewed && asset.type === 'AntiGene' && !review) ? 'review_rejected'
+            const raw = rawAssets?.get(asset) ?? asset;
+            const decision = assetstore.assessSourceEligibility(raw, snapshot?.get(raw.asset_id), this.benchmark);
+            const review = reviewed?.get(raw.asset_id);
+            const withheld = snapshot?.get(raw.asset_id)?.trusted === false ? 'trust_rejected'
+                : (review && review.state !== 'approved') || (reviewed && raw.type === 'AntiGene' && !review) ? 'review_rejected'
                     : decision.allowed && !reviewed ? 'review_unavailable' : undefined;
             return { ...decision, ...(withheld ? { allowed: false, reason: withheld } : {}),
                 assetId: asset.asset_id, benchmarkId: this.benchmark.benchmarkId };
@@ -867,10 +908,10 @@ export class ProxyDaemon {
         const qualified = this.qualifyAssets(assets, limit);
         ctx.json(200, { results: qualified.assets, ...qualified, query, ...extra, ...(this.benchmark ? { benchmarkId: this.benchmark.benchmarkId } : {}) });
     }
-    qualifyFetch(ids, assets, missing) {
+    qualifyFetch(ids, assets, missing, rawAssets) {
         if (!this.benchmark)
             return { assets: [...assets], missing: [...missing] };
-        const qualified = this.qualifyAssets(assets);
+        const qualified = this.qualifyAssets(assets, assets.length, rawAssets);
         return { ...qualified, missing: ids.filter((id) => !qualified.assets.some((asset) => assetMatchesId(asset, id))) };
     }
     async recallAssets(query) {
@@ -883,6 +924,92 @@ export class ProxyDaemon {
                 throw error;
             this.markHubAuthFailed(error);
             return null;
+        }
+    }
+    retryLocalRecallCleanup() {
+        for (const reservation of this.localRecallCleanup) {
+            void reservation.failure.retryCleanup().then(() => {
+                if (reservation.failure.cleanupComplete && this.localRecallCleanup.delete(reservation))
+                    reservation.release();
+            }, () => { });
+        }
+    }
+    async localRecall(text, projectDir, beforeFinish = Promise.resolve()) {
+        const store = this.assetStore, provenance = this.sourceProvenance, review = this.sourceReview;
+        if (!store)
+            return undefined;
+        // One mutable ledger pair cannot authorize Union sources or a read-only foreign pool.
+        if (store instanceof assetstore.UnionReadStore || store instanceof assetstore.ForeignJsonlSource
+            || !provenance || !review) {
+            return { assets: [], diagnostics: { considered: 0, injected: 0, error: 'local_recall_qualification_unavailable' } };
+        }
+        this.retryLocalRecallCleanup();
+        // A store read cannot be cancelled once started; after a timeout it may still be running, and a second one on
+        // top would only pile up.
+        const startedAt = this.now();
+        const recentlyStarted = this.localRecallStartedAt !== undefined && startedAt - this.localRecallStartedAt < LOCAL_RECALL_STALE_MS;
+        if (recentlyStarted || this.localReadsOutstanding >= MAX_OUTSTANDING_LOCAL_READS) {
+            return { assets: [], diagnostics: { considered: 0, injected: 0, error: 'local_recall_busy' } };
+        }
+        this.localRecallStartedAt = startedAt;
+        this.localReadsOutstanding += 1;
+        const preparationStarted = performance.now();
+        const controller = new AbortController();
+        let timer;
+        const timedOut = new Promise((_resolve, reject) => {
+            controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+        });
+        const expire = () => controller.abort(new Error('local_recall_timeout'));
+        timer = setTimeout(expire, this.localRecallTimeoutMs);
+        const recall = (async () => {
+            const read = await recallFromLocalStore(store, text, projectDir);
+            clearTimeout(timer);
+            const remaining = this.localRecallTimeoutMs - (performance.now() - preparationStarted);
+            controller.signal.throwIfAborted();
+            if (remaining <= 0)
+                throw new Error('local_recall_timeout');
+            // Hub owns its own wait; resume only the unused local-work budget after its page settles.
+            await beforeFinish;
+            controller.signal.throwIfAborted();
+            const deadline = performance.now() + remaining;
+            timer = setTimeout(expire, remaining);
+            const reuse = await this.localReuseTallies({ signal: controller.signal, deadlineAt: Date.now() + remaining });
+            controller.signal.throwIfAborted();
+            if (performance.now() >= deadline)
+                throw new Error('local_recall_timeout');
+            // Take fresh approval only after asynchronous history work, with no await before ranking.
+            const outcome = read.finish({ provenance: provenance.snapshotNow(), review: review.snapshotNow(),
+                referenceScope: store.referenceScope, ...(this.benchmark ? { benchmark: this.benchmark } : {}) }, reuse);
+            if (performance.now() >= deadline)
+                throw new Error('local_recall_timeout');
+            return outcome;
+        })();
+        // Timeout can return Hub while a read or its cleanup is still owned by this reservation.
+        void Promise.allSettled([recall, beforeFinish]).then(([result]) => {
+            const release = () => {
+                this.localReadsOutstanding -= 1;
+                if (this.localRecallStartedAt === startedAt)
+                    this.localRecallStartedAt = undefined;
+            };
+            if (result.status === 'rejected' && result.reason instanceof events.AuditCleanupError && !result.reason.cleanupComplete) {
+                this.localRecallCleanup.add({ failure: result.reason, release });
+                this.retryLocalRecallCleanup();
+            }
+            else
+                release();
+        });
+        try {
+            return await Promise.race([recall, timedOut]);
+        }
+        catch (error) {
+            // A cooperative deadline can reject before the timer gets its event-loop turn.
+            if (error instanceof Error && error.message === 'local_recall_timeout')
+                controller.abort(error);
+            // Local recall only adds candidates: a store it cannot read must not cost the Hub's recall.
+            return { assets: [], diagnostics: { considered: 0, injected: 0, error: safeDaemonErrorMessage(error, 200) } };
+        }
+        finally {
+            clearTimeout(timer);
         }
     }
     async localFetchAssets(ids) {
@@ -917,6 +1044,27 @@ export class ProxyDaemon {
         const handledAtp = await this.handleAtpRoute(ctx);
         if (handledAtp)
             return true;
+        if (ctx.route === 'POST /trigger-feedback/sync' || ctx.route === 'POST /trigger-feedback/get') {
+            const action = ctx.route.endsWith('/sync') ? 'sync' : 'get';
+            const body = asRecord(await ctx.readJson());
+            const runId = body['run_id'];
+            const remote = body['remote'] ?? false;
+            if (typeof runId !== 'string' || !runId.trim() || Buffer.byteLength(runId) > 256 || typeof remote !== 'boolean'
+                || Object.keys(body).some((key) => key !== 'run_id' && key !== 'remote') || (action === 'get' && remote)) {
+                ctx.json(400, { ok: false, reason: 'trigger_feedback_invalid_input' });
+                return true;
+            }
+            if (action === 'sync' && this.shadowMode) {
+                ctx.json(403, { ok: false, reason: 'shadow_mode' });
+                return true;
+            }
+            if (!this.deps.triggerFeedback) {
+                ctx.json(501, { ok: false, reason: 'trigger_feedback_source_unbound' });
+                return true;
+            }
+            ctx.json(200, await this.deps.triggerFeedback.invoke(action, runId, remote));
+            return true;
+        }
         if (ctx.route === 'GET /proxy/status') {
             const publishReceiptDiagnostics = safePublishReceiptDiagnostics(this.hub);
             const nodeId = this.deps.hubMode === 'private' ? this.feedbackNodeId() : this.lifecycle.nodeId;
@@ -1174,9 +1322,22 @@ export class ProxyDaemon {
                 ctx.json(400, { error: 'invalid_limit' });
                 return true;
             }
+            const recallText = typeof body.text === 'string' && body.text.trim() ? body.text.trim() : undefined;
+            const recallContext = recallContextOf(body.context);
+            const recallSignals = Array.isArray(body.signals) ? body.signals.filter((s) => typeof s === 'string') : [];
+            const recallByContent = ids.length === 0 && (recallText !== undefined || recallSignals.length > 0);
             if (this.hubAuthFailed()) {
                 if (this.hubAuthFailurePolicy === 'deny') {
                     ctx.json(401, this.hubAuthFailureBody());
+                    return true;
+                }
+                if (recallByContent) {
+                    const local = await this.localRecall([recallText ?? '', ...recallSignals].join('\n'), body.project_dir);
+                    ctx.json(200, {
+                        ...this.qualifyFetch([], withinLimit(local?.assets ?? [], body.limit), [], local?.rawAssets), query: body,
+                        ...localRecallReport(local),
+                        degraded: true, local_fallback: true, auth_status: HUB_AUTH_FAILED, warning: HUB_AUTH_FAILURE_WARNING,
+                    });
                     return true;
                 }
                 const local = await this.localFetchAssets(ids);
@@ -1190,21 +1351,26 @@ export class ProxyDaemon {
                 });
                 return true;
             }
-            const recallText = typeof body.text === 'string' && body.text.trim() ? body.text.trim() : undefined;
-            const recallSignals = Array.isArray(body.signals) ? body.signals.filter((s) => typeof s === 'string') : [];
-            if (ids.length === 0 && (recallText !== undefined || recallSignals.length > 0)) {
-                const recalled = await this.recallAssets({
+            if (recallByContent) {
+                const recalledPage = this.recallAssets({
                     ...(recallText !== undefined ? { text: recallText } : {}),
+                    ...(recallText !== undefined && recallContext !== undefined ? { context: recallContext } : {}),
                     ...(recallSignals.length > 0 ? { signalsAny: recallSignals } : {}),
                     ...(typeof body.limit === 'number' ? { limit: body.limit } : {}),
                 });
+                const [recalled, local] = await Promise.all([
+                    recalledPage,
+                    this.localRecall([recallText ?? '', ...recallSignals].join('\n'), body.project_dir, recalledPage),
+                ]);
+                const localAssets = withinLimit(local?.assets ?? [], body.limit);
+                const localRecall = localRecallReport(local);
                 if (recalled === null) {
                     if (this.hubAuthFailurePolicy === 'deny') {
                         ctx.json(401, this.hubAuthFailureBody());
                         return true;
                     }
                     ctx.json(200, {
-                        assets: [], missing: [], query: body,
+                        ...this.qualifyFetch([], localAssets, [], local?.rawAssets), query: body, ...localRecall,
                         degraded: true, local_fallback: true,
                         auth_status: HUB_AUTH_FAILED, warning: HUB_AUTH_FAILURE_WARNING,
                     });
@@ -1212,13 +1378,16 @@ export class ProxyDaemon {
                 }
                 const recalledBy = recallText !== undefined ? 'text' : 'signals';
                 if (recalled.confirmRequired) {
+                    // Confirmation gates Hub credit spending; the caller's labelled local methods are free.
                     ctx.json(200, {
-                        assets: [], missing: [], query: body, recalled_by: recalledBy,
+                        ...this.qualifyFetch([], localAssets, [], local?.rawAssets), query: body, recalled_by: recalledBy, ...localRecall,
                         confirm_required: true, credit_cost_preview: recalled.creditCostPreview,
                     });
                     return true;
                 }
-                ctx.json(200, { ...this.qualifyFetch([], recalled.assets, []), query: body, recalled_by: recalledBy });
+                const localIds = new Set(localAssets.map((asset) => asset.asset_id));
+                const merged = withinLimit([...localAssets, ...recalled.assets.filter((asset) => !localIds.has(asset.asset_id))], body.limit);
+                ctx.json(200, { ...this.qualifyFetch([], merged, [], local?.rawAssets), query: body, recalled_by: recalledBy, ...localRecall });
                 return true;
             }
             const assets = [];
@@ -2280,6 +2449,14 @@ export class ProxyDaemon {
         const status = rec['ok'] === false && typeof rec['status'] === 'number' ? rec['status'] : 200;
         ctx.json(status, body);
     }
+}
+function withinLimit(assets, limit) {
+    return typeof limit === 'number' && Number.isFinite(limit) && limit >= 1 ? assets.slice(0, Math.floor(limit)) : [...assets];
+}
+function localRecallReport(local) {
+    if (!local || (local.diagnostics.considered === 0 && !local.diagnostics.error))
+        return {};
+    return { local_recall: local.diagnostics };
 }
 function isAssetByIdFetcher(value) {
     return Boolean(value && typeof value === 'object' && typeof value.fetchAssetById === 'function');

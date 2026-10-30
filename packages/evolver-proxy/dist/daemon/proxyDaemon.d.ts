@@ -4,6 +4,7 @@ import { LifecycleManager, type HelloLifecycleMode, type HelloResult, type Heart
 import { type SelfUpdateDeps } from '../selfUpdate/executor.js';
 import type { AtpOrderConsentGate } from './atpConsent.js';
 import type { PrivateBoundReuseFeedback } from '../private/adapterLoader.js';
+import { type ReuseTallies } from './localRecall.js';
 import { type PublishRecallVerifierPort } from './publishRecallVerifier.js';
 type HubCapability = hubNs.HubCapability;
 type AssetStoreProvider = assetstore.AssetStoreProvider;
@@ -12,11 +13,12 @@ export declare const DEFAULT_IPC_PORT = 19820;
 export type HubAuthFailurePolicy = 'deny' | 'warn';
 export declare function resolveHubAuthFailurePolicy(env?: Record<string, string | undefined>): HubAuthFailurePolicy;
 export interface ProxyDaemonDeps {
+    triggerFeedback?: import('@evomap/evolver-core').exec.TriggerFeedbackLocalFacade;
     recipeExecutionDirectory?: string;
     /** operator配置，不能由单次搜索请求关闭。 */
     benchmarkId?: string;
     sourceProvenance?: assetstore.ProvenanceStore;
-    /** benchmark自定义provider必须接入审核账本；缺账本不等于Gene没有审核记录。 */
+    /** 自定义provider须显式提供本pool的资格账本；缺账本不等于没有审核记录。 */
     sourceReview?: assetstore.ReviewLedger;
     hub: HubCapability;
     /** Identity actually presented by the connected Hub runtime; terminal lifecycle state is scoped to it. */
@@ -63,6 +65,10 @@ export interface ProxyDaemonDeps {
     assetStore?: AssetStoreProvider;
     /** 未显式传 assetStore 时, 用该目录创建 LocalJsonlProvider; 缺省跟随 storePath 同目录. */
     assetStoreDir?: string;
+    /** Reuse counts that rank local recall; defaults to the hosts' records in root_events. */
+    localReuseTallies?: ReuseTallies;
+    /** How long a text recall waits for the local store before leaving it out of this turn. */
+    localRecallTimeoutMs?: number;
     /** 可选 ATP 兼容路由实现. ProxyDaemon 只依赖窄接口; public/private adapter 在 bin 层装配. */
     atp?: AtpProxyClient;
     /** Consent gate for local /atp/order spend attempts. Missing gate fails closed. */
@@ -162,6 +168,11 @@ export declare class ProxyDaemon {
     readonly sync: SyncEngine;
     readonly lifecycle: LifecycleManager;
     private readonly assetStore;
+    private readonly localReuseTallies;
+    private readonly localRecallTimeoutMs;
+    private localRecallStartedAt;
+    private localReadsOutstanding;
+    private readonly localRecallCleanup;
     private readonly benchmark;
     private readonly sourceProvenance;
     private readonly sourceReview;
@@ -199,6 +210,7 @@ export declare class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     private wakeRunnerPending;
     private started;
+    private feedbackRecovery;
     private lifecycleArmed;
     private lastTickAt;
     private readonly runtimeProcessIdentity;
@@ -226,6 +238,7 @@ export declare class ProxyDaemon {
     /** 启动: 锁 + IPC 监听 + 初次 hello. 返回 IPC 端口. */
     start(): Promise<number>;
     private listenIpc;
+    private drainTriggerFeedbackRecovery;
     /** 单轮: core pump/TTL/wake + proxy 出站 + hub 入站 + 到点心跳. */
     tick(): Promise<ProxyTickReport>;
     /** 下一轮建议延时: inbound 背压/idle 与 outbound pending cadence 取更快者. */
@@ -270,6 +283,8 @@ export declare class ProxyDaemon {
     private respondAssetSearch;
     private qualifyFetch;
     private recallAssets;
+    private retryLocalRecallCleanup;
+    private localRecall;
     private localFetchAssets;
     private feedbackNodeId;
     private handleProxyRoute;

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops } from '@evomap/evolver-core';
 import { ProxyReverificationError, safeReverificationRecovery } from './proxyClient.js';
+import { buildExperienceTools } from './experienceTools.js';
 import { buildEvolverPrimer } from './primer.js';
 import { recipeToolSchemas } from './recipeSchemas.js';
 import { DISCOVERY_MAX_TIMEOUT_MS, discoveryTimeout, isDegradedDiscovery } from './discovery.js';
@@ -338,7 +339,25 @@ export function buildEvolverTools(deps) {
             return referenceStore.context(query, args['max_chars'] === undefined ? undefined : Number(args['max_chars']));
         },
     }));
+    const feedbackTools = deps.proxy || deps.triggerFeedback ? ['sync', 'get'].map((action) => ({
+        name: `evolver_trigger_feedback_${action}`,
+        description: action === 'sync'
+            ? 'Synchronize one scheduled-run evaluation from its bound native writer. Supply only runId, never a score or Human assertion. remote=true explicitly submits to the configured Hub and uses its existing memory-record fee once; updates and withdrawals do not add another sample or fee.'
+            : 'Read one scheduled-run evaluation and its confirmed native rating. Unavailable is not a cleared override; do not guess a run from session history.',
+        inputSchema: { type: 'object', additionalProperties: false, required: ['runId'], properties: { runId: { type: 'string', minLength: 1, maxLength: 256 }, ...(action === 'sync' ? { remote: { type: 'boolean', default: false } } : {}) } },
+        annotations: action === 'sync' ? { ...REMOTE_WRITE, idempotentHint: true } : LOCAL_READ_ONLY,
+        handler: async (args) => {
+            const runId = args['runId'];
+            const remote = args['remote'] ?? false;
+            if (typeof runId !== 'string' || !runId.trim() || Buffer.byteLength(runId) > 256 || typeof remote !== 'boolean' || (action === 'get' && remote)
+                || Object.keys(args).some((key) => key !== 'runId' && !(action === 'sync' && key === 'remote')))
+                throw new Error('trigger_feedback_invalid_input');
+            return deps.proxy ? deps.proxy.triggerFeedback(action, runId, remote) : deps.triggerFeedback.invoke(action, runId, remote);
+        },
+    })) : [];
     const tools = [
+        ...(deps.store instanceof assetstore.LocalJsonlProvider && deps.experienceClient ? buildExperienceTools(deps.store.baseDir, deps.experienceClient) : []),
+        ...feedbackTools,
         ...referenceTools,
         {
             // Self-onboarding (#mcp-onboarding): any MCP agent can learn the quiet reuse loop when it needs guidance.
@@ -694,7 +713,9 @@ export function buildEvolverTools(deps) {
         },
     });
     if (deps.mailbox) {
-        const box = deps.mailbox;
+        const mailbox = deps.mailbox;
+        let opened;
+        const box = () => opened ??= typeof mailbox === 'function' ? mailbox() : mailbox;
         tools.push({
             name: 'evolver_mailbox_send',
             description: '投递一条 mailbox 消息(类型须在目录内). 副作用类型应传 idempotencyKey.',
@@ -707,7 +728,7 @@ export function buildEvolverTools(deps) {
                     ...(a['runtimeNamespace'] ? { runtimeNamespace: str(a['runtimeNamespace']) } : {}),
                     now: now(),
                 });
-                const r = box.send(env);
+                const r = box().send(env);
                 return { id: env.id, receiptId: r.receiptId, stored: r.stored, correlationId: env.correlationId };
             },
         }, {
@@ -715,7 +736,7 @@ export function buildEvolverTools(deps) {
             description: '查 mailbox 消息状态(status/attempts/dlq).',
             inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
             annotations: LOCAL_READ_ONLY,
-            handler: async (a) => box.getStatus(str(a['id'])) ?? { error: 'not found' },
+            handler: async (a) => box().getStatus(str(a['id'])) ?? { error: 'not found' },
         });
     }
     if (deps.proxy) {

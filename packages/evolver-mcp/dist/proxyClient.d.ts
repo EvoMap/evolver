@@ -137,6 +137,7 @@ export declare class EvolverProxyClient {
     validateAssetBundle(bundle: ProxyAssetBundle): Promise<unknown>;
     distillConversation(input: unknown): Promise<unknown>;
     recordReuseResult(args: ProxyReuseResultArgs): Promise<unknown>;
+    triggerFeedback(action: 'sync' | 'get', runId: string, remote?: boolean): Promise<unknown>;
     private modeBoundBody;
     call(method: string, path: string, body?: unknown, opts?: {
         signal?: AbortSignal;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ulid } from '../schema/common.js';
+import { ulid, recordEntry } from '../schema/common.js';
 export const EVENT_SCHEMA_VERSION = '1.0.0';
 export const replayability = z.enum(['deterministic', 'stochastic_recorded', 'stochastic_unreproducible']);
 /** 每事件自带叙述 (军杰 §9.2). title 必填. */
@@ -27,7 +27,17 @@ export const rootEvent = z.object({
     payload: z.unknown().default({}),
     human: humanNarrative,
     actor: actor.default({ kind: 'machine' }),
-    /** Protected-writer replay key, minted by the service and never by a caller. */
+    /** Replay identity minted by the root writer (local or separate-UID service), never raw client metadata. */
     auditOperationId: z.string().min(1).max(128).optional(),
     auditRequestHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    /** Experience writer's witnessed physical namespace, never caller supplied. */
+    experienceAuditNamespace: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
+// Raw in-process events have not necessarily crossed JSON yet. Guard only actor's
+// record slot; payload is deliberately unknown and must retain its existing domain.
+const rootEventInput = recordEntry.pipe(rootEvent.extend({
+    actor: recordEntry.pipe(actor).default({ kind: 'machine' }),
+}));
+export function parseRootEvent(input) {
+    return rootEventInput.parse(input);
+}

@@ -155,6 +155,7 @@ export declare class PublicHubCapability implements hub.HubCapability {
     private lastMalformedPublish2xxAt;
     private lastMalformedPublish2xxStatus;
     readonly auth: hub.AuthProvider;
+    readonly triggerFeedback: hub.TriggerFeedbackCapability;
     readonly recipes: hub.RecipeCapability;
     constructor(opts: PublicHubOptions);
     private evolverVersionForWire;

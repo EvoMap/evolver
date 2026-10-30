@@ -1,5 +1,6 @@
 import { createWindowsReferenceApi } from '../benchmark/referenceNativeWindows.js';
 import { type AuditBudget, type AuditFileHandle } from './boundedAudit.js';
+export { WindowsAuditNameBusyError } from './boundedAudit.js';
 type Handle = bigint;
 type FileInfo = ReturnType<ReturnType<typeof createWindowsReferenceApi>['info']>;
 type OpenMode = 'directory' | 'directory-read' | 'read' | 'append' | 'existing' | 'create' | 'delete';
@@ -48,4 +49,3 @@ export declare function openWindowsAuditDirectory(path: string, budget: AuditBud
 export declare function openWindowsAuditFile(path: string, maxBytes: number, budget: AuditBudget, injected?: WindowsAuditApi, existingOnly?: boolean): Promise<AuditFileHandle>;
 /** The v2 process-start/PID/token and .lock/.mutation/.guardian protocol; legacy live PIDs stay conservative. */
 export declare function withWindowsAuditLock<T>(path: string, budget: AuditBudget, run: () => Promise<T>, injected?: WindowsAuditApi): Promise<T>;
-export {};

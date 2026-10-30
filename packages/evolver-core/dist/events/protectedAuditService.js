@@ -2,6 +2,7 @@ import { createConnection, createServer } from 'node:net';
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { RootOperationError } from './rootEventOperations.js';
 import { EventStore } from './eventStore.js';
 import { rootEvent } from './eventSchema.js';
 import { archiveRootEvents, inspectRootEventArchive, localRootEventHistoryVersion, planRootEventArchive, rootEventArchiveDir } from './eventArchive.js';
@@ -296,7 +297,7 @@ function validatedRootInput(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new ProtectedAuditUnavailableError('root_event_invalid');
     const raw = value;
-    if (raw.auditOperationId !== undefined || raw.auditRequestHash !== undefined) {
+    if (raw.auditOperationId !== undefined || raw.auditRequestHash !== undefined || raw.experienceAuditNamespace !== undefined) {
         throw new ProtectedAuditUnavailableError('client_audit_identity_denied');
     }
     if (typeof raw.type !== 'string' || !raw.human || typeof raw.human.title !== 'string' || !raw.human.title
@@ -383,25 +384,51 @@ async function execute(config, request, connected, publication) {
         return EventStore.projectContextDelivery(authority, { path, ...options });
     };
     switch (request.method) {
-        case 'append_root':
-        case 'append_root_bounded': {
-            const input = validatedRootInput(request.payload);
-            const hash = requestHash(input), path = root();
+        case 'append_experience_audit_v1': {
+            const payload = request.payload;
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+                || Object.keys(payload).some(key => !['raw', 'expectedNamespace'].includes(key))
+                || payload.expectedNamespace !== undefined && (typeof payload.expectedNamespace !== 'string' || !/^[a-f0-9]{64}$/.test(payload.expectedNamespace)))
+                throw new ProtectedAuditUnavailableError('invalid_experience_audit');
+            const input = validatedRootInput(payload.raw), path = root();
+            const p = input.payload;
+            if (p?.['source'] !== 'experience-library' || typeof p['operationId'] !== 'string'
+                || !['experience.operation.requested', 'actor.human.teach', 'actor.human.review.approve', 'actor.human.review.reject', 'experience.source.recovered'].includes(input.type))
+                throw new ProtectedAuditUnavailableError('invalid_experience_audit');
             return orderedRequest(path, async () => {
-                // Idempotency replay reads history before the bounded writer opens it.
-                // Reject nonregular sources before they can block the service loop.
+                assertReadSourceCapacity(path, 'root');
+                return new EventStore({ path }).appendExperienceAuditV1(input, request.operationId, request.deadlineAt, payload.expectedNamespace);
+            });
+        }
+        case 'prepare_root_operation':
+        case 'append_root_idempotent': {
+            const payload = request.payload;
+            if (!payload || (payload.legacyActivityId !== undefined && typeof payload.legacyActivityId !== 'string')
+                || (payload.namespaceId !== undefined && typeof payload.namespaceId !== 'string'))
+                throw new ProtectedAuditUnavailableError('root_event_invalid');
+            const input = validatedRootInput(payload.raw), path = root();
+            return orderedRequest(path, async () => {
                 assertReadSourceCapacity(path, 'root');
                 const store = new EventStore({ path });
-                const prior = store.readAllStrict().find(event => event.auditOperationId === request.operationId);
-                if (prior) {
-                    if (prior.auditRequestHash !== hash)
-                        throw new ProtectedAuditUnavailableError('operation_reused_with_new_payload');
-                    return prior;
+                const admission = { operationId: request.operationId, deadlineAt: request.deadlineAt,
+                    ...(typeof payload.legacyActivityId === 'string' ? { legacyActivityId: payload.legacyActivityId } : {}),
+                    ...(typeof payload.namespaceId === 'string' ? { namespaceId: payload.namespaceId } : {}) };
+                return request.method === 'prepare_root_operation' ? store.prepareIdempotent(input, admission) : store.appendIdempotent(input, admission);
+            });
+        }
+        case 'append_root':
+        case 'append_root_bounded': {
+            const input = validatedRootInput(request.payload), path = root();
+            return orderedRequest(path, async () => {
+                assertReadSourceCapacity(path, 'root');
+                try {
+                    return await new EventStore({ path }).appendIdempotent(input, { operationId: request.operationId, deadlineAt: request.deadlineAt });
                 }
-                const raw = { ...input, auditOperationId: request.operationId, auditRequestHash: hash };
-                return request.method === 'append_root'
-                    ? store.append(raw, { operationId: request.operationId, deadlineAt: request.deadlineAt })
-                    : EventStore.appendBounded(raw, { path, deadlineAt: request.deadlineAt });
+                catch (error) {
+                    if (error instanceof RootOperationError && error.reason === 'request_conflict')
+                        throw new ProtectedAuditUnavailableError('operation_reused_with_new_payload');
+                    throw error;
+                }
             });
         }
         case 'read_root_start': {

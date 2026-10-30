@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { canonicalEventPath } from '../util/canonicalEventPath.js';
 import { rootEventArchiveDir } from '../events/eventArchive.js';
 import { rootEvent } from '../events/eventSchema.js';
+import { assertOpenedRegularAssetFile } from '../assetstore/assetStoreStorage.js';
 import { MAX_LINE_BYTES } from '../events/eventStore.js';
 import { Ingestor } from '../events/ingest.js';
 import { protectedAuditConfigured, protectedAuditRpc, protectedAuditRpcSync } from '../events/protectedAuditRpc.js';
@@ -223,6 +224,7 @@ export class GeneContextObservationIndex {
             }
             try {
                 const stat = fstatSync(fd);
+                assertOpenedRegularAssetFile(fd, path);
                 if (!stat.isFile() || stat.nlink !== 1)
                     throw new Error('unsafe_context_history');
                 const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
@@ -414,12 +416,21 @@ export class GeneContextObservationIndex {
         try {
             let changed = false;
             for (const [path, prior] of this.historyIdentities) {
-                const stat = lstatSync(path);
-                if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
-                    || `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` !== prior.identity)
+                const named = lstatSync(path);
+                if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1)
                     throw new Error('unsafe_context_history');
-                if (stat.size !== prior.size || stat.mtimeMs !== prior.mtimeMs)
-                    changed = true;
+                const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+                try {
+                    const stat = fstatSync(fd);
+                    assertOpenedRegularAssetFile(fd, path);
+                    if (!stat.isFile() || stat.nlink !== 1 || `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` !== prior.identity)
+                        throw new Error('unsafe_context_history');
+                    if (stat.size !== prior.size || stat.mtimeMs !== prior.mtimeMs)
+                        changed = true;
+                }
+                finally {
+                    closeSync(fd);
+                }
             }
             if (!this.historyIdentities.has(this.eventsPath)) {
                 try {

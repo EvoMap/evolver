@@ -1,5 +1,6 @@
 export * from './prompt.js';
 export * from './contextResolver.js';
+export * from './triggerFeedbackFacade.js';
 export * from './proofOfWork.js';
 export * from './policy/index.js';
 export * from './openPrRegistry.js';

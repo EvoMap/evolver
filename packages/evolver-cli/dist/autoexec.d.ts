@@ -10,6 +10,7 @@ import { type AutoDistillAntiGeneMode, type AutoDistillAntiGeneResult } from './
 import { type AutoDistillTranscriptMode, type TranscriptDistillTickResult } from './autoDistillTranscript.js';
 import { type SessionIngestTickResult } from './sessionIngest.js';
 import { AtpAutoBuyer, type AtpAutoBuyerClient, type AtpAutoBuyerRequest } from './atpAutoBuyer.js';
+export { feedbackDestinationIdentity } from './feedbackDestinationIdentity.js';
 import { FeedbackOutbox, type FeedbackOutboxRecord, type FeedbackSender } from './feedbackOutbox.js';
 import { TaskOutcomeOutbox, type PrepareTaskOutcomeInput, type TaskOutcomeSender } from './taskOutcomeOutbox.js';
 import { type ConfiguredSelectionGuard } from './selectionPolicyConfig.js';
@@ -250,8 +251,6 @@ export declare function scheduleAutoExecHubSideEffects(task: exec.AutoExecTask, 
  * the legacy task-wide outcome path cannot send a duplicate reuse-result claim.
  */
 export declare function makeHubLink(cap: OutcomeReportingHub, ingestor?: events.Ingestor, reportEnabled?: boolean, onVerifiedSearchMiss?: VerifiedHubSearchMissHandler, assetLog?: AssetCallLogger, env?: NodeJS.ProcessEnv, appliedUseSender?: FeedbackSender, reportingCap?: OutcomeReportingHub, reportingDestinationId?: string): HubLink;
-/** Opaque nonsecret binding to the effective Hub principal and route, never a credential. */
-export declare function feedbackDestinationIdentity(mode: 'public' | 'private', endpoint: string, principal: string, namespace?: string): string;
 /** The proxy attests the final identity it also checks on the feedback POST. */
 export declare function privateFeedbackDestinationIdFromStatus(value: unknown): string | undefined;
 /** A private proxy must attest its effective Hub destination, not merely its local node. */

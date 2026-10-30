@@ -1,6 +1,7 @@
 export * from './recipeExecution.js';
 export * from './recipeExecutionGovernance.js';
 export * from './capability.js';
+export * from './triggerFeedback.js';
 export * from './agentDirectory.js';
 export * from './fake.js';
 export * from './bindings.js';

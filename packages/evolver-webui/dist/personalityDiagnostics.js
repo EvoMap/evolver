@@ -77,7 +77,7 @@ export async function readPersonalityDiagnostics(reader, options = {}) {
         return { available: false, error: 'personality_unavailable' };
     try {
         const raw = await reader();
-        const parsed = personality.personalityModel.safeParse(raw);
+        const parsed = personality.safeParsePersonalityModel(raw);
         if (!parsed.success)
             return { available: false, error: 'personality_unavailable' };
         const maxStats = boundedInteger(options.maxStats, PERSONALITY_DIAGNOSTICS_MAX_STATS, PERSONALITY_DIAGNOSTICS_MAX_STATS);

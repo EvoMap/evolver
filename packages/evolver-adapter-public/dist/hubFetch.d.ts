@@ -111,6 +111,7 @@ export declare class HubFetch {
     call<T>(method: string, path: string, bodyObj?: Record<string, unknown>, query?: Record<string, string | number | undefined>, requestHeaders?: Readonly<Record<string, string>>): Promise<T>;
 }
 export declare function resolveHubOperationTimeouts(env?: Record<string, string | undefined>, overrides?: Partial<HubOperationTimeouts>): HubOperationTimeouts;
+export declare function awaitWithAbort<T>(promise: PromiseLike<T>, signal?: AbortSignal): Promise<T>;
 export declare function hubResponseContentType(res: Pick<HubFetchResponse, 'headers'> | undefined): string;
 export declare function isHubApiResponse(res: Pick<HubFetchResponse, 'headers'> | undefined): boolean;
 export declare function hubUnreachableBackoffMs(failureCount: number): number;

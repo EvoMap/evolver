@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { assetstore, events, mailbox, verify, hub as recipeExecution, hub as hubNs } from '@evomap/evolver-core';
 import { runRecipeConsentCommand } from './recipeConsent.js';
-import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion, resolveHubUrl } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, isNodeSecret, parseNodeSecretVersion, readPublicOAuthCredentialBinding, resolveHubUrl } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, loadEnvFileFromEnvOrThrow, safeReverificationRecovery } from '@evomap/evolver-mcp';
 import { resolveExplicitNodeCredentials } from './identityHome.js';
 import { getCliVersion } from './version.js';
@@ -210,7 +210,7 @@ export function createRecipeHubFromEnv(env = process.env, connectHub = connectPu
     return connected.hub;
 }
 /** Opaque identity for resume isolation; raw credentials, account ids, and local paths never leave this helper. */
-export function resolveRecipeHubResumeIdentityFingerprint(env) {
+export function resolveRecipeHubResumeIdentityFingerprint(env, includeCredentialGeneration = false) {
     loadEnvFileFromEnv(env);
     const credentials = resolveRecipeHubCredentials(env);
     let credential;
@@ -219,9 +219,17 @@ export function resolveRecipeHubResumeIdentityFingerprint(env) {
     }
     else {
         try {
-            credential = createHash('sha256')
-                .update(readFileSync(join(credentials.evomapDir, 'token.json'), 'utf8'))
-                .digest('hex');
+            if (includeCredentialGeneration) {
+                const binding = readPublicOAuthCredentialBinding(join(credentials.evomapDir, 'token.json'));
+                if (!binding)
+                    throw new Error('Hub resume identity credentials are unavailable');
+                credential = binding;
+            }
+            else {
+                credential = createHash('sha256')
+                    .update(readFileSync(join(credentials.evomapDir, 'token.json'), 'utf8'))
+                    .digest('hex');
+            }
         }
         catch {
             throw new Error('Hub resume identity credentials are unavailable');
@@ -231,6 +239,7 @@ export function resolveRecipeHubResumeIdentityFingerprint(env) {
         authMode: credentials.nodeSecret ? 'legacy' : 'oauth',
         senderId: credentials.senderId ?? '',
         credential,
+        ...(includeCredentialGeneration ? { nodeSecretVersion: credentials.nodeSecretVersion ?? null } : {}),
     })).digest('hex');
 }
 function resolveRecipeHubUrl(env) {

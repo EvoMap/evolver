@@ -1,0 +1,1 @@
+export declare function runMcpStdioCommand(argv: string[]): Promise<number>;

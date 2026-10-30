@@ -235,8 +235,8 @@ export function renderGeneContext(projections, options = {}) {
         }
     return { text, digest: hash(text), geneAssetIds, capsuleAssetIds, sections, omissions };
 }
-/** Same legacy trust/review/source decisions as listApprovedGenes, plus the reference guard required at render boundaries. */
-function eligibilityReason(asset, eligibility) {
+/** Shared render/recall gate. The caller must supply this asset's own source maps, including for a Capsule. */
+export function assetContextEligibilityReason(asset, eligibility) {
     if (!isExecutionEligible(asset, eligibility.referenceScope))
         return 'reference_only';
     if (eligibility.provenance.get(asset.asset_id)?.trusted === false)
@@ -312,7 +312,7 @@ function examplesForGene(gene, result, eligibility, omissions, checkBudget, task
                 continue;
             }
             const ownEligibility = { ...eligibility, provenance: source.provenance, review: source.review };
-            const rejected = eligibilityReason(capsule, ownEligibility);
+            const rejected = assetContextEligibilityReason(capsule, ownEligibility);
             checkBudget();
             if (rejected) {
                 omissions.push({ ...omission, reason: rejected });
@@ -329,7 +329,7 @@ function examplesForGene(gene, result, eligibility, omissions, checkBudget, task
                 return other !== source && other.capsules.some((copy) => {
                     checkBudget();
                     return copy.asset_id === capsule.asset_id && (computeAssetId(copy) !== computeAssetId(capsule)
-                        || eligibilityReason(copy, { ...eligibility, provenance: other.provenance, review: other.review }) !== undefined);
+                        || assetContextEligibilityReason(copy, { ...eligibility, provenance: other.provenance, review: other.review }) !== undefined);
                 });
             });
             checkBudget();
@@ -561,7 +561,7 @@ export async function assembleGeneContext(options) {
                 omissions.push({ geneAssetId: gene.asset_id, reason: 'timeout' });
                 continue;
             }
-            const reason = eligibilityReason(gene, options.eligibility);
+            const reason = assetContextEligibilityReason(gene, options.eligibility);
             if (reason) {
                 omissions.push({ geneAssetId: gene.asset_id, reason });
                 continue;

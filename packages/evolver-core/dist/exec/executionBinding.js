@@ -7,7 +7,7 @@ import { canonicalize } from '../wire/index.js';
 import { MAX_LINE_BYTES } from '../events/eventStore.js';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { isValidationCommandAllowed } from '../verify/validation.js';
-import { proofOfWork } from '../schema/proofOfWork.js';
+import { proofOfWork, proofOfWorkInput } from '../schema/proofOfWork.js';
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const digest = z.string().regex(DIGEST_PATTERN, 'must be sha256:<64 lowercase hex>');
 const MAX_INLINE_BINDING_BYTES = MAX_LINE_BYTES - 512;
@@ -152,6 +152,8 @@ const terminalRecordSchema = z.object({
     proof_of_work: proofOfWork.optional(),
     provenance: provenanceSchema,
 }).strict();
+// Live terminal inputs must use the same declared-proof record boundary as public proof readers.
+const terminalRecordInput = terminalRecordSchema.extend({ proof_of_work: proofOfWorkInput.optional() });
 function sha256(value) {
     return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
@@ -475,7 +477,7 @@ export class ExecutionBindingJournal {
         });
     }
     async recordTerminal(record) {
-        const parsed = terminalRecordSchema.safeParse(record);
+        const parsed = terminalRecordInput.safeParse(record);
         if (!parsed.success)
             throw new ExecutionBindingError('binding_provenance_unavailable', parsed.error.message);
         const normalized = normalizeTerminalRecord(parsed.data);
@@ -570,7 +572,7 @@ export class ExecutionBindingJournal {
         }))
             return { kind: 'unsafe_to_replay', task_id: taskId, binding_digest: chosen, reason: 'started event run_id disagrees with binding' };
         if (terminalEvents.length > 0) {
-            const parsed = terminalEvents.map((event) => terminalRecordSchema.safeParse(eventPayload(event) ?? {}));
+            const parsed = terminalEvents.map((event) => terminalRecordInput.safeParse(eventPayload(event) ?? {}));
             if (parsed.some((result) => !result.success))
                 return { kind: 'unsafe_to_replay', task_id: taskId, binding_digest: chosen, reason: 'terminal provenance is invalid' };
             const terminals = parsed.map((result) => normalizeTerminalRecord(result.data));
@@ -594,7 +596,7 @@ export class ExecutionBindingJournal {
     }
 }
 export function parseExecutionTerminalRecord(input) {
-    const parsed = terminalRecordSchema.safeParse(input);
+    const parsed = terminalRecordInput.safeParse(input);
     if (!parsed.success)
         throw new ExecutionBindingError('binding_provenance_unavailable', parsed.error.message, true);
     return freezeDeep(normalizeTerminalRecord(parsed.data));

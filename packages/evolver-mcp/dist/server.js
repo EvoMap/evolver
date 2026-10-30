@@ -1,4 +1,4 @@
-import { hub } from '@evomap/evolver-core';
+import { assetstore, hub } from '@evomap/evolver-core';
 import { DiscoveryError } from './discovery.js';
 export class UnknownToolError extends Error {
     name;
@@ -38,6 +38,9 @@ export class EvolverMcpServer {
             return { ok: true, result: await tool.handler(args) };
         }
         catch (e) {
+            if (name.startsWith('evolver_experience_') && e instanceof assetstore.ExperienceError && e.code === 'ACTIVITY_NOT_ADMITTED') {
+                return { ok: false, error: e.message, code: e.code };
+            }
             if (e instanceof hub.RecipeExecutionError || e instanceof DiscoveryError)
                 return { ok: false, error: e.code, code: e.code, status: e.status, ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) };
             if (name === 'evolver_recipe_search')

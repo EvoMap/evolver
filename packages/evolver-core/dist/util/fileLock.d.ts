@@ -48,6 +48,7 @@ export type ClearLockGuardianResult = {
     reason: 'not_owned' | 'ownership_changed' | 'mutation_busy' | 'path_changed';
 };
 export type FileLockOwnerProcessStatus = 'current' | 'dead' | 'pid_reused' | 'unverifiable';
+export type FileLockProcessLiveness = 'alive' | 'dead' | 'unknown';
 export declare class LockTimeoutError extends Error {
     readonly code = "LOCK_TIMEOUT";
     constructor(_lockPath?: string);
@@ -82,6 +83,9 @@ export declare function _setFileLockTestHooksForTest(hooks?: {
     beforeMutationGuardRelease?: (mutationGuardPath: string, lockPath: string) => void;
 }): void;
 export declare function statRegularFileIdentity(path: string): BigIntStats;
+/** Fresh, read-only liveness. On Windows this avoids Bun's slow signal-0 path and
+ * distinguishes proven death from denied/ambiguous process observations. */
+export declare function readFileLockProcessLiveness(pid: number): FileLockProcessLiveness;
 /** Observe an owner without acquiring, reclaiming or removing the lock. Legacy owners remain unverifiable. */
 export declare function readFileLockOwner(lockPath: string): FileLockOwnerRecord | null;
 /**

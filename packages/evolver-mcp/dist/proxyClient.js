@@ -251,6 +251,16 @@ export class EvolverProxyClient {
             ...(args.expectedHubDestinationId ? { expected_hub_destination_id: args.expectedHubDestinationId } : {}),
         });
     }
+    async triggerFeedback(action, runId, remote = false) {
+        if (!runId.trim() || Buffer.byteLength(runId) > 256 || (action === 'get' && remote))
+            throw new Error('trigger_feedback_invalid_input');
+        const connection = this.connectionSnapshot();
+        const path = `/trigger-feedback/${action}`;
+        const result = await this.callOnce('POST', path, { run_id: runId, ...(remote ? { remote } : {}) }, {}, connection);
+        if (!result.ok)
+            throw this.proxyError(result, path);
+        return result.parsed;
+    }
     modeBoundBody(input) {
         if (!this.expectedHubMode || !input || typeof input !== 'object' || Array.isArray(input))
             return input;

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
 import { installJsonMcpRuntime, McpConfigChangedError, McpConfigConflictError, McpConfigOwnershipError, McpConfigShapeError, uninstallJsonMcpRuntime, } from './jsonMcpInstaller.js';
@@ -275,6 +275,38 @@ function openCodeWorktreeRoot(configRoot) {
     }
     catch {
         return directory;
+    }
+    if (process.platform === 'win32') {
+        // Git and Node may spell the same directory through different 8.3/case aliases.
+        // Compare actual directory identities, then retain the caller's ancestor spelling.
+        const directoryIdentity = (path) => {
+            const fd = openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+            try {
+                return fstatSync(fd, { bigint: true });
+            }
+            finally {
+                closeSync(fd);
+            }
+        };
+        const identity = directoryIdentity(canonicalWorktreeRoot);
+        if (!identity.isDirectory())
+            return directory;
+        let ancestor = directory;
+        while (true) {
+            try {
+                const candidate = directoryIdentity(ancestor);
+                if (candidate.isDirectory() && candidate.dev === identity.dev && candidate.ino === identity.ino)
+                    return ancestor;
+            }
+            catch (error) {
+                if (error.code !== 'ENOENT')
+                    throw error;
+            }
+            const parent = dirname(ancestor);
+            if (parent === ancestor)
+                return directory;
+            ancestor = parent;
+        }
     }
     return isLexicallyContained(canonicalWorktreeRoot, directory)
         ? canonicalWorktreeRoot

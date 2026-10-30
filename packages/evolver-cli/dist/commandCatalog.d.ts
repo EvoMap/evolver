@@ -9,6 +9,7 @@ export declare const COMMAND_GROUPS: {
     readonly 'proxy-token': "Daemon";
     readonly doctor: "Daemon";
     readonly 'setup-hooks': "Daemon";
+    readonly plugin: "Daemon";
     readonly run: "Evolution";
     readonly cycle: "Evolution";
     readonly autoexec: "Evolution";
@@ -20,12 +21,15 @@ export declare const COMMAND_GROUPS: {
     readonly ingest: "Memory";
     readonly inject: "Memory";
     readonly recall: "Memory";
+    readonly experience: "Memory";
+    readonly 'mcp-stdio': "Tools";
     readonly reuse: "Memory";
     readonly 'reuse-report': "Memory";
     readonly 'recall-verify-report': "Memory";
     readonly narrative: "Memory";
     readonly 'gene-value': "Memory";
     readonly 'memory-graph': "Memory";
+    readonly 'trigger-feedback': "Memory";
     readonly 'asset-log': "Assets";
     readonly 'asset-trust': "Assets";
     readonly 'asset-health': "Assets";

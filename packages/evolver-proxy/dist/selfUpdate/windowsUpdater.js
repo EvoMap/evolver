@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, rm, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, win32 } from 'node:path';
 import { SELF_UPDATE_FAILURE_CODES, SelfUpdateFailureError, selfUpdateFailure, } from './failureCodes.js';
+import { selfUpdateFileMetadata } from './fileMetadata.js';
 export const WINDOWS_UPDATER_WORKER_ARG = '--evolver-windows-updater-worker';
 const WORK_ITEM_SCHEMA_VERSION = 1;
 const RESULT_SCHEMA_VERSION = 1;
@@ -400,7 +401,7 @@ function parseIdentity(value) {
 }
 async function snapshotRegularFile(path, label, maxBytes) {
     const cleanPath = assertAbsoluteCleanPath(path, label);
-    const before = await lstat(cleanPath, { bigint: true }).catch((error) => {
+    const before = await selfUpdateFileMetadata(cleanPath).catch((error) => {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}_unreadable`, {
             cause: error,
         });

@@ -49,6 +49,9 @@ export interface CursorInstallOptions {
     configRoot: string;
     genes: readonly CursorGene[];
     maxGenes?: number;
+    dryRun?: boolean;
+    targetPath?: string;
+    preserveExisting?: boolean;
 }
 /**
  * Write/refresh `.cursor/rules/evolver.mdc` from the current top genes. Non-destructive + idempotent:
@@ -61,12 +64,11 @@ export interface CursorInstallOptions {
 export declare function installCursorRules(opts: CursorInstallOptions): InstallResult & {
     rewritten: boolean;
 };
-/**
- * Remove evolver's cursor injection. If evolver.mdc is evolver-only (we created it, no user prose), delete the
- * file; otherwise strip just the managed block and keep the user's content. Other rules files are untouched.
- */
+/** Retain the original inode, durably record intent, and publish only an exclusive postimage. */
 export declare function uninstallCursorRules(opts: {
     configRoot: string;
+    dryRun?: boolean;
+    targetPath?: string;
 }): InstallResult;
 /** Convenience for the daemon rewrite trigger: rewrite the rules file to reflect the current top genes. Returns
  *  whether the file actually changed (so callers can avoid redundant downstream work / emissions). */

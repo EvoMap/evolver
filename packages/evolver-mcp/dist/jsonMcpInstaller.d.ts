@@ -7,7 +7,7 @@ export declare function _setJsonMcpAfterSharedFileValidateHookForTest(hook?: Bef
 export declare function _setJsonMcpBeforeBackupRemoveHookForTest(hook?: BeforeReplaceHook): void;
 export declare function _setJsonMcpBeforeSharedFileCommitHookForTest(hook?: BeforeReplaceHook): void;
 export interface JsonMcpRuntimeSpec {
-    runtime: 'opencode' | 'kiro';
+    runtime: 'opencode' | 'kiro' | 'antigravity';
     configPath(opts: JsonMcpPathOptions): string;
     resolveConfig?(opts: JsonMcpPathOptions): JsonMcpRuntimeResolution;
     safeRoot?(opts: JsonMcpPathOptions): string;

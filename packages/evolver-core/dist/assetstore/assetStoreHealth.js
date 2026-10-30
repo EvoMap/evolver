@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { computeAssetId, validateWire, verifyAssetId } from '../wire/index.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
-import { assertOptionalRegularFile, isReliableAssetStoreLockRelease, readUtf8Regular, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
+import { assertNoExperienceTransaction, assertOptionalRegularFile, isReliableAssetStoreLockRelease, readUtf8Regular, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
 import { isActiveUnverifiedProvenance } from './provenance.js';
 import { parseAssetSyncSidecarRecord, parseProvenanceRecord, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 export const DEFAULT_ASSET_HEALTH_MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -296,6 +296,7 @@ export function inspectLocalAssetStore(baseDir, opts = {}, deps = {}) {
     }
     let report;
     try {
+        assertNoExperienceTransaction(baseDir);
         const maxFileBytes = healthScanLimit(opts.maxFileBytes);
         // Read the unverified-reuse set once, under the lock we already hold, so every asset file classifies its
         // hash mismatches consistently against the same bounded provenance snapshot.

@@ -321,6 +321,16 @@ export function protectedAuditRootIdentitySync(path) {
 export function protectedAuditReadSnapshotSync(kind, path, options) {
     return readProtectedAuditSnapshotChunks(kind, (method, payload, deadlineAt) => protectedAuditRpcSync(method, path, payload, { deadlineAt }), options);
 }
+export function decodeSnapshotChunk(encoded, offset, size) {
+    if (typeof encoded !== 'string' || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+        throw new ProtectedAuditUnavailableError('read_snapshot_chunk_invalid');
+    }
+    const chunk = Buffer.from(encoded, 'base64');
+    if (chunk.length === 0 && offset < size || offset + chunk.length > size) {
+        throw new ProtectedAuditUnavailableError('read_snapshot_length_invalid');
+    }
+    return chunk;
+}
 /** Internal chunk protocol. Its caller retains socket/principal authentication. */
 export function readProtectedAuditSnapshotChunks(kind, request, options) {
     const deadlineAt = Date.now() + 30_000;
@@ -339,13 +349,7 @@ export function readProtectedAuditSnapshotChunks(kind, request, options) {
             check();
             const encoded = offset === 0 ? first.chunk : request(`${prefix}_chunk`, { token: first.token, offset }, deadlineAt);
             check();
-            if (typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
-                throw new ProtectedAuditUnavailableError('read_snapshot_chunk_invalid');
-            }
-            const chunk = Buffer.from(encoded, 'base64');
-            if (chunk.length === 0 && offset < first.size || offset + chunk.length > first.size) {
-                throw new ProtectedAuditUnavailableError('read_snapshot_length_invalid');
-            }
+            const chunk = decodeSnapshotChunk(encoded, offset, first.size);
             parts.push(chunk);
             offset += chunk.length;
             if (offset === first.size)

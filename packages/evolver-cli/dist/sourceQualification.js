@@ -5,13 +5,16 @@ const USAGE = 'evolver asset-trust qualify <asset_id> --evidence <file> --reason
     + 'evolver asset-trust qualification <asset_id> --benchmark <id> [--evidence-digest <sha256>] [--json]\n';
 /** 有界、单descriptor读取；不执行证据中的命令，不跟随symlink或读取增长中的文件。 */
 function readEvidence(path) {
+    const identity = assetstore.captureRegularAssetFileIdentity(path);
     const before = lstatSync(path);
     if (!before.isFile() || before.isSymbolicLink() || before.size > 128 * 1024)
         throw new Error('invalid_evidence_file');
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
         const opened = fstatSync(fd);
-        if (!opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino || before.size !== opened.size)
+        assetstore.assertOpenedRegularAssetFile(fd, path, identity);
+        if (!opened.isFile() || (process.platform !== 'win32' && before.dev !== opened.dev) || before.ino !== opened.ino || before.size !== opened.size
+            || before.mtimeMs !== opened.mtimeMs || before.ctimeMs !== opened.ctimeMs)
             throw new Error('evidence_changed');
         const bytes = Buffer.alloc(opened.size);
         let offset = 0;
@@ -23,8 +26,9 @@ function readEvidence(path) {
         }
         const after = fstatSync(fd);
         const named = lstatSync(path);
+        assetstore.assertOpenedRegularAssetFile(fd, path, identity);
         if (opened.size !== after.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs
-            || named.isSymbolicLink() || named.dev !== opened.dev || named.ino !== opened.ino)
+            || named.isSymbolicLink() || named.ino !== opened.ino)
             throw new Error('evidence_changed');
         return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     }

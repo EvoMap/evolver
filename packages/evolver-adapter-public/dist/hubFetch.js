@@ -102,6 +102,8 @@ const LEGACY_BEARER_POST_PATHS = new Set([
     '/a2a/fetch',
     '/a2a/events/poll',
     '/a2a/mailbox/outbound',
+    '/a2a/trigger-feedback',
+    '/a2a/trigger-feedback/get',
 ]);
 function requestHeaderName(headers, name) {
     const normalized = name.toLowerCase();
@@ -352,7 +354,7 @@ function abortReason(signal) {
     error.name = 'AbortError';
     return error;
 }
-async function awaitWithAbort(promise, signal) {
+export async function awaitWithAbort(promise, signal) {
     const pending = Promise.resolve(promise);
     if (!signal)
         return await pending;

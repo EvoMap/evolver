@@ -113,6 +113,8 @@ export declare class ProvenanceStore {
     isTrusted(assetId: string): boolean;
     /** One linearizable trust snapshot for bounded batch readers. */
     snapshot(): ReadonlyMap<string, ProvenanceRecord>;
+    /** Fresh prompt-time eligibility; a busy writer fails closed instead of blocking the event loop. */
+    snapshotNow(): ReadonlyMap<string, ProvenanceRecord>;
     /** 指定历史证据的只读追溯，不将旧资格恢复为当前状态。 */
     qualificationHistory(assetId: string, benchmarkId: string, evidenceDigest: string): readonly SourceQualification[];
     /** operator确认的资格仅附加到现有provenance，不创建或修改trust/ReviewLedger状态。 */

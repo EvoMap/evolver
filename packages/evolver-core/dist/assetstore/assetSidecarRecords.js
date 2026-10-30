@@ -105,10 +105,14 @@ export function parseReviewRecord(value) {
     }
     const by = stringField(record, 'by');
     const reason = stringField(record, 'reason');
+    const operationId = record['operationId'];
+    if (operationId !== undefined && (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)))
+        return null;
     return {
         assetId,
         state,
         at,
+        ...(operationId ? { operationId: operationId } : {}),
         ...(by ? { by } : {}),
         ...(reason ? { reason } : {}),
     };

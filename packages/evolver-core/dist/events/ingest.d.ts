@@ -4,8 +4,9 @@ import type { RawEvent, RootEvent } from './eventSchema.js';
 import type { EventSink } from './sink.js';
 import { type AuditWriteOptions } from './boundedAudit.js';
 import { type ContextDeliveryStatus, type PreparedContextDelivery } from '../ops/geneContextDeliveryJournal.js';
+import type { IdempotentEventAdmission, RootOperationTicket } from './rootEventOperations.js';
 /** 已知事件类型 (军杰 §9; 可 registerEventType 扩展). */
-export declare const EVENT_TYPES: readonly ["cycle.started", "cycle.signals_collected", "cycle.solidified", "cycle.failed", "cycle.aborted", "cycle.heartbeat", "cycle.consumed", "cycle.execution_admitted", "cycle.validation", "decision.gene_selected", "decision.triggered", "decision.suppressed", "personality.selected", "personality.risk_gated", "personality.mutated", "personality.stats_updated", "personality.pivoted", "signals.extracted", "mutation.built", "capsule.produced", "evolution_event.projected", "observer.quarantined", "observer.dead_letter", "actor.human.nudge", "actor.human.intervene", "actor.human.teach", "actor.human.observe", "actor.human.review.approve", "actor.human.review.reject", "actor.human.trust.promote", "actor.human.trust.revoke", "actor.human.source.qualify", "actor.human.sidecar.recover", "gene.distilled", "gene.distill_shadowed", "anti_gene.distilled", "anti_gene.distill_shadowed", "anti_gene.benchmark_result", "anti_gene.rollout_result", "reflection.recorded", "material.batch_ready", "value.reuse_hit", "value.inject", "value.reuse_outcome", "value.recall", "value.gene_context_delivery", "value.gene_context_observation", "execution.binding.created", "execution.started", "execution.decision", "execution.terminal", "execution.recovered", "execution.reference_access", "governance.projection.revoked", "governance.projection.reinstated"];
+export declare const EVENT_TYPES: readonly ["cycle.started", "cycle.signals_collected", "cycle.solidified", "cycle.failed", "cycle.aborted", "cycle.heartbeat", "cycle.consumed", "cycle.execution_admitted", "cycle.validation", "decision.gene_selected", "decision.triggered", "decision.suppressed", "personality.selected", "personality.risk_gated", "personality.mutated", "personality.stats_updated", "personality.pivoted", "signals.extracted", "mutation.built", "capsule.produced", "evolution_event.projected", "observer.quarantined", "observer.dead_letter", "actor.human.nudge", "actor.human.intervene", "actor.human.teach", "actor.human.observe", "actor.human.review.approve", "actor.human.review.reject", "actor.human.trust.promote", "actor.human.trust.revoke", "actor.human.source.qualify", "actor.human.sidecar.recover", "gene.distilled", "gene.distill_shadowed", "experience.activity", "experience.operation.requested", "experience.source.recovered", "anti_gene.distilled", "anti_gene.distill_shadowed", "anti_gene.benchmark_result", "anti_gene.rollout_result", "reflection.recorded", "material.batch_ready", "value.reuse_hit", "value.inject", "value.reuse_outcome", "value.recall", "value.gene_context_delivery", "value.gene_context_observation", "execution.binding.created", "execution.started", "execution.decision", "execution.terminal", "execution.recovered", "execution.reference_access", "governance.projection.revoked", "governance.projection.reinstated"];
 export type EventType = (typeof EVENT_TYPES)[number];
 export declare function registerEventType(t: string): void;
 export declare function isKnownEventType(t: string): boolean;
@@ -75,7 +76,23 @@ export declare class Ingestor {
         readonly operationId: string;
         readonly signal: AbortSignal;
         readonly deadlineAt?: number;
+        readonly expectedPath?: string;
+        readonly expectedAlias?: string;
     }): ContextObservationOperationV1;
+    /** Diagnostic only: legacy intent has no business identity. Never use this scan to authorize replay. */
+    static experienceLegacyAuditStatus(path: string, limit?: number): {
+        operationId: string;
+        assetId: string;
+        action: string;
+        proof: "unresolved";
+        missingEvidence: "business_operation_identity";
+    }[];
+    /** Durable experience projection has no external sink replay. The root writer owns exact-once readback. */
+    ingestExperienceAuditV1(raw: RawEvent, operationId: string, deadlineAt?: number, expectedNamespace?: string): Promise<RootEvent>;
+    /** No dispatch: callers checkpoint this namespace binding before asking for an idempotent root write. */
+    prepareIdempotent(raw: RawEvent, admission: IdempotentEventAdmission): Promise<RootOperationTicket>;
+    /** Durable root audit only. Replay never re-dispatches a sink or issue reporter. */
+    ingestIdempotent(raw: RawEvent, admission: IdempotentEventAdmission): Promise<RootEvent>;
     ingest(raw: RawEvent, admission?: EventWriteAdmission): Promise<RootEvent>;
     readAll(): RootEvent[];
     readAllStrict(): RootEvent[];

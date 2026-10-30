@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { parseProvenanceRecord, parseReviewRecord } from './assetSidecarRecords.js';
 import { decodeReferencePair } from '../reference/decoder.js';
 import { brandScanRawObject, isExecutionEligible } from '../reference/guard.js';
@@ -671,7 +672,7 @@ async function closeSnapshotOwner(key, reader) {
             current.recovering = false;
     }
 }
-async function readLocalSnapshotOwned(baseDir, query, capsules, signal, beforeRecord, onReader, onClosed, pageBytes, onRecord) {
+async function readLocalSnapshotOwned(baseDir, query, capsules, signal, beforeRecord, onReader, onClosed, pageBytes, onRecord, allKinds = false) {
     let finish;
     let snapshot;
     let part = 'root';
@@ -741,7 +742,12 @@ async function readLocalSnapshotOwned(baseDir, query, capsules, signal, beforeRe
             const jsonl = beforeRecord && onRecord
                 ? await reader.scanGeneJsonl(join(baseDir, 'genes.jsonl'), beforeRecord, onRecord)
                 : await reader.jsonl(join(baseDir, 'genes.jsonl'), (row) => assetRow(row, 'Gene'));
-            const cases = capsules ? await reader.jsonl(join(baseDir, 'capsules.jsonl'), (row) => assetRow(row, 'Capsule')) : [];
+            const cases = capsules || allKinds ? await reader.jsonl(join(baseDir, 'capsules.jsonl'), (row) => assetRow(row, 'Capsule')) : [];
+            const other = [];
+            if (allKinds)
+                for (const kind of ['EvolutionEvent', 'AntiGene']) {
+                    other.push(...await reader.jsonl(join(baseDir, LOCAL_ASSET_FILES[kind]), row => assetRow(row, kind)));
+                }
             settle?.('fulfilled');
             start?.('metadata');
             const provenance = await reader.jsonl(join(baseDir, 'provenance.jsonl'), parseProvenanceRecord, true);
@@ -786,7 +792,8 @@ async function readLocalSnapshotOwned(baseDir, query, capsules, signal, beforeRe
             start?.('verify');
             await reader.verify();
             settle?.('fulfilled');
-            return { genes: [...envelope, ...jsonl], capsules: cases, scanned: envelope.length + jsonl.length + cases.length,
+            return { genes: [...envelope, ...jsonl], capsules: cases, identities: allKinds ? [...envelope, ...jsonl, ...cases, ...other] : [],
+                scanned: envelope.length + jsonl.length + cases.length + other.length,
                 bytes: reader.bytesRead,
                 provenance: trust, review, referenceScope, referenceIds: Object.freeze([...ids]) };
         }
@@ -870,6 +877,16 @@ export async function readLocalGeneSnapshot(baseDir, query = {}) {
         if (signal.aborted || Date.now() >= boundedQuery.deadlineAt)
             throw new Error('snapshot_aborted');
         return { ...snapshot, genes };
+    });
+}
+/** Capture admission needs every frozen address, including non-execution-eligible
+ * records. Use the same reader and aggregate budgets, not an unbounded provider
+ * reload or another independent snapshot which could miss a cross-kind writer. */
+export async function readLocalExperienceSnapshot(baseDir, query) {
+    return withSnapshotDeadline(query, async (signal) => {
+        const snapshot = await trackSnapshotInvocation(readLocalSnapshotOwned(baseDir, query, false, signal, undefined, undefined, undefined, undefined, undefined, true));
+        const checked = await checkedSnapshotAssets(snapshot.identities, snapshot.referenceScope, { ...query, signal });
+        return { ...snapshot, genes: checked.filter(row => row.asset.type === 'Gene' && row.executionEligible).map(row => row.asset) };
     });
 }
 /** A real, single-pass Local/Foreign scan. The reader and root admission remain

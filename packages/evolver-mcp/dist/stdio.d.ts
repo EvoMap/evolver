@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-export {};
+export declare const stdioLifetime: Promise<void>;

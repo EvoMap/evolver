@@ -4,6 +4,7 @@
 // must not enter the content hash (#30.2), or it would break content-addressing. Trust-first by construction:
 // selection defaults to trusted-only; an untrusted asset is promoted to trusted only by an explicit, logged act.
 import { join, dirname } from 'node:path';
+import { acquireLock } from '../util/fileLock.js';
 import { assertCapsuleGeneBinding, FrozenAssetIdCollisionError, InvalidFrozenPutResultError, frozenAssetRecordsEqual, normalizeForPut, supportsAtomicConditionalPut, supportsAtomicFrozenConditionalPut, validateConditionalPutResult, validateFrozenPutResult, } from './provider.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, truncateUtf8SuffixDurable, withAssetStoreLock, } from './assetStoreStorage.js';
 import { assertTrustSidecarHealthy, parseProvenanceRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
@@ -181,12 +182,12 @@ export class ProvenanceStore {
         if (state !== this.fileState)
             this.rebuildIndex(state);
     }
-    withFreshRead(read) {
+    withFreshRead(read, waitForLock = true) {
         assertAssetStoreDirectory(dirname(this.path));
         return withAssetStoreLock(this.lockPath, () => {
             this.refreshUnderLock();
             return read(this.index);
-        });
+        }, waitForLock ? {} : { acquireLock: (path) => acquireLock(path, { maxTries: 1, waitMs: 0 }) });
     }
     appendUnderLock(full, replaceQualifications = false) {
         // 普通trust写入可能携带旧snapshot；它必须保留锁内fresh资格，只有qualify能替换。
@@ -355,6 +356,10 @@ export class ProvenanceStore {
     /** One linearizable trust snapshot for bounded batch readers. */
     snapshot() {
         return this.withFreshRead((index) => new Map(index));
+    }
+    /** Fresh prompt-time eligibility; a busy writer fails closed instead of blocking the event loop. */
+    snapshotNow() {
+        return this.withFreshRead((index) => new Map(index), false);
     }
     /** 指定历史证据的只读追溯，不将旧资格恢复为当前状态。 */
     qualificationHistory(assetId, benchmarkId, evidenceDigest) {

@@ -1,26 +1,29 @@
-import { closeSync, fstatSync, lstatSync, mkdtempSync, openSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdtempSync, openSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
+import { assertAssetStoreDirectoryIdentity, captureAssetStoreDirectoryIdentity, captureRegularAssetFileIdentity } from '../assetstore/assetStoreStorage.js';
 function windowsBunConfig() {
     const cwd = mkdtempSync(join(tmpdir(), 'evolver-validation-worker-'));
-    const directory = lstatSync(cwd, { bigint: true });
+    const directory = captureAssetStoreDirectoryIdentity(cwd);
     const path = join(cwd, 'worker.toml');
     let config;
     let removed = false;
     const cleanup = () => {
         if (removed)
             return;
-        const currentDirectory = lstatSync(cwd, { bigint: true });
-        if (!currentDirectory.isDirectory() || currentDirectory.isSymbolicLink()
-            || currentDirectory.dev !== directory.dev || currentDirectory.ino !== directory.ino) {
-            throw new Error('trusted_validation_runtime_cleanup_failed');
+        try {
+            assertAssetStoreDirectoryIdentity(cwd, directory);
+            if (config) {
+                const currentConfig = captureRegularAssetFileIdentity(path);
+                if (currentConfig.dev !== config.dev || currentConfig.ino !== config.ino
+                    || currentConfig.birthtimeNs !== config.birthtimeNs)
+                    throw new Error('worker_config_identity_changed');
+            }
+        }
+        catch (error) {
+            throw new Error('trusted_validation_runtime_cleanup_failed', { cause: error });
         }
         if (config) {
-            const currentConfig = lstatSync(path, { bigint: true });
-            if (!currentConfig.isFile() || currentConfig.isSymbolicLink()
-                || currentConfig.dev !== config.dev || currentConfig.ino !== config.ino) {
-                throw new Error('trusted_validation_runtime_cleanup_failed');
-            }
             // No recursive deletion: unexpected files or a replaced artifact remain a failure.
             unlinkSync(path);
         }

@@ -123,6 +123,8 @@ export declare function renderGeneContext(projections: readonly GeneContextProje
     contentMode?: GeneContextContentMode;
     budget?: GeneContextBudget;
 }): RenderedGeneContext;
+/** Shared render/recall gate. The caller must supply this asset's own source maps, including for a Capsule. */
+export declare function assetContextEligibilityReason(asset: AssetRecord, eligibility: GeneContextEligibility): GeneContextOmissionReason | undefined;
 /** Assemble already-selected Genes without changing their selection order or reading remote assets.
  * @example
  * const result = await assetstore.assembleGeneContext({

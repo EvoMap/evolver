@@ -1,5 +1,5 @@
 import { isExecutionEligible } from '../reference/guard.js';
-import { normalizeProofOfWork, proofOfWork } from '../schema/proofOfWork.js';
+import { normalizeProofOfWork, parseProofOfWork } from '../schema/proofOfWork.js';
 import { proofIndicatesOutput } from '../algo/solidify.js';
 /** 扫该 gene 关联的 Capsule, 派生学习视图(只读, 不落库). */
 export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
@@ -35,5 +35,5 @@ export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
 }
 /** M3-5: 校验 agent 提交的 proof_of_work(zod). 返回规范化值或抛. */
 export function validateProofOfWork(input) {
-    return proofOfWork.parse(normalizeProofOfWork(input) ?? input);
+    return parseProofOfWork(normalizeProofOfWork(input) ?? input);
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --
 import { mailbox } from '@evomap/evolver-core';
 import { PrivateNodeCredentialStore } from '../private/nodeCredentialStore.js';
+import { type ProxyStopSignalSource } from './proxyStopSignal.js';
 import { loadEnvFileFromEnv } from './envFile.js';
 import { type DegradedStartupBootstrapResult } from '../selfUpdate/bootstrap.js';
 import { type SelfUpdatePolicy } from '../selfUpdate/policy.js';
@@ -129,6 +130,7 @@ interface ProxyLoopLogger {
     write: (chunk: string) => unknown;
 }
 export interface ProxyLoopOptions {
+    signal?: AbortSignal;
     minDelayMs?: number;
     errorDelayMs?: number;
     maxIterations?: number;
@@ -147,6 +149,7 @@ export declare function runManagedProxyLoop(options: {
     };
     runLoop?: (daemon: ProxyLoopDaemon, options?: ProxyLoopOptions) => Promise<void>;
     logger?: ProxyLoopLogger;
+    signals?: ProxyStopSignalSource;
 }): Promise<void>;
 interface CreateProxyDaemonDepsOptions {
     runtime: HubRuntime;
@@ -158,6 +161,7 @@ interface CreateProxyDaemonDepsOptions {
     selfUpdatePolicy: SelfUpdatePolicy;
     env?: NodeJS.ProcessEnv;
     selfUpdateOverrides?: SelfUpdateRuntimeOverrides;
+    triggerFeedback?: ProxyDaemonDeps['triggerFeedback'];
 }
 interface SelfUpdateRuntimeOverrides extends ReleaseBinaryOptions {
     restart?: () => void;

@@ -146,6 +146,12 @@ function boundedBootstrapDetail(value) {
     }
     return normalized.slice(0, MAX_BOOTSTRAP_DETAIL_LENGTH);
 }
+function bootstrapPathMetadata(path) {
+    const stat = lstatSync(path, { bigint: true });
+    // Reuse the native file witness; a missing Windows volume is not an identity.
+    return process.platform === 'win32' && stat.dev === 0n && stat.isFile() && !stat.isSymbolicLink()
+        ? util.statRegularFileIdentity(path) : stat;
+}
 function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_STATE_BYTES) {
     const injected = options.exists !== undefined || options.readFile !== undefined;
     try {
@@ -158,7 +164,7 @@ function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_S
             }
             return { status: 'present', raw };
         }
-        const before = lstatSync(path, { bigint: true });
+        const before = bootstrapPathMetadata(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
             || before.size > BigInt(maxBytes)
             || before.dev <= 0n || before.ino <= 0n) {
@@ -190,7 +196,7 @@ function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_S
                 return { status: 'invalid', detail: `changed durable state: ${basename(path)}` };
             }
             (options.assertIntentFileTrust ?? assertNativeBootstrapIntentFileTrust)(path);
-            const settled = lstatSync(path, { bigint: true });
+            const settled = bootstrapPathMetadata(path);
             if (!settled.isFile() || settled.isSymbolicLink() || settled.nlink !== 1n
                 || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.size !== opened.size
                 || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
@@ -268,7 +274,7 @@ function readLegacyBootstrapProofFile(receipt, options) {
     const directory = dirname(receipt.path);
     assertDirectoryTrust(directory);
     assertFileTrust(receipt.path);
-    const before = lstatSync(receipt.path, { bigint: true });
+    const before = bootstrapPathMetadata(receipt.path);
     if (!before.isFile() || before.isSymbolicLink()
         || before.dev <= 0n || before.ino <= 0n
         || before.size !== BigInt(receipt.size)
@@ -310,7 +316,7 @@ function readLegacyBootstrapProofFile(receipt, options) {
         }
         assertDirectoryTrust(directory);
         assertFileTrust(receipt.path);
-        const settled = lstatSync(receipt.path, { bigint: true });
+        const settled = bootstrapPathMetadata(receipt.path);
         if (!settled.isFile() || settled.isSymbolicLink()
             || settled.dev !== opened.dev || settled.ino !== opened.ino
             || settled.size !== opened.size
@@ -2037,7 +2043,7 @@ function syncBootstrapDirectory(path) {
 function readBootstrapRegistrationIntentFile(options, path, registrationPath, terminalPath, clearingPath, expectedLinkCount = 1n) {
     try {
         assertBootstrapIntentFileTrust(options, path, Number(expectedLinkCount));
-        const before = lstatSync(path, { bigint: true });
+        const before = bootstrapPathMetadata(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== expectedLinkCount
             || before.dev <= 0n || before.ino <= 0n
             || before.size > BigInt(MAX_BOOTSTRAP_REGISTRATION_INTENT_BYTES)
@@ -2083,7 +2089,7 @@ function readBootstrapRegistrationIntentFile(options, path, registrationPath, te
         finally {
             closeSync(descriptor);
         }
-        const after = lstatSync(path, { bigint: true });
+        const after = bootstrapPathMetadata(path);
         if (!after.isFile() || after.isSymbolicLink() || after.nlink !== expectedLinkCount
             || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
             || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
@@ -2173,7 +2179,7 @@ function readBootstrapRegistrationPublisherClaim(options, stateDir) {
     const path = join(stateDir, name);
     try {
         assertBootstrapIntentFileTrust(options, path);
-        const before = lstatSync(path, { bigint: true });
+        const before = bootstrapPathMetadata(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
             || before.size !== 0n || before.dev <= 0n || before.ino <= 0n) {
             return { status: 'invalid', detail: 'registration publisher claim is unsafe' };
@@ -2192,7 +2198,7 @@ function readBootstrapRegistrationPublisherClaim(options, stateDir) {
             if (descriptor !== undefined)
                 closeSync(descriptor);
         }
-        const after = lstatSync(path, { bigint: true });
+        const after = bootstrapPathMetadata(path);
         if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n || after.size !== 0n
             || after.dev !== before.dev || after.ino !== before.ino
             || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
@@ -2466,7 +2472,7 @@ function createBootstrapRegistrationPublisherClaim(options, stateDir, owner) {
         throw new Error('bootstrap registration publisher claim failed');
     syncBootstrapDirectory(stateDir);
     assertBootstrapIntentFileTrust(options, path);
-    const settled = lstatSync(path, { bigint: true });
+    const settled = bootstrapPathMetadata(path);
     if (!settled.isFile() || settled.isSymbolicLink() || settled.nlink !== 1n
         || settled.size !== 0n || settled.dev !== opened.dev || settled.ino !== opened.ino
         || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
@@ -2568,7 +2574,7 @@ function publishBootstrapRegistrationIntent(options) {
         if (!opened)
             throw new Error('bootstrap registration intent publication failed');
         assertBootstrapIntentFileTrust(options, publishingPath);
-        const prepared = lstatSync(publishingPath, { bigint: true });
+        const prepared = bootstrapPathMetadata(publishingPath);
         if (!prepared.isFile() || prepared.isSymbolicLink() || prepared.nlink !== 1n
             || prepared.dev !== opened.dev || prepared.ino !== opened.ino
             || prepared.size !== opened.size || prepared.mtimeNs !== opened.mtimeNs
@@ -2581,8 +2587,8 @@ function publishBootstrapRegistrationIntent(options) {
         options.afterIntentPublicationStep?.('directory_fsync', stateDir);
         assertBootstrapIntentFileTrust(options, publishingPath, 2);
         assertBootstrapIntentFileTrust(options, path, 2);
-        const linkedTemp = lstatSync(publishingPath, { bigint: true });
-        const linkedCanonical = lstatSync(path, { bigint: true });
+        const linkedTemp = bootstrapPathMetadata(publishingPath);
+        const linkedCanonical = bootstrapPathMetadata(path);
         if (!linkedTemp.isFile() || linkedTemp.isSymbolicLink() || linkedTemp.nlink !== 2n
             || !linkedCanonical.isFile() || linkedCanonical.isSymbolicLink()
             || linkedCanonical.nlink !== 2n
@@ -2598,7 +2604,7 @@ function publishBootstrapRegistrationIntent(options) {
             throw new Error('bootstrap registration intent temp retirement is unconfirmed');
         }
         assertBootstrapIntentFileTrust(options, path);
-        const published = lstatSync(path, { bigint: true });
+        const published = bootstrapPathMetadata(path);
         if (!published.isFile() || published.isSymbolicLink() || published.nlink !== 1n
             || published.dev !== opened.dev || published.ino !== opened.ino
             || published.size !== opened.size || published.mtimeNs !== opened.mtimeNs) {
@@ -2634,7 +2640,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     }
     assertBootstrapIntentDirectoryTrust(options, dirname(lease.currentPath), true);
     assertBootstrapIntentFileTrust(options, lease.currentPath);
-    const current = lstatSync(lease.currentPath, { bigint: true });
+    const current = bootstrapPathMetadata(lease.currentPath);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
         || current.dev !== lease.device || current.ino !== lease.inode || current.size !== lease.size
         || current.mtimeNs !== lease.mtimeNs || current.ctimeNs !== lease.ctimeNs) {
@@ -2688,7 +2694,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     if (!settled)
         throw new Error('bootstrap registration intent terminal publication failed');
     assertBootstrapIntentFileTrust(options, lease.terminalPath);
-    const after = lstatSync(lease.terminalPath, { bigint: true });
+    const after = bootstrapPathMetadata(lease.terminalPath);
     if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n
         || after.dev !== settled.dev || after.ino !== settled.ino
         || after.size !== settled.size || after.mtimeNs !== settled.mtimeNs
@@ -2698,7 +2704,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     const stateDir = dirname(lease.currentPath);
     syncBootstrapDirectory(stateDir);
     options.afterIntentTerminalPublish?.();
-    const active = lstatSync(lease.path, { bigint: true });
+    const active = bootstrapPathMetadata(lease.path);
     if (!active.isFile() || active.isSymbolicLink() || active.nlink !== 1n
         || active.dev !== lease.device || active.ino !== lease.inode || active.size !== lease.size
         || active.mtimeNs !== lease.mtimeNs || active.ctimeNs !== lease.ctimeNs) {
@@ -2728,7 +2734,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
     assertBootstrapIntentDirectoryTrust(options, stateDir, true);
     if (lease.staleRegistering) {
         assertBootstrapIntentFileTrust(options, lease.staleRegistering.path);
-        const stale = lstatSync(lease.staleRegistering.path, { bigint: true });
+        const stale = bootstrapPathMetadata(lease.staleRegistering.path);
         if (!stale.isFile() || stale.isSymbolicLink() || stale.nlink !== 1n
             || stale.dev !== lease.staleRegistering.device || stale.ino !== lease.staleRegistering.inode
             || stale.size !== lease.staleRegistering.size
@@ -2743,7 +2749,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         }
     }
     assertBootstrapIntentFileTrust(options, lease.currentPath);
-    const current = lstatSync(lease.currentPath, { bigint: true });
+    const current = bootstrapPathMetadata(lease.currentPath);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
         || current.dev !== lease.device || current.ino !== lease.inode || current.size !== lease.size
         || current.mtimeNs !== lease.mtimeNs || current.ctimeNs !== lease.ctimeNs) {
@@ -2761,7 +2767,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         }
         renameSync(lease.terminalPath, lease.clearingPath);
         syncBootstrapDirectory(stateDir);
-        const renamed = lstatSync(lease.clearingPath, { bigint: true });
+        const renamed = bootstrapPathMetadata(lease.clearingPath);
         if (!renamed.isFile() || renamed.isSymbolicLink() || renamed.nlink !== 1n
             || renamed.dev !== lease.device || renamed.ino !== lease.inode
             || renamed.size !== lease.size) {
@@ -2780,7 +2786,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         throw new Error('bootstrap registration intent path is unexpected');
     }
     assertBootstrapIntentFileTrust(options, clearingLease.currentPath);
-    const moved = lstatSync(clearingLease.currentPath, { bigint: true });
+    const moved = bootstrapPathMetadata(clearingLease.currentPath);
     if (!moved.isFile() || moved.isSymbolicLink() || moved.nlink !== 1n
         || moved.dev !== clearingLease.device || moved.ino !== clearingLease.inode
         || moved.size !== clearingLease.size || moved.mtimeNs !== clearingLease.mtimeNs
@@ -2816,7 +2822,7 @@ function sameBootstrapIncompletePublication(left, right) {
 }
 function assertBootstrapRegistrationIntentFileIdentity(options, expected) {
     assertBootstrapIntentFileTrust(options, expected.path, Number(expected.linkCount));
-    const current = lstatSync(expected.path, { bigint: true });
+    const current = bootstrapPathMetadata(expected.path);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== expected.linkCount
         || current.dev !== expected.device || current.ino !== expected.inode
         || current.size !== expected.size || current.mtimeNs !== expected.mtimeNs
@@ -2842,7 +2848,7 @@ function clearBootstrapIncompletePublication(options, publication) {
             && publication.registration.identity.device === publication.publishing.device
             && publication.registration.identity.inode === publication.publishing.inode) {
             assertBootstrapIntentFileTrust(options, publication.publishing.path);
-            const remaining = lstatSync(publication.publishing.path, { bigint: true });
+            const remaining = bootstrapPathMetadata(publication.publishing.path);
             if (!remaining.isFile() || remaining.isSymbolicLink() || remaining.nlink !== 1n
                 || remaining.dev !== publication.publishing.device
                 || remaining.ino !== publication.publishing.inode
@@ -3027,7 +3033,7 @@ function recoverBootstrapRegistrationIntent(options) {
                 };
             }
             assertBootstrapIntentFileTrust(options, intent.terminalFile.path);
-            const partial = lstatSync(intent.terminalFile.path, { bigint: true });
+            const partial = bootstrapPathMetadata(intent.terminalFile.path);
             if (!partial.isFile() || partial.isSymbolicLink() || partial.nlink !== 1n
                 || partial.dev !== intent.terminalFile.device || partial.ino !== intent.terminalFile.inode) {
                 throw new Error('incomplete terminal receipt ownership changed');

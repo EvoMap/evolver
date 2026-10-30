@@ -385,6 +385,7 @@ export type FetchPage = {
     creditCostPreview: Record<string, unknown>;
 };
 export interface HubCapability {
+    triggerFeedback?: import('./triggerFeedback.js').TriggerFeedbackCapability;
     references?: import('../reference/decoder.js').ReferenceCapability;
     /**
      * 异步发布. 公版 /a2a/publish 收 **bundle**[Gene,Capsule,(EvolutionEvent)](一个 cycle 的产物一起发, +GDI);

@@ -44,7 +44,7 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--components=product-only|evolution-only|both] [--root=<dir>] [--lifecycle=capabilities|plan|verify|execute] [--action=install|uninstall] [--confirmed-plan=<base64url>] [--target-id=<id>] [--completed-targets=<id,id>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for claude-code, codex, opencode and kiro\n  lifecycle operations are versioned JSON and require --json\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--components=product-only|evolution-only|both] [--root=<dir>] [--lifecycle=capabilities|plan|verify|execute] [--action=install|uninstall] [--confirmed-plan=<base64url>] [--target-id=<id>] [--completed-targets=<id,id>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--prompt-recall-hook-command="evolver inject prompt-recall"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for claude-code, codex, opencode and kiro\n  lifecycle operations are versioned JSON and require --json\n`;
 export function commandNamesForPath(command, platform, pathExt) {
     if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
         return [command];
@@ -602,7 +602,7 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
         try {
             const built = buildServer(f, descriptor.descriptor, deps.resolveMcpNodePath);
             server = built.server;
-            if (f['components'] !== 'evolution-only') {
+            if ((runtime === 'claude-code' || runtime === 'codex') && f['components'] !== 'evolution-only') {
                 productBridgeNodePath = built.nodePath ?? (deps.resolveMcpNodePath ?? resolveStableMcpNodePath)();
             }
         }
@@ -617,12 +617,13 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
         configRoot,
         injectionPlan,
         installOptions: {
-            components: resolveInstallComponents(f['components']),
+            ...((runtime === 'claude-code' || runtime === 'codex') ? { components: resolveInstallComponents(f['components']) } : {}),
             configRoot,
             server,
             scope,
             ...(productBridgeNodePath !== undefined ? { productBridgeNodePath } : {}),
             ...(typeof f['hook-command'] === 'string' ? { hookCommand: f['hook-command'] } : {}),
+            ...(typeof f['prompt-recall-hook-command'] === 'string' ? { promptRecallHookCommand: f['prompt-recall-hook-command'] } : {}),
             homeDir: configuredHomeDir(),
             codexHome: process.env['CODEX_HOME'],
             kiroHome: process.env['KIRO_HOME'],
@@ -986,6 +987,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             configRoot, server, scope,
             ...(productBridgeNodePath !== undefined ? { productBridgeNodePath } : {}),
             ...(typeof f['hook-command'] === 'string' ? { hookCommand: f['hook-command'] } : {}),
+            ...(typeof f['prompt-recall-hook-command'] === 'string' ? { promptRecallHookCommand: f['prompt-recall-hook-command'] } : {}),
             ...(cursorGenes ? { genes: cursorGenes } : {}),
             force: f['force'] === true,
             dryRun: f['dry-run'] === true,

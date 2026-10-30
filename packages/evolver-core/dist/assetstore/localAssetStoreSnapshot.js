@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
-import { AssetStoreReadLimitError, readRegularBuffer, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
+import { assertNoExperienceTransaction, AssetStoreReadLimitError, readRegularBuffer, UnsafeAssetStorePathError, } from './assetStoreStorage.js';
 import { parseProvenanceRecord, CorruptAssetSidecarError, } from './assetSidecarRecords.js';
 import { frozenAssetRecordsEqual, FrozenAssetIdCollisionError } from './provider.js';
 const PROVENANCE_FILE = 'provenance.jsonl';
@@ -104,6 +104,7 @@ function optionalFileFingerprint(path, role) {
     }
 }
 function captureState(baseDir) {
+    assertNoExperienceTransaction(baseDir);
     const root = directoryFingerprint(baseDir);
     const files = new Map();
     if (root === 'missing') {

@@ -4,6 +4,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { userInfo } from 'node:os';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { reference, algo, events, util } from '@evomap/evolver-core';
+import { MAX_TRIGGER_FEEDBACK_BYTES, TRIGGER_FEEDBACK_FILE, readLocalTriggerFeedback, upsertLocalTriggerFeedback, triggerFeedbackRecords } from './localTriggerFeedback.js';
+import { authorizeTriggerFeedbackDelivery, claimTriggerFeedbackDelivery, markTriggerFeedbackDispatched, settleTriggerFeedbackDelivery } from './triggerFeedbackSyncState.js';
 const ACTIVE_FILE = 'memory_graph.v2.jsonl';
 const COMPACT_FILE = 'memory_graph.compact.jsonl';
 const LOCK_FILE = 'memory_graph.lock';
@@ -96,6 +98,8 @@ export class LocalMemoryGraph {
                     }
                     return true;
                 });
+                const feedback = this.readTriggerFeedbackUnlocked();
+                records.push(...triggerFeedbackRecords(feedback, this.readableUserScopes, workspaceScope, this.readEpochState().epochId));
                 if (this.rotationCleanupFailed)
                     diagnostics.recovery = 'degraded';
                 if (records.length === 0 && diagnostics.recovery === 'healthy')
@@ -109,6 +113,184 @@ export class LocalMemoryGraph {
             }
             throw error;
         }
+    }
+    /** @internal Only the bound kernel reader supplies snapshots; CLI/MCP callers provide a run id, never a score. */
+    applyKernelTriggerFeedback(snapshot, destinationId) {
+        const result = this.applyKernelTriggerFeedbackBatch([snapshot], destinationId)[0];
+        if (!result)
+            throw new Error('trigger_feedback_local_unverified');
+        return result;
+    }
+    applyKernelTriggerFeedbackBatch(snapshots, destinationId) {
+        return this.changeTriggerFeedbackFile((file) => {
+            const epochId = this.readEpochState().epochId;
+            let current = file;
+            const result = snapshots.map((snapshot) => {
+                const workspaceScope = snapshot.workspace === null ? null : this.workspaceScope(snapshot.workspace);
+                if (snapshot.workspace !== null && workspaceScope === null)
+                    throw new Error('trigger_feedback_workspace_unavailable');
+                const updated = upsertLocalTriggerFeedback(current, snapshot, { userScope: this.userScope, workspaceScope, epochId });
+                current = updated.file;
+                let changed = updated.changed;
+                if (destinationId) {
+                    const delivery = authorizeTriggerFeedbackDelivery(updated.row.delivery, snapshot, epochId, destinationId);
+                    changed ||= JSON.stringify(delivery) !== JSON.stringify(updated.row.delivery);
+                    current = { ...current, rows: current.rows.map((row) => row.userScope === this.userScope && row.state.snapshot.runId === snapshot.runId ? { ...row, delivery } : row) };
+                }
+                return { committed: updated.row.state.snapshot.commit, changed, resetSuppressed: updated.resetSuppressed };
+            });
+            return { file: current, result };
+        });
+    }
+    readTriggerFeedback(runId) {
+        return this.withGraphLock(() => this.readTriggerFeedbackUnlocked().rows.find((row) => row.userScope === this.userScope && row.state.snapshot.runId === runId)?.state ?? null);
+    }
+    triggerFeedbackSourceAvailable(runId) {
+        if (!existsSync(join(this.dir, TRIGGER_FEEDBACK_FILE)))
+            return false;
+        return this.withGraphLock(() => {
+            const row = this.readTriggerFeedbackUnlocked().rows.find((row) => row.userScope === this.userScope && row.state.snapshot.runId === runId);
+            return Boolean(row && row.sourceAvailable !== false && row.epochId === this.readEpochState().epochId);
+        });
+    }
+    readTriggerFeedbackDelivery(runId) {
+        return this.withGraphLock(() => {
+            const row = this.readTriggerFeedbackUnlocked().rows.find((row) => row.userScope === this.userScope && row.state.snapshot.runId === runId);
+            const state = row?.delivery;
+            if (state && state.consentEpoch !== this.readEpochState().epochId)
+                return { ...state, status: 'blocked', reason: 'trigger_feedback_reset_requires_consent' };
+            return state ?? null;
+        });
+    }
+    readTriggerFeedbackDeliveries(after = null, limit = 25) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+            throw new Error('trigger_feedback_invalid_input');
+        if (!existsSync(join(this.dir, TRIGGER_FEEDBACK_FILE)))
+            return [];
+        return this.withGraphLock(() => this.readTriggerFeedbackUnlocked().rows
+            .filter((row) => row.userScope === this.userScope && row.delivery && row.delivery.status !== 'confirmed' && (after === null || row.state.snapshot.runId > after))
+            .slice(0, limit).map((row) => ({ snapshot: row.state.snapshot, delivery: row.delivery })));
+    }
+    markTriggerFeedbackSourceUnavailable(runId) {
+        if (!existsSync(join(this.dir, TRIGGER_FEEDBACK_FILE)))
+            return;
+        this.changeTriggerFeedbackFile((file) => ({ file: { ...file, rows: file.rows.map((row) => row.userScope === this.userScope && (runId === undefined || row.state.snapshot.runId === runId) ? { ...row, sourceAvailable: false } : row) }, result: undefined }));
+    }
+    authorizeTriggerFeedbackDelivery(runId, destinationId) {
+        return this.changeTriggerFeedbackDelivery(runId, (prior, snapshot) => authorizeTriggerFeedbackDelivery(prior, snapshot, this.readEpochState().epochId, destinationId));
+    }
+    claimTriggerFeedbackDelivery(runId, destinationId, id) {
+        let claimed = false;
+        let reconcile = false;
+        const state = this.changeTriggerFeedbackDelivery(runId, (prior) => {
+            if (!prior)
+                throw new Error('trigger_feedback_consent_missing');
+            if (prior.consentEpoch !== this.readEpochState().epochId)
+                return { ...prior, status: 'blocked', reason: 'trigger_feedback_reset_requires_consent' };
+            const result = claimTriggerFeedbackDelivery(prior, destinationId, id, this.now());
+            claimed = result.claimed;
+            reconcile = result.reconcile;
+            return result.state;
+        });
+        return { state, claimed, reconcile };
+    }
+    markTriggerFeedbackDispatched(runId, id) {
+        this.changeTriggerFeedbackDelivery(runId, (prior) => {
+            if (!prior)
+                throw new Error('trigger_feedback_consent_missing');
+            if (prior.consentEpoch !== this.readEpochState().epochId)
+                throw new Error('trigger_feedback_reset_requires_consent');
+            return markTriggerFeedbackDispatched(prior, id, this.now());
+        });
+    }
+    settleTriggerFeedbackDelivery(runId, id, result) {
+        return this.changeTriggerFeedbackDelivery(runId, (prior) => {
+            if (!prior)
+                throw new Error('trigger_feedback_consent_missing');
+            return settleTriggerFeedbackDelivery(prior, id, result, this.now());
+        });
+    }
+    readTriggerFeedbackRecoveryCursor(kind = 'native') {
+        if (!existsSync(join(this.dir, TRIGGER_FEEDBACK_FILE)))
+            return null;
+        return this.withGraphLock(() => {
+            const file = this.readTriggerFeedbackUnlocked();
+            return (kind === 'native' ? file.recoveryCursors : file.deliveryCursors)?.[this.userScope] ?? null;
+        });
+    }
+    saveTriggerFeedbackRecoveryCursor(after, kind = 'native') {
+        if (after !== null && (!after.trim() || Buffer.byteLength(after) > 256))
+            throw new Error('trigger_feedback_invalid_identity');
+        this.changeTriggerFeedbackFile((file) => {
+            const key = kind === 'native' ? 'recoveryCursors' : 'deliveryCursors';
+            return { file: { ...file, [key]: { ...file[key], [this.userScope]: after } }, result: undefined };
+        });
+    }
+    changeTriggerFeedbackDelivery(runId, change) {
+        return this.changeTriggerFeedbackFile((file) => {
+            const index = file.rows.findIndex((row) => row.userScope === this.userScope && row.state.snapshot.runId === runId);
+            const row = file.rows[index];
+            if (!row)
+                throw new Error('trigger_feedback_not_found');
+            const result = change(row.delivery, row.state.snapshot);
+            const rows = [...file.rows];
+            rows[index] = { ...row, delivery: result };
+            return { file: { ...file, rows }, result };
+        });
+    }
+    changeTriggerFeedbackFile(change) {
+        let published = false;
+        let completed = false;
+        let result;
+        try {
+            return this.withGraphLock(() => {
+                const current = this.readTriggerFeedbackUnlocked();
+                const next = change(current);
+                const path = join(this.dir, TRIGGER_FEEDBACK_FILE);
+                const bytes = Buffer.from(JSON.stringify(next.file));
+                if (bytes.length > MAX_TRIGGER_FEEDBACK_BYTES)
+                    throw new Error('trigger_feedback_capacity');
+                if (JSON.stringify(current) !== bytes.toString('utf8')) {
+                    this.writeAtomic(path, bytes, true);
+                    published = true;
+                }
+                else if (existsSync(path)) {
+                    const fd = openNoFollow(path, constants.O_RDWR, 0o600);
+                    try {
+                        fsyncSync(fd);
+                    }
+                    finally {
+                        closeSync(fd);
+                    }
+                    this.syncGraphDirectory();
+                }
+                result = next.result;
+                completed = true;
+                return result;
+            });
+        }
+        catch (error) {
+            if (published && completed && error instanceof util.LockReleaseError)
+                return result;
+            throw error;
+        }
+    }
+    readTriggerFeedbackUnlocked() {
+        const path = join(this.dir, TRIGGER_FEEDBACK_FILE);
+        if (!existsSync(path))
+            return readLocalTriggerFeedback(null);
+        const bytes = this.readRawBounded(path, MAX_TRIGGER_FEEDBACK_BYTES);
+        if (bytes === null)
+            throw new Error('trigger_feedback_invalid_store');
+        const fd = openNoFollow(path, constants.O_RDWR, 0o600);
+        try {
+            fsyncSync(fd);
+        }
+        finally {
+            closeSync(fd);
+        }
+        this.syncGraphDirectory();
+        return readLocalTriggerFeedback(bytes);
     }
     recordOutcome(input) {
         if (!reference.isExecutionEligible(input, this.referenceScope))
@@ -407,6 +589,7 @@ export class LocalMemoryGraph {
             EPOCH_FILE,
             ACTIVE_FILE,
             COMPACT_FILE,
+            TRIGGER_FEEDBACK_FILE,
         ];
         const state = [];
         for (const name of names) {
@@ -499,13 +682,15 @@ export class LocalMemoryGraph {
         }
     }
     readResetSource(file) {
-        const limit = file.name === ACTIVE_FILE
-            ? this.maxActiveBytes + this.maxLineBytes
-            : file.name === COMPACT_FILE
-                ? this.maxCompactBytes + this.maxLineBytes
-                : file.name === RECOVERY_FILE || file.name === EPOCH_FILE
-                    ? this.maxLineBytes
-                    : this.maxActiveBytes + this.maxLineBytes;
+        const limit = file.name === TRIGGER_FEEDBACK_FILE
+            ? MAX_TRIGGER_FEEDBACK_BYTES
+            : file.name === ACTIVE_FILE
+                ? this.maxActiveBytes + this.maxLineBytes
+                : file.name === COMPACT_FILE
+                    ? this.maxCompactBytes + this.maxLineBytes
+                    : file.name === RECOVERY_FILE || file.name === EPOCH_FILE
+                        ? this.maxLineBytes
+                        : this.maxActiveBytes + this.maxLineBytes;
         if (file.identity.size > BigInt(limit))
             throw new Error('memory_graph_reset_backup_failed');
         const fd = openNoFollow(file.path, constants.O_RDONLY, 0o600);

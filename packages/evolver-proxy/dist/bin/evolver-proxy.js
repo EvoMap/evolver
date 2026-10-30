@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootstrap as coreBootstrap, daemon, hub as hubNs, mailbox, util, verify } from '@evomap/evolver-core';
+import { bootstrap as coreBootstrap, daemon, events, exec as execCore, hub as hubNs, mailbox, util, verify } from '@evomap/evolver-core';
 import { AtpHubClient, connectPublicHub, globalFetchLike, isNodeSecret, parseNodeSecretVersion } from '@evomap/evolver-adapter-public';
 import { ProxyDaemon } from '../daemon/proxyDaemon.js';
 import { resolveHubMode, resolveHubUrl } from '../daemon/selectHub.js';
@@ -16,6 +16,8 @@ import { createAtpOrderConsentGate } from '../daemon/atpConsent.js';
 import { SystemdNotifier } from '../daemon/systemdNotifier.js';
 import { resolveProxyStorePath } from './proxyStorePath.js';
 import { publishProxySettings } from './proxySettings.js';
+import { recoverTriggerFeedbackBeforeHub } from './triggerFeedbackStartup.js';
+import { proxyStopSignal } from './proxyStopSignal.js';
 import { expandHomePath, loadEnvFileFromEnv } from './envFile.js';
 import { readLegacyNodeId, resolveProxyNodeId } from '../lifecycle/legacyNodeId.js';
 import { createClaimNudge, wrapHelloWithClaimNudge } from '../lifecycle/claimNudge.js';
@@ -82,6 +84,8 @@ export async function runProxyMain(options = {}) {
     finally {
         clearRecoveryControllerLifecycleOwnerCapability(process.env);
     }
+    const triggerFeedback = execCore.createTriggerFeedbackLocalFacade(process.env);
+    await recoverTriggerFeedbackBeforeHub(triggerFeedback);
     let storePath;
     let store;
     let proxyDaemon;
@@ -162,6 +166,7 @@ export async function runProxyMain(options = {}) {
                 evolverVersion,
                 selfUpdatePolicy,
                 env: process.env,
+                triggerFeedback,
             }),
             onIpcListen: (listeningPort) => {
                 proxySettingsState.url = `http://127.0.0.1:${listeningPort}`;
@@ -580,12 +585,16 @@ export async function runProxyLoop(daemon, options = {}) {
     let consecutiveTickFailures = 0;
     try {
         for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+            if (options.signal?.aborted)
+                break;
             daemon.setExpectedNextTick?.(undefined);
             let delayMs = errorDelayMs;
             let tickHealthy = false;
             let exitForResolvedFailure;
             try {
                 const rep = await daemon.tick();
+                if (options.signal?.aborted)
+                    break;
                 const resolvedFailure = resolvedTickFailureMessage(rep);
                 if (resolvedFailure) {
                     logLoopResolvedFailure(options.logger, resolvedFailure);
@@ -640,18 +649,49 @@ export async function runProxyLoop(daemon, options = {}) {
     }
 }
 export async function runManagedProxyLoop(options) {
+    const scope = proxyStopSignal(options.signals);
+    let stopping;
+    const stop = () => {
+        stopping ??= Promise.resolve().then(() => options.daemon.stop());
+        void stopping.catch(() => { });
+    };
+    scope.signal.addEventListener('abort', stop, { once: true });
+    let failure;
     try {
         await options.notifier.readyOrThrow();
-        await (options.runLoop ?? runProxyLoop)(options.daemon, options.logger ? { logger: options.logger } : {});
+        if (!scope.signal.aborted)
+            await (options.runLoop ?? runProxyLoop)(options.daemon, { ...(options.logger ? { logger: options.logger } : {}), signal: scope.signal });
     }
-    finally {
+    catch (error) {
+        failure = { error };
+    }
+    try {
         try {
             options.notifier.stop();
         }
-        finally {
-            await closeStartupResources({ store: options.store, daemon: options.daemon });
+        catch (error) {
+            failure ??= { error };
+        }
+        stop();
+        try {
+            await stopping;
+        }
+        catch (error) {
+            failure ??= { error };
+            try {
+                await closeStartupResources({ store: options.store });
+            }
+            catch (closeError) {
+                failure ??= { error: closeError };
+            }
         }
     }
+    finally {
+        scope.signal.removeEventListener('abort', stop);
+        scope.close();
+    }
+    if (failure)
+        throw failure.error;
 }
 export function createProxyDaemonDeps(options) {
     const selfUpdate = createSelfUpdateDeps(options.selfUpdatePolicy, options.evolverVersion, options.env ?? process.env, options.selfUpdateOverrides);
@@ -660,13 +700,17 @@ export function createProxyDaemonDeps(options) {
     const heartbeatIntervalMs = positiveIntegerEnv(env['HEARTBEAT_INTERVAL_MS']);
     const publishExecutionVerifier = resolveNativePublishExecutionVerifier(env);
     const hubAuthFailurePolicy = resolveHubAuthFailurePolicy(env);
+    const triggerFeedback = options.triggerFeedback ?? execCore.createTriggerFeedbackLocalFacade(env);
     return {
+        ...(triggerFeedback ? { triggerFeedback } : {}),
         hub: options.runtime.hub,
         ...(options.runtime.currentNodeId ? { currentNodeId: options.runtime.currentNodeId } : {}),
         ...(options.hubMode === 'private' && options.runtime.boundReuseFeedback
             ? { boundReuseFeedback: options.runtime.boundReuseFeedback } : {}),
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
         store: options.store,
+        // The node's one local asset pool, shared with the CLI: distillations persist into it and every recall reads it.
+        assetStoreDir: events.assetsDir(env),
         ipcToken: options.ipcToken,
         ...(options.ipcPort !== undefined ? { ipcPort: options.ipcPort } : {}),
         ...(options.runtime.atp ? {

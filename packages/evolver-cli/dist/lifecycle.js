@@ -5408,7 +5408,10 @@ function forceKill(pid) {
 function readProxySettings(path, options = {}) {
     let descriptor;
     try {
-        const before = lstatSync(path, { bigint: true });
+        let before = lstatSync(path, { bigint: true });
+        if (process.platform === 'win32' && before.dev === 0n && before.isFile() && !before.isSymbolicLink()) {
+            before = coreUtil.statRegularFileIdentity(path);
+        }
         if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(MAX_PROXY_SETTINGS_BYTES)
             || before.dev <= 0n || before.ino <= 0n) {
             throw new Error('proxy settings are not a bounded regular file');

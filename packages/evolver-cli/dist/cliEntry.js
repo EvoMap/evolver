@@ -58,6 +58,14 @@ export async function runCliEntry(argv) {
             watchdog.unref();
         }
     }
+    if (argv[0] === 'experience') {
+        const { runExperienceCommand } = await import('./experience.js');
+        return runExperienceCommand(argv.slice(1));
+    }
+    if (argv[0] === 'mcp-stdio') {
+        const { runMcpStdioCommand } = await import('./mcpStdio.js');
+        return runMcpStdioCommand(argv.slice(1));
+    }
     const { dispatch } = await import('./dispatch.js');
     return await Promise.resolve(dispatch(argv));
 }

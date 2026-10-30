@@ -8,6 +8,8 @@ import { prepareContextDelivery, recoverContextDeliveries, contextDeliveryStatus
 import { fitsRootEventLine } from './eventStore.js';
 import { readGeneContextDeliveryReceipt } from '../ops/geneContextDelivery.js';
 import { protectedAuditConfigured, protectedAuditRpc, protectedAuditRpcSync } from './protectedAuditRpc.js';
+import { readRootEventHistoryStrict } from './eventArchive.js';
+import { protectedAuditReadSnapshotSync } from './protectedAuditRpc.js';
 import { startContextReadStage } from '../assetstore/contextReadDiagnostics.js';
 const builtInEventStore = EventStore.isBuiltInObservationStore;
 const builtInEventClock = EventStore.usesBuiltInClock;
@@ -27,6 +29,7 @@ export const EVENT_TYPES = [
     'actor.human.source.qualify',
     'actor.human.sidecar.recover',
     'gene.distilled', 'gene.distill_shadowed',
+    'experience.activity', 'experience.operation.requested', 'experience.source.recovered',
     'anti_gene.distilled', 'anti_gene.distill_shadowed',
     'anti_gene.benchmark_result', 'anti_gene.rollout_result',
     'reflection.recorded',
@@ -183,10 +186,48 @@ export class Ingestor {
         const result = this.ingest(raw, {
             operationId: attempt.operationId, signal: cancellation.signal,
             ...(attempt.deadlineAt === undefined ? {} : { deadlineAt: attempt.deadlineAt }),
+            ...(attempt.expectedPath === undefined ? {} : { expectedPath: attempt.expectedPath }),
+            ...(attempt.expectedAlias === undefined ? {} : { expectedAlias: attempt.expectedAlias }),
         }).then(() => ({ operationId: attempt.operationId, outcome: 'committed' }), error => ({ operationId: attempt.operationId,
             outcome: error instanceof EventWriteNotCommittedError && error.operationId === attempt.operationId
                 ? 'not_committed' : 'unknown' })).finally(() => attempt.signal.removeEventListener('abort', abort));
         return { version: 1, result, cancelAndSettle: () => { abort(); return result; } };
+    }
+    /** Diagnostic only: legacy intent has no business identity. Never use this scan to authorize replay. */
+    static experienceLegacyAuditStatus(path, limit = 50) {
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+            throw new IngestValidationError('invalid_legacy_status_limit');
+        const events = protectedAuditConfigured() ? protectedAuditReadSnapshotSync('root_strict', path) : readRootEventHistoryStrict(path);
+        const completed = new Set(events.filter(e => e.payload?.phase === 'committed')
+            .map(e => e.payload.operationId));
+        return events.filter(e => {
+            const p = e.payload;
+            return e.type === 'experience.operation.requested' && p?.['source'] === 'experience-library'
+                && typeof p['operationId'] === 'string' && p['requestHash'] === undefined && !completed.has(p['operationId']);
+        }).slice(0, limit).map(e => {
+            const p = e.payload;
+            return { operationId: p.operationId, assetId: p.assetId, action: p.action, proof: 'unresolved',
+                missingEvidence: 'business_operation_identity' };
+        });
+    }
+    /** Durable experience projection has no external sink replay. The root writer owns exact-once readback. */
+    async ingestExperienceAuditV1(raw, operationId, deadlineAt = Date.now() + 30_000, expectedNamespace) {
+        raw = validatedEvent(raw, this.referenceScope);
+        const p = raw.payload;
+        if (p?.['source'] !== 'experience-library' || typeof p['operationId'] !== 'string'
+            || !['experience.operation.requested', 'actor.human.teach', 'actor.human.review.approve', 'actor.human.review.reject', 'experience.source.recovered'].includes(raw.type)) {
+            throw new IngestValidationError('invalid_experience_audit');
+        }
+        return this.store.appendExperienceAuditV1(raw, operationId, deadlineAt, expectedNamespace);
+    }
+    /** No dispatch: callers checkpoint this namespace binding before asking for an idempotent root write. */
+    async prepareIdempotent(raw, admission) {
+        return this.store.prepareIdempotent(validatedEvent(raw, this.referenceScope), admission);
+    }
+    /** Durable root audit only. Replay never re-dispatches a sink or issue reporter. */
+    async ingestIdempotent(raw, admission) {
+        raw = validatedEvent(raw, this.referenceScope);
+        return this.store.appendIdempotent(raw, admission);
     }
     async ingest(raw, admission = {}) {
         try {

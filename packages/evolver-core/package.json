@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-core",
-  "version": "2.0.46",
+  "version": "2.0.47",
   "private": false,
   "type": "module",
   "engines": {
@@ -21,6 +21,10 @@
     "./prompt-recall": {
       "types": "./dist/promptRecall.d.ts",
       "default": "./dist/promptRecall.js"
+    },
+    "./experience": {
+      "types": "./dist/experience.d.ts",
+      "default": "./dist/experience.js"
     },
     "./snapshot-worker": {
       "types": "./dist/assetstore/snapshotWorkerBridge.d.ts",

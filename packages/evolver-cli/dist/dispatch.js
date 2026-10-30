@@ -9,6 +9,7 @@ import { runAutoExecFeedbackCommand } from './feedbackOutboxCli.js';
 import { runAtpCommand, runBuyCommand, runOrdersCommand, runVerifyCommand } from './atp.js';
 import { runLogin, runLogout } from './login.js';
 import { runSetupHooks } from './setupHooks.js';
+import { runPluginCommand } from './plugin.js';
 import { runSkillDistill, runSkillMdUpdate } from './skillDistill.js';
 import { runSkillCommand } from './skillFetch.js';
 import { runThesisCommand } from './thesis.js';
@@ -16,6 +17,8 @@ import { getCliVersion } from './version.js';
 import { runRecipeCommand } from './recipe.js';
 import { runReuseCommand } from './reuse.js';
 import { runPublishCommand } from './cliContracts.js';
+import { runExperienceCommand } from './experience.js';
+import { runMcpStdioCommand } from './mcpStdio.js';
 import { runRecallCommand } from './recall.js';
 import { runReuseReportCommand } from './reuseReport.js';
 import { runRecallVerifyReportCommand } from './recallVerifyReport.js';
@@ -40,6 +43,7 @@ import { runAssetRepairCommand } from './assetRepair.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat, runV1ExecCompat } from './v1Compat.js';
 import { runWorkflowCommand } from './workflow.js';
 import { runMemoryGraphCommand } from './memoryGraphOps.js';
+import { runTriggerFeedbackCommand } from './triggerFeedbackCli.js';
 import { runModelCompatibilityReplay } from './modelCompatibility.js';
 import { SYNC_COMMAND_NAMES } from './commandCatalog.js';
 export async function runProxyCommand(argv, importer = () => import('@evomap/evolver-proxy/bin/evolver-proxy')) {
@@ -65,6 +69,7 @@ const ASYNC_COMMAND_TABLE = {
     logout: runLogout,
     'proxy-token': runProxyToken,
     'setup-hooks': runSetupHooks,
+    plugin: runPluginCommand,
     buy: runBuyCommand,
     orders: runOrdersCommand,
     verify: runVerifyCommand,
@@ -75,10 +80,13 @@ const ASYNC_COMMAND_TABLE = {
     reference: runReferenceCommand,
     sync: runSyncCommand,
     recall: runRecallCommand,
+    experience: runExperienceCommand,
+    'mcp-stdio': runMcpStdioCommand,
     'reuse-report': runReuseReportCommand,
     'recall-verify-report': runRecallVerifyReportCommand,
     doctor: runDoctorCommand,
     'memory-graph': runMemoryGraphCommand,
+    'trigger-feedback': runTriggerFeedbackCommand,
     phub: runPhubCommand,
     lifecycle: runLifecycleCommand,
     cycle: runCycleCommand,

@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, watch } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, realpath, rename, rm, writeFile, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import { ops } from '@evomap/evolver-core';
 import { resolveSelfUpdateTarget } from './releaseBinary.js';
 import { SELF_UPDATE_FAILURE_CODES, selfUpdateFailure } from './failureCodes.js';
+import { selfUpdateFileMetadata } from './fileMetadata.js';
 import { bindWindowsManagedExecutable, prepareWindowsExecutableSwap, resolveWindowsUpdaterPaths, } from './windowsUpdater.js';
 const execFileAsync = promisify(execFile);
 const JOURNAL_SCHEMA_VERSION = 2;
@@ -47,7 +48,9 @@ export async function inspectDurableSelfUpdate(options) {
     const paths = await resolveTransactionPaths(options, false);
     if (!paths)
         return { outcome: 'none' };
+    await assertStateRootIdentity(paths);
     const loadedJournal = await readJournal(paths.journal);
+    await assertStateRootIdentity(paths);
     if (!loadedJournal)
         return { outcome: 'none' };
     const journal = await bindJournalToTarget(paths, loadedJournal);
@@ -75,30 +78,35 @@ export function stableUnixRecoveryControllerPathForTarget(targetPath, stateDir) 
 export async function provisionStableUnixRecoveryController(options) {
     assertUnixControllerPlatform(options.platform ?? process.platform);
     const paths = await resolveTransactionPaths(options, true);
-    const owner = await acquireLock(paths.lock, options.pid ?? process.pid);
-    const controllerDirectory = join(paths.root, UNIX_CONTROLLER_DIRECTORY);
+    const controllerDirectory = join(paths.stateRoot, UNIX_CONTROLLER_DIRECTORY);
     const controllerPath = join(controllerDirectory, UNIX_CONTROLLER_NAME);
-    const temporaryPath = options.artifactClaimPath
-        ?? join(controllerDirectory, `.${UNIX_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
-    if (dirname(resolve(temporaryPath)) !== resolve(controllerDirectory)) {
+    const configuredControllerPath = join(paths.root, UNIX_CONTROLLER_DIRECTORY, UNIX_CONTROLLER_NAME);
+    const configuredTemporaryPath = options.artifactClaimPath
+        ?? join(dirname(configuredControllerPath), `.${UNIX_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    if (dirname(resolve(configuredTemporaryPath)) !== dirname(configuredControllerPath)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unix_controller_claim_outside_directory');
     }
+    const temporaryPath = join(controllerDirectory, basename(configuredTemporaryPath));
     const ownershipReceiptPath = options.replaceExisting === false && options.artifactClaimPath !== undefined
         ? bootstrapClaimOwnershipReceiptPath(temporaryPath)
         : undefined;
     if (ownershipReceiptPath && !options.onArtifactPublished) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_has_no_durable_owner_callback');
     }
+    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, undefined, paths.stateRootIdentity);
+    const notifyPublished = () => observeArtifactPublicationAliases(paths, () => options.onArtifactPublished?.(configuredControllerPath, configuredTemporaryPath));
     let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
+        await assertStateRootIdentity(paths);
         const loadedJournal = await readJournal(paths.journal);
+        await assertStateRootIdentity(paths);
         if (loadedJournal) {
             const journal = await bindJournalToTarget(paths, loadedJournal);
             if (!isTerminal(journal.stage) || journal.stage === 'rollback_failed') {
                 throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, `controller_install_pending_${journal.stage}`);
             }
         }
-        await ensureSecureDirectory(paths.root);
+        await ensureSecureDirectory(paths.stateRoot);
         await ensureSecureDirectory(controllerDirectory);
         if (options.replaceExisting === false) {
             try {
@@ -115,14 +123,14 @@ export async function provisionStableUnixRecoveryController(options) {
         await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
             ? {
                 ownershipReceiptPath,
-                onClaimCreated: () => options.onArtifactPublished(controllerPath, temporaryPath),
+                onClaimCreated: notifyPublished,
             }
             : undefined);
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
         if (options.replaceExisting === false) {
             await link(temporaryPath, controllerPath);
             await syncDirectoryDurably(controllerDirectory);
-            await options.onArtifactPublished?.(controllerPath, temporaryPath);
+            await notifyPublished();
             if (ownershipReceiptPath) {
                 await rm(ownershipReceiptPath, { force: true });
                 await syncDirectoryDurably(controllerDirectory);
@@ -136,13 +144,19 @@ export async function provisionStableUnixRecoveryController(options) {
             await syncDirectoryDurably(controllerDirectory);
         }
         await chmod(controllerPath, 0o700);
+        await assertStateRootAlias(paths);
         return controllerPath;
     }
     finally {
         if (!retainClaimOnFailure) {
-            if (ownershipReceiptPath)
-                await rm(ownershipReceiptPath, { force: true }).catch(() => { });
-            await rm(temporaryPath, { force: true }).catch(() => { });
+            try {
+                await assertStateRootIdentity(paths);
+                if (ownershipReceiptPath)
+                    await rm(ownershipReceiptPath, { force: true });
+                await assertStateRootIdentity(paths);
+                await rm(temporaryPath, { force: true });
+            }
+            catch { /* Never clean a replacement state tree after a failed publication. */ }
         }
         await releaseLock(paths.lock, owner).catch(() => { });
     }
@@ -153,7 +167,7 @@ export async function bindStableUnixRecoveryController(options, processExecPath)
     if (!paths) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, 'unix_controller_state_missing');
     }
-    const controllerPath = join(paths.root, UNIX_CONTROLLER_DIRECTORY, UNIX_CONTROLLER_NAME);
+    const controllerPath = join(paths.stateRoot, UNIX_CONTROLLER_DIRECTORY, UNIX_CONTROLLER_NAME);
     await assertRegularNonSymlink(controllerPath, 'unix_controller');
     await assertRegularNonSymlink(paths.targetPath, 'target');
     const [actualController, expectedController] = await Promise.all([
@@ -175,7 +189,7 @@ export async function bindStableWindowsRecoveryController(options, processExecPa
     }
     await assertRegularNonSymlink(paths.targetPath, 'target');
     const boundController = await bindWindowsManagedExecutable({
-        stateDir: paths.root,
+        stateDir: paths.stateRoot,
         executablePath: processExecPath,
         relativePath: [WINDOWS_CONTROLLER_DIRECTORY, WINDOWS_CONTROLLER_NAME],
         label: 'windows_controller',
@@ -200,22 +214,27 @@ export async function provisionStableWindowsRecoveryController(options, processE
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'windows_controller_unsupported_platform');
     }
     const paths = await resolveTransactionPaths(options, true);
-    const owner = await acquireLock(paths.lock, options.pid ?? process.pid);
-    const controllerDirectory = join(paths.root, WINDOWS_CONTROLLER_DIRECTORY);
-    const controllerPath = stableWindowsRecoveryControllerPathForStateDir(paths.root);
-    const temporaryPath = options.artifactClaimPath ?? join(controllerDirectory, `.${WINDOWS_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
-    if (dirname(resolve(temporaryPath)) !== resolve(controllerDirectory)) {
+    const controllerDirectory = join(paths.stateRoot, WINDOWS_CONTROLLER_DIRECTORY);
+    const controllerPath = stableWindowsRecoveryControllerPathForStateDir(paths.stateRoot);
+    const configuredControllerPath = stableWindowsRecoveryControllerPathForStateDir(paths.root);
+    const configuredTemporaryPath = options.artifactClaimPath ?? join(dirname(configuredControllerPath), `.${WINDOWS_CONTROLLER_NAME}.${randomBytes(8).toString('hex')}.tmp`);
+    if (dirname(resolve(configuredTemporaryPath)) !== dirname(configuredControllerPath)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'windows_controller_claim_outside_directory');
     }
+    const temporaryPath = join(controllerDirectory, basename(configuredTemporaryPath));
     const ownershipReceiptPath = options.replaceExisting === false && options.artifactClaimPath !== undefined
         ? bootstrapClaimOwnershipReceiptPath(temporaryPath)
         : undefined;
     if (ownershipReceiptPath && !options.onArtifactPublished) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_windows_controller_claim_has_no_durable_owner_callback');
     }
+    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, undefined, paths.stateRootIdentity);
+    const notifyPublished = () => observeArtifactPublicationAliases(paths, () => options.onArtifactPublished?.(configuredControllerPath, configuredTemporaryPath));
     let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
+        await assertStateRootIdentity(paths);
         const loadedJournal = await readJournal(paths.journal);
+        await assertStateRootIdentity(paths);
         if (loadedJournal) {
             const journal = await bindJournalToTarget(paths, loadedJournal);
             if (!isTerminal(journal.stage) || journal.stage === 'rollback_failed') {
@@ -230,7 +249,7 @@ export async function provisionStableWindowsRecoveryController(options, processE
             !== normalizeCanonicalSelfUpdateTargetPath(expectedSource, 'win32')) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'windows_controller_source_mismatch');
         }
-        await ensureSecureDirectory(paths.root);
+        await ensureSecureDirectory(paths.stateRoot);
         await ensureSecureDirectory(controllerDirectory);
         if (options.replaceExisting === false) {
             try {
@@ -247,7 +266,7 @@ export async function provisionStableWindowsRecoveryController(options, processE
         await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
             ? {
                 ownershipReceiptPath,
-                onClaimCreated: () => options.onArtifactPublished(controllerPath, temporaryPath),
+                onClaimCreated: notifyPublished,
             }
             : undefined);
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
@@ -264,7 +283,7 @@ export async function provisionStableWindowsRecoveryController(options, processE
         if (options.replaceExisting === false) {
             await link(temporaryPath, controllerPath);
             await syncDirectoryDurably(controllerDirectory);
-            await options.onArtifactPublished?.(controllerPath, temporaryPath);
+            await notifyPublished();
             if (ownershipReceiptPath) {
                 await rm(ownershipReceiptPath, { force: true });
                 await syncDirectoryDurably(controllerDirectory);
@@ -278,25 +297,33 @@ export async function provisionStableWindowsRecoveryController(options, processE
             await syncDirectoryDurably(controllerDirectory);
         }
         await chmod(controllerPath, 0o700);
+        await assertStateRootAlias(paths);
         return controllerPath;
     }
     finally {
         if (!retainClaimOnFailure) {
-            if (ownershipReceiptPath)
-                await rm(ownershipReceiptPath, { force: true }).catch(() => { });
-            await rm(temporaryPath, { force: true }).catch(() => { });
+            try {
+                await assertStateRootIdentity(paths);
+                if (ownershipReceiptPath)
+                    await rm(ownershipReceiptPath, { force: true });
+                await assertStateRootIdentity(paths);
+                await rm(temporaryPath, { force: true });
+            }
+            catch { /* Never clean a replacement state tree after a failed publication. */ }
         }
         await releaseLock(paths.lock, owner).catch(() => { });
     }
 }
 export async function beginDurableSelfUpdate(targetVersion, options) {
     const paths = await resolveTransactionPaths(options, true);
-    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim);
+    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim, paths.stateRootIdentity);
     const now = options.now ?? (() => new Date());
     let journal;
     let released = false;
     try {
+        await assertStateRootIdentity(paths);
         const loadedExisting = await readJournal(paths.journal);
+        await assertStateRootIdentity(paths);
         const existing = loadedExisting ? await bindJournalToTarget(paths, loadedExisting) : undefined;
         if (existing?.stage === 'rollback_failed') {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.ROLLBACK_FAILED, 'pending_rollback_failed');
@@ -304,11 +331,16 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
         if (existing && !isTerminal(existing.stage)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, `pending_${existing.stage}`);
         }
-        await ensureSecureDirectory(paths.root);
+        await assertStateRootIdentity(paths);
+        await ensureSecureDirectory(paths.stateRoot);
+        await assertStateRootIdentity(paths);
         await ensureSecureDirectory(paths.staging);
+        await assertStateRootIdentity(paths);
         await ensureSecureDirectory(paths.backups);
+        await assertStateRootIdentity(paths);
         if (existing)
             await rm(paths.journal, { force: true });
+        await assertStateRootIdentity(paths);
         const transactionId = `${Date.now()}-${randomBytes(8).toString('hex')}`;
         const createdAt = now().toISOString();
         journal = {
@@ -326,10 +358,14 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
             target_path: await canonicalLogicalTargetPath(paths.targetPath),
             configured_target_path: paths.configuredTargetPath,
         };
+        await assertStateRootIdentity(paths);
         await writeJournal(paths.journal, journal);
+        await assertStateRootIdentity(paths);
         const persist = async (stage, patch = {}) => {
             journal = { ...journal, ...patch, stage, updated_at: now().toISOString() };
+            await assertStateRootIdentity(paths);
             await writeJournal(paths.journal, journal);
+            await assertStateRootIdentity(paths);
             return journal;
         };
         const rollback = async (failureCode) => {
@@ -342,6 +378,7 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
         };
         return {
             async adoptDownloaded(download) {
+                await assertStateRootIdentity(paths);
                 const stagedName = `${journal.transaction_id}.staged`;
                 const managedPath = join(paths.staging, stagedName);
                 await moveRegularFile(download.stagedPath, managedPath, 0o700);
@@ -363,6 +400,7 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
                 await persist('verified', { verified_sha256: verifiedSha256 });
             },
             async install() {
+                await assertStateRootIdentity(paths);
                 if (!journal?.staged_name || !journal.verified_sha256 || journal.stage !== 'verified') {
                     throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, 'install_before_verified');
                 }
@@ -375,6 +413,7 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
                     await cleanupTransactionFiles(paths, journal);
                     throw error;
                 }
+                await assertStateRootIdentity(paths);
                 const backupName = `${journal.transaction_id}.backup`;
                 const backupPath = join(paths.backups, backupName);
                 const targetStat = await assertRegularNonSymlink(paths.targetPath, 'target');
@@ -398,7 +437,7 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
                             stagedPath,
                             expectedStagedSha256: journal.verified_sha256,
                             backupPath,
-                            stateDir: paths.root,
+                            stateDir: paths.stateRoot,
                             platform: 'win32',
                         });
                         return;
@@ -443,8 +482,8 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
             async release() {
                 if (released)
                     return;
-                released = true;
                 await releaseLock(paths.lock, owner);
+                released = true;
             },
         };
     }
@@ -457,18 +496,24 @@ export async function recoverDurableSelfUpdate(options) {
     const paths = await resolveTransactionPaths(options, false);
     if (!paths)
         return { outcome: 'none' };
-    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim);
+    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim, paths.stateRootIdentity);
     const now = options.now ?? (() => new Date());
     try {
+        await assertStateRootIdentity(paths);
         const loadedJournal = await readJournal(paths.journal);
+        await assertStateRootIdentity(paths);
         if (!loadedJournal)
             return { outcome: 'none' };
         const boundJournal = await bindJournalToTarget(paths, loadedJournal);
+        await assertStateRootIdentity(paths);
         await options.beforeJournalMutation?.();
+        await assertStateRootIdentity(paths);
         let journal = boundJournal;
         const persist = async (stage, patch = {}) => {
             journal = { ...journal, ...patch, stage, updated_at: now().toISOString() };
+            await assertStateRootIdentity(paths);
             await writeJournal(paths.journal, journal);
+            await assertStateRootIdentity(paths);
             return journal;
         };
         const terminal = recoveryResultForTerminal(journal);
@@ -572,18 +617,24 @@ async function mutateRecoveredTransaction(options, mutate) {
     const paths = await resolveTransactionPaths(options, false);
     if (!paths)
         return { outcome: 'none' };
-    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim);
+    const owner = await acquireLock(paths.lock, options.pid ?? process.pid, options.beforeStaleLockReclaim, paths.stateRootIdentity);
     const now = options.now ?? (() => new Date());
     try {
+        await assertStateRootIdentity(paths);
         const loadedJournal = await readJournal(paths.journal);
+        await assertStateRootIdentity(paths);
         if (!loadedJournal)
             return { outcome: 'none' };
         const boundJournal = await bindJournalToTarget(paths, loadedJournal);
+        await assertStateRootIdentity(paths);
         await options.beforeJournalMutation?.();
+        await assertStateRootIdentity(paths);
         let journal = boundJournal;
         const persist = async (stage, patch = {}) => {
             journal = { ...journal, ...patch, stage, updated_at: now().toISOString() };
+            await assertStateRootIdentity(paths);
             await writeJournal(paths.journal, journal);
+            await assertStateRootIdentity(paths);
             return journal;
         };
         return await mutate(paths, journal, persist);
@@ -618,11 +669,11 @@ async function rollbackJournal(paths, persist, failureCode, options) {
     return recoveryResult(journal, 'rolled_back', !alreadyRestored);
 }
 async function prepareWindowsRollback(paths, current, persist, failureCode, options) {
-    const pendingPath = resolveWindowsUpdaterPaths(paths.root).pendingPath;
+    const pendingPath = resolveWindowsUpdaterPaths(paths.stateRoot).pendingPath;
     let pendingExists = await regularFileExists(pendingPath);
     if ((current.stage === 'install_pending' || current.stage === 'restarted') && pendingExists) {
         const targetStillMatchesBackup = await targetMatchesBackup(paths, current);
-        await removeRegularWindowsPending(paths.root);
+        await removeRegularWindowsPending(paths.stateRoot);
         pendingExists = false;
         if (targetStillMatchesBackup) {
             const cancelled = await persist('rolled_back', { failure_code: failureCode });
@@ -635,7 +686,7 @@ async function prepareWindowsRollback(paths, current, persist, failureCode, opti
         : await persist('rollback_pending', { failure_code: failureCode });
     if (await targetMatchesVersion(paths.targetPath, journal.from_version, options.readBackVersion)) {
         try {
-            await removeRegularWindowsPending(paths.root);
+            await removeRegularWindowsPending(paths.stateRoot);
         }
         catch {
             journal = await persist('rollback_failed', { failure_code: SELF_UPDATE_FAILURE_CODES.ROLLBACK_FAILED });
@@ -655,7 +706,7 @@ async function prepareWindowsRollback(paths, current, persist, failureCode, opti
                 operation: 'rollback',
                 targetPath: paths.targetPath,
                 backupPath: join(paths.backups, journal.backup_name),
-                stateDir: paths.root,
+                stateDir: paths.stateRoot,
                 helperSourcePath: options.processExecPath ?? process.execPath,
                 platform: 'win32',
             });
@@ -757,12 +808,14 @@ async function resolveTransactionPaths(options, create) {
     // journal itself binds mutations to the canonical target, while this path
     // preserves discovery of state created through a symlinked launcher path.
     const root = resolve(configuredStateDir ?? join(dirname(logicalTargetPath), '.evolver-update'));
+    const stateRoot = await directoryCreationPath(root, true);
     if (create) {
-        await ensureStateRootForLock(root);
+        await ensureStateRootForLock(stateRoot);
     }
     else {
         try {
             await assertDirectoryNonSymlink(root);
+            await assertDirectoryNonSymlink(stateRoot);
         }
         catch (error) {
             if (isErrno(error, 'ENOENT'))
@@ -770,14 +823,18 @@ async function resolveTransactionPaths(options, create) {
             throw error;
         }
     }
+    const stateRootIdentity = await readDirectoryIdentity(stateRoot);
+    await assertStateRootAlias({ root, stateRoot, stateRootIdentity });
     return {
         configuredTargetPath: normalizedConfiguredTargetPath,
         targetPath,
         root,
-        journal: join(root, 'journal.json'),
-        lock: join(root, 'update.lock'),
-        staging: join(root, 'staging'),
-        backups: join(root, 'backups'),
+        stateRoot,
+        stateRootIdentity,
+        journal: join(stateRoot, 'journal.json'),
+        lock: join(stateRoot, 'update.lock'),
+        staging: join(stateRoot, 'staging'),
+        backups: join(stateRoot, 'backups'),
     };
 }
 function nonBlank(value) {
@@ -789,8 +846,142 @@ function assertUnixControllerPlatform(platform) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unix_controller_unsupported_platform');
     }
 }
+async function readDirectoryIdentity(path) {
+    const info = await lstat(path, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_state_directory');
+    }
+    return { dev: info.dev, ino: info.ino };
+}
+async function assertDirectoryIdentity(path, expected) {
+    let current;
+    try {
+        current = await readDirectoryIdentity(path);
+    }
+    catch (error) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_root_changed', { cause: error });
+    }
+    if (current.dev !== expected.dev || current.ino !== expected.ino) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_root_changed');
+    }
+}
+async function assertStateRootIdentity(paths) {
+    await assertDirectoryIdentity(paths.stateRoot, paths.stateRootIdentity);
+}
+async function captureArtifactAliasWitness(path) {
+    const info = await lstat(path, { bigint: true });
+    return {
+        path, dev: info.dev, ino: info.ino, ctimeNs: info.ctimeNs, mtimeNs: info.mtimeNs,
+        resolvedPath: normalizeCanonicalSelfUpdateTargetPath(await realpath(path)),
+    };
+}
+async function captureArtifactAliasWitnesses(paths) {
+    const names = new Set([paths.stateRoot]);
+    for (let path = dirname(paths.root);;) {
+        const info = await lstat(path);
+        // Sibling BootstrapJournal writes are legitimate callback work. Observe the
+        // bound root and actual links, not unrelated changes to their parent entries.
+        if (info.isSymbolicLink())
+            names.add(path);
+        const parent = dirname(path);
+        if (parent === path)
+            break;
+        path = parent;
+    }
+    return Promise.all([...names].map(captureArtifactAliasWitness));
+}
+async function observeArtifactPublicationAliases(paths, callback) {
+    const aliases = await captureArtifactAliasWitnesses(paths);
+    const watchers = [], closed = [];
+    let renamed = false, uncertain = false;
+    try {
+        for (const alias of aliases) {
+            const name = basename(alias.path);
+            const watcher = watch(dirname(alias.path), { persistent: false }, (event, file) => {
+                if (file === null) {
+                    uncertain = true;
+                    return;
+                }
+                const current = String(file);
+                if (event === 'rename' && (process.platform === 'win32' ? current.toLowerCase() === name.toLowerCase() : current === name))
+                    renamed = true;
+            });
+            watchers.push(watcher);
+            closed.push(new Promise(resolve => watcher.once('close', resolve)));
+            watcher.on('error', () => { uncertain = true; });
+        }
+        // Watch only the bound names: legitimate sibling journal writes do not invalidate the callback.
+        await assertStateRootAlias(paths);
+        await assertArtifactAliasWitnesses(aliases);
+        await callback();
+        await assertStateRootAlias(paths);
+        await assertArtifactAliasWitnesses(aliases);
+        // Drain the event-loop turn as well as metadata I/O; Windows directory times can remain unchanged on rename-back.
+        await new Promise(resolve => setImmediate(resolve));
+        if (renamed)
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_changed_during_callback');
+        if (uncertain)
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_observation_unconfirmed');
+    }
+    finally {
+        for (const watcher of watchers)
+            watcher.close();
+        await Promise.all(closed);
+    }
+}
+async function assertArtifactAliasWitnesses(expected) {
+    for (const witness of expected) {
+        const current = await captureArtifactAliasWitness(witness.path);
+        if (current.dev !== witness.dev || current.ino !== witness.ino || current.ctimeNs !== witness.ctimeNs
+            || current.mtimeNs !== witness.mtimeNs || current.resolvedPath !== witness.resolvedPath) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_changed_during_callback');
+        }
+    }
+}
+async function assertStateRootAlias(paths) {
+    await assertStateRootIdentity(paths);
+    if (normalizeCanonicalSelfUpdateTargetPath(await realpath(paths.root))
+        !== normalizeCanonicalSelfUpdateTargetPath(await realpath(paths.stateRoot))) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_parent_changed');
+    }
+    await assertStateRootIdentity(paths);
+}
+async function directoryCreationPath(path, resolveParent = process.platform === 'win32') {
+    if (!resolveParent)
+        return path;
+    // Resolve existing parents, not the leaf: directory links can reject mkdir
+    // even while ordinary reads and writes through the same link succeed.
+    let parent = dirname(resolve(path));
+    const missing = [basename(path)];
+    let physicalParent;
+    for (;;) {
+        try {
+            physicalParent = await realpath(parent);
+            break;
+        }
+        catch (error) {
+            const ancestor = dirname(parent);
+            if (!isErrno(error, 'ENOENT') || ancestor === parent)
+                throw error;
+            missing.unshift(basename(parent));
+            parent = ancestor;
+        }
+    }
+    return join(physicalParent, ...missing);
+}
+async function createStateDirectory(path) {
+    const physical = await directoryCreationPath(path);
+    await mkdir(physical, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32')
+        return;
+    await assertDirectoryNonSymlink(physical);
+    if (normalizeCanonicalSelfUpdateTargetPath(await realpath(path))
+        !== normalizeCanonicalSelfUpdateTargetPath(await realpath(physical))) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_parent_changed');
+    }
+}
 async function ensureSecureDirectory(path) {
-    await mkdir(path, { recursive: true, mode: 0o700 });
+    await createStateDirectory(path);
     await assertDirectoryNonSymlink(path);
     await chmod(path, 0o700);
 }
@@ -803,7 +994,7 @@ async function ensureStateRootForLock(path) {
         if (!isErrno(error, 'ENOENT'))
             throw error;
     }
-    await mkdir(path, { recursive: true, mode: 0o700 });
+    await createStateDirectory(path);
     await assertDirectoryNonSymlink(path);
     await chmod(path, 0o700);
 }
@@ -905,7 +1096,7 @@ async function readRegularFile(source) {
     }
 }
 async function writeExclusiveFile(destination, bytes, mode, publication) {
-    const stagingPath = publication?.ownershipReceiptPath ?? destination;
+    const stagingPath = await directoryCreationPath(publication?.ownershipReceiptPath ?? destination);
     if (publication
         && dirname(resolve(publication.ownershipReceiptPath)) !== dirname(resolve(destination))) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_outside_directory');
@@ -922,16 +1113,16 @@ async function writeExclusiveFile(destination, bytes, mode, publication) {
             await syncDirectoryDurably(dirname(destination));
             const [opened, receipt] = await Promise.all([
                 destinationHandle.stat({ bigint: true }),
-                lstat(publication.ownershipReceiptPath, { bigint: true }),
+                selfUpdateFileMetadata(publication.ownershipReceiptPath, constants.O_WRONLY),
             ]);
             if (!opened.isFile() || opened.dev <= 0n || opened.ino <= 0n
                 || receipt.dev !== opened.dev || receipt.ino !== opened.ino) {
                 throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_mismatch');
             }
-            await link(publication.ownershipReceiptPath, destination);
+            await link(stagingPath, await directoryCreationPath(destination));
             await syncDirectoryDurably(dirname(destination));
             claimPublished = true;
-            const claim = await lstat(destination, { bigint: true });
+            const claim = await selfUpdateFileMetadata(destination, constants.O_WRONLY);
             if (claim.dev !== opened.dev || claim.ino !== opened.ino) {
                 throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_receipt_mismatch');
             }
@@ -947,6 +1138,7 @@ async function writeExclusiveFile(destination, bytes, mode, publication) {
     }
 }
 async function restoreBackup(paths, journal, force = false) {
+    await assertStateRootIdentity(paths);
     if (!journal.backup_name)
         return;
     const backupPath = join(paths.backups, journal.backup_name);
@@ -972,12 +1164,16 @@ async function restoreBackup(paths, journal, force = false) {
     await rename(restoreTmp, paths.targetPath);
 }
 async function cleanupTransactionFiles(paths, journal) {
+    await assertStateRootIdentity(paths);
     if (journal.staged_name)
         await rm(join(paths.staging, journal.staged_name), { force: true }).catch(() => { });
+    await assertStateRootIdentity(paths);
     if (journal.backup_name)
         await rm(join(paths.backups, journal.backup_name), { force: true }).catch(() => { });
+    await assertStateRootIdentity(paths);
 }
 async function writeJournal(path, journal) {
+    path = await directoryCreationPath(path);
     const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await writeFile(tmp, `${JSON.stringify(journal)}\n`, { flag: 'wx', mode: 0o600 });
     await rename(tmp, path);
@@ -986,7 +1182,7 @@ async function writeJournal(path, journal) {
 async function readJournal(path) {
     let journalHandle;
     try {
-        const pathInfo = await lstat(path);
+        const pathInfo = await selfUpdateFileMetadata(path);
         if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal');
         }
@@ -998,14 +1194,14 @@ async function readJournal(path) {
         throw error;
     }
     try {
-        const info = await journalHandle.stat();
-        const currentPathInfo = await lstat(path);
+        const info = await journalHandle.stat({ bigint: true });
+        const currentPathInfo = await selfUpdateFileMetadata(path);
         if (!info.isFile()
             || currentPathInfo.isSymbolicLink()
             || !currentPathInfo.isFile()
-            || Number(currentPathInfo.dev) !== Number(info.dev)
-            || Number(currentPathInfo.ino) !== Number(info.ino)
-            || info.size > MAX_JOURNAL_BYTES) {
+            || currentPathInfo.dev !== info.dev
+            || currentPathInfo.ino !== info.ino
+            || info.size > BigInt(MAX_JOURNAL_BYTES)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal');
         }
         const parsed = JSON.parse(await journalHandle.readFile('utf8'));
@@ -1065,15 +1261,21 @@ function isJournalStage(value) {
 function isTerminal(stage) {
     return stage === 'confirmed' || stage === 'rolled_back';
 }
-async function acquireLock(path, pid, beforeStaleLockReclaim) {
+async function acquireLock(path, pid, beforeStaleLockReclaim, expectedRootIdentity) {
+    path = await directoryCreationPath(path);
+    const rootDirectory = dirname(path);
+    const rootIdentity = expectedRootIdentity ?? await readDirectoryIdentity(rootDirectory);
+    await assertDirectoryIdentity(rootDirectory, rootIdentity);
     const owner = { pid, token: randomBytes(16).toString('hex') };
     const visited = new Set();
     let generationPath = path;
     while (true) {
+        await assertDirectoryIdentity(rootDirectory, rootIdentity);
         const existing = await readLockGeneration(generationPath);
         if (!existing) {
-            if (await publishLockGeneration(path, generationPath, owner)) {
-                return { ...owner, generationPath };
+            if (await publishLockGeneration(path, generationPath, owner, rootIdentity)) {
+                await assertDirectoryIdentity(rootDirectory, rootIdentity);
+                return { ...owner, rootPath: path, rootIdentity, generationPath };
             }
             continue;
         }
@@ -1089,8 +1291,11 @@ async function acquireLock(path, pid, beforeStaleLockReclaim) {
         generationPath = successorLockGenerationPath(path, existing.owner.token);
     }
 }
-async function releaseLock(path, lease) {
+async function releaseLock(_path, lease) {
+    const path = lease.rootPath;
+    await assertDirectoryIdentity(dirname(path), lease.rootIdentity);
     const current = await readLockGeneration(lease.generationPath);
+    await assertDirectoryIdentity(dirname(path), lease.rootIdentity);
     if (current?.owner.pid !== lease.pid || current.owner.token !== lease.token)
         return;
     try {
@@ -1101,14 +1306,19 @@ async function releaseLock(path, lease) {
             throw error;
         await lockGenerationReleased(path, lease.token);
     }
+    await assertDirectoryIdentity(dirname(path), lease.rootIdentity);
 }
-async function publishLockGeneration(rootPath, generationPath, owner) {
+async function publishLockGeneration(rootPath, generationPath, owner, rootIdentity) {
+    const rootDirectory = dirname(rootPath);
     const candidatePath = `${rootPath}.${owner.token}.candidate`;
     let candidateCreated = false;
     try {
+        await assertDirectoryIdentity(rootDirectory, rootIdentity);
         await mkdir(candidatePath, { mode: 0o700 });
         candidateCreated = true;
+        await assertDirectoryIdentity(rootDirectory, rootIdentity);
         await writeExclusiveFile(join(candidatePath, 'owner.json'), Buffer.from(`${JSON.stringify(owner)}\n`), 0o600);
+        await assertDirectoryIdentity(rootDirectory, rootIdentity);
         try {
             // A fully populated, non-empty directory is published atomically. Unlike
             // renaming the stale shared lock itself, a losing rename cannot replace a
@@ -1130,7 +1340,11 @@ async function publishLockGeneration(rootPath, generationPath, owner) {
     }
     finally {
         if (candidateCreated) {
-            await rm(candidatePath, { force: true, recursive: true }).catch(() => { });
+            try {
+                await assertDirectoryIdentity(rootDirectory, rootIdentity);
+                await rm(candidatePath, { force: true, recursive: true });
+            }
+            catch { /* Retain candidates when their original state tree is unavailable. */ }
         }
     }
 }
@@ -1164,15 +1378,15 @@ async function readLockGeneration(path) {
 async function readLockOwner(path) {
     let handle;
     try {
-        const before = await lstat(path);
-        if (before.isSymbolicLink() || !before.isFile() || before.size > 4_096)
+        const before = await selfUpdateFileMetadata(path);
+        if (before.isSymbolicLink() || !before.isFile() || before.size > 4096n)
             return undefined;
         handle = await open(path, constants.O_RDONLY | noFollowFlag());
-        const opened = await handle.stat();
+        const opened = await handle.stat({ bigint: true });
         if (!opened.isFile()
-            || opened.size > 4_096
-            || Number(opened.dev) !== Number(before.dev)
-            || Number(opened.ino) !== Number(before.ino))
+            || opened.size > 4096n
+            || opened.dev !== before.dev
+            || opened.ino !== before.ino)
             return undefined;
         const bytes = await handle.readFile();
         if (bytes.byteLength > 4_096)

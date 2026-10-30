@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { openSqliteDatabase } from '../util/sqlite.js';
 import { canonicalEventPath } from '../util/canonicalEventPath.js';
 import { protectedAuditConfigured, protectedAuditRpcSync } from '../events/protectedAuditRpc.js';
@@ -12,15 +12,23 @@ const builtInDispatches = new WeakSet();
 const builtInObservationSink = Ingestor.isBuiltInObservationSink;
 const beginBuiltInObservation = Ingestor.prototype.beginContextObservationV1;
 export function builtInContextObservationDispatch(ingestor, raw, expectedPath) {
-    if (!builtInObservationSink(ingestor)
-        || canonicalEventPath(ingestor.path) !== canonicalEventPath(expectedPath))
+    if (!builtInObservationSink(ingestor))
+        throw new Error('unsupported_unsupervised_context_observation_sink_v1');
+    const path = canonicalEventPath(expectedPath);
+    if (canonicalEventPath(ingestor.path) !== path)
         throw new Error('unsupported_unsupervised_context_observation_sink_v1');
     const dispatch = Object.freeze({ version: 1,
         begin: (attempt) => {
-            if (!builtInObservationSink(ingestor)
-                || canonicalEventPath(ingestor.path) !== canonicalEventPath(expectedPath))
-                throw new EventWriteNotCommittedError(attempt.operationId, new Error('context_observation_sink_mismatch'));
-            return beginBuiltInObservation.call(ingestor, raw, attempt);
+            try {
+                if (!builtInObservationSink(ingestor)
+                    || canonicalEventPath(ingestor.path) !== path || canonicalEventPath(expectedPath) !== path) {
+                    throw new Error('context_observation_sink_mismatch');
+                }
+            }
+            catch (cause) {
+                throw new EventWriteNotCommittedError(attempt.operationId, cause);
+            }
+            return beginBuiltInObservation.call(ingestor, raw, { ...attempt, expectedPath: path, expectedAlias: expectedPath });
         },
     });
     builtInDispatches.add(dispatch);
@@ -222,6 +230,12 @@ function initializeObservationSchema(db) {
     INSERT OR IGNORE INTO observation_epoch VALUES (1, 0);`);
     return journalInstance(db, true);
 }
+function observationJournalPath(eventsPath) {
+    const path = `${eventsPath}.context-observation-intents.sqlite`;
+    // Resolve directory aliases for exclusive creation, not the journal leaf:
+    // journalIdentity must still reject a symbolic or multiply-linked file.
+    return join(canonicalEventPath(dirname(path)), basename(path));
+}
 /** Recovery state, separate from the disposable index. Never delete it when rebuilding that index. */
 export function durableObservationIntents(eventsPath) {
     if (protectedAuditConfigured()) {
@@ -305,7 +319,7 @@ export function durableObservationIntents(eventsPath) {
         namespaces.set(store, canonicalEventPath(`${eventsPath}.context-observation-intents.sqlite`));
         return store;
     }
-    const path = `${eventsPath}.context-observation-intents.sqlite`;
+    const path = observationJournalPath(eventsPath);
     const reservations = new Map();
     const store = {
         lookup: key => {
@@ -426,7 +440,7 @@ export function resetObservationAcknowledgements(eventsPath) {
         // the local reset inside its guarded rebuild transaction.
         throw new Error('observation_reset_requires_index_authority');
     }
-    const path = `${eventsPath}.context-observation-intents.sqlite`;
+    const path = observationJournalPath(eventsPath);
     let identity;
     try {
         const stat = lstatSync(path);

@@ -1,3 +1,4 @@
+export { assertOpenedRegularAssetFile, captureRegularAssetFileIdentity, ExperienceRecoveryRequiredError, type AssetFileIdentity } from './assetStoreStorage.js';
 export * from './provider.js';
 export { assertPromptProviderNotProxy, isBuiltInPromptProvider } from './promptAdapterTrust.js';
 export { beginLocalContextReadV1 } from './contextReadOperationV1.js';
@@ -18,6 +19,11 @@ export * from './provenance.js';
 export * from './sourceQualification.js';
 export * from './assetSyncLedger.js';
 export * from './reviewLedger.js';
+export { ExperienceJournalError, type ExperienceCommit, type ExperienceOperationStatus } from './experienceJournal.js';
+export * from './experience.js';
+export * from './experienceActivity.js';
 export * from './reviewFilter.js';
 export * from './pendingSignals.js';
 export * from './seedGenes.js';
+export * from './localRecall.js';
+export * from './projectFingerprint.js';

@@ -1,5 +1,6 @@
 export * from './prompt.js';
 export * from './contextResolver.js';
+export * from './triggerFeedbackFacade.js';
 export * from './proofOfWork.js';
 // The policy enforcement core (checkPolicy + the split guards). policyCheck.js is a back-compat shim that
 // re-exports the per-gene checker from here, so it is intentionally NOT re-exported again (would duplicate names).

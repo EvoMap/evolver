@@ -28,8 +28,9 @@ export interface McpTool {
 export interface EvolverToolDeps {
     store: assetstore.AssetStoreProvider;
     referenceStore?: reference.ReferenceStore;
-    mailbox?: mb.MailboxStore;
+    mailbox?: mb.MailboxStore | (() => mb.MailboxStore);
     proxy?: EvolverProxyClient;
+    triggerFeedback?: import('@evomap/evolver-core').exec.TriggerFeedbackLocalFacade;
     now?: () => number;
     /** Root_events writer for the MCP reuse-feedback loop (#268). When wired, a SUCCESS reuse-result emits a local
      *  `value.reuse_hit` so the local ledger credits reuse driven by an MCP agent (not just the hook/daemon path).
@@ -38,6 +39,7 @@ export interface EvolverToolDeps {
     /** Server-minted correlation id for this MCP connection (#268). Used as the reuse_hit `cycleId` audit anchor and,
      *  with the agent's optional taskId, as the idempotency key. One stdio process ~ one MCP session. */
     cycleId?: string;
+    experienceClient?: () => assetstore.ExperienceClient;
 }
 /**
  * Evolver MCP 工具集(M5-2). asset.search/fetch/publish + gep.build + mailbox.*.

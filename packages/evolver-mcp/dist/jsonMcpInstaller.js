@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
 import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
+import { sameRuntimePath } from './runtimePathIdentity.js';
 const CONFIG_MODE = 0o600;
 const DIR_MODE = 0o700;
 const BACKUP_VERSION = 1;
@@ -81,6 +82,7 @@ export class McpServerValidationError extends Error {
         this.name = 'McpServerValidationError';
     }
 }
+const sameSelectedTargetPath = sameRuntimePath;
 function isObject(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -586,6 +588,9 @@ function installJsonMcpRuntimeOnce(spec, plan, opts) {
     validateServer(opts.server);
     const resolution = resolveInstallRuntimeConfig(spec, opts);
     const { configPath, safeRoot } = resolution;
+    if (opts.targetPath !== undefined && !sameSelectedTargetPath(opts.targetPath, configPath)) {
+        throw new McpConfigOwnershipError(spec.runtime, 'selected lifecycle target is not the resolved runtime config');
+    }
     assertSafeParents(spec.runtime, safeRoot, configPath);
     const topologySnapshot = captureConfigTopology(spec.runtime, resolution);
     for (const conflictingPath of resolution.conflictingPaths) {
@@ -742,6 +747,9 @@ export function uninstallJsonMcpRuntime(spec, runtime, opts) {
 function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
     const resolution = resolveUninstallRuntimeConfig(spec, opts);
     const { configPath, safeRoot } = resolution;
+    if (opts.targetPath !== undefined && !sameSelectedTargetPath(opts.targetPath, configPath)) {
+        throw new McpConfigOwnershipError(spec.runtime, 'selected lifecycle target is not the resolved runtime config');
+    }
     assertSafeParents(spec.runtime, safeRoot, configPath);
     for (const conflictingPath of resolution.conflictingPaths) {
         assertSafeParents(spec.runtime, safeRoot, conflictingPath);

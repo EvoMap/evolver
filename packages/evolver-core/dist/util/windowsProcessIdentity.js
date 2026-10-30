@@ -3,6 +3,7 @@ import { loadReferenceSystemLibrary } from '../benchmark/referenceNativeRuntime.
 const FILETIME_EPOCH_TICKS = 504911232000000000n;
 const MAX_DOTNET_TICKS = 3155378975999999999n;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const STATUS_INVALID_CID = 0xc000000b;
 let api;
 let pendingClose;
 let closeUnconfirmed = false;
@@ -21,10 +22,11 @@ function succeeded(value) {
 function processApi() {
     if (api)
         return api;
-    // Only fixed KnownDLL metadata calls through the existing version-checked Node/Bun loader.
-    // No shell, caller-selected library/symbol, process mutation, or bulk synchronous I/O.
+    // NtOpenProcess returns its failure status directly. Unlike a GetLastError
+    // follow-up, that status cannot be clobbered across the JS/native boundary.
     const kernel = loadReferenceSystemLibrary('kernel32.dll');
-    const open = kernel.func('void * __stdcall OpenProcess(uint32_t access, int inheritHandle, uint32_t pid)');
+    const nt = loadReferenceSystemLibrary('ntdll.dll');
+    const open = nt.func('int32_t __stdcall NtOpenProcess(void *process, uint32_t access, void *attributes, void *clientId)');
     const times = kernel.func('int __stdcall GetProcessTimes(void *handle, _Out_ void *creation, _Out_ void *exit, _Out_ void *kernel, _Out_ void *user)');
     const close = kernel.func('int __stdcall CloseHandle(void *handle)');
     api = { open, times, close };
@@ -47,19 +49,51 @@ function closePending(native) {
     }
     pendingClose = undefined;
 }
-/** Fresh process-generation metadata. Unknown observations are never cached here. */
-export function readWindowsProcessStartTimeTicks(pid) {
-    if (process.platform !== 'win32' || !['x64', 'arm64'].includes(process.arch)
-        || !Number.isInteger(pid) || pid <= 0 || pid > 0xffff_ffff)
-        return null;
+function validPid(pid) {
+    return Number.isInteger(pid) && pid > 0 && pid <= 0xffff_ffff;
+}
+function status(value) {
+    // Koffi's int32_t binding returns a signed number, but preserve an equivalent
+    // uint32 representation if a supported runtime exposes the raw NTSTATUS bits.
+    return typeof value === 'number' && Number.isInteger(value) && value >= -0x8000_0000 && value <= 0xffff_ffff
+        ? value >>> 0
+        : undefined;
+}
+function nativeOpenBuffers(pid) {
+    // x64 and arm64 Windows share the 48-byte OBJECT_ATTRIBUTES and 16-byte
+    // CLIENT_ID layouts: ULONG Length at 0, pointer-aligned HANDLE at 8,
+    // then pointer/ULONG/pointer/pointer; both CLIENT_ID members are HANDLEs.
+    const process = Buffer.alloc(8);
+    const attributes = Buffer.alloc(48);
+    const clientId = Buffer.alloc(16);
+    attributes.writeUInt32LE(48, 0);
+    clientId.writeBigUInt64LE(BigInt(pid), 0);
+    return { process, attributes, clientId };
+}
+/** A fresh, read-only native observation. No result is cached: PID values and numeric
+ * HANDLE values may both be reused. Close failure poisons later observations rather
+ * than retrying an uncertain numeric HANDLE. */
+function observeWindowsProcess(pid) {
+    if (process.platform !== 'win32' || !['x64', 'arm64'].includes(process.arch) || !validPid(pid)) {
+        return { liveness: 'unknown' };
+    }
     try {
         const native = processApi();
-        // An unconfirmed close withholds the observation and any later probe. Retain at most one
-        // uncertain owner without retrying its numeric value, which Windows may already have reused.
+        // An unconfirmed close withholds this and all later probes. Retrying may close
+        // an unrelated object after Windows has reused the numeric HANDLE.
         closePending(native);
-        const handle = native.open(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        const open = nativeOpenBuffers(pid);
+        const openStatus = status(native.open(open.process, PROCESS_QUERY_LIMITED_INFORMATION, open.attributes, open.clientId));
+        const handle = open.process.readBigUInt64LE();
+        // STATUS_INVALID_CID is definitive only when the out parameter remained
+        // NULL. A nonzero out value is contradictory ABI evidence: it is never
+        // adopted or closed because there was no successful acquisition contract.
+        if (openStatus === STATUS_INVALID_CID)
+            return handle === 0n ? { liveness: 'dead' } : { liveness: 'unknown' };
+        if (openStatus !== 0)
+            return { liveness: 'unknown' };
         if (!validHandle(handle))
-            return null;
+            return { liveness: 'unknown' };
         pendingClose = handle;
         try {
             const creation = Buffer.alloc(8);
@@ -67,15 +101,18 @@ export function readWindowsProcessStartTimeTicks(pid) {
             const kernel = Buffer.alloc(8);
             const user = Buffer.alloc(8);
             if (!succeeded(native.times(handle, creation, exit, kernel, user)))
-                return null;
-            // Another handle may retain a terminated process object. Its creation time is
-            // readable but is no longer evidence of a live owner generation.
+                return { liveness: 'unknown' };
+            // A retained HANDLE preserves a terminated process object. Its nonzero exit
+            // FILETIME is affirmative death evidence, independent of creation metadata.
             if (exit.readBigUInt64LE() !== 0n)
-                return null;
-            // Keep both DWORDs and the epoch conversion in BigInt: Number loses 100 ns precision.
+                return { liveness: 'dead' };
+            // A live result must have a valid, exact creation identity too. Otherwise a
+            // malformed ABI observation cannot license lock ownership decisions.
             const fileTime = creation.readBigUInt64LE();
             const ticks = fileTime + FILETIME_EPOCH_TICKS;
-            return fileTime > 0n && ticks <= MAX_DOTNET_TICKS ? ticks.toString() : null;
+            return fileTime > 0n && ticks <= MAX_DOTNET_TICKS
+                ? { liveness: 'alive', startTimeTicks: ticks.toString() }
+                : { liveness: 'unknown' };
         }
         finally {
             closePending(native);
@@ -83,6 +120,15 @@ export function readWindowsProcessStartTimeTicks(pid) {
     }
     catch {
         // Access denied, PID exit races, unavailable ABI and unconfirmed cleanup all fail closed.
-        return null;
+        return { liveness: 'unknown' };
     }
+}
+/** Fresh, read-only liveness for Windows lock ownership. `dead` is returned only
+ * for STATUS_INVALID_CID with a NULL out HANDLE or a confirmed nonzero exit FILETIME. */
+export function readWindowsProcessLiveness(pid) {
+    return observeWindowsProcess(pid).liveness;
+}
+/** Fresh process-generation metadata. Unknown and dead observations are never cached here. */
+export function readWindowsProcessStartTimeTicks(pid) {
+    return observeWindowsProcess(pid).startTimeTicks ?? null;
 }

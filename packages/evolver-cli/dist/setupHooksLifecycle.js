@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, claudeCodeTargets, codexConfigTarget, installInjection, uninstallInjection, resolveInstallComponents, } from '@evomap/evolver-mcp';
+import { DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, claudeCodeTargets, codexConfigTarget, installInjection, uninstallInjection, resolveInstallComponents, cursorRulesPath, resolveAntigravityConfigTargets, resolveOpenCodeConfig, resolveKiroConfig, } from '@evomap/evolver-mcp';
 export const SETUP_LIFECYCLE_SCHEMA = 'evolver.setup_hooks.lifecycle.v1';
 export const SETUP_LIFECYCLE_PLAN_TTL_MS = 120_000;
 export class SetupLifecycleError extends Error {
@@ -14,12 +14,16 @@ export class SetupLifecycleError extends Error {
     }
 }
 export function setupLifecycleCapabilities(runtime, scope) {
-    const supported = runtime === 'claude-code' || runtime === 'codex';
+    const supported = ['claude-code', 'codex', 'cursor', 'antigravity', 'opencode', 'kiro'].includes(runtime)
+        && (runtime !== 'cursor' || scope === 'project')
+        && (runtime !== 'antigravity' || scope === 'user');
     return {
         schema: SETUP_LIFECYCLE_SCHEMA,
         runtime,
         scope,
         supported,
+        hookCommandsBound: runtime === 'claude-code' || runtime === 'codex',
+        standaloneMcp: true,
         operations: {
             plan: supported,
             verify: supported,
@@ -44,7 +48,7 @@ function canonicalJson(value) {
     return value;
 }
 function lifecycleIntentDigest(context, action) {
-    const options = context.installOptions;
+    const options = lifecycleInstallOptions(context);
     const targetResolution = {
         components: resolveInstallComponents(options.components),
         configRoot: context.configRoot,
@@ -113,22 +117,47 @@ function displayTarget(path, context) {
     }
     return `<managed:${context.runtime}:${context.scope}>`;
 }
+function lifecycleInstallOptions(context) {
+    return { ...context.installOptions, configRoot: context.configRoot, scope: context.scope };
+}
 function planResult(context, action) {
-    if (action === 'install') {
-        return installInjection(context.injectionPlan, { ...context.installOptions, dryRun: true });
+    const options = { ...lifecycleInstallOptions(context), dryRun: true };
+    return action === 'install' ? installInjection(context.injectionPlan, options) : uninstallInjection(context.runtime, options);
+}
+function applyLifecycleMutation(context, action, targetPath) {
+    const options = { ...lifecycleInstallOptions(context), ...(targetPath === undefined ? {} : { targetPath }) };
+    return action === 'install'
+        ? installInjection(context.injectionPlan, options)
+        : uninstallInjection(context.runtime, options);
+}
+function applyConfirmedTargets(context, plan, paths) {
+    const files = [];
+    for (const target of plan.targets) {
+        if (target.disposition === 'already_satisfied')
+            continue;
+        const path = paths.get(target.target_id);
+        if (!path)
+            throw new SetupLifecycleError('PLAN_STALE', 'confirmed target is no longer resolved');
+        const result = applyLifecycleMutation(context, plan.action, path);
+        files.push(...result.files);
+        if (!result.ok)
+            return { ...result, files };
     }
-    return uninstallInjection(context.runtime, {
-        components: context.installOptions.components,
-        configRoot: context.configRoot,
-        scope: context.scope,
-        homeDir: context.installOptions.homeDir,
-        codexHome: context.installOptions.codexHome,
-        kiroHome: context.installOptions.kiroHome,
-        xdgConfigHome: context.installOptions.xdgConfigHome,
-        opencodeConfig: context.installOptions.opencodeConfig,
-        opencodeConfigDir: context.installOptions.opencodeConfigDir,
-        dryRun: true,
-    });
+    return { ok: true, runtime: context.runtime, mode: context.injectionPlan.mode, files };
+}
+function lifecycleConfigPaths(context) {
+    const options = lifecycleInstallOptions(context);
+    switch (context.runtime) {
+        case 'claude-code': {
+            const targets = claudeCodeTargets(context.scope, context.configRoot, options.homeDir);
+            return [targets.mcpConfigPath, ...(resolveInstallComponents(options.components) === 'product-only' ? [] : [targets.settingsPath])];
+        }
+        case 'codex': return [codexConfigTarget(options).configPath];
+        case 'cursor': return [cursorRulesPath(context.configRoot)];
+        case 'antigravity': return resolveAntigravityConfigTargets(options.homeDir).map((target) => target.configPath);
+        case 'opencode': return [resolveOpenCodeConfig(options).configPath];
+        case 'kiro': return [resolveKiroConfig(options).configPath];
+    }
 }
 function planForTimes(context, action, createdAt, expiresAt, resolvedPaths) {
     const capabilities = setupLifecycleCapabilities(context.runtime, context.scope);
@@ -139,13 +168,7 @@ function planForTimes(context, action, createdAt, expiresAt, resolvedPaths) {
     if (!dryRun.ok)
         throw new SetupLifecycleError('PLAN_INVALID', dryRun.error ?? 'lifecycle plan failed');
     if (resolvedPaths) {
-        const options = context.installOptions;
-        const claude = context.runtime === 'claude-code'
-            ? claudeCodeTargets(options.scope ?? 'project', options.configRoot, options.homeDir)
-            : undefined;
-        const paths = claude
-            ? [claude.mcpConfigPath, ...(resolveInstallComponents(options.components) === 'product-only' ? [] : [claude.settingsPath])]
-            : [codexConfigTarget(options).configPath];
+        const paths = [...lifecycleConfigPaths(context), ...dryRun.files];
         for (const path of paths.map((path) => resolve(path))) {
             resolvedPaths.set(digest(`${context.runtime}\0${context.scope}\0${path}`).slice(0, 32), path);
         }
@@ -231,7 +254,7 @@ export function decodeSetupLifecyclePlan(raw) {
     return plan;
 }
 export function verifySetupLifecycle(context) {
-    const result = installInjection(context.injectionPlan, { ...context.installOptions, dryRun: true });
+    const result = installInjection(context.injectionPlan, { ...lifecycleInstallOptions(context), dryRun: true });
     return result.ok && result.alreadyInstalled === true && result.verified === true && result.files.length === 0;
 }
 export function executeSetupLifecyclePlan(context, confirmed, options = {}) {
@@ -271,19 +294,9 @@ export function executeSetupLifecyclePlan(context, confirmed, options = {}) {
     let result;
     let executionFailed = false;
     try {
-        result = confirmed.action === 'install'
-            ? installInjection(context.injectionPlan, context.installOptions)
-            : uninstallInjection(context.runtime, {
-                components: context.installOptions.components,
-                configRoot: context.configRoot,
-                scope: context.scope,
-                homeDir: context.installOptions.homeDir,
-                codexHome: context.installOptions.codexHome,
-                kiroHome: context.installOptions.kiroHome,
-                xdgConfigHome: context.installOptions.xdgConfigHome,
-                opencodeConfig: context.installOptions.opencodeConfig,
-                opencodeConfigDir: context.installOptions.opencodeConfigDir,
-            });
+        result = context.runtime === 'claude-code' || context.runtime === 'codex'
+            ? applyLifecycleMutation(context, confirmed.action)
+            : applyConfirmedTargets(context, confirmed, resolvedPaths);
         executionFailed = !result.ok;
     }
     catch {
@@ -417,20 +430,7 @@ function executeSetupLifecycleTarget(context, confirmed, targetId, completedTarg
     }
     let executionFailed = false;
     try {
-        const result = confirmed.action === 'install'
-            ? installInjection(context.injectionPlan, { ...context.installOptions, targetPath })
-            : uninstallInjection(context.runtime, {
-                components: context.installOptions.components,
-                configRoot: context.configRoot,
-                scope: context.scope,
-                homeDir: context.installOptions.homeDir,
-                codexHome: context.installOptions.codexHome,
-                kiroHome: context.installOptions.kiroHome,
-                xdgConfigHome: context.installOptions.xdgConfigHome,
-                opencodeConfig: context.installOptions.opencodeConfig,
-                opencodeConfigDir: context.installOptions.opencodeConfigDir,
-                targetPath,
-            });
+        const result = applyLifecycleMutation(context, confirmed.action, targetPath);
         executionFailed = !result.ok;
     }
     catch {

@@ -9,6 +9,8 @@
 // Default (no record) = approved/eligible: the only writer of quarantine records is `--distill`; cycle-self-
 // produced and v1-migrated genes are never quarantined, so the explore→prove loop is untouched for them.
 import { join, dirname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { acquireLock } from '../util/fileLock.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, ensureAssetStoreDirectory, readUtf8Regular, regularFileFingerprint, withAssetStoreLock, } from './assetStoreStorage.js';
 import { assertTrustSidecarHealthy, parseReviewRecord, parseSidecarJsonl, } from './assetSidecarRecords.js';
 function immutableRecord(record) {
@@ -70,12 +72,12 @@ export class ReviewLedger {
         if (state !== this.fileState)
             this.rebuildIndex(state);
     }
-    withFreshRead(read) {
+    withFreshRead(read, waitForLock = true) {
         assertAssetStoreDirectory(dirname(this.path));
         return withAssetStoreLock(this.lockPath, () => {
             this.refreshUnderLock();
             return read(this.index);
-        });
+        }, waitForLock ? {} : { acquireLock: (path) => acquireLock(path, { maxTries: 1, waitMs: 0 }) });
     }
     appendUnderLock(full) {
         appendUtf8Durable(this.path, `${JSON.stringify(full)}\n`);
@@ -120,6 +122,19 @@ export class ReviewLedger {
             });
         });
     }
+    /** Human mutation with an atomic review/provenance fence; stale UI confirmations never override a later decision. */
+    markIfCurrent(rec, expected, provenanceRevision) {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => {
+            this.refreshUnderLock();
+            const current = this.index.get(rec.assetId) ?? null;
+            if (!isDeepStrictEqual(current, expected)
+                || regularFileFingerprint(join(dirname(this.path), 'provenance.jsonl')) !== provenanceRevision) {
+                throw new Error('experience_review_changed');
+            }
+            return this.appendUnderLock({ ...rec, at: new Date(this.now()).toISOString() });
+        });
+    }
     /** Explicit, audited approval (who/why) — flips a draft to eligible. */
     approve(assetId, by, reason) {
         return this.mark({ assetId, state: 'approved', by, reason });
@@ -142,6 +157,10 @@ export class ReviewLedger {
     /** One linearizable review snapshot for bounded batch readers. */
     snapshot() {
         return this.withFreshRead((index) => new Map(index));
+    }
+    /** Fresh prompt-time eligibility; a busy writer fails closed instead of blocking the event loop. */
+    snapshotNow() {
+        return this.withFreshRead((index) => new Map(index), false);
     }
     /** No record → approved (default eligible); a record → approved only when its state is 'approved'. */
     isApproved(assetId) {

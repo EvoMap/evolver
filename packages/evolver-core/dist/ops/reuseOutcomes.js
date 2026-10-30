@@ -15,19 +15,19 @@
 // second event on the success path.
 import { VALUE_REUSE_HIT_EVENT } from './valueLedger.js';
 import { VALUE_RECALL_EVENT } from './recall.js';
-import { uniqueReuseFacts } from './reuseEventIdentity.js';
+import { hasReusePayload, uniqueReuseFactSteps } from './reuseEventIdentity.js';
 /** root_events type appended for a NON-success MCP reuse-result — the negative half of the keep/prune signal. */
 export const VALUE_REUSE_OUTCOME_EVENT = 'value.reuse_outcome';
 const NEG = ['failed', 'mismatched', 'stale', 'unsafe'];
 function assetIdOf(e) {
-    const id = e.payload?.['assetId'];
+    const id = hasReusePayload(e) ? e.payload['assetId'] : undefined;
     return typeof id === 'string' && id.length > 0 ? id : null;
 }
 /**
  * Roll reuse signals up per gene from root_events: SUCCESS from `value.reuse_hit`, the negative verdicts from
  * `value.reuse_outcome`. Pure; deterministic ordering. Unknown/garbled payloads are skipped, never counted.
  */
-export function summarizeReuseOutcomes(events) {
+function* reuseOutcomeSummarySteps(events) {
     const agg = new Map();
     const get = (assetId) => {
         let g = agg.get(assetId);
@@ -38,7 +38,9 @@ export function summarizeReuseOutcomes(events) {
         return g;
     };
     let total = 0;
-    for (const e of uniqueReuseFacts(events)) {
+    const facts = yield* uniqueReuseFactSteps(events);
+    for (const e of facts) {
+        yield;
         if (e.type === VALUE_REUSE_HIT_EVENT) {
             const assetId = assetIdOf(e);
             if (!assetId)
@@ -48,7 +50,7 @@ export function summarizeReuseOutcomes(events) {
         }
         else if (e.type === VALUE_REUSE_OUTCOME_EVENT) {
             const assetId = assetIdOf(e);
-            const outcome = e.payload?.['outcome'];
+            const outcome = hasReusePayload(e) ? e.payload['outcome'] : undefined;
             if (!assetId || typeof outcome !== 'string' || !NEG.includes(outcome))
                 continue;
             const g = get(assetId);
@@ -57,9 +59,42 @@ export function summarizeReuseOutcomes(events) {
             total += 1;
         }
     }
+    yield;
     const perGene = [...agg.values()].sort((a, b) => b.negative - a.negative || (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0));
     const pruneCandidates = perGene.filter((g) => g.negative > 0 && g.success === 0).map((g) => g.assetId);
     return { total, perGene, pruneCandidates };
+}
+export function summarizeReuseOutcomes(events) {
+    const steps = reuseOutcomeSummarySteps(events);
+    let result = steps.next();
+    while (!result.done)
+        result = steps.next();
+    return result.value;
+}
+/** The same projection, yielding between bounded batches so a recall can abort without publishing partial counts. */
+export async function summarizeReuseOutcomesAsync(events, options = {}) {
+    if (options.deadlineAt !== undefined && !Number.isFinite(options.deadlineAt))
+        throw new Error('invalid_reuse_summary_deadline');
+    const check = () => {
+        options.signal?.throwIfAborted();
+        if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)
+            throw new Error('reuse_summary_aborted');
+    };
+    check();
+    const steps = reuseOutcomeSummarySteps(events);
+    let batch = 0;
+    for (;;) {
+        check();
+        const result = steps.next();
+        if (result.done) {
+            check();
+            return result.value;
+        }
+        if (++batch === 512) {
+            await new Promise((resolve) => setImmediate(resolve));
+            batch = 0;
+        }
+    }
 }
 /**
  * Map a reuse-outcome summary to per-id reuse COUNTS (#268 phase 1) — the input to a SOFT selection re-order.
@@ -100,7 +135,7 @@ export function recallCountsFromEvents(events) {
     const perSession = new Map(); // key: `${sessionId}|${geneId}` (per-session collapse)
     const geneOf = new Map();
     for (const e of events) {
-        if (e.type !== VALUE_RECALL_EVENT)
+        if (e.type !== VALUE_RECALL_EVENT || !hasReusePayload(e))
             continue;
         const id = e.payload?.['geneId'];
         const recalled = e.payload?.['recalled'];

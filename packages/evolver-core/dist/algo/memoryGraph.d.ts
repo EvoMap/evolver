@@ -15,6 +15,8 @@ export interface MemoryGraphOutcomeRecord {
     sourceFingerprint?: string;
     successCount?: number;
     failCount?: number;
+    /** One reversible evaluation contributes one graded fitness observation, not another execution. */
+    fitness?: number;
 }
 export interface MemoryGraphGeneEvidence {
     geneId: string;

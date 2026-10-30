@@ -5,6 +5,8 @@ export interface ReviewRecord {
     at: string;
     by?: string;
     reason?: string;
+    /** Historical experience identity; never part of the content-addressed Gene. */
+    operationId?: string;
 }
 /**
  * Append-only JSONL sidecar at <baseDir>/review.jsonl. Default for an asset with NO record = approved (eligible):
@@ -45,6 +47,8 @@ export declare class ReviewLedger {
      * approval is inert. Returns the surviving record (the existing decision, or the new quarantine).
      */
     quarantineIfAbsent(assetId: string, reason?: string): ReviewRecord;
+    /** Human mutation with an atomic review/provenance fence; stale UI confirmations never override a later decision. */
+    markIfCurrent(rec: Omit<ReviewRecord, 'at'>, expected: ReviewRecord | null, provenanceRevision: string): ReviewRecord;
     /** Explicit, audited approval (who/why) — flips a draft to eligible. */
     approve(assetId: string, by: string, reason: string): ReviewRecord;
     /** Explicit, audited rejection (who/why) — a reviewed terminal state that stays out of runs. */
@@ -58,6 +62,8 @@ export declare class ReviewLedger {
     records(): ReviewRecord[];
     /** One linearizable review snapshot for bounded batch readers. */
     snapshot(): ReadonlyMap<string, ReviewRecord>;
+    /** Fresh prompt-time eligibility; a busy writer fails closed instead of blocking the event loop. */
+    snapshotNow(): ReadonlyMap<string, ReviewRecord>;
     /** No record → approved (default eligible); a record → approved only when its state is 'approved'. */
     isApproved(assetId: string): boolean;
     /**

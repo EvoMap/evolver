@@ -11,9 +11,9 @@ export type Watermark = z.infer<typeof watermark>;
 export declare const material: z.ZodObject<{
     materialId: z.ZodString;
     sourceAgent: z.ZodOptional<z.ZodEnum<{
+        cursor: "cursor";
         "claude-code": "claude-code";
         codex: "codex";
-        cursor: "cursor";
         gemini: "gemini";
         antigravity: "antigravity";
         kimi: "kimi";

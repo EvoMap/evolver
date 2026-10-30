@@ -20,6 +20,8 @@ export function searchQueryToFetchWire(q) {
         out['signals'] = q.signalsAny;
     if (q.text)
         out['query'] = q.text;
+    if (q.text && q.context)
+        out['context'] = q.context;
     if (q.kind)
         out['kind'] = q.kind;
     if (q.category)

@@ -1,10 +1,11 @@
 import { win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readFileLockProcessStartIdentity, parseFileLockProcessStartIdentity, sameFileLockProcessStartIdentity } from '../util/fileLock.js';
+import { readFileLockProcessLiveness, readFileLockProcessStartIdentity, parseFileLockProcessStartIdentity, sameFileLockProcessStartIdentity } from '../util/fileLock.js';
 import { loadReferenceFfi, loadReferenceSystemLibrary } from '../benchmark/referenceNativeRuntime.js';
 import { createWindowsReferenceApi } from '../benchmark/referenceNativeWindows.js';
 import { referenceFilePath } from '../benchmark/referenceAccess.js';
-import { AuditWriteSkipped } from './boundedAudit.js';
+import { AuditWriteSkipped, WindowsAuditNameBusyError } from './boundedAudit.js';
+export { WindowsAuditNameBusyError } from './boundedAudit.js';
 import { AuditCleanupError, auditCleanupSequence, withAuditCleanup } from './auditCleanup.js';
 const validHandle = (value) => typeof value === 'bigint' && value > 0n
     && value !== 0xffffffffn && value !== 0xffffffffffffffffn;
@@ -35,7 +36,18 @@ function safeInfo(info, directory, maxBytes) {
     if (!directory && info.size > BigInt(maxBytes))
         throw new AuditWriteSkipped('file_too_large');
 }
+function unlinkedRead(info, maxBytes) {
+    if (info.links !== 0)
+        return false;
+    // A release can unlink an opened read-share HANDLE. Validate every other
+    // field, then discard it: zero links never certify ownership of a name.
+    safeInfo({ ...info, links: 1 }, false, maxBytes);
+    return true;
+}
 function ntError(status) {
+    const value = status >>> 0;
+    if (value === 0xc0000043 || value === 0xc0000056)
+        return new WindowsAuditNameBusyError(value);
     const code = { [0xc0000034]: 'ENOENT', [0xc000003a]: 'ENOENT', [0xc0000035]: 'EEXIST',
         [0xc0000043]: 'EBUSY', [0xc0000056]: 'EBUSY', [0xc0000022]: 'EACCES' }[status >>> 0] ?? 'EIO';
     return Object.assign(new AuditWriteSkipped('windows_io_failed'), { code });
@@ -348,10 +360,12 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
         if (errors.length)
             throw new AggregateError(errors, 'windows released handle cleanup failed');
     }
-    function checked(owner, expectedPath, directory, maxBytes) {
+    function checked(owner, expectedPath, directory, maxBytes, reading = false) {
         const { handle } = owner;
         const info = api.info(handle);
-        safeInfo(info, directory, maxBytes);
+        const unlinked = reading && unlinkedRead(info, maxBytes);
+        if (!unlinked)
+            safeInfo(info, directory, maxBytes);
         const final = api.finalPath(handle);
         const actual = final.startsWith('\\\\?\\') ? final.slice(4) : final;
         // NtCreateFile has already resolved exactly one no-reparse component under our pinned parent.
@@ -360,6 +374,8 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
         if (api.fileType(handle) !== 1 || (expectedPath === drive ? pathKey(actual) !== pathKey(drive)
             : pathKey(win32.dirname(actual)) !== pathKey(win32.dirname(expectedPath))))
             throw new AuditWriteSkipped('path_changed');
+        if (unlinked)
+            throw Object.assign(new AuditWriteSkipped('lock_unlinked'), { code: 'ENOENT' });
         return { handle, info, path: actual, owner };
     }
     let parent;
@@ -397,7 +413,7 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
         try {
             if (closed)
                 throw new AuditWriteSkipped('windows_handle_closed');
-            return checked(owner, win32.join(boundPath, name), false, maxBytes);
+            return checked(owner, win32.join(boundPath, name), false, maxBytes, mode === 'read');
         }
         catch (error) {
             return withAuditCleanup(async () => { throw error; }, auditCleanupSequence([{ run: () => publication ? cleanupPublication(publication) : release(owner), retryFailedOperation: true }]));
@@ -469,7 +485,7 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
                 file = await opened(name, 'read', 4096);
             }
             catch (error) {
-                if (codeIs(error, 'ENOENT'))
+                if (codeIs(error, 'ENOENT') || error instanceof WindowsAuditNameBusyError)
                     return undefined;
                 throw error;
             }
@@ -477,6 +493,8 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
                 const buffer = Buffer.alloc(4097);
                 const count = await api.read(file.handle, buffer, 0);
                 const after = api.info(file.handle);
+                if (unlinkedRead(after, 4096))
+                    return undefined;
                 safeInfo(after, false, 4096);
                 if (count > 4096 || BigInt(count) !== after.size || !sameSnapshot(file.info, after))
                     throw new AuditWriteSkipped('lock_changed');
@@ -487,7 +505,7 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
                     named = await opened(name, 'read', 4096);
                 }
                 catch (error) {
-                    if (codeIs(error, 'ENOENT'))
+                    if (codeIs(error, 'ENOENT') || error instanceof WindowsAuditNameBusyError)
                         return undefined;
                     throw error;
                 }
@@ -507,6 +525,8 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
             catch (error) {
                 if (codeIs(error, 'ENOENT'))
                     return false;
+                if (error instanceof WindowsAuditNameBusyError)
+                    return true; // Delete-pending/sharing contention is busy, never absent authority.
                 throw error;
             }
             return withAuditCleanup(async () => true, auditCleanupSequence([{ run: () => release(file.owner), retryFailedOperation: true }]));
@@ -532,7 +552,7 @@ export async function openWindowsAuditDirectory(path, budget, injected, existing
                     return true;
                 }
                 catch (error) {
-                    if (codeIs(error, 'EEXIST'))
+                    if (codeIs(error, 'EEXIST') || error instanceof WindowsAuditNameBusyError)
                         return false;
                     throw error;
                 }
@@ -610,12 +630,9 @@ export async function withWindowsAuditLock(path, budget, run, injected) {
         const pid = previous.pid;
         if (!pid)
             return false;
-        try {
-            process.kill(pid, 0);
-        }
-        catch (error) {
-            return codeIs(error, 'ESRCH');
-        }
+        const liveness = readFileLockProcessLiveness(pid);
+        if (liveness !== 'alive')
+            return liveness === 'dead';
         if (previous.v !== 2)
             return false;
         const claimed = parseFileLockProcessStartIdentity(previous.processStart);
@@ -666,8 +683,16 @@ export async function withWindowsAuditLock(path, budget, run, injected) {
                 }
             }
             if (!await directory.exists(name) && await publish(name)) {
-                if (await directory.exists(guard) || await directory.exists(guardian))
-                    throw new AuditWriteSkipped('mutation_busy');
+                let contended = false;
+                while (await directory.exists(guard) || await directory.exists(guardian)) {
+                    contended = true;
+                    await budget.pause();
+                }
+                if (contended) {
+                    const current = await directory.snapshot(name, budget), actual = parsed(current);
+                    if (!current || actual.pid !== process.pid || actual.token !== token)
+                        throw new AuditWriteSkipped('lock_changed');
+                }
                 budget.check();
                 return await run();
             }

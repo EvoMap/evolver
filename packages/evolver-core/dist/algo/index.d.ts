@@ -4,6 +4,7 @@ export * from './ucb1.js';
 export * from './epigenetics.js';
 export * from './confidence.js';
 export * from './memoryGraph.js';
+export * from './triggerFeedback.js';
 export * from './capabilityCandidates.js';
 export * from './conversationSniffer.js';
 export * from './geneIntake.js';

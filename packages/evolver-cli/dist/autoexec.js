@@ -37,6 +37,8 @@ import { readAutoExecConfig } from './autoexecConfig.js';
 import { makeCurriculumCapabilityGapsProvider } from './curriculumCapabilityGaps.js';
 import { resolveLearningTrace } from './learningTrace.js';
 import { semanticIdfEnabled } from './semanticIdfConfig.js';
+import { feedbackDestinationIdentity } from './feedbackDestinationIdentity.js';
+export { feedbackDestinationIdentity } from './feedbackDestinationIdentity.js';
 import { FeedbackNotDispatchedError, FeedbackOutbox } from './feedbackOutbox.js';
 import { TaskOutcomeOutbox, taskOutcomeIdentity } from './taskOutcomeOutbox.js';
 import { selectionFloorFromEnv, selectionGuardFromEnv, selectionPolicyFromEnv, } from './selectionPolicyConfig.js';
@@ -1553,13 +1555,6 @@ function hubMode(env) {
     return mode === 'public' || mode === 'private' ? mode : undefined;
 }
 /** Opaque nonsecret binding to the effective Hub principal and route, never a credential. */
-export function feedbackDestinationIdentity(mode, endpoint, principal, namespace = '') {
-    if (!endpoint || !principal || [...endpoint, ...principal, ...namespace]
-        .some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
-        throw new Error('feedback destination identity unavailable');
-    }
-    return `sha256:${createHash('sha256').update(JSON.stringify([mode, endpoint, principal, namespace])).digest('hex')}`;
-}
 function publicFeedbackDestinationId(env) {
     try {
         const sender = resolveAtpSenderId(env);

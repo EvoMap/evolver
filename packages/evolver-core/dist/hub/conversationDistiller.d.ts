@@ -35,6 +35,8 @@ export interface ConversationDistillInput {
     persist?: unknown;
     /** Facts that hold only in this project (files, fields, quirks). Kept on the local Capsule, never published. */
     project_notes?: unknown;
+    /** Absolute directory of the project the conversation ran in; only its fingerprint is kept, on the local Capsule. */
+    project_dir?: unknown;
     /** The answer the conversation ended with: its values must not reach the reusable Gene. */
     final_answer?: unknown;
     cost_tokens?: unknown;

@@ -13,8 +13,8 @@ export declare const humanNarrative: z.ZodObject<{
     why: z.ZodOptional<z.ZodString>;
     next: z.ZodOptional<z.ZodString>;
     severity: z.ZodDefault<z.ZodEnum<{
-        error: "error";
         warn: "warn";
+        error: "error";
         info: "info";
         notice: "notice";
     }>>;
@@ -49,8 +49,8 @@ export declare const rootEvent: z.ZodObject<{
         why: z.ZodOptional<z.ZodString>;
         next: z.ZodOptional<z.ZodString>;
         severity: z.ZodDefault<z.ZodEnum<{
-            error: "error";
             warn: "warn";
+            error: "error";
             info: "info";
             notice: "notice";
         }>>;
@@ -65,8 +65,10 @@ export declare const rootEvent: z.ZodObject<{
     }, z.core.$strip>>;
     auditOperationId: z.ZodOptional<z.ZodString>;
     auditRequestHash: z.ZodOptional<z.ZodString>;
+    experienceAuditNamespace: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type RootEvent = z.infer<typeof rootEvent>;
+export declare function parseRootEvent(input: unknown): RootEvent;
 /** append 入参: seq/eventId/ts 由 store 生成. */
 export type RawEvent = {
     type: string;

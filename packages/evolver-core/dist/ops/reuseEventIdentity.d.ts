@@ -10,7 +10,16 @@
  * (including MCP result) events retain their existing counting semantics.
  */
 import { type ReferenceScope } from '../reference/guard.js';
+export declare function hasReusePayload<T extends {
+    payload?: unknown;
+}>(event: T): event is T & {
+    payload: Record<string, unknown>;
+};
+export declare function uniqueReuseFactSteps<T extends {
+    type: string;
+    payload?: unknown;
+}>(events: readonly T[], scope?: ReferenceScope): Generator<void, T[]>;
 export declare function uniqueReuseFacts<T extends {
     type: string;
-    payload?: Record<string, unknown>;
+    payload?: unknown;
 }>(events: readonly T[], scope?: ReferenceScope): T[];

@@ -1,0 +1,1 @@
+export declare function feedbackDestinationIdentity(mode: 'public' | 'private', endpoint: string, principal: string, namespace?: string): string;

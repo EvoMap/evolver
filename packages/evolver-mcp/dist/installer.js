@@ -500,7 +500,7 @@ export function installInjection(plan, opts) {
         return installCodex(plan, opts);
     }
     if (plan.runtime === 'cursor') {
-        return installCursorRules({ configRoot: opts.configRoot, genes: opts.genes ?? [], ...(opts.maxGenes !== undefined ? { maxGenes: opts.maxGenes } : {}) });
+        return installCursorRules({ configRoot: opts.configRoot, genes: opts.genes ?? [], preserveExisting: opts.genes === undefined, dryRun: opts.dryRun, targetPath: opts.targetPath, ...(opts.maxGenes !== undefined ? { maxGenes: opts.maxGenes } : {}) });
     }
     if (plan.runtime === 'antigravity') {
         return installAntigravity(plan, opts);

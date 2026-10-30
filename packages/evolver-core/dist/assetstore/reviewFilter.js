@@ -135,15 +135,17 @@ function validateGeneLimit(maxGenes) {
         throw new Error('invalid_gene_limit');
 }
 /** Same trust/review/source gate for the asynchronous read-only snapshot path. */
-export function approvedGenesFromSnapshot(snapshot, maxGenes, options = {}) {
+export function approvedGenesFromSnapshot(snapshot, maxGenes, options = {}, scanLimit = GENE_SCAN_LIMIT) {
     checkSelectionActive(options);
     validateGeneLimit(maxGenes);
+    if (!Number.isSafeInteger(scanLimit) || scanLimit < 0 || scanLimit > 100_000)
+        throw new Error('invalid_gene_scan_limit');
     if (maxGenes === 0) {
         if (options.benchmark)
             options.onQualification?.([]);
         return [];
     }
-    return approvedGeneRecords({ ...snapshot, genes: snapshot.genes.slice(0, GENE_SCAN_LIMIT) }, maxGenes, options);
+    return approvedGeneRecords({ ...snapshot, genes: snapshot.genes.slice(0, scanLimit) }, maxGenes, options);
 }
 function approvedGeneRecords(snapshot, maxGenes, options) {
     const all = snapshot.genes;

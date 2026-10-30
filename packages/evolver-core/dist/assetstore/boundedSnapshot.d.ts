@@ -50,6 +50,12 @@ export declare function checkedSnapshotAssets(records: readonly AssetRecord[], r
  * Full source scan precedes selection so malformed authority/sidecars cannot become local-default approval.
  */
 export declare function readLocalGeneSnapshot(baseDir: string, query?: GeneSnapshotQuery): Promise<GeneReadSnapshot>;
+/** Capture admission needs every frozen address, including non-execution-eligible
+ * records. Use the same reader and aggregate budgets, not an unbounded provider
+ * reload or another independent snapshot which could miss a cross-kind writer. */
+export declare function readLocalExperienceSnapshot(baseDir: string, query: GeneSnapshotQuery): Promise<GeneReadSnapshot & {
+    identities: AssetRecord[];
+}>;
 /** A real, single-pass Local/Foreign scan. The reader and root admission remain
  * owned while a page is paused; the next page resumes the same inode/authority
  * view rather than reopening a path or replaying a scan. */

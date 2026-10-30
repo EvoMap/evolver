@@ -1,5 +1,6 @@
 import { type UserInfo } from 'node:os';
 import { algo, util } from '@evomap/evolver-core';
+import { type TriggerFeedbackDeliveryState, type TriggerFeedbackDeliveryStatus } from './triggerFeedbackSyncState.js';
 export interface LocalMemoryGraphOptions {
     dir: string;
     userId: string;
@@ -83,6 +84,43 @@ export declare class LocalMemoryGraph implements algo.MemoryGraphProvider {
     private rotationCleanupFailed;
     constructor(options: LocalMemoryGraphOptions);
     query(input: algo.MemoryGraphQueryInput): algo.MemoryGraphAdvice;
+    /** @internal Only the bound kernel reader supplies snapshots; CLI/MCP callers provide a run id, never a score. */
+    applyKernelTriggerFeedback(snapshot: algo.TriggerFeedbackSnapshot, destinationId?: string): {
+        committed: algo.TriggerRatingCommit | null;
+        changed: boolean;
+        resetSuppressed: boolean;
+    };
+    applyKernelTriggerFeedbackBatch(snapshots: readonly algo.TriggerFeedbackSnapshot[], destinationId?: string): Array<{
+        committed: algo.TriggerRatingCommit | null;
+        changed: boolean;
+        resetSuppressed: boolean;
+    }>;
+    readTriggerFeedback(runId: string): algo.TriggerFeedbackState | null;
+    triggerFeedbackSourceAvailable(runId: string): boolean;
+    readTriggerFeedbackDelivery(runId: string): TriggerFeedbackDeliveryState | null;
+    readTriggerFeedbackDeliveries(after?: string | null, limit?: number): Array<{
+        snapshot: algo.TriggerFeedbackSnapshot;
+        delivery: TriggerFeedbackDeliveryState;
+    }>;
+    markTriggerFeedbackSourceUnavailable(runId?: string): void;
+    authorizeTriggerFeedbackDelivery(runId: string, destinationId: string): TriggerFeedbackDeliveryState;
+    claimTriggerFeedbackDelivery(runId: string, destinationId: string, id: string): {
+        state: TriggerFeedbackDeliveryState;
+        claimed: boolean;
+        reconcile: boolean;
+    };
+    markTriggerFeedbackDispatched(runId: string, id: string): void;
+    settleTriggerFeedbackDelivery(runId: string, id: string, result: {
+        status: TriggerFeedbackDeliveryStatus;
+        revision?: number;
+        operationId?: string | null;
+        reason?: string;
+    }): TriggerFeedbackDeliveryState;
+    readTriggerFeedbackRecoveryCursor(kind?: 'native' | 'delivery'): string | null;
+    saveTriggerFeedbackRecoveryCursor(after: string | null, kind?: 'native' | 'delivery'): void;
+    private changeTriggerFeedbackDelivery;
+    private changeTriggerFeedbackFile;
+    private readTriggerFeedbackUnlocked;
     recordOutcome(input: algo.MemoryGraphRecordInput): void;
     importV1Outcome(workspace: string, raw: unknown, source?: string): boolean;
     /** Builds a stable import forecast without creating or locking the target graph. */

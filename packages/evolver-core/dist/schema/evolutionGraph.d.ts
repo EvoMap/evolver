@@ -4,33 +4,33 @@ export declare const evolutionGraphNodeKinds: readonly ["prompt", "code", "spec"
 export declare const evolutionGraphEdgeKinds: readonly ["derivation", "evaluated_by", "regressed", "fixed", "selected"];
 export declare const evolutionGraphProvenanceKinds: readonly ["root_event", "asset", "material", "review", "cycle", "workflow", "runtime_trace", "plugin", "manual"];
 export declare const evolutionGraphNodeKind: z.ZodEnum<{
-    code: "code";
     prompt: "prompt";
+    selection: "selection";
+    run: "run";
+    code: "code";
     spec: "spec";
     test: "test";
     feedback: "feedback";
-    run: "run";
     metric: "metric";
     variant: "variant";
-    selection: "selection";
 }>;
 export declare const evolutionGraphEdgeKind: z.ZodEnum<{
-    derivation: "derivation";
-    evaluated_by: "evaluated_by";
     regressed: "regressed";
     fixed: "fixed";
+    derivation: "derivation";
+    evaluated_by: "evaluated_by";
     selected: "selected";
 }>;
 export declare const evolutionGraphProvenanceKind: z.ZodEnum<{
-    root_event: "root_event";
+    manual: "manual";
     asset: "asset";
-    material: "material";
     review: "review";
     cycle: "cycle";
+    material: "material";
+    root_event: "root_event";
     workflow: "workflow";
     runtime_trace: "runtime_trace";
     plugin: "plugin";
-    manual: "manual";
 }>;
 export type EvolutionGraphNodeKind = z.infer<typeof evolutionGraphNodeKind>;
 export type EvolutionGraphEdgeKind = z.infer<typeof evolutionGraphEdgeKind>;
@@ -39,10 +39,10 @@ export declare const evolutionGraphNodeRef: z.ZodString;
 export type EvolutionGraphNodeRef = z.infer<typeof evolutionGraphNodeRef>;
 export declare const evolutionGraphArtifactRef: z.ZodObject<{
     kind: z.ZodEnum<{
-        file: "file";
-        root_event: "root_event";
         asset: "asset";
+        file: "file";
         material: "material";
+        root_event: "root_event";
         runtime_trace: "runtime_trace";
         plugin_resource: "plugin_resource";
     }>;
@@ -55,9 +55,9 @@ export declare const evolutionGraphMetricValue: z.ZodObject<{
     value: z.ZodNumber;
     unit: z.ZodOptional<z.ZodString>;
     direction: z.ZodDefault<z.ZodEnum<{
+        target: "target";
         higher_is_better: "higher_is_better";
         lower_is_better: "lower_is_better";
-        target: "target";
     }>>;
     target: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
@@ -78,24 +78,24 @@ export type EvolutionGraphMetricDelta = z.infer<typeof evolutionGraphMetricDelta
 export declare const evolutionGraphNode: z.ZodObject<{
     id: z.ZodString;
     kind: z.ZodEnum<{
-        code: "code";
         prompt: "prompt";
+        selection: "selection";
+        run: "run";
+        code: "code";
         spec: "spec";
         test: "test";
         feedback: "feedback";
-        run: "run";
         metric: "metric";
         variant: "variant";
-        selection: "selection";
     }>;
     label: z.ZodString;
     createdAt: z.ZodString;
     artifact: z.ZodOptional<z.ZodObject<{
         kind: z.ZodEnum<{
-            file: "file";
-            root_event: "root_event";
             asset: "asset";
+            file: "file";
             material: "material";
+            root_event: "root_event";
             runtime_trace: "runtime_trace";
             plugin_resource: "plugin_resource";
         }>;
@@ -107,9 +107,9 @@ export declare const evolutionGraphNode: z.ZodObject<{
         value: z.ZodNumber;
         unit: z.ZodOptional<z.ZodString>;
         direction: z.ZodDefault<z.ZodEnum<{
+            target: "target";
             higher_is_better: "higher_is_better";
             lower_is_better: "lower_is_better";
-            target: "target";
         }>>;
         target: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>>;
@@ -120,15 +120,15 @@ export declare const evolutionGraphNode: z.ZodObject<{
 export type EvolutionGraphNode = z.infer<typeof evolutionGraphNode>;
 export declare const evolutionGraphProvenance: z.ZodObject<{
     kind: z.ZodEnum<{
-        root_event: "root_event";
+        manual: "manual";
         asset: "asset";
-        material: "material";
         review: "review";
         cycle: "cycle";
+        material: "material";
+        root_event: "root_event";
         workflow: "workflow";
         runtime_trace: "runtime_trace";
         plugin: "plugin";
-        manual: "manual";
     }>;
     ref: z.ZodString;
     capturedAt: z.ZodString;
@@ -140,10 +140,10 @@ export type EvolutionGraphProvenance = z.infer<typeof evolutionGraphProvenance>;
 export declare const evolutionGraphEdge: z.ZodObject<{
     id: z.ZodString;
     kind: z.ZodEnum<{
-        derivation: "derivation";
-        evaluated_by: "evaluated_by";
         regressed: "regressed";
         fixed: "fixed";
+        derivation: "derivation";
+        evaluated_by: "evaluated_by";
         selected: "selected";
     }>;
     from: z.ZodString;
@@ -151,15 +151,15 @@ export declare const evolutionGraphEdge: z.ZodObject<{
     createdAt: z.ZodString;
     provenance: z.ZodArray<z.ZodObject<{
         kind: z.ZodEnum<{
-            root_event: "root_event";
+            manual: "manual";
             asset: "asset";
-            material: "material";
             review: "review";
             cycle: "cycle";
+            material: "material";
+            root_event: "root_event";
             workflow: "workflow";
             runtime_trace: "runtime_trace";
             plugin: "plugin";
-            manual: "manual";
         }>;
         ref: z.ZodString;
         capturedAt: z.ZodString;
@@ -204,24 +204,24 @@ export declare const evolutionGraph: z.ZodObject<{
     nodes: z.ZodArray<z.ZodObject<{
         id: z.ZodString;
         kind: z.ZodEnum<{
-            code: "code";
             prompt: "prompt";
+            selection: "selection";
+            run: "run";
+            code: "code";
             spec: "spec";
             test: "test";
             feedback: "feedback";
-            run: "run";
             metric: "metric";
             variant: "variant";
-            selection: "selection";
         }>;
         label: z.ZodString;
         createdAt: z.ZodString;
         artifact: z.ZodOptional<z.ZodObject<{
             kind: z.ZodEnum<{
-                file: "file";
-                root_event: "root_event";
                 asset: "asset";
+                file: "file";
                 material: "material";
+                root_event: "root_event";
                 runtime_trace: "runtime_trace";
                 plugin_resource: "plugin_resource";
             }>;
@@ -233,9 +233,9 @@ export declare const evolutionGraph: z.ZodObject<{
             value: z.ZodNumber;
             unit: z.ZodOptional<z.ZodString>;
             direction: z.ZodDefault<z.ZodEnum<{
+                target: "target";
                 higher_is_better: "higher_is_better";
                 lower_is_better: "lower_is_better";
-                target: "target";
             }>>;
             target: z.ZodOptional<z.ZodNumber>;
         }, z.core.$strip>>>;
@@ -246,10 +246,10 @@ export declare const evolutionGraph: z.ZodObject<{
     edges: z.ZodArray<z.ZodObject<{
         id: z.ZodString;
         kind: z.ZodEnum<{
-            derivation: "derivation";
-            evaluated_by: "evaluated_by";
             regressed: "regressed";
             fixed: "fixed";
+            derivation: "derivation";
+            evaluated_by: "evaluated_by";
             selected: "selected";
         }>;
         from: z.ZodString;
@@ -257,15 +257,15 @@ export declare const evolutionGraph: z.ZodObject<{
         createdAt: z.ZodString;
         provenance: z.ZodArray<z.ZodObject<{
             kind: z.ZodEnum<{
-                root_event: "root_event";
+                manual: "manual";
                 asset: "asset";
-                material: "material";
                 review: "review";
                 cycle: "cycle";
+                material: "material";
+                root_event: "root_event";
                 workflow: "workflow";
                 runtime_trace: "runtime_trace";
                 plugin: "plugin";
-                manual: "manual";
             }>;
             ref: z.ZodString;
             capturedAt: z.ZodString;

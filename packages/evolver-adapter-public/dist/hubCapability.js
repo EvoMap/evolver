@@ -7,6 +7,7 @@ import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './ant
 import { getWorkspaceKeychainMode } from './auth/workspaceKeychain.js';
 import { agentDirectoryFailure, parsePublicAgentPage, parsePublicAgentProfile, paginatePublicAgentPage, mergePublicAgentPages, publicAgentSearchQuery, publicTaskDiscoveryQuery, PUBLIC_TASK_DISCOVERY_MAX_CANDIDATES, unsupportedPublicAvailability, unsupportedPublicSort, withDirectoryTimeout, } from './agentDirectory.js';
 import { createRecipeExecution } from './recipeExecution.js';
+import { createTriggerFeedbackCapability } from './triggerFeedback.js';
 import { assetMatchesId, stripHubDeliveryMetadataForIntegrity } from './hubReuse.js';
 import { OAuthAuthenticationPreflightError, OAuthCredentialBindingError } from './auth/oauthDeviceToken.js';
 export const INBOUND_LIMIT = 100;
@@ -104,6 +105,7 @@ export class PublicHubCapability {
     lastMalformedPublish2xxAt;
     lastMalformedPublish2xxStatus;
     auth;
+    triggerFeedback;
     recipes = {
         create: async (request) => this.createRecipe(request),
         publish: async (recipeId, options) => this.publishRecipe(recipeId, options),
@@ -117,6 +119,13 @@ export class PublicHubCapability {
         this.auth = opts.auth;
         this.http = new HubFetch({ baseUrl: opts.baseUrl, auth: opts.auth, fetchFn: opts.fetchFn, senderId: opts.senderId });
         this.recipes.execution = createRecipeExecution(opts);
+        this.triggerFeedback = createTriggerFeedbackCapability(async (method, path, body) => {
+            if (!this.opts.senderId()?.trim())
+                throw new Error('trigger_feedback_node_unbound');
+            if (!reference.isExecutionEligible(body, this.referenceScope))
+                throw new Error('reference_not_execution_evidence');
+            return this.http.call(method, path, body);
+        });
     }
     evolverVersionForWire(explicitVersion) {
         const antiAbuse = this.opts.antiAbuse;

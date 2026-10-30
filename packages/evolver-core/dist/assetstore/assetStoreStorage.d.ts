@@ -16,10 +16,21 @@ export interface DurableWriteOptions {
     syncFile?: (fd: number) => void;
     syncDirectory?: (path: string) => void;
     onTempPath?: (path: string) => void;
+    expectedFingerprint?: string;
+    expectedDirectory?: AssetFileIdentity;
 }
+export declare const EXPERIENCE_BUNDLE_SCHEMA = "evolver.assetstore-experience.v3";
+export declare class ExperienceRecoveryRequiredError extends Error {
+    readonly code = "EXPERIENCE_RECOVERY_REQUIRED";
+    constructor();
+}
+/** Every supported shared-lock writer must refuse an unfinished experience transaction. */
+export declare function assertNoExperienceTransaction(baseDir: string): void;
 export interface AssetStoreLockDeps {
     acquireLock?: typeof acquireLock;
     releaseLock?: typeof releaseLock;
+    /** Only the experience coordinator may inspect/settle its own prepared manifest. */
+    experienceRecovery?: boolean;
 }
 export declare function ensureAssetStoreDirectory(path: string): void;
 /** Validate an existing store root without recreating a deleted or unmounted path. */
@@ -32,11 +43,22 @@ export declare function isReliableAssetStoreLockRelease(result: ReleaseLockResul
 export declare function withAssetStoreLock<T>(lockPath: string, operation: () => T, deps?: AssetStoreLockDeps): T;
 export declare function assertOptionalRegularFile(path: string, role?: AssetStorePathRole): Stats | null;
 export declare function regularFileFingerprint(path: string): string;
-export declare function readRegularBuffer(path: string, maxBytes?: number): Buffer | null;
+export interface AssetFileIdentity {
+    readonly dev: bigint;
+    readonly ino: bigint;
+    readonly birthtimeNs: bigint;
+}
+export declare function captureAssetStoreDirectoryIdentity(path: string): AssetFileIdentity;
+export declare function assertAssetStoreDirectoryIdentity(path: string, expected: AssetFileIdentity): void;
+export declare function captureRegularAssetFileIdentity(path: string): AssetFileIdentity;
+export declare function assertOpenedRegularAssetFile(fd: number, path: string, expected?: AssetFileIdentity): void;
+export declare function readRegularBuffer(path: string, maxBytes?: number, check?: () => void): Buffer | null;
 export declare function readUtf8Regular(path: string, maxBytes?: number): string | null;
 export declare function createBufferDurableExclusive(path: string, value: Buffer, opts?: DurableWriteOptions): void;
 export declare function fsyncDirectoryBestEffort(path: string): void;
 export declare function appendUtf8Durable(path: string, value: string, opts?: DurableWriteOptions): void;
 export declare function replaceUtf8Durable(path: string, value: string, opts?: DurableWriteOptions): void;
+/** Confirm the exact named projection on one descriptor before deleting its recovery intent. */
+export declare function syncUtf8Regular(path: string, expected: string, opts?: Pick<DurableWriteOptions, 'syncFile' | 'expectedDirectory' | 'expectedFingerprint'>): void;
 /** Remove one exact UTF-8 suffix and fsync the new file length; false means the suffix was not current. */
 export declare function truncateUtf8SuffixDurable(path: string, suffix: string, opts?: Pick<DurableWriteOptions, 'syncFile'>): boolean;

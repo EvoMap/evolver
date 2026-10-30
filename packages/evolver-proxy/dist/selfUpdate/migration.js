@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse as parsePath, relative, resolve as resolvePath, win32 } from 'node:path';
 import { ops, util } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES } from './failureCodes.js';
+import { selfUpdateFileMetadata } from './fileMetadata.js';
 import { resolveSelfUpdatePublicKey } from './builtinKey.js';
 import { downloadGithubReleaseArtifact, releaseAssetName, resolveGithubReleaseManifest, } from './releaseBinary.js';
 import { preflightManagedStagedBinary } from './transaction.js';
@@ -83,8 +84,13 @@ function assertTrustedMigrationStateLeafSync(path, options = {}) {
     }
     return existing;
 }
+function migrationPathMetadata(path) {
+    const stat = lstatSync(path, { bigint: true });
+    return process.platform === 'win32' && stat.dev === 0n && stat.isFile() && !stat.isSymbolicLink()
+        ? util.statRegularFileIdentity(path) : stat;
+}
 function statMigrationStateLeafSync(path) {
-    const existing = lstatSync(path, { bigint: true });
+    const existing = migrationPathMetadata(path);
     if (existing.isSymbolicLink() || !existing.isFile() || existing.nlink !== 1n) {
         throw new Error('unsafe_migration_state_leaf');
     }
@@ -198,7 +204,7 @@ const defaultWriteTextFile = (path, content) => {
         closeSync(fd);
         fd = undefined;
         renameSync(temporaryPath, path);
-        const published = lstatSync(path, { bigint: true });
+        const published = migrationPathMetadata(path);
         if (published.isSymbolicLink() || !published.isFile() || published.nlink !== 1n) {
             throw new Error('unsafe_migration_state_publication');
         }
@@ -897,7 +903,7 @@ function sha256(bytes) {
 async function inspectExistingMigrationTarget(destPath, version, preflight, readBinary, expected, assertDirectoryTrust, assertFileTrust) {
     let before;
     try {
-        before = await lstat(destPath, { bigint: true });
+        before = await selfUpdateFileMetadata(destPath);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -924,7 +930,7 @@ async function inspectExistingMigrationTarget(destPath, version, preflight, read
         throw new Error(`destination_exists_unowned_or_invalid:${errorDetail(error)}`, { cause: error });
     }
     await assertFileTrust(destPath);
-    const after = await lstat(destPath, { bigint: true });
+    const after = await selfUpdateFileMetadata(destPath);
     if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n
         || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
         || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
@@ -1013,7 +1019,7 @@ function readBoundedMigrationLockFd(fd) {
     return bytes.subarray(0, offset);
 }
 function readMigrationLockAuthority(lockPath) {
-    const beforeOpen = lstatSync(lockPath, { bigint: true });
+    const beforeOpen = migrationPathMetadata(lockPath);
     assertMigrationLockSnapshotShape(beforeOpen);
     const fd = openSync(lockPath, 'r');
     try {
@@ -1024,10 +1030,10 @@ function readMigrationLockAuthority(lockPath) {
         }
         const firstBytes = readBoundedMigrationLockFd(fd);
         const afterFirstFd = fstatSync(fd, { bigint: true });
-        const afterFirstPath = lstatSync(lockPath, { bigint: true });
+        const afterFirstPath = migrationPathMetadata(lockPath);
         const secondBytes = readBoundedMigrationLockFd(fd);
         const finalFd = fstatSync(fd, { bigint: true });
-        const finalPath = lstatSync(lockPath, { bigint: true });
+        const finalPath = migrationPathMetadata(lockPath);
         for (const snapshot of [afterFirstFd, afterFirstPath, finalFd, finalPath]) {
             assertMigrationLockSnapshotShape(snapshot);
             if (!sameMigrationLockSnapshot(opened, snapshot)) {
@@ -1152,7 +1158,7 @@ async function installVerifiedMigrationBinary(input) {
         await input.chmod(temporaryPath, 0o755);
         await input.syncFile(temporaryPath);
         const temporaryInfo = await input.stat(temporaryPath);
-        const temporaryIdentity = await lstat(temporaryPath, { bigint: true });
+        const temporaryIdentity = await selfUpdateFileMetadata(temporaryPath);
         if (temporaryInfo.isSymbolicLink() || !temporaryInfo.isFile()
             || temporaryIdentity.isSymbolicLink() || !temporaryIdentity.isFile()
             || temporaryIdentity.nlink !== 1n || temporaryIdentity.dev <= 0n || temporaryIdentity.ino <= 0n) {
@@ -1267,7 +1273,7 @@ function migrationRegistrationTargetQuarantinePath(destPath, intentId) {
 }
 async function migrationPathIdentity(path) {
     try {
-        return await lstat(path, { bigint: true });
+        return await selfUpdateFileMetadata(path);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -1279,7 +1285,7 @@ function sameMigrationFileId(left, right) {
     return left.dev === right.dev && left.ino === right.ino;
 }
 async function inspectExactMigrationCleanupFile(input) {
-    const before = await lstat(input.path, { bigint: true });
+    const before = await selfUpdateFileMetadata(input.path);
     await input.assertFileTrust(input.path);
     if (before.isSymbolicLink()
         || !before.isFile()
@@ -1293,7 +1299,7 @@ async function inspectExactMigrationCleanupFile(input) {
     if (bytes.byteLength !== input.expected.size || sha256(bytes) !== input.expected.sha256) {
         throw new Error(input.hashError);
     }
-    const after = await lstat(input.path, { bigint: true });
+    const after = await selfUpdateFileMetadata(input.path);
     if (after.isSymbolicLink()
         || !after.isFile()
         || after.dev !== before.dev
@@ -1506,7 +1512,7 @@ async function recoverPendingMigrationInstall(input) {
     if (pending.anchor.phase === 'planned') {
         let before;
         try {
-            before = await lstat(pending.anchor.temporaryPath, { bigint: true });
+            before = await selfUpdateFileMetadata(pending.anchor.temporaryPath);
         }
         catch (error) {
             if (!isErrno(error, 'ENOENT'))
@@ -1525,7 +1531,7 @@ async function recoverPendingMigrationInstall(input) {
             throw new Error('migration_planned_temporary_unowned');
         }
         const bytes = await input.readBinary(pending.anchor.temporaryPath);
-        const after = await lstat(pending.anchor.temporaryPath, { bigint: true });
+        const after = await selfUpdateFileMetadata(pending.anchor.temporaryPath);
         if (after.isSymbolicLink()
             || !after.isFile()
             || after.dev !== before.dev

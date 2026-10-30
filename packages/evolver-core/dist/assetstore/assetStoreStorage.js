@@ -20,6 +20,16 @@ export class AssetStoreReadLimitError extends Error {
         this.name = 'AssetStoreReadLimitError';
     }
 }
+export const EXPERIENCE_BUNDLE_SCHEMA = 'evolver.assetstore-experience.v3';
+export class ExperienceRecoveryRequiredError extends Error {
+    code = 'EXPERIENCE_RECOVERY_REQUIRED';
+    constructor() { super('experience transaction requires recovery'); }
+}
+/** Every supported shared-lock writer must refuse an unfinished experience transaction. */
+export function assertNoExperienceTransaction(baseDir) {
+    if (assertOptionalRegularFile(join(baseDir, '.assetstore-bundle.json'), 'temp_file') !== null)
+        throw new ExperienceRecoveryRequiredError();
+}
 function isErrno(error, code) {
     return typeof error === 'object' && error !== null && error.code === code;
 }
@@ -78,6 +88,8 @@ export function withAssetStoreLock(lockPath, operation, deps = {}) {
     let operationError;
     let operationFailed = false;
     try {
+        if (!deps.experienceRecovery && basename(lockPath) === '.assetstore.lock')
+            assertNoExperienceTransaction(dirname(lockPath));
         value = operation();
     }
     catch (error) {
@@ -118,13 +130,52 @@ export function regularFileFingerprint(path) {
         throw error;
     }
 }
-function assertOpenedPathMatches(fd, path, role) {
+function nativePathIdentity(path, role, witnessAccess = constants.O_RDONLY) {
+    const current = lstatSync(path, { bigint: true });
+    if (current.isSymbolicLink())
+        throw new UnsafeAssetStorePathError(role, 'symlink');
+    if (!current.isFile())
+        throw new UnsafeAssetStorePathError(role, 'not_regular_file');
+    if (process.platform !== 'win32' || current.dev !== 0n)
+        return current;
+    // Windows lstat can omit the volume identity even though fstat supplies it.
+    // Acquire a fresh ordinary-file witness; never treat missing dev as equality.
+    // Match the caller's access without creating, truncating or requiring extra data-read rights.
+    const witness = openNoFollow(path, witnessAccess);
+    let result;
+    try {
+        const identity = fstatSync(witness, { bigint: true });
+        const after = lstatSync(path, { bigint: true });
+        if (!identity.isFile() || after.isSymbolicLink() || !after.isFile()
+            || identity.ino !== current.ino || identity.ino !== after.ino
+            || identity.birthtimeNs !== current.birthtimeNs || identity.birthtimeNs !== after.birthtimeNs) {
+            throw new UnsafeAssetStorePathError(role, 'path_changed');
+        }
+        result = { ok: true, identity };
+    }
+    catch (error) {
+        result = { ok: false, error };
+    }
+    try {
+        closeSync(witness);
+    }
+    catch (closeError) {
+        if (!result.ok) {
+            throw new AggregateError([result.error, closeError], 'asset store witness validation and close failed', { cause: result.error });
+        }
+        throw closeError;
+    }
+    if (!result.ok)
+        throw result.error;
+    return result.identity;
+}
+function assertOpenedPathMatches(fd, path, role, witnessAccess = constants.O_RDONLY) {
     const opened = fstatSync(fd, { bigint: true });
     if (!opened.isFile())
         throw new UnsafeAssetStorePathError(role, 'not_regular_file');
     let current;
     try {
-        current = lstatSync(path, { bigint: true });
+        current = nativePathIdentity(path, role, witnessAccess);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -139,14 +190,78 @@ function assertOpenedPathMatches(fd, path, role) {
         throw new UnsafeAssetStorePathError(role, 'path_changed');
     }
 }
+export function captureAssetStoreDirectoryIdentity(path) {
+    const before = lstatSync(path, { bigint: true });
+    if (before.isSymbolicLink())
+        throw new UnsafeAssetStorePathError('base_directory', 'symlink');
+    if (!before.isDirectory())
+        throw new UnsafeAssetStorePathError('base_directory', 'not_directory');
+    const fd = openNoFollow(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+    let result;
+    try {
+        const opened = fstatSync(fd, { bigint: true }), after = lstatSync(path, { bigint: true });
+        if (!opened.isDirectory() || after.isSymbolicLink() || !after.isDirectory()
+            || opened.ino !== before.ino || opened.birthtimeNs !== before.birthtimeNs
+            || opened.ino !== after.ino || opened.birthtimeNs !== after.birthtimeNs
+            || (process.platform !== 'win32' || before.dev !== 0n) && opened.dev !== before.dev
+            || (process.platform !== 'win32' || after.dev !== 0n) && opened.dev !== after.dev) {
+            throw new UnsafeAssetStorePathError('base_directory', 'path_changed');
+        }
+        result = { ok: true, identity: Object.freeze({ dev: opened.dev, ino: opened.ino, birthtimeNs: opened.birthtimeNs }) };
+    }
+    catch (error) {
+        result = { ok: false, error };
+    }
+    try {
+        closeSync(fd);
+    }
+    catch (closeError) {
+        if (!result.ok)
+            throw new AggregateError([result.error, closeError], 'asset store directory validation and close failed', { cause: result.error });
+        throw closeError;
+    }
+    if (!result.ok)
+        throw result.error;
+    return result.identity;
+}
+export function assertAssetStoreDirectoryIdentity(path, expected) {
+    let actual;
+    try {
+        actual = captureAssetStoreDirectoryIdentity(path);
+    }
+    catch (error) {
+        if (isErrno(error, 'ENOENT'))
+            throw new UnsafeAssetStorePathError('base_directory', 'path_changed');
+        throw error;
+    }
+    if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.birthtimeNs !== expected.birthtimeNs) {
+        throw new UnsafeAssetStorePathError('base_directory', 'path_changed');
+    }
+}
+export function captureRegularAssetFileIdentity(path) {
+    const identity = nativePathIdentity(path, 'asset_file');
+    return Object.freeze({ dev: identity.dev, ino: identity.ino, birthtimeNs: identity.birthtimeNs });
+}
+export function assertOpenedRegularAssetFile(fd, path, expected) {
+    assertOpenedPathMatches(fd, path, 'asset_file');
+    if (expected) {
+        const actual = fstatSync(fd, { bigint: true });
+        if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.birthtimeNs !== expected.birthtimeNs) {
+            throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+        }
+    }
+}
 function openNoFollow(path, flags, mode) {
     return mode === undefined
         ? openSync(path, flags | noFollowFlag())
         : openSync(path, flags | noFollowFlag(), mode);
 }
-export function readRegularBuffer(path, maxBytes = Number.MAX_SAFE_INTEGER) {
-    if (assertOptionalRegularFile(path) === null)
+export function readRegularBuffer(path, maxBytes = Number.MAX_SAFE_INTEGER, check = () => undefined) {
+    check();
+    if (assertOptionalRegularFile(path) === null) {
+        check();
         return null;
+    }
     const fd = openNoFollow(path, constants.O_RDONLY);
     try {
         assertOpenedPathMatches(fd, path, 'asset_file');
@@ -155,6 +270,7 @@ export function readRegularBuffer(path, maxBytes = Number.MAX_SAFE_INTEGER) {
         const chunks = [];
         let total = 0;
         while (total <= maxBytes) {
+            check();
             const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes - total + 1));
             const bytesRead = readSync(fd, chunk, 0, chunk.byteLength, null);
             if (bytesRead === 0)
@@ -164,6 +280,8 @@ export function readRegularBuffer(path, maxBytes = Number.MAX_SAFE_INTEGER) {
                 throw new AssetStoreReadLimitError();
             chunks.push(bytesRead === chunk.byteLength ? chunk : chunk.subarray(0, bytesRead));
         }
+        check();
+        assertOpenedPathMatches(fd, path, 'asset_file');
         return Buffer.concat(chunks, total);
     }
     finally {
@@ -190,9 +308,11 @@ export function createBufferDurableExclusive(path, value, opts = {}) {
     let operationError;
     let openedIdentity;
     try {
-        assertOpenedPathMatches(fd, path, 'asset_file');
         const opened = fstatSync(fd, { bigint: true });
+        if (!opened.isFile())
+            throw new UnsafeAssetStorePathError('asset_file', 'not_regular_file');
         openedIdentity = { dev: opened.dev, ino: opened.ino };
+        assertOpenedPathMatches(fd, path, 'asset_file', constants.O_WRONLY);
         writeAll(fd, value);
         (opts.syncFile ?? fsyncSync)(fd);
     }
@@ -204,14 +324,15 @@ export function createBufferDurableExclusive(path, value, opts = {}) {
             closeSync(fd);
         }
         catch (error) {
-            if (operationError === undefined)
-                operationError = error;
+            operationError = operationError === undefined ? error
+                : new AggregateError([operationError, error], 'asset store exclusive write and close failed', { cause: operationError });
         }
     }
     if (operationError !== undefined) {
         try {
-            const current = lstatSync(path, { bigint: true });
+            const current = statOrNull(path) === null ? null : nativePathIdentity(path, 'temp_file', constants.O_WRONLY);
             if (openedIdentity
+                && current !== null
                 && !current.isSymbolicLink()
                 && current.isFile()
                 && current.dev === openedIdentity.dev
@@ -219,7 +340,9 @@ export function createBufferDurableExclusive(path, value, opts = {}) {
                 unlinkSync(path);
             }
         }
-        catch { /* preserve the primary write/fsync failure */ }
+        catch (cleanupError) {
+            throw new AggregateError([operationError, cleanupError], 'asset store exclusive write and cleanup failed', { cause: operationError });
+        }
         throw operationError;
     }
     (opts.syncDirectory ?? fsyncDirectoryBestEffort)(parent);
@@ -267,8 +390,14 @@ export function appendUtf8Durable(path, value, opts = {}) {
     if (!existed)
         (opts.syncDirectory ?? fsyncDirectoryBestEffort)(parent);
 }
-function removeTemp(path) {
+function removeTemp(path, identity, directory) {
     try {
+        if (directory)
+            assertAssetStoreDirectoryIdentity(dirname(path), directory);
+        const current = nativePathIdentity(path, 'temp_file', constants.O_WRONLY);
+        if (current.dev !== identity.dev || current.ino !== identity.ino || current.birthtimeNs !== identity.birthtimeNs) {
+            throw new UnsafeAssetStorePathError('temp_file', 'path_changed');
+        }
         unlinkSync(path);
     }
     catch (error) {
@@ -279,29 +408,92 @@ function removeTemp(path) {
 export function replaceUtf8Durable(path, value, opts = {}) {
     const parent = dirname(path);
     assertAssetStoreDirectory(parent);
+    if (opts.expectedDirectory)
+        assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
     assertOptionalRegularFile(path);
     const tempPath = join(parent, `.${basename(path)}.compact.${process.pid}.${randomUUID()}.tmp`);
     opts.onTempPath?.(tempPath);
     let renamed = false;
+    let temporaryIdentity;
+    let failure;
     try {
+        if (opts.expectedDirectory)
+            assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
         const fd = openNoFollow(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
         try {
-            assertOpenedPathMatches(fd, tempPath, 'temp_file');
+            const opened = fstatSync(fd, { bigint: true });
+            temporaryIdentity = { dev: opened.dev, ino: opened.ino, birthtimeNs: opened.birthtimeNs };
+            assertOpenedPathMatches(fd, tempPath, 'temp_file', constants.O_WRONLY);
+            if (opts.expectedDirectory)
+                assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
             writeAll(fd, value);
             (opts.syncFile ?? fsyncSync)(fd);
         }
         finally {
             closeSync(fd);
         }
+        if (opts.expectedDirectory)
+            assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
         assertOptionalRegularFile(path);
+        if (opts.expectedFingerprint !== undefined && regularFileFingerprint(path) !== opts.expectedFingerprint) {
+            throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+        }
         renameSync(tempPath, path);
         renamed = true;
+        if (opts.expectedDirectory)
+            assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
         (opts.syncDirectory ?? fsyncDirectoryBestEffort)(parent);
+        if (opts.expectedDirectory)
+            assertAssetStoreDirectoryIdentity(parent, opts.expectedDirectory);
+    }
+    catch (error) {
+        failure = { error };
+    }
+    if (!renamed && temporaryIdentity) {
+        try {
+            removeTemp(tempPath, temporaryIdentity, opts.expectedDirectory);
+        }
+        catch (cleanupError) {
+            if (failure)
+                throw new AggregateError([failure.error, cleanupError], 'asset store replacement and cleanup failed', { cause: failure.error });
+            throw cleanupError;
+        }
+    }
+    if (failure)
+        throw failure.error;
+}
+/** Confirm the exact named projection on one descriptor before deleting its recovery intent. */
+export function syncUtf8Regular(path, expected, opts = {}) {
+    const check = () => {
+        if (opts.expectedDirectory)
+            assertAssetStoreDirectoryIdentity(dirname(path), opts.expectedDirectory);
+        if (opts.expectedFingerprint !== undefined && regularFileFingerprint(path) !== opts.expectedFingerprint) {
+            throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+        }
+    };
+    check();
+    const bytes = Buffer.from(expected);
+    const fd = openNoFollow(path, constants.O_RDWR);
+    try {
+        assertOpenedPathMatches(fd, path, 'asset_file');
+        if (fstatSync(fd).size !== bytes.length)
+            throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+        const actual = Buffer.alloc(Math.min(64 * 1024, bytes.length));
+        for (let offset = 0; offset < bytes.length;) {
+            const count = Math.min(actual.length, bytes.length - offset);
+            const read = readSync(fd, actual, 0, count, offset);
+            if (read !== count || !actual.subarray(0, count).equals(bytes.subarray(offset, offset + count))) {
+                throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+            }
+            offset += count;
+        }
+        (opts.syncFile ?? fsyncSync)(fd);
+        assertOpenedPathMatches(fd, path, 'asset_file');
     }
     finally {
-        if (!renamed)
-            removeTemp(tempPath);
+        closeSync(fd);
     }
+    check();
 }
 /** Remove one exact UTF-8 suffix and fsync the new file length; false means the suffix was not current. */
 export function truncateUtf8SuffixDurable(path, suffix, opts = {}) {

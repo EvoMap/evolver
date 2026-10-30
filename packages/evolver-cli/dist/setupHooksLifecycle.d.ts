@@ -8,6 +8,8 @@ export interface SetupLifecycleCapabilities {
     runtime: RuntimeId;
     scope: InstallScope;
     supported: boolean;
+    hookCommandsBound: boolean;
+    standaloneMcp: boolean;
     operations: Record<SetupLifecycleOperation, boolean>;
 }
 export interface SetupLifecycleTarget {

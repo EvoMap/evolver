@@ -70,7 +70,22 @@ export declare function rootEventArchiveSegmentName(firstSeq: number, lastSeq: n
 export declare function planRootEventArchive(opts: RootEventArchiveOptions): RootEventArchivePlan;
 export declare function archiveRootEvents(opts: RootEventArchiveOptions): RootEventArchiveResult;
 export declare function readRootEventHistory(path: string, archiveDir?: string): RootEvent[];
+export interface RootHistoryReadBudget {
+    maxBytes: number;
+    check(): void;
+}
+export interface RootEventHistoryReadOptions {
+    readonly deadlineAt?: number;
+    readonly signal?: AbortSignal;
+}
+/** Same operational replay as the synchronous reader, yielding between bounded read/parse batches. */
+export declare function readRootEventHistoryAsync(path: string, options?: RootEventHistoryReadOptions): Promise<RootEvent[]>;
+/** Internal protocol seam; the wrapper retains socket, principal and logical-path admission. */
+export declare function readProtectedAuditRootSnapshotChunksAsync(request: (method: string, payload: unknown, deadlineAt: number) => Promise<unknown>, options?: {
+    readonly deadlineAt?: number;
+    readonly signal?: AbortSignal;
+}): Promise<RootEvent[]>;
 /** Strict replay for control-plane decisions that must fail closed on partial or conflicting history. */
-export declare function readRootEventHistoryStrict(path: string): RootEvent[];
+export declare function readRootEventHistoryStrict(path: string, budget?: RootHistoryReadBudget): RootEvent[];
 export declare function validateRootEventHistory(path: string): void;
 export declare function inspectRootEventArchive(path: string): RootEventArchiveStats;

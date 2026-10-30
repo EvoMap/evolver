@@ -7,7 +7,7 @@ import { assertLocalContextBundle, isBoundLocalContext, mergeLocalProjectContext
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
-import { appendUtf8Durable, assertAssetStoreDirectory, assertOptionalRegularFile, ensureAssetStoreDirectory, fsyncDirectoryBestEffort, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
+import { appendUtf8Durable, assertAssetStoreDirectory, assertNoExperienceTransaction, EXPERIENCE_BUNDLE_SCHEMA, ExperienceRecoveryRequiredError, assertOptionalRegularFile, ensureAssetStoreDirectory, fsyncDirectoryBestEffort, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { FrozenAssetIdCollisionError, frozenAssetRecordsEqual, normalizeForPut, } from './provider.js';
 function resultLogicalId(logicalId) {
@@ -145,6 +145,8 @@ export class LocalJsonlProvider {
             throw new Error('asset store bundle journal is malformed');
         }
         const journal = parsed;
+        if (journal['schema'] === EXPERIENCE_BUNDLE_SCHEMA)
+            throw new ExperienceRecoveryRequiredError();
         const assets = journal['assets'];
         const hasContext = journal['schema'] === CONTEXT_BUNDLE_JOURNAL_SCHEMA;
         if ((!hasContext && journal['schema'] !== BUNDLE_JOURNAL_SCHEMA) || !Array.isArray(assets) || assets.length === 0 || assets.length > MAX_BUNDLE_ASSETS) {
@@ -512,6 +514,7 @@ export class LocalJsonlProvider {
         assertOptionalRegularFile(this.lockPath, 'lock_file');
         acquireLock(this.lockPath);
         try {
+            assertNoExperienceTransaction(this.baseDir);
             this.refreshUnderLock();
             let kept = 0, removed = 0;
             for (const [kind, file] of Object.entries(LOCAL_ASSET_FILES)) {

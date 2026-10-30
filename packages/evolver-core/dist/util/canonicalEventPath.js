@@ -4,6 +4,25 @@ import { isAbsolute, join, parse, sep } from 'node:path';
 export function canonicalEventPath(value) {
     if (!value)
         throw new Error('invalid_recall_event_path');
+    if (process.platform === 'win32' && value.startsWith('\\\\?\\')) {
+        // libuv cannot realpath an extended drive root reliably. Normalize only
+        // namespace spellings that have identical Win32 component semantics.
+        const suffix = value.slice(4), share = suffix.slice(4).split('\\');
+        const isUnc = suffix.slice(0, 4).toUpperCase() === 'UNC\\';
+        if (isUnc && share.slice(0, 2).some(part => !part || part === '.' || part === '..' || part.includes('/') || /[<>:"|?*\\]|[. ]$/.test(part))) {
+            throw new Error('invalid_recall_event_path');
+        }
+        const plain = /^[a-z]:[\\/]/i.test(suffix) ? suffix
+            : isUnc && share.length >= 2 && share[0] && share[1]
+                ? `\\\\${suffix.slice(4)}` : undefined;
+        if (!plain)
+            throw new Error('invalid_recall_event_path');
+        const components = plain.slice(parse(plain).root.length).split(/[\\/]+/);
+        if (components.some(part => part === '.' || part === '..' || part && (/[<>:"|?*]|[. ]$/.test(part)
+            || /^(?:con(?:in\$|out\$)?|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part))))
+            throw new Error('invalid_recall_event_path');
+        value = plain;
+    }
     // path.resolve() folds `..` before the filesystem follows a preceding
     // symlink. That can bind a receipt to a different physical event log from
     // the one opened by readFile/open. Resolve each existing component first.

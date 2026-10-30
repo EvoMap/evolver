@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { assetstore, events, mailbox } from '@evomap/evolver-core';
+import { assetstore, events, exec as execCore, mailbox } from '@evomap/evolver-core';
 import { buildEvolverTools } from './tools.js';
 import { buildEvolverPrimer } from './primer.js';
 import { EvolverMcpServer, UnknownToolError } from './server.js';
@@ -21,8 +21,19 @@ catch {
 bootstrap.checkV1EnvCompat(process.env);
 const store = new assetstore.LocalJsonlProvider(events.assetsDir());
 const mailboxPath = process.env['EVOLVER_MCP_MAILBOX'] ?? join(events.evomapHome(), 'mailbox', 'mcp.db');
-mkdirSync(dirname(mailboxPath), { recursive: true });
-const box = new mailbox.MailboxStore({ path: mailboxPath });
+let box;
+let closing = false;
+const mailboxStore = () => {
+    if (closing)
+        throw new Error('MCP stdio is closing');
+    if (!box) {
+        // Protocol initialization and discovery do not need a SQLite mailbox.
+        // Open the real store only when a mailbox handler actually uses it.
+        mkdirSync(dirname(mailboxPath), { recursive: true });
+        box = new mailbox.MailboxStore({ path: mailboxPath });
+    }
+    return box;
+};
 // A configured proxy is authoritative. Discovery may report an explicitly incomplete result
 // during an outage, but must never silently switch to local mode or hide rejected credentials.
 const proxy = proxyClientFromEnv(process.env);
@@ -39,7 +50,15 @@ const ingestor = {
     },
 };
 const connId = `mcp-${randomUUID()}`;
-const server = new EvolverMcpServer(buildEvolverTools({ store, mailbox: box, ingestor, cycleId: connId, ...(proxy ? { proxy } : {}) }), { instructions: buildEvolverPrimer({ proxy: !!proxy }) });
+// clientInfo is a caller-supplied display label, never authenticated host identity.
+let clientName = 'MCP client';
+let initialized = false;
+const experienceClient = () => ({ connectionId: connId, transport: 'mcp_stdio', clientName,
+    ...(process.env['EVOLVER_ONBOARDING_RUNTIME'] ? { runtime: process.env['EVOLVER_ONBOARDING_RUNTIME'] } : {}),
+});
+const triggerFeedback = execCore.createTriggerFeedbackLocalFacade(process.env);
+const server = new EvolverMcpServer(buildEvolverTools({ store, mailbox: mailboxStore, ingestor, cycleId: connId, experienceClient,
+    ...(proxy ? { proxy } : {}), ...(triggerFeedback ? { triggerFeedback } : {}) }), { instructions: buildEvolverPrimer({ proxy: !!proxy }) });
 function send(message) {
     process.stdout.write(`${JSON.stringify(message)}\n`);
 }
@@ -58,7 +77,19 @@ async function handle(req) {
     if (!method)
         return fail(id, -32600, 'missing method');
     if (method === 'initialize') {
+        // Initialize is a request, not a notification. Do not advance protocol state
+        // or reply to an id-less notification with an uncorrelated null ID.
+        if (req.id === undefined)
+            return;
+        if (typeof req.id !== 'string' && !Number.isSafeInteger(req.id)) {
+            return fail(null, -32600, 'initialize requires a valid request ID');
+        }
+        if (initialized)
+            return fail(id, -32600, 'MCP session already initialized');
+        initialized = true;
         const params = asRecord(req.params);
+        const info = asRecord(params['clientInfo']);
+        clientName = typeof info['name'] === 'string' ? info['name'] : 'MCP client';
         ok(id, {
             protocolVersion: typeof params['protocolVersion'] === 'string' ? params['protocolVersion'] : '2024-11-05',
             capabilities: { tools: {} },
@@ -73,6 +104,8 @@ async function handle(req) {
         return;
     if (method === 'ping')
         return ok(id, {});
+    if (!initialized)
+        return fail(id, -32002, 'MCP session must initialize before calling tools');
     if (method === 'tools/list')
         return ok(id, { tools: server.listTools() });
     if (method === 'tools/call') {
@@ -94,6 +127,8 @@ async function handle(req) {
     }
     fail(id, -32601, `unknown method: ${method}`);
 }
+let resolveStdioLifetime;
+export const stdioLifetime = new Promise((resolve) => { resolveStdioLifetime = resolve; });
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let requestQueue = Promise.resolve();
 async function processLine(line) {
@@ -119,6 +154,14 @@ rl.on('line', (line) => {
     const next = requestQueue.then(() => processLine(line), () => processLine(line));
     requestQueue = next.catch(() => undefined);
 });
-rl.on('close', () => { void requestQueue.finally(() => { box.close(); process.exit(0); }); });
-process.on('SIGINT', () => { box.close(); process.exit(0); });
-process.on('SIGTERM', () => { box.close(); process.exit(0); });
+function finishStdio() {
+    if (closing)
+        return;
+    closing = true;
+    box?.close();
+    resolveStdioLifetime();
+    setImmediate(() => process.exit(0));
+}
+rl.on('close', () => { void requestQueue.finally(finishStdio); });
+process.on('SIGINT', finishStdio);
+process.on('SIGTERM', finishStdio);

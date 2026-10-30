@@ -57,6 +57,7 @@ export declare function validateProtectedAuditHistoryVersion(value: unknown): st
 export declare function protectedAuditRootIdentitySync(path: string): string | null;
 /** A stable service-owned snapshot crosses the bounded frame in verified chunks. */
 export declare function protectedAuditReadSnapshotSync<T>(kind: 'root' | 'root_strict' | 'call', path: string, options?: unknown): T;
+export declare function decodeSnapshotChunk(encoded: unknown, offset: number, size: number): Buffer;
 /** Internal chunk protocol. Its caller retains socket/principal authentication. */
 export declare function readProtectedAuditSnapshotChunks<T>(kind: 'root' | 'root_strict' | 'call', request: (method: string, payload: unknown, deadlineAt: number) => unknown, options?: unknown): T;
 export declare function validateProtectedAuditSnapshotHeader(value: unknown): void;

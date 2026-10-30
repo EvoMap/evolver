@@ -89,6 +89,34 @@ export declare const personalityModel: z.ZodObject<{
     extensions: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
 }, z.core.$strip>;
 export type PersonalityModel = z.infer<typeof personalityModel>;
+export declare function parsePersonalityModel(input: unknown): PersonalityModel;
+export declare function safeParsePersonalityModel(input: unknown): z.ZodSafeParseResult<{
+    version: 1;
+    history: {
+        at: string;
+        key: string;
+        outcome: string;
+        score: number | null;
+        notes: string | null;
+    }[];
+    updatedAt: string | null;
+    extensions: Record<string, unknown>;
+    current: {
+        type: "PersonalityState";
+        rigor: number;
+        creativity: number;
+        verbosity: number;
+        risk_tolerance: number;
+        obedience: number;
+    };
+    stats: Record<string, {
+        success: number;
+        fail: number;
+        avgScore: number;
+        n: number;
+        updatedAt: string | null;
+    }>;
+}>;
 /** 单个变异提案 (作用于一个轴, delta 会被 applyMutations 夹取). */
 export declare const personalityMutation: z.ZodObject<{
     type: z.ZodDefault<z.ZodLiteral<"PersonalityMutation">>;

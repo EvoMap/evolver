@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, readFileSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { readWindowsProcessStartTimeTicks } from './windowsProcessIdentity.js';
+import { readWindowsProcessLiveness, readWindowsProcessStartTimeTicks } from './windowsProcessIdentity.js';
+import { asyncFileLockOwned } from './asyncFileLockOwners.js';
 export function syncSleep(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -209,8 +210,11 @@ export function parseFileLockProcessStartIdentity(value) {
  * remain distinct from a proven-dead PID so callers cannot reclaim ambiguous ownership.
  */
 export function inspectFileLockOwnerProcess(owner) {
-    if (!pidAlive(owner.pid))
+    const liveness = readFileLockProcessLiveness(owner.pid);
+    if (liveness === 'dead')
         return 'dead';
+    if (liveness === 'unknown')
+        return 'unverifiable';
     const current = readFileLockProcessStartIdentity(owner.pid);
     if (current === null)
         return 'unverifiable';
@@ -329,8 +333,20 @@ function readOwnerFileBounded(path) {
         closeSync(fd);
     }
 }
-/** True if pid is a live process (cross-platform via signal 0; EPERM = exists but owned by another user). */
-function pidAlive(pid) {
+/** Fresh, read-only liveness. On Windows this avoids Bun's slow signal-0 path and
+ * distinguishes proven death from denied/ambiguous process observations. */
+export function readFileLockProcessLiveness(pid) {
+    if (!Number.isInteger(pid) || pid <= 0)
+        return 'dead';
+    if (fileLockTestHooks.pidAlive)
+        return fileLockTestHooks.pidAlive(pid) ? 'alive' : 'dead';
+    if (process.platform === 'win32')
+        return readWindowsProcessLiveness(pid);
+    return posixPidAlive(pid) ? 'alive' : 'dead';
+}
+/** POSIX-only boolean fallback. Windows must use the tri-state native reader
+ * above so an unknown observation cannot be mistaken for process death. */
+function posixPidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0)
         return false;
     if (fileLockTestHooks.pidAlive)
@@ -430,7 +446,7 @@ function readLockSnapshot(lockPath) {
 export function readFileLockOwner(lockPath) {
     let initial;
     try {
-        initial = lstatSync(lockPath, { bigint: true });
+        initial = statRegularFileIdentity(lockPath);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -488,11 +504,12 @@ function forgetMalformedObservation(lockPath) {
 function reclaimableSnapshot(lockPath, snapshot) {
     if (snapshot.owner !== null) {
         forgetMalformedObservation(lockPath);
-        if (!pidAlive(snapshot.owner.pid)) {
+        const liveness = readFileLockProcessLiveness(snapshot.owner.pid);
+        if (liveness === 'dead') {
             observedProcessIdentities.delete(snapshot.owner.pid);
             return true;
         }
-        if (snapshot.owner.processStart === null)
+        if (liveness === 'unknown' || snapshot.owner.processStart === null)
             return false;
         const liveProcessStart = processStartIdentity(snapshot.owner.pid, snapshot.owner.processStart);
         return liveProcessStart !== null
@@ -586,10 +603,13 @@ function readLockGuardianSnapshot(lockPath) {
     };
 }
 function guardianReclaimable(record) {
-    if (!pidAlive(record.guardian.pid)) {
+    const liveness = readFileLockProcessLiveness(record.guardian.pid);
+    if (liveness === 'dead') {
         observedProcessIdentities.delete(record.guardian.pid);
         return true;
     }
+    if (liveness === 'unknown')
+        return false;
     const current = processStartIdentity(record.guardian.pid, record.guardian.processStart);
     return current !== null && !sameProcessStartIdentity(record.guardian.processStart, current);
 }
@@ -907,22 +927,32 @@ function samePublicOwner(left, right) {
         && sameProcessStartIdentity(left.processStartIdentity, right.processStart);
 }
 function observeTransferTarget(pid) {
-    if (!Number.isSafeInteger(pid) || pid <= 0 || !pidAlive(pid)) {
+    if (!Number.isSafeInteger(pid) || pid <= 0)
         return { reason: 'target_process_dead' };
-    }
+    const initialLiveness = readFileLockProcessLiveness(pid);
+    if (initialLiveness === 'dead')
+        return { reason: 'target_process_dead' };
+    if (initialLiveness === 'unknown')
+        return { reason: 'target_process_unverifiable' };
     const first = readFileLockProcessStartIdentity(pid);
     if (first === null)
         return { reason: 'target_process_unverifiable' };
-    if (!pidAlive(pid))
+    const secondLiveness = readFileLockProcessLiveness(pid);
+    if (secondLiveness === 'dead')
         return { reason: 'target_process_dead' };
+    if (secondLiveness === 'unknown')
+        return { reason: 'target_process_unverifiable' };
     const second = readFileLockProcessStartIdentity(pid);
     if (second === null)
         return { reason: 'target_process_unverifiable' };
     if (!sameProcessStartIdentity(first, second)) {
         return { reason: 'target_process_pid_reused' };
     }
-    if (!pidAlive(pid))
+    const finalLiveness = readFileLockProcessLiveness(pid);
+    if (finalLiveness === 'dead')
         return { reason: 'target_process_dead' };
+    if (finalLiveness === 'unknown')
+        return { reason: 'target_process_unverifiable' };
     return { owner: { pid, token: randomUUID(), processStart: second } };
 }
 /**
@@ -1111,6 +1141,10 @@ export function transferLockOwnershipToProcess(lockPath, expectedOwner, targetPi
  * synchronous critical sections (append-only writes).
  */
 export function acquireLock(lockPath, opts = {}) {
+    // Never block this event loop on an async owner whose finally/cleanup needs
+    // it. All synchronous storage participants share this admission check.
+    if (asyncFileLockOwned(lockPath))
+        throw new LockTimeoutError();
     const pending = ownedLocks.get(lockKey(lockPath));
     if (pending?.releasePending) {
         const released = releaseLock(lockPath);

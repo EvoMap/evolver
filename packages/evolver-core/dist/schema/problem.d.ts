@@ -19,9 +19,9 @@ export declare const problemPattern: z.ZodObject<{
     resolvedBy: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     status: z.ZodDefault<z.ZodEnum<{
         open: "open";
+        abandoned: "abandoned";
         cooling: "cooling";
         resolved: "resolved";
-        abandoned: "abandoned";
     }>>;
     value: z.ZodPrefault<z.ZodObject<{
         severity: z.ZodDefault<z.ZodNumber>;

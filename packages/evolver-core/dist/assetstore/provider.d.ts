@@ -43,6 +43,9 @@ export declare class InvalidConditionalPutResultError extends Error {
 }
 /** Validate an injected provider response before callers treat it as an explicit write/no-write decision. */
 export declare function validateConditionalPutResult(value: unknown, expectedAssetId: string, options?: ConditionalPutOptions): ConditionalPutResult;
+export type RecallContext = {
+    readonly [field: string]: unknown;
+};
 export interface SearchQuery {
     kind?: AssetKind;
     signalsAny?: string[];
@@ -51,6 +54,12 @@ export interface SearchQuery {
     text?: string;
     /** Task-domain scope (hub taxonomy slug, e.g. "software_engineering"). Local providers may ignore it; the hub applies it as a recall fence. */
     domain?: string;
+    /**
+     * What the caller is working on, for the hub to judge a text recall's fit by; never used to recall. A JSON object
+     * whose fields the hub defines (`task`, `trigger`, `language`, ...): clients forward it whole, so a new field needs
+     * no client release.
+     */
+    context?: RecallContext;
     limit?: number;
 }
 /** A bounded external read owns every dispatched side effect until terminal settlement.
