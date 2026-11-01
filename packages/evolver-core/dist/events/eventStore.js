@@ -177,9 +177,15 @@ export class EventStore {
     }
     /** Experience audit has a persistent reservation; ordinary append's admission ID is not this protocol. */
     async appendExperienceAuditV1(raw, operationId, deadlineAt = Date.now() + 30_000, expectedNamespace) {
-        if (protectedAuditConfigured())
-            return protectedAuditRpc('append_experience_audit_v1', this.path, { raw, ...(expectedNamespace !== undefined ? { expectedNamespace } : {}) }, { operationId, deadlineAt });
+        const rootDeadlineAt = Number.isFinite(deadlineAt) ? Math.min(deadlineAt, Date.now() + 500) : deadlineAt;
+        const budget = new AuditBudget({ deadlineAt });
+        budget.check();
+        if (protectedAuditConfigured()) {
+            budget.check();
+            return protectedAuditRpc('append_experience_audit_v1', this.path, { raw, ...(expectedNamespace !== undefined ? { expectedNamespace } : {}) }, { operationId, deadlineAt: rootDeadlineAt });
+        }
         const path = canonicalEventPath(this.path);
+        budget.check();
         const target = { parent: localParentIdentity(path), file: localFileIdentity(path) };
         if (target.file === undefined) {
             if (!this.creation || this.creation.path !== path || this.creation.parent !== target.parent || this.creation.file !== undefined)
@@ -187,6 +193,7 @@ export class EventStore {
             target.creation = this.creation;
         }
         const run = this.chain.then(() => {
+            budget.check();
             const validate = () => {
                 assertNoPendingRootOperation(path);
                 if (canonicalEventPath(this.path) !== path || localParentIdentity(path) !== target.parent
@@ -195,7 +202,7 @@ export class EventStore {
             };
             if (contextDeliveryRootOwned(path))
                 throw new AuditWriteSkipped('delivery_cleanup_pending');
-            return appendExperienceAudit(path, raw, operationId, { deadlineAt, expectedNamespace, maxFileBytes: auditFileLimit(),
+            return appendExperienceAudit(path, raw, operationId, { budget, expectedNamespace, maxFileBytes: auditFileLimit(),
                 capacity: incoming => assertProtectedHistoryCapacity(path, incoming), lastSeq: () => this.lastSeqFromFile(path), validate,
                 created: () => { target.creation.file = localFileIdentity(path); },
                 assertHistory: check => {
@@ -472,11 +479,11 @@ export class EventStore {
                 deadlineAt: opts.deadlineAt ?? Date.now() + 30_000,
                 ...(opts.signal ? { signal: opts.signal } : {}),
             });
-        opts = { ...opts, path: canonicalEventPath(opts.path) };
         const budget = new AuditBudget(opts);
         budget.check();
         if (!fitsRootEventLine(raw))
             throw new LineTooLargeError(MAX_LINE_BYTES + 1);
+        opts = { ...opts, path: canonicalEventPath(opts.path) };
         return withAuditLock(`${opts.path}.lock`, budget, async () => {
             assertNoPendingRootOperation(opts.path);
             recoverExperienceAuditUnderLock(opts.path, () => budget.check());
@@ -525,8 +532,8 @@ export class EventStore {
     static async projectContextDelivery(authority, opts, validate) {
         if (protectedAuditConfigured())
             throw new ProtectedAuditUnavailableError('delivery_projection_requires_protected_authority');
-        opts = { ...opts, path: canonicalEventPath(opts.path) };
         const budget = new AuditBudget(opts);
+        opts = { ...opts, path: canonicalEventPath(opts.path) };
         return withAuditLock(`${opts.path}.lock`, budget, async () => {
             assertNoPendingRootOperation(opts.path);
             recoverExperienceAuditUnderLock(opts.path, () => budget.check());
@@ -723,7 +730,7 @@ export class EventStore {
     async recoverExperienceAudit(deadlineAt = Date.now() + 30_000) {
         if (protectedAuditConfigured())
             throw new ProtectedAuditUnavailableError('experience_recovery_requires_service');
-        const path = canonicalEventPath(this.path), budget = new AuditBudget({ deadlineAt }, 'experience');
+        const budget = new AuditBudget({ deadlineAt }), path = canonicalEventPath(this.path);
         await withAuditLock(`${path}.lock`, budget, async () => {
             if (canonicalEventPath(this.path) !== path)
                 throw new AuditWriteSkipped('path_changed');

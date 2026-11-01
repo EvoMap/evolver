@@ -1,3 +1,4 @@
+import { AuditBudget } from './boundedAudit.js';
 import { type RawEvent, type RootEvent } from './eventSchema.js';
 export declare function isExperienceAuditKey(value: string | undefined): boolean;
 interface Locator {
@@ -14,7 +15,7 @@ export declare function recoverExperienceAuditUnderLock(path: string, check?: ()
 export declare function snapshotExperienceAuditV1(raw: RawEvent): RawEvent;
 /** Versioned, exact-slot projection. It never uses a history search to certify non-commit. */
 export declare function appendExperienceAudit(path: string, raw: RawEvent, key: string, options: {
-    deadlineAt: number;
+    budget: AuditBudget;
     maxFileBytes: number;
     capacity(incoming: number): void;
     lastSeq(): number;

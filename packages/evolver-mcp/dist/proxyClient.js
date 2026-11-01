@@ -242,6 +242,7 @@ export class EvolverProxyClient {
         return this.call('POST', '/asset/reuse-result', {
             asset_id: args.assetId,
             outcome: args.outcome,
+            ...(args.idempotencyKey ? { idempotency_key: args.idempotencyKey } : {}),
             ...(args.taskId ? { task_id: args.taskId } : {}),
             ...(args.traceId ? { trace_id: args.traceId } : {}),
             ...(args.timeSavedSeconds !== undefined ? { time_saved_seconds: args.timeSavedSeconds } : {}),

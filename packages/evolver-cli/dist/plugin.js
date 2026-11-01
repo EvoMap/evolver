@@ -5,19 +5,21 @@ import { installAgentPlugin } from './pluginInstall.js';
 import { createPluginRuntime, PluginInstallError } from './pluginRuntime.js';
 export const PLUGIN_USAGE = `Usage: evolver plugin list [--json]
        evolver plugin install [--host <host>] [--scope user|project] [--root <dir>]
-                              [--profile <dsh-profile>] [--dry-run] [--json]
+                              [--profile <dsh-profile>] [--trust] [--dry-run] [--json]
 
 Hosts: claude-code, codex, grok, qoder, antigravity, opencode, dsh,
        cursor, workbuddy, mcp-generic
 Default scope: user. dsh default profile: dsh-tui.
+--trust says you trust the plugin's hooks; only hosts that require it (grok) accept it.
 With no host, only a single discovered native host is selected; otherwise choose --host.
 Cursor, WorkBuddy and generic MCP return manual_required without writing client config.
 Dry-run performs no download, host command or config write and proves no installed state.
 Installation uses EvoMap/evolver-agent-plugin and does not replace setup-hooks.
-Exit codes: 0 verified install/already-installed/list/preview; 2 action required; 1 failure.
+Exit codes: 0 verified install/already-installed/list/preview; 2 action required
+(including trust_required and profile_store_mismatch); 1 conflict or failure.
 `;
 function parsePluginArgs(argv) {
-    const flags = { action: 'list', json: false, dryRun: false };
+    const flags = { action: 'list', json: false, dryRun: false, trust: false };
     let index = 0;
     if (argv[0] && !argv[0].startsWith('-')) {
         if (argv[0] !== 'list' && argv[0] !== 'install')
@@ -32,12 +34,14 @@ function parsePluginArgs(argv) {
             flags.action = 'help';
             continue;
         }
-        if (token === '--json' || token === '--dry-run') {
+        if (token === '--json' || token === '--dry-run' || token === '--trust') {
             if (seen.has(token))
                 throw new PluginInstallError('invalid_arguments', 'A plugin option was repeated.');
             seen.add(token);
             if (token === '--json')
                 flags.json = true;
+            else if (token === '--trust')
+                flags.trust = true;
             else
                 flags.dryRun = true;
             continue;
@@ -54,7 +58,7 @@ function parsePluginArgs(argv) {
             throw new PluginInstallError('invalid_arguments', `--${key} requires a non-empty value.`);
         flags[key] = value;
     }
-    if (flags.action === 'list' && (flags.host || flags.scope || flags.root || flags.profile || flags.dryRun)) {
+    if (flags.action === 'list' && (flags.host || flags.scope || flags.root || flags.profile || flags.dryRun || flags.trust)) {
         throw new PluginInstallError('invalid_arguments', 'plugin list accepts only --json; use plugin install for installation options.');
     }
     return flags;
@@ -76,6 +80,10 @@ function installOptions(flags, runtime) {
         throw new PluginInstallError('invalid_arguments', '--scope must be user or project.');
     if (!host.scopes.includes(scope))
         throw new PluginInstallError('invalid_arguments', `${host.label} does not have a verified ${scope}-scope installer. Supported scopes: ${host.scopes.join(', ')}.`);
+    if (flags.trust && !host.requiresTrust) {
+        const trustHosts = PLUGIN_HOSTS.filter(candidate => candidate.requiresTrust).map(candidate => candidate.id).join(', ');
+        throw new PluginInstallError('invalid_arguments', `--trust is only accepted for hosts whose installer requires plugin trust (${trustHosts}); ${host.label} does not, and no host-specific argument is silently ignored.`);
+    }
     if (flags.profile && host.id !== 'dsh')
         throw new PluginInstallError('invalid_arguments', '--profile is only supported for dsh; no host-specific argument was silently ignored.');
     const profile = flags.profile ?? 'dsh-tui';
@@ -92,7 +100,7 @@ function installOptions(flags, runtime) {
             throw new PluginInstallError('invalid_arguments', '--root must identify an existing project/working directory.');
         }
     }
-    return { host, scope: scope, root, profile, dryRun: flags.dryRun };
+    return { host, scope: scope, root, profile, dryRun: flags.dryRun, trust: flags.trust };
 }
 export async function runPluginCommand(argv, deps = {}) {
     const stdout = deps.stdout ?? (text => { process.stdout.write(text); });
@@ -107,7 +115,7 @@ export async function runPluginCommand(argv, deps = {}) {
             return 0;
         }
         if (flags.action === 'list') {
-            const hosts = PLUGIN_HOSTS.map(host => ({ id: host.id, label: host.label, mode: host.kind === 'manual' ? 'manual' : 'native', cli: host.command ?? null, cliFound: Boolean(host.command && runtime.available(host.command)), minimumVersion: host.minimumVersion ?? null, scopes: host.scopes, instructions: host.instructions }));
+            const hosts = PLUGIN_HOSTS.map(host => ({ id: host.id, label: host.label, mode: host.kind === 'manual' ? 'manual' : 'native', cli: host.command ?? null, cliFound: Boolean(host.command && runtime.available(host.command)), minimumVersion: host.minimumVersion ?? null, requiresTrust: Boolean(host.requiresTrust), scopes: host.scopes, instructions: host.instructions }));
             stdout(json ? `${JSON.stringify({ ok: true, action: 'list', hosts })}\n` : `${hosts.map(host => `${host.id.padEnd(14)} ${host.mode.padEnd(7)} ${host.cliFound ? 'CLI found' : 'CLI not found / not required'}; scopes=${host.scopes.join('|')}`).join('\n')}\nCLI detection is not installation or version verification.\n`);
             return 0;
         }

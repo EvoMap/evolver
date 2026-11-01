@@ -294,6 +294,23 @@ export declare class ProxyDaemon {
     private publishAssetSubmitSynchronously;
     private createSynchronousAssetSubmitEnvelope;
     private composeRecipeAfterAcceptedSubmit;
+    /**
+     * 记住本节点已发布的 Gene：之后单独发布引用它的 Capsule 时，parent 有本机发布事实可查。
+     * 只在 Hub 接受发布后登记；本机记账失败不得让已接受的发布变成失败。
+     */
+    private recordPublishedParents;
+    /**
+     * 记下本节点正在为这些 Gene 提交发布。
+     * 单独发布的 Gene 从来不需要 binding，也就不会在 ledger 里登记任何 parent 事实；
+     * 没有这条事实，之后单独发布引用它的 Capsule 必然被 publish_binding_missing 拒绝。
+     */
+    private recordPublishingParents;
+    /**
+     * parent 发布终态失败：这份 parent 不再授权单独发布的 Capsule。
+     * 可重试的失败不算终态，发布仍会继续。
+     */
+    private recordFailedParents;
+    private submitEnvelopeAssets;
     private currentHubMode;
     private handleHubModeBoundOutbound;
     private publishSynchronousBundle;

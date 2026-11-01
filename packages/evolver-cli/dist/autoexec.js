@@ -1900,6 +1900,7 @@ export function makeProxyHubCapability(proxy) {
         recordReuseResult: async (report) => reuseReceipt(await proxy.recordReuseResult({
             assetId: report.assetId,
             outcome: report.outcome,
+            ...(report.idempotencyKey ? { idempotencyKey: report.idempotencyKey } : {}),
             ...(report.taskId ? { taskId: report.taskId } : {}),
             ...(report.traceId ? { traceId: report.traceId } : {}),
             ...(report.timeSavedSeconds !== undefined ? { timeSavedSeconds: report.timeSavedSeconds } : {}),

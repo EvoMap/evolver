@@ -6,6 +6,7 @@ export interface AgentPluginInstallResult {
     host: string;
     scope: string;
     verified: boolean;
+    requiresTrust: boolean;
     repository: string;
     commands: PluginCommandStep[];
     completed: string[];

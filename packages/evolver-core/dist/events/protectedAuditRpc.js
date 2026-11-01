@@ -219,6 +219,8 @@ export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWri
         socket.once('connect', () => {
             try {
                 verifyBeforeWrite();
+                if (Date.now() >= deadlineAt || signal?.aborted)
+                    throw new ProtectedAuditUnavailableError('admission_expired');
                 socket.write(frame);
             }
             catch (error) {

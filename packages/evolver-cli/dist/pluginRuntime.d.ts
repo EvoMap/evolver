@@ -1,10 +1,11 @@
 import { exec } from '@evomap/evolver-core';
 import type { PluginHost } from './pluginHosts.js';
 export type PluginProcessResult = Awaited<ReturnType<typeof exec.spawnCapture>>;
-export type PluginInstallStatus = 'installed' | 'already_installed' | 'dry_run' | 'manual_required' | 'host_missing' | 'unsupported_version' | 'unsupported_capability' | 'conflict' | 'failed' | 'invalid_arguments' | 'selection_required';
+export type PluginInstallStatus = 'installed' | 'already_installed' | 'dry_run' | 'manual_required' | 'host_missing' | 'unsupported_version' | 'unsupported_capability' | 'conflict' | 'failed' | 'invalid_arguments' | 'selection_required' | 'trust_required' | 'profile_store_mismatch';
 export declare class PluginInstallError extends Error {
     readonly status: PluginInstallStatus;
-    constructor(status: PluginInstallStatus, message: string);
+    readonly instructions: readonly string[];
+    constructor(status: PluginInstallStatus, message: string, instructions?: readonly string[]);
 }
 export interface PluginRuntime {
     env: NodeJS.ProcessEnv;

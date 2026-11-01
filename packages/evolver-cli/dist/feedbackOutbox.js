@@ -341,11 +341,21 @@ export class FeedbackOutbox {
         if (reportable && input.destinationId !== undefined && !SHA256_ID.test(input.destinationId)) {
             throw new FeedbackOutboxError('invalid Hub feedback destination id');
         }
+        // The Hub records one event per (asset, reporter node, idempotency key). The outbox row IS
+        // one logical reuse — its operation id is derived from (claim root, asset) and is stable on
+        // disk across processes and restarts — so it mints exactly one stable key for that row. A
+        // network retry of the same row therefore records once instead of double-counting the reuse.
         const report = appliedUse.source === 'hub'
             && (appliedUse.outcome === 'success' || appliedUse.outcome === 'failed')
             && input.destinationId
             && appliedUse.hubOriginDestinationId === input.destinationId
-            ? { assetId: appliedUse.assetId, outcome: appliedUse.outcome, taskId, traceId: appliedUse.cycleId }
+            ? {
+                assetId: appliedUse.assetId,
+                outcome: appliedUse.outcome,
+                taskId,
+                traceId: appliedUse.cycleId,
+                idempotencyKey: hub.reuseResultIdempotencyKey([identity.operationId]),
+            }
             : undefined;
         const networkStatus = report
             ? 'pending' : appliedUse.source === 'hub' ? 'terminal' : 'not_applicable';

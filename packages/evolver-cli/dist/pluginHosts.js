@@ -2,6 +2,7 @@ export const AGENT_PLUGIN_REPOSITORY = 'EvoMap/evolver-agent-plugin';
 export const AGENT_PLUGIN_GIT_URL = `https://github.com/${AGENT_PLUGIN_REPOSITORY}.git`;
 export const AGENT_PLUGIN_NAME = 'evolver-plugin';
 export const AGENT_PLUGIN_RELEASE = 'release';
+export const DSH_PLUGIN_SOURCE = `github:${AGENT_PLUGIN_REPOSITORY}#${AGENT_PLUGIN_RELEASE}&path:dist/dsh`;
 export const PLUGIN_HOSTS = [
     {
         id: 'claude-code', label: 'Claude Code', command: 'claude', minimumVersion: '2.1.286',
@@ -11,14 +12,14 @@ export const PLUGIN_HOSTS = [
         instructions: ['Restart Claude Code. Installed hooks modules also require the host rollout flag; an installed plugin is not proof that recall is active.'],
     },
     {
-        id: 'codex', label: 'Codex', command: 'codex', kind: 'marketplace', management: 'plugin', marketplace: 'evomap',
+        id: 'codex', label: 'Codex', command: 'codex', minimumVersion: '0.164.0', kind: 'marketplace', management: 'plugin', marketplace: 'evomap',
         scopes: ['user'], manifest: '.codex-plugin/plugin.json', legacyNames: ['evolver'],
         instructions: ['Open /hooks in Codex, review and trust the Evolver hooks, then start a new thread.'],
     },
     {
         id: 'grok', label: 'Grok CLI', command: 'grok', minimumVersion: '1.0.70',
-        kind: 'marketplace', management: 'plugin', marketplace: 'evomap', scopes: ['user'], manifest: '.grok-plugin/plugin.json',
-        legacyNames: ['evolver', 'evolver-grok-plugin'],
+        kind: 'marketplace', management: 'plugin', marketplace: 'evolver-agent-plugin', scopes: ['user'], manifest: '.grok-plugin/plugin.json',
+        packedSubdir: 'dist/grok', requiresTrust: true, legacyNames: ['evolver', 'evolver-grok-plugin'],
         instructions: ['Restart Grok and review its hook trust settings. Recall reaches the first tool result; a turn without tools receives no strategy.'],
     },
     {
@@ -76,7 +77,7 @@ export function pluginHostNamed(name) {
     return PLUGIN_HOSTS.find(host => host.id === (aliases[name] ?? name));
 }
 export function pluginInstallSteps(options, bundle = '<release-checkout>/dist') {
-    const { host, scope, profile } = options;
+    const { host, scope, profile, trust } = options;
     const command = host.command ?? '';
     if (host.kind === 'marketplace') {
         const management = host.management;
@@ -84,7 +85,7 @@ export function pluginInstallSteps(options, bundle = '<release-checkout>/dist') 
         const add = [management, 'marketplace', 'add', AGENT_PLUGIN_REPOSITORY];
         const install = host.id === 'codex'
             ? [management, 'add', selector, '--json']
-            : [management, 'install', selector, ...(host.id === 'claude-code' ? ['--scope', scope, '--json'] : [])];
+            : [management, 'install', selector, ...(host.id === 'claude-code' ? ['--scope', scope, '--json'] : []), ...(host.requiresTrust && trust ? ['--trust'] : [])];
         return [
             { name: 'marketplace', command, args: add },
             { name: 'install', command, args: install },
@@ -96,7 +97,7 @@ export function pluginInstallSteps(options, bundle = '<release-checkout>/dist') 
         return [{ name: 'install', command, args: ['plugin', `${bundle}/opencode`, ...(scope === 'user' ? ['-g'] : [])] }];
     if (host.id === 'dsh')
         return [{
-                name: 'install', command, args: ['plugin', '--profile', profile, 'add', '-w', `github:${AGENT_PLUGIN_REPOSITORY}#${AGENT_PLUGIN_RELEASE}&path:dist/dsh`],
+                name: 'install', command, args: ['plugin', '--profile', profile, 'add', '-w', DSH_PLUGIN_SOURCE],
             }];
     return [];
 }
@@ -107,9 +108,9 @@ export function pluginRollbackInstructions(options, bundle) {
     if (host.id === 'codex')
         return [`codex plugin remove ${AGENT_PLUGIN_NAME}@${host.marketplace}`];
     if (host.id === 'grok')
-        return ['grok plugin uninstall evolver-plugin'];
+        return ['grok plugin uninstall evolver-plugin --keep-data'];
     if (host.id === 'qoder')
-        return ['qodercli plugins uninstall evolver-plugin@evomap'];
+        return ['qodercli plugins uninstall evolver-plugin@evomap --keep-data'];
     if (host.id === 'antigravity')
         return ['agy plugin uninstall evolver-plugin'];
     if (host.id === 'dsh')
@@ -117,4 +118,29 @@ export function pluginRollbackInstructions(options, bundle) {
     if (host.id === 'opencode')
         return [`Remove only this plugin's ${bundle ?? '<installed-bundle>'}/opencode/server.mjs and tui.mjs entries from opencode.json and tui.json; preserve neighboring configuration.`];
     return [];
+}
+const SHELL_SAFE_ARGUMENT = /^[A-Za-z0-9@._/][A-Za-z0-9@._/-]*$/;
+/**
+ * The host's own removal command for an old plugin, keeping its data where the host has a flag for that.
+ * Inventory values are host data, so a value that is not a plain argument never reaches a suggested command.
+ */
+export function standalonePluginRemoval(options, plugin) {
+    const { host, profile } = options;
+    const scope = plugin.scope ?? options.scope;
+    if ([plugin.id, plugin.name, scope].some(value => !SHELL_SAFE_ARGUMENT.test(value))) {
+        return `Remove the standalone Evolver plugin through ${host.label}'s own plugin manager, keeping its data; its inventory name is not a plain command argument, so no command is suggested.`;
+    }
+    if (host.id === 'claude-code')
+        return `claude plugin uninstall ${plugin.id} --scope ${scope} --keep-data`;
+    if (host.id === 'codex')
+        return `codex plugin remove ${plugin.id}`;
+    if (host.id === 'grok')
+        return `grok plugin uninstall ${plugin.name} --keep-data`;
+    if (host.id === 'qoder')
+        return `qodercli plugins uninstall ${plugin.id} --scope ${scope} --keep-data`;
+    if (host.id === 'antigravity')
+        return `agy plugin uninstall ${plugin.name}`;
+    if (host.id === 'dsh')
+        return `dsh plugin --profile ${profile} remove ${plugin.name}`;
+    return `Remove only the ${plugin.name} entries from the OpenCode opencode.json and tui.json; keep the rest of the configuration.`;
 }

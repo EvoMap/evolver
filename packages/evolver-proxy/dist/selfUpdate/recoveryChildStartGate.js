@@ -92,8 +92,10 @@ export function deliverRecoveryChildStartGate(child, token, timeoutMs = DEFAULT_
             settled = true;
             clearTimeout(timer);
             gate.off('finish', onFinish);
-            gate.off('error', onError);
             gate.off('close', onClose);
+            // Keep the error listener: fd4 stays readable after delivery, and stopping
+            // the child resets it (ECONNRESET on Linux). Without a listener that cleanup
+            // error is uncaught and crashes the long-lived controller.
             resolve(accepted);
         };
         const onFinish = () => { finish(true); };
@@ -109,7 +111,7 @@ export function deliverRecoveryChildStartGate(child, token, timeoutMs = DEFAULT_
             finish(false);
         }, positiveTimeout(timeoutMs));
         gate.once('finish', onFinish);
-        gate.once('error', onError);
+        gate.on('error', onError);
         gate.once('close', onClose);
         gate.end(`${token}\n`);
     });

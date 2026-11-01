@@ -4,7 +4,7 @@ import { monotonicFactory } from 'ulid';
 import { AuditBudget, withAuditLock } from './boundedAudit.js';
 import { rootEventArchiveDir } from './eventArchive.js';
 import { assertOpenedRegularAssetFile, assertOptionalRegularFile, createBufferDurableExclusive } from '../assetstore/assetStoreStorage.js';
-import { bytesDigest, journalDigest, journalFileIdentity, journalParentIdentity, journalWitnessPath, stableJson, sqliteTransaction, withDurableJournal } from '../util/durableJournal.js';
+import { bytesDigest, journalDigest, journalFileIdentity, journalInitializationPending, journalParentIdentity, journalWitnessPath, stableJson, sqliteTransaction, withDurableJournal } from '../util/durableJournal.js';
 import { rootEvent } from './eventSchema.js';
 const makeId = monotonicFactory();
 const suffix = '.experience-audit.sqlite';
@@ -178,7 +178,19 @@ export function recoverExperienceAuditUnderLock(path, check = () => undefined) {
             return fail();
         return;
     }
-    const pending = database(path, true, db => db.prepare("SELECT * FROM experience_audit WHERE state='planned' ORDER BY rowid LIMIT ?").all(MAX_ROWS).map(projection)) ?? [];
+    const read = (db) => db.prepare("SELECT * FROM experience_audit WHERE state='planned' ORDER BY rowid LIMIT ?").all(MAX_ROWS).map(projection);
+    const journal = `${path}${suffix}`;
+    // Ordinary writers normally encounter a ready, fully projected namespace.
+    // Inspect it read-only; only evidenced initialization or missing schema needs
+    // a writable bootstrap. Pending slots still use the original durable settle.
+    const ready = assertOptionalRegularFile(journalWitnessPath(journal), 'temp_file') !== null && !journalInitializationPending(journal);
+    check();
+    let pending = ready ? database(path, false, read) : undefined;
+    if (pending === undefined) {
+        check(); // A completed read cannot renew admission for a writable bootstrap.
+        pending = database(path, true, read) ?? [];
+    }
+    check();
     for (const row of pending)
         settle(path, row, check);
 }
@@ -223,6 +235,8 @@ export function snapshotExperienceAuditV1(raw) {
 }
 /** Versioned, exact-slot projection. It never uses a history search to certify non-commit. */
 export async function appendExperienceAudit(path, raw, key, options) {
+    const { budget } = options;
+    budget.check();
     if (!/^experience-(?:request|completion|recovery)-[a-f0-9]{64}$/.test(key))
         return fail('EXPERIENCE_AUDIT_ID_INVALID');
     const snapshot = snapshotExperienceAuditV1(raw), hash = journalDigest(snapshot);
@@ -233,7 +247,7 @@ export async function appendExperienceAudit(path, raw, key, options) {
         return fail('EXPERIENCE_AUDIT_ID_INVALID');
     if (options.expectedNamespace !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedNamespace))
         return fail('EXPERIENCE_AUDIT_UNKNOWN');
-    const budget = new AuditBudget({ deadlineAt: options.deadlineAt }, 'experience');
+    // Preserve the entry's Root admission across validation, queueing and recovery.
     return withAuditLock(`${path}.lock`, budget, async () => {
         const check = () => budget.check();
         check();

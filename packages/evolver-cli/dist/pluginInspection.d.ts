@@ -14,6 +14,8 @@ export interface PluginInspection {
     installed?: InstalledAgentPlugin;
     marketplacePresent: boolean;
     conflicts: string[];
+    /** Native commands the user can run to remove a conflicting standalone plugin; never run automatically. */
+    migrations: string[];
 }
 export declare function installedPluginsFromJson(value: unknown, host: PluginHost): InstalledAgentPlugin[];
 export declare function agentPluginRepositoryMatches(value: unknown): boolean;

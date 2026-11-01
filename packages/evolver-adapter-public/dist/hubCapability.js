@@ -587,6 +587,10 @@ export class PublicHubCapability {
             const body = await this.http.call('POST', `/a2a/assets/${encodeURIComponent(assetId)}/reuse-result`, {
                 asset_id: assetId,
                 outcome: report.outcome,
+                // The Hub reads the idempotency key from the BODY only (never from a request header).
+                // A caller-supplied key makes a network retry record once; without it the Hub keeps
+                // its legacy per-report semantics.
+                ...(report.idempotencyKey ? { idempotency_key: report.idempotencyKey } : {}),
                 ...(report.taskId ? { task_id: report.taskId } : {}),
                 ...(report.traceId ? { trace_id: report.traceId } : {}),
                 ...(timeSavedSeconds.value !== undefined ? { time_saved_seconds: timeSavedSeconds.value } : {}),
@@ -752,7 +756,9 @@ export class PublicHubCapability {
         if (isHubDryRunEnabled()) {
             return dryRunRecipeSearchReceipt('search_recipe', request);
         }
-        const body = await this.http.call('GET', '/a2a/recipe/search', undefined, recipeSearchQuery(request));
+        const body = request.context
+            ? await this.http.call('POST', '/a2a/recipe/search', { ...recipeSearchQuery(request), context: request.context })
+            : await this.http.call('GET', '/a2a/recipe/search', undefined, recipeSearchQuery(request));
         return recipeSearchReceiptFromBody(body);
     }
     async listRecipes(request = {}) {
@@ -1063,12 +1069,20 @@ function recipeSearchReceiptFromBody(body) {
         ?? booleanField(payload, 'hasMore')
         ?? booleanField(body, 'has_more')
         ?? booleanField(body, 'hasMore');
+    const contextFit = contextFitOf(body['context_fit']);
     return {
         recipes,
         ...(nextCursor ? { nextCursor } : {}),
         ...(hasMore !== undefined ? { hasMore } : {}),
+        ...(contextFit ? { contextFit } : {}),
         raw: body,
     };
+}
+function contextFitOf(value) {
+    const record = asRecord(value);
+    const judged = record?.['judged'];
+    const kept = record?.['kept'];
+    return typeof judged === 'number' && typeof kept === 'number' ? { judged, kept } : undefined;
 }
 function dryRunRecipeSearchReceipt(action, request) {
     return {

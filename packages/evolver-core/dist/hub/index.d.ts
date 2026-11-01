@@ -10,6 +10,7 @@ export * from './ingest.js';
 export * from './assetCallLog.js';
 export * from './hubReview.js';
 export * from './reuseDecision.js';
+export * from './reuseIdempotency.js';
 export * from './conversationDistiller.js';
 export * from './publishBinding.js';
 export * from './publishReverification.js';

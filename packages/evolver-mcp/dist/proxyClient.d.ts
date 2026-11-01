@@ -77,6 +77,12 @@ export interface ProxyReuseResultArgs {
     reason?: string;
     /** Caller-produced reuse evidence; forwarded verbatim, the Hub owns its schema. */
     evidence?: Record<string, unknown>;
+    /**
+     * Stable logical identity of this reuse report, minted by the caller that knows it (see
+     * hub.reuseResultIdempotencyKey). The Hub derives its feedback event id from it, so the same
+     * key makes a network retry record once. Absent = legacy per-report semantics.
+     */
+    idempotencyKey?: string;
     expectedHubMode?: 'public' | 'private';
     /** Destination fingerprint attested by /proxy/status before the queued report was prepared. */
     expectedHubDestinationId?: string;

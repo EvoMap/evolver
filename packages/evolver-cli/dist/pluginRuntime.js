@@ -4,9 +4,11 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 export class PluginInstallError extends Error {
     status;
-    constructor(status, message) {
+    instructions;
+    constructor(status, message, instructions = []) {
         super(message);
         this.status = status;
+        this.instructions = instructions;
         this.name = 'PluginInstallError';
     }
 }

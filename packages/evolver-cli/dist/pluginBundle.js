@@ -5,8 +5,7 @@ import { AGENT_PLUGIN_GIT_URL, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, AGENT
 import { agentPluginRepositoryMatches } from './pluginInspection.js';
 import { assertPluginManagedPath, checkedPluginCommand, pluginHome, PluginInstallError, readPluginJson, readPluginText } from './pluginRuntime.js';
 const RECEIPT = '.evolver-plugin-checkout.json';
-function validateBundle(checkout, host) {
-    const bundle = join(checkout, 'dist', host.id);
+export function validatePackedBundle(bundle, host) {
     const root = lstatSync(bundle);
     if (root.isSymbolicLink() || !root.isDirectory())
         throw new PluginInstallError('failed', 'The plugin bundle root is not an ordinary owned directory.');
@@ -60,7 +59,7 @@ export async function ensureAgentPluginBundle(runtime, host) {
                 if (receipt?.['repository'] !== AGENT_PLUGIN_REPOSITORY || receipt['commit'] !== commit || receipt['host'] !== host.id) {
                     throw new PluginInstallError('conflict', 'The plugin cache directory is not an owned, matching release checkout.');
                 }
-                validateBundle(checkout, host);
+                validatePackedBundle(join(checkout, 'dist', host.id), host);
                 return join(checkout, 'dist');
             }
             stage = mkdtempSync(join(base, `.${host.id}-`));
@@ -74,7 +73,7 @@ export async function ensureAgentPluginBundle(runtime, host) {
             const head = await checkedPluginCommand(runtime, 'git', ['-C', source, 'rev-parse', 'HEAD']);
             if (head.stdout.trim() !== commit)
                 throw new PluginInstallError('failed', 'The plugin release changed while downloading. Retry to use a consistent release.');
-            validateBundle(source, host);
+            validatePackedBundle(join(source, 'dist', host.id), host);
             writeFileSync(join(source, RECEIPT), `${JSON.stringify({ repository: AGENT_PLUGIN_REPOSITORY, commit, host: host.id })}\n`, { flag: 'wx', mode: 0o600 });
             assertPluginManagedPath(checkout);
             if (existsSync(checkout))

@@ -1,4 +1,4 @@
-import type { AssetRecord, AssetKind, SearchQuery, PutResult } from '../assetstore/provider.js';
+import type { AssetRecord, AssetKind, SearchQuery, PutResult, RecallContext } from '../assetstore/provider.js';
 import type { Envelope } from '../mailbox/envelope.js';
 import type { AgentDirectoryCapability } from './agentDirectory.js';
 /** publish 投递回执. hub 侧做 gate(经济/治理/RBAC 全在 hub), core 只读 status+reason. */
@@ -127,6 +127,14 @@ export interface ReuseResultReport {
     reason?: string;
     /** Caller-produced evidence object. The runtime forwards it verbatim; the Hub owns its schema and weighting. */
     evidence?: Record<string, unknown>;
+    /**
+     * Stable logical identity of THIS reuse report. The Hub derives
+     * asset_feedback_event.event_id from (asset_id, reporter_node_id,
+     * idempotency_key), so the same key makes a network retry idempotent.
+     * Absent = legacy per-report semantics (the Hub records every report).
+     * NEVER derive it from wall-clock time, attempt counters, or randomness.
+     */
+    idempotencyKey?: string;
 }
 /** Reuse-result reporting is best-effort; failures must not break fetch or solve paths. */
 /** Hub-wide reuse effectiveness of the asset after this report (evomap-hub#3647). */
@@ -279,11 +287,18 @@ export interface RecipeSearchRequest {
     limit?: number;
     cursor?: string;
     sort?: string;
+    /** What the caller is working on; the Hub then serves only the Recipes it judges to fit that task. */
+    context?: RecallContext;
 }
 export interface RecipeSearchReceipt {
     recipes: unknown[];
     nextCursor?: string;
     hasMore?: boolean;
+    /** Present when the Hub judged the Recipes against the request's context. */
+    contextFit?: {
+        judged: number;
+        kept: number;
+    };
     raw: unknown;
 }
 /** Optional Hub recipe/DNA capability. Core stays wire-agnostic; adapters own REST shape. */

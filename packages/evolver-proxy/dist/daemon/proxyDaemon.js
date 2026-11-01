@@ -203,7 +203,13 @@ export class ProxyDaemon {
             ...(deps.publishSanitizeEnv ? { sanitize: { env: deps.publishSanitizeEnv } } : {}),
             verifyPublishBinding: (bundle, receipt) => { this.publishBindingLedger.verify(bundle, receipt); },
         });
-        this.proxyHandler = hubBindings.asProxyHandler();
+        const hubProxyHandler = hubBindings.asProxyHandler();
+        // Hub 接受是"本节点已发布这份 Gene"的唯一事实来源，出站与同步提交都走这一个出口。
+        this.proxyHandler = async (envelope) => {
+            const result = await hubProxyHandler(envelope);
+            this.recordPublishedParents(envelope, result);
+            return result;
+        };
         const proxyHandler = this.proxyHandler;
         const syncProxyHandler = (envelope) => this.handleHubModeBoundOutbound(envelope);
         const assetByIdSource = isAssetByIdFetcher(deps.hub) ? deps.hub : (isAssetByIdFetcher(hubToUse) ? hubToUse : undefined);
@@ -282,6 +288,7 @@ export class ProxyDaemon {
             },
             onOutboundTerminal: (envelope, error) => {
                 this.collaborationFacade.handleOutboundTerminal(envelope, error);
+                this.recordFailedParents(envelope);
                 try {
                     this.cacheSynchronousAssetSubmitTerminal(envelope, error);
                 }
@@ -1273,11 +1280,13 @@ export class ProxyDaemon {
             const q = [body.q, body.query, body.text].find((value) => typeof value === 'string' && value.trim().length > 0);
             const cursor = typeof body.cursor === 'string' && body.cursor.trim() ? body.cursor.trim() : undefined;
             const sort = typeof body.sort === 'string' && body.sort.trim() ? body.sort.trim() : undefined;
+            const context = q ? recallContextOf(body.context) : undefined;
             const request = {
                 ...(q ? { q } : {}),
                 limit,
                 ...(cursor ? { cursor } : {}),
                 ...(sort ? { sort } : {}),
+                ...(context ? { context } : {}),
             };
             let receipt;
             try {
@@ -1294,6 +1303,7 @@ export class ProxyDaemon {
                 recipes: receipt.recipes,
                 ...(receipt.nextCursor ? { nextCursor: receipt.nextCursor } : {}),
                 ...(receipt.hasMore !== undefined ? { hasMore: receipt.hasMore } : {}),
+                ...(receipt.contextFit ? { context_fit: receipt.contextFit } : {}),
                 query: body,
             });
             return true;
@@ -1517,6 +1527,7 @@ export class ProxyDaemon {
                 now: ctx.now,
             });
             const r = this.store.send(env);
+            this.recordPublishingParents(outboundBundle);
             if (r.stored)
                 this.notifyNewOutbound();
             ctx.json(202, {
@@ -1642,7 +1653,9 @@ export class ProxyDaemon {
                     return normalized.record;
                 });
                 const authorization = this.publishBindingLedger.verify(bundle);
+                // binding_exempt 只表示 ledger 按 parent 规则放行，不是宿主执行回执。
                 ctx.json(200, { ok: true, binding_verified: authorization !== undefined,
+                    binding_exempt: authorization === undefined && this.publishBindingLedger.authorizesByParentBinding(bundle),
                     binding_required: hubNs.requiresPublishBinding(bundle), bundle_digest: hubNs.publishBundleDigest(bundle) });
             }
             catch {
@@ -2107,6 +2120,56 @@ export class ProxyDaemon {
         this.recipeComposeStarted.add(key);
         void hubNs.composeRecipeAfterAssetPublish(this.hub, asRecord(envelope.payload)).catch(() => { });
     }
+    /**
+     * 记住本节点已发布的 Gene：之后单独发布引用它的 Capsule 时，parent 有本机发布事实可查。
+     * 只在 Hub 接受发布后登记；本机记账失败不得让已接受的发布变成失败。
+     */
+    recordPublishedParents(envelope, result) {
+        try {
+            if (envelope.type !== 'asset_submit')
+                return;
+            const receipt = asRecord(result);
+            if (receipt['status'] !== 'accepted')
+                return;
+            const { assets } = hubNs.splitAssetSubmitPayload(envelope.payload);
+            const publishedIds = Array.isArray(receipt['submittedAssetIds']) ? receipt['submittedAssetIds'] : [];
+            assets.forEach((asset, index) => {
+                const publishedId = typeof publishedIds[index] === 'string' ? publishedIds[index] : undefined;
+                this.publishBindingLedger.recordPublishedParent(asset, publishedId);
+            });
+        }
+        catch { /* best-effort: a local bookkeeping failure must not fail an accepted publish */ }
+    }
+    /**
+     * 记下本节点正在为这些 Gene 提交发布。
+     * 单独发布的 Gene 从来不需要 binding，也就不会在 ledger 里登记任何 parent 事实；
+     * 没有这条事实，之后单独发布引用它的 Capsule 必然被 publish_binding_missing 拒绝。
+     */
+    recordPublishingParents(assets) {
+        try {
+            for (const asset of assets)
+                this.publishBindingLedger.recordPublishingParent(asset);
+        }
+        catch { /* best-effort: 本机记账失败不得让发布失败 */ }
+    }
+    /**
+     * parent 发布终态失败：这份 parent 不再授权单独发布的 Capsule。
+     * 可重试的失败不算终态，发布仍会继续。
+     */
+    recordFailedParents(envelope) {
+        try {
+            if (envelope.type !== 'asset_submit')
+                return;
+            for (const asset of this.submitEnvelopeAssets(envelope))
+                this.publishBindingLedger.recordFailedParent(asset);
+        }
+        catch { /* best-effort: 本机记账失败不得让发布失败 */ }
+    }
+    submitEnvelopeAssets(envelope) {
+        if (envelope.type !== 'asset_submit')
+            return [];
+        return hubNs.splitAssetSubmitPayload(envelope.payload).assets;
+    }
     currentHubMode() {
         return this.deps.hubMode ?? 'public';
     }
@@ -2145,6 +2208,7 @@ export class ProxyDaemon {
         if (inflight)
             return this.waitForSynchronousAssetSubmit(inflight, envelope.id);
         const { stored } = this.store.send(envelope);
+        this.recordPublishingParents(this.submitEnvelopeAssets(envelope));
         const cachedAfterInsert = this.readSynchronousAssetSubmitOutcome(envelope);
         if (cachedAfterInsert)
             return cachedAfterInsert;
@@ -2219,6 +2283,8 @@ export class ProxyDaemon {
             const outcome = { kind: 'failed', ...failure, error };
             if (this.shadowMode)
                 return outcome;
+            if (isTerminalSynchronousPublishFailure(error))
+                this.recordFailedParents(envelope);
             if (current?.status !== 'in_flight') {
                 const message = safeDaemonMessage(JSON.stringify(failure.body), MAX_PROXY_TICK_ERROR_LENGTH);
                 const outcomeKey = synchronousAssetSubmitOutcomeKey(envelope.idempotencyKey);
@@ -3188,6 +3254,7 @@ function parseReuseResultReport(value) {
     if ('error' in timeSavedSecondsParsed)
         return { error: timeSavedSecondsParsed.error };
     const reason = stringBody(body, 'reason');
+    const idempotencyKey = stringBody(body, 'idempotencyKey') ?? stringBody(body, 'idempotency_key');
     const evidence = optionalEvidenceBody(body);
     if ('error' in evidence)
         return { error: evidence.error };
@@ -3195,6 +3262,7 @@ function parseReuseResultReport(value) {
         report: {
             assetId,
             outcome,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
             ...(taskId ? { taskId } : {}),
             ...(traceId ? { traceId } : {}),
             ...(timeSavedSecondsParsed.value !== undefined ? { timeSavedSeconds: timeSavedSecondsParsed.value } : {}),

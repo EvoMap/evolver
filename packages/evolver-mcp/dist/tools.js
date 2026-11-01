@@ -688,12 +688,23 @@ export function buildEvolverTools(deps) {
                 return { recorded: false, reason: 'reference_not_execution_evidence' };
             const outcome = reuseOutcome(a['outcome']);
             const taskId = optionalTaskIdArg(a);
+            // A stable Hub-side idempotency key may only be minted by the layer that KNOWS the logical
+            // identity of the reuse. An explicit taskId is exactly that handle: the same
+            // (session, asset, task, outcome) report is one logical reuse, so a network retry of it must
+            // record once instead of counting the reuse twice. Without a taskId the report falls back to
+            // the MCP session id, and two GENUINE reuses of the same asset in one session are
+            // indistinguishable from a retry — so no key is sent and the Hub keeps recording every
+            // report (Bugbot #269).
+            const idempotencyKey = taskId
+                ? hub.reuseResultIdempotencyKey([deps.cycleId ?? 'mcp', assetId, taskId, outcome])
+                : undefined;
             // Local-first: feed the local experience loop even with no proxy/hub (the MCP-only path). SUCCESS credits the
             // $ rail (reuse_hit); a non-success records the keep/prune verdict (reuse_outcome) — the cross-runtime signal.
             let remoteResult;
             if (deps.proxy) {
                 remoteResult = await deps.proxy.recordReuseResult({
                     assetId, outcome, taskId: taskId ?? sessionTaskId,
+                    ...(idempotencyKey ? { idempotencyKey } : {}),
                     ...(typeof a['traceId'] === 'string' ? { traceId: a['traceId'] } : {}),
                     ...(timeSavedSeconds !== undefined ? { timeSavedSeconds } : {}),
                     ...(typeof a['reason'] === 'string' ? { reason: a['reason'] } : {}),

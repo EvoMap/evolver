@@ -65,7 +65,11 @@ async function authorizeSnapshot(assets, expectedHubMode, proxy) {
     catch (error) {
         throw new LocalPublishBindingError(safeFailureReason(error, 'publish_binding_authorization_unavailable', 'binding_authorization'));
     }
-    if (response['ok'] !== true || response['binding_verified'] !== true || response['bundle_digest'] !== digest
+    // binding_exempt 表示本机 ledger 按 parent 规则放行（parent Gene 已随本节点发布），
+    // 不是宿主执行回执；它与 binding_verified 一样只是本机授权结论。
+    if (response['ok'] !== true
+        || (response['binding_verified'] !== true && response['binding_exempt'] !== true)
+        || response['bundle_digest'] !== digest
         || requestDigest !== digest || hub.publishBundleDigest(requestAssets) !== requestDigest
         || hub.publishBundleDigest(assets) !== digest) {
         throw new LocalPublishBindingError('publish_binding_authorization_invalid');

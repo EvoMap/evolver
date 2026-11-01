@@ -2,7 +2,7 @@ import { resolveOpenCodeConfig } from '@evomap/evolver-mcp';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AGENT_PLUGIN_GIT_URL, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY } from './pluginHosts.js';
+import { AGENT_PLUGIN_GIT_URL, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, standalonePluginRemoval } from './pluginHosts.js';
 import { checkedPluginCommand, objectOf, pluginHome, pluginJson, pluginVersionAtLeast, PluginInstallError, readPluginJson, readPluginText } from './pluginRuntime.js';
 function listRecords(value, key, label) {
     const list = Array.isArray(value) ? value : objectOf(value)?.[key];
@@ -91,11 +91,14 @@ async function inspectMarketplacePlugin(runtime, options) {
     const markets = listRecords(pluginJson(marketResult.stdout, `${host.label} marketplace list`), 'marketplaces', `${host.label} marketplace list`);
     const market = markets.find(record => record['name'] === host.marketplace);
     const conflicts = oldHookConflicts(runtime, options);
+    const migrations = [];
     if (market && !await marketplaceMatches(runtime, market))
         conflicts.push(`Marketplace ${host.marketplace} belongs to another source. Review its plugins before replacing it with ${AGENT_PLUGIN_REPOSITORY}.`);
     for (const plugin of plugins) {
-        if (host.legacyNames.includes(plugin.name) && plugin.enabled)
+        if (host.legacyNames.includes(plugin.name) && plugin.enabled) {
             conflicts.push(`The standalone ${plugin.name} plugin is enabled. Disable/remove it using ${host.label}, keeping its data, before installing ${AGENT_PLUGIN_NAME}.`);
+            migrations.push(standalonePluginRemoval(options, plugin));
+        }
         if (plugin.name === AGENT_PLUGIN_NAME && plugin.id !== `${AGENT_PLUGIN_NAME}@${host.marketplace}` && !(host.id === 'grok' && plugin.id === AGENT_PLUGIN_NAME))
             conflicts.push('An Evolver plugin from another marketplace is registered; review that installation before continuing.');
     }
@@ -106,14 +109,15 @@ async function inspectMarketplacePlugin(runtime, options) {
         conflicts.push('The plugin is installed but disabled. Enable it explicitly in the host rather than installing another copy.');
     if (installed && host.id === 'codex' && !agentPluginRepositoryMatches(repositoryOf(installed.raw)))
         conflicts.push('The installed plugin source does not match the unified Evolver plugin repository.');
-    return { installed, marketplacePresent: Boolean(market), conflicts };
+    return { installed, marketplacePresent: Boolean(market), conflicts, migrations };
 }
 export function verifyPluginManifest(runtime, options, plugin, installAnswer) {
     const { host } = options;
     if (!pluginVersionAtLeast(plugin.version, plugin.version))
         throw new PluginInstallError('failed', 'The installed plugin has no verifiable version.');
     const answer = objectOf(installAnswer);
-    const path = plugin.path ?? stringOf(answer?.['installedPath']) ?? stringOf(answer?.['installPath'])
+    const listedPath = plugin.path && host.packedSubdir ? join(plugin.path, host.packedSubdir) : plugin.path;
+    const path = listedPath ?? stringOf(answer?.['installedPath']) ?? stringOf(answer?.['installPath'])
         ?? (host.id === 'codex' ? join(runtime.env['CODEX_HOME'] ?? join(pluginHome(runtime), '.codex'), 'plugins', 'cache', host.marketplace, AGENT_PLUGIN_NAME, plugin.version) : undefined);
     if (!path || !host.manifest)
         throw new PluginInstallError('failed', 'The host did not identify a verifiable installed plugin directory.');
@@ -161,10 +165,13 @@ export function inspectOpenCodePlugin(runtime, options) {
     const tuiFile = existsSync(join(root, 'tui.jsonc')) ? join(root, 'tui.jsonc') : join(root, 'tui.json');
     const tuiEntries = pluginEntries(readPluginJson(tuiFile));
     const conflicts = [];
+    const migrations = [];
     const pairs = [];
     for (const entry of [...serverEntries, ...tuiEntries]) {
-        if (options.host.legacyNames.some(name => entry.includes(name)))
+        if (options.host.legacyNames.some(name => entry.includes(name))) {
             conflicts.push('The standalone OpenCode Evolver package is registered; remove only its entries, keeping its data.');
+            migrations.push(standalonePluginRemoval(options, { id: entry, name: entry }));
+        }
     }
     if (existsSync(join(options.root, '.opencode', 'plugins', 'evolver.js')))
         conflicts.push('A legacy .opencode/plugins/evolver.js is present; inspect/disable it before continuing.');
@@ -199,7 +206,7 @@ export function inspectOpenCodePlugin(runtime, options) {
     const path = pair && dirname(pair.server);
     const manifest = path && readPluginJson(join(path, 'package.json'));
     const installed = manifest && typeof manifest['version'] === 'string' ? { id: AGENT_PLUGIN_NAME, name: AGENT_PLUGIN_NAME, version: manifest['version'], enabled: true, path, raw: manifest } : undefined;
-    return { installed, marketplacePresent: false, conflicts };
+    return { installed, marketplacePresent: false, conflicts, migrations: [...new Set(migrations)] };
 }
 function inspectDshPlugin(runtime, options) {
     const profileDir = join(pluginHome(runtime), '.dsh', 'profiles', options.profile);
@@ -208,15 +215,17 @@ function inspectDshPlugin(runtime, options) {
     const path = join(profileDir, 'node_modules', '@evomap', 'dsh-evolver');
     const manifest = readPluginJson(join(path, 'package.json'));
     const conflicts = [];
+    const migrations = [];
     if (dependency !== undefined && (typeof dependency !== 'string' || !dependency.includes(`github:${AGENT_PLUGIN_REPOSITORY}#release&path:dist/dsh`))) {
         conflicts.push(`Profile ${options.profile} contains the standalone or differently sourced @evomap/dsh-evolver. Remove that package in this profile first; keep its state.`);
+        migrations.push(standalonePluginRemoval(options, { id: '@evomap/dsh-evolver', name: '@evomap/dsh-evolver' }));
     }
     const repository = packageRepositoryOf(manifest?.['repository']);
     if (manifest && !agentPluginRepositoryMatches(repository))
         conflicts.push('The installed dsh package does not belong to the unified plugin repository.');
     const installed = manifest && dependency !== undefined && typeof manifest['version'] === 'string'
         ? { id: AGENT_PLUGIN_NAME, name: AGENT_PLUGIN_NAME, version: manifest['version'], enabled: true, path, raw: manifest } : undefined;
-    return { installed, marketplacePresent: false, conflicts };
+    return { installed, marketplacePresent: false, conflicts, migrations };
 }
 export async function inspectAgentPlugin(runtime, options) {
     if (options.host.kind === 'marketplace')
@@ -228,10 +237,12 @@ export async function inspectAgentPlugin(runtime, options) {
     const result = await checkedPluginCommand(runtime, options.host.command, ['plugin', 'list', '--json'], options.root);
     const plugins = installedPluginsFromJson(pluginJson(result.stdout, 'Antigravity plugin list'), options.host);
     const installed = plugins.find(plugin => plugin.name === AGENT_PLUGIN_NAME);
-    const conflicts = plugins.filter(plugin => options.host.legacyNames.includes(plugin.name) && plugin.enabled).map(plugin => `Standalone ${plugin.name} is enabled; disable/remove it and keep its data before continuing.`);
+    const standalone = plugins.filter(plugin => options.host.legacyNames.includes(plugin.name) && plugin.enabled);
+    const conflicts = standalone.map(plugin => `Standalone ${plugin.name} is enabled; disable/remove it and keep its data before continuing.`);
+    const migrations = standalone.map(plugin => standalonePluginRemoval(options, plugin));
     if (installed && hasForeignInstalledScope(installed, options.scope))
         conflicts.push('The host registered this plugin in another scope; it cannot confirm the requested installation scope.');
     if (installed && !installed.enabled)
         conflicts.push('The plugin is installed but disabled. Enable it explicitly in the host rather than installing another copy.');
-    return { marketplacePresent: false, installed, conflicts };
+    return { marketplacePresent: false, installed, conflicts, migrations };
 }

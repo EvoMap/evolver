@@ -28,7 +28,9 @@ export class AuditBudget {
     deadline;
     constructor(options = {}, phase = 'audit') {
         this.options = options;
-        // Each protocol retains its admission cap; shorter callers always win.
+        // Experience business recovery/outbox has its own coordinator window, not
+        // a Root admission budget. Root append/recovery must use the audit phase.
+        // Shorter callers always win; ordinary audit retains 250ms default / 500ms cap.
         const cap = phase === 'context_preparation' ? DEFAULT_CONTEXT_PREPARATION_BUDGET_MS : phase === 'experience' ? 30_000 : 500;
         const requested = options.deadlineAt ?? Date.now() + (phase === 'audit' ? 250 : cap);
         const remaining = Number.isFinite(requested) ? requested - Date.now() : 0;
