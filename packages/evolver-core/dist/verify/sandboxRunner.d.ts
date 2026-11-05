@@ -1,4 +1,10 @@
-import { type CommandRunner } from './validation.js';
+import type { CommandRunner } from './validation.js';
+export interface SandboxResourceBudget {
+    memoryBytes: number;
+    processes: number;
+}
+/** The requested aggregate budget, or null when it is outside the bounds a caller may ask for. */
+export declare function sandboxResourceBudget(requested: SandboxResourceBudget | undefined): SandboxResourceBudget | null;
 export interface SandboxOptions {
     /** Per-command timeout (ms); clamped to 120s. Default 60s. */
     timeoutMs?: number;
@@ -27,12 +33,20 @@ export interface SandboxOptions {
     writableTmpDir?: string;
     /** Read-only checkout root remounted at its original absolute path after HOME and /tmp are hidden. */
     readOnlyRoot?: string;
+    /** Read-only tier: dependency directories (outside the checkout) the workload may read but never write. */
+    extraReadRoots?: readonly string[];
+    /** Canonical venv explicitly provided by the dependency mirror. */
+    mirroredVenvRoot?: string;
+    /** Read-only tier: the checkout is a disposable copy the workload may write; everything else stays read-only. */
+    writableReadOnlyRoot?: boolean;
+    /** Aggregate memory/process budget for `resourceLimits`; defaults to 1 GiB and 64 processes. */
+    resourceBudget?: SandboxResourceBudget;
     /** Put the full command tree in a bounded cgroup v2. Required by verified Skill execution. */
     resourceLimits?: boolean;
     /** Injected unshare-availability probe (test seam). Default: a real `unshare -r -m -n true` check (cached). */
     unshareCheck?: () => boolean;
     /** Injected cgroup allocator (test seam). */
-    resourceGroupFactory?: () => SandboxResourceGroup | null;
+    resourceGroupFactory?: (budget: SandboxResourceBudget) => SandboxResourceGroup | null;
     /** Cooperative cancellation for the current validation command. */
     signal?: AbortSignal;
 }
@@ -41,9 +55,9 @@ export interface SandboxResourceGroup {
     cleanup: () => void;
 }
 /** Configure an already-created cgroup. Kept separate so limit values are testable without resource exhaustion. */
-export declare function configureSandboxResourceGroup(path: string): boolean;
+export declare function configureSandboxResourceGroup(path: string, budget?: SandboxResourceBudget): boolean;
 /** Allocate a delegated cgroup v2 for one validation command. Returns null unless every limit is enforceable. */
-export declare function createSandboxResourceGroup(): SandboxResourceGroup | null;
+export declare function createSandboxResourceGroup(budget?: SandboxResourceBudget): SandboxResourceGroup | null;
 /** Join the cgroup before exec, so attacker-controlled code never runs outside the aggregate resource budget. */
 export declare function resourceLimitedCommand(cmd: string, args: readonly string[], procsFile: string): {
     cmd: string;
@@ -51,7 +65,7 @@ export declare function resourceLimitedCommand(cmd: string, args: readonly strin
 };
 export declare function sandboxResourceLimitsAvailable(): boolean;
 /** Wrap an (executable,args) in unprivileged namespaces per the requested isolation (pure — testable). */
-export declare function isolationCommand(bin: string, args: readonly string[], opts: {
+export interface IsolationCommandOptions {
     noNetwork?: boolean;
     hideHomeSecrets?: boolean;
     readOnlyFilesystem?: boolean;
@@ -60,7 +74,14 @@ export declare function isolationCommand(bin: string, args: readonly string[], o
     writableTmpDir?: string;
     readOnlyRoot?: string;
     cwd?: string;
-}): {
+    /** Read-only tier: absolute path exec'd after privileges drop; defaults to the bound runtime at /tmp/node. */
+    workloadBin?: string;
+    /** Read-only tier: directories under $HOME re-exposed read-only at their original paths. */
+    homeBindRoots?: readonly string[];
+    /** Read-only tier: leave the bound checkout writable (a disposable verification copy). */
+    writableReadOnlyRoot?: boolean;
+}
+export declare function isolationCommand(bin: string, args: readonly string[], opts: IsolationCommandOptions): {
     cmd: string;
     args: string[];
     env?: NodeJS.ProcessEnv;

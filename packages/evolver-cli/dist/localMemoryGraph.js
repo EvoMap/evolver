@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, ftruncateSync, fsyncSync, 
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { userInfo } from 'node:os';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { reference, algo, events, util } from '@evomap/evolver-core';
+import { reference, algo, events, util, assetstore } from '@evomap/evolver-core';
 import { MAX_TRIGGER_FEEDBACK_BYTES, TRIGGER_FEEDBACK_FILE, readLocalTriggerFeedback, upsertLocalTriggerFeedback, triggerFeedbackRecords } from './localTriggerFeedback.js';
 import { authorizeTriggerFeedbackDelivery, claimTriggerFeedbackDelivery, markTriggerFeedbackDispatched, settleTriggerFeedbackDelivery } from './triggerFeedbackSyncState.js';
 const ACTIVE_FILE = 'memory_graph.v2.jsonl';
@@ -524,7 +524,7 @@ export class LocalMemoryGraph {
                         const payload = this.readResetSource(file);
                         const destination = join(backup.pendingDir, file.name);
                         this.writeAtomic(destination, payload);
-                        const copiedIdentity = lstatSync(destination, { bigint: true });
+                        const copiedIdentity = graphPathSnapshot(destination);
                         const copiedPayload = this.readRawBounded(destination, payload.length);
                         if (!copiedIdentity.isFile() || copiedIdentity.isSymbolicLink()
                             || copiedPayload === null || !copiedPayload.equals(payload)) {
@@ -596,7 +596,7 @@ export class LocalMemoryGraph {
             const path = join(this.dir, name);
             let identity;
             try {
-                identity = lstatSync(path, { bigint: true });
+                identity = graphPathSnapshot(path);
             }
             catch (error) {
                 if (isObject(error) && error['code'] === 'ENOENT')
@@ -661,7 +661,7 @@ export class LocalMemoryGraph {
     cleanupResetPendingDirectory(backup, copied) {
         for (const file of [...copied].reverse()) {
             try {
-                const current = lstatSync(file.path, { bigint: true });
+                const current = graphPathSnapshot(file.path);
                 if (current.isFile() && !current.isSymbolicLink()
                     && sameGraphFileIdentity(file.identity, current))
                     unlinkSync(file.path);
@@ -773,7 +773,7 @@ export class LocalMemoryGraph {
         const path = join(this.dir, EPOCH_FILE);
         let identity;
         try {
-            identity = lstatSync(path, { bigint: true });
+            identity = graphPathSnapshot(path);
         }
         catch (error) {
             if (isObject(error) && error['code'] === 'ENOENT') {
@@ -856,7 +856,7 @@ export class LocalMemoryGraph {
         if (!baseline)
             return false;
         try {
-            const current = lstatSync(join(this.dir, COMPACT_FILE), { bigint: true });
+            const current = graphPathSnapshot(join(this.dir, COMPACT_FILE));
             return current.isFile() && !current.isSymbolicLink()
                 && serializedSnapshotMatches(baseline, current);
         }
@@ -886,7 +886,7 @@ export class LocalMemoryGraph {
         const path = join(this.dir, ACTIVE_FILE);
         let identity;
         try {
-            identity = lstatSync(path, { bigint: true });
+            identity = graphPathSnapshot(path);
         }
         catch (error) {
             if (isObject(error) && error['code'] === 'ENOENT') {
@@ -955,7 +955,7 @@ export class LocalMemoryGraph {
             if (!expected)
                 return true;
             try {
-                const current = lstatSync(join(this.dir, file), { bigint: true });
+                const current = graphPathSnapshot(join(this.dir, file));
                 return !current.isFile() || current.isSymbolicLink()
                     || !serializedSnapshotMatches(expected, current);
             }
@@ -1074,7 +1074,7 @@ export class LocalMemoryGraph {
         const archives = this.archiveFiles().length;
         let activeOversized = false;
         if (existsSync(activePath) && this.secureRegularFile(activePath)) {
-            const activeIdentity = lstatSync(activePath, { bigint: true });
+            const activeIdentity = graphPathSnapshot(activePath);
             const window = this.activeLogicalWindow(epoch, activeIdentity);
             activeOversized = window.invalid || window.size > this.maxActiveBytes;
         }
@@ -1199,7 +1199,7 @@ export class LocalMemoryGraph {
             const path = join(this.dir, file);
             let stat;
             try {
-                stat = lstatSync(path, { bigint: true });
+                stat = graphPathSnapshot(path);
             }
             catch (error) {
                 if (isObject(error) && error['code'] === 'ENOENT')
@@ -1681,7 +1681,7 @@ export class LocalMemoryGraph {
     rotationTargetMatches(path, target) {
         let identity;
         try {
-            identity = lstatSync(path, { bigint: true });
+            identity = graphPathSnapshot(path);
         }
         catch (error) {
             if (isObject(error) && error['code'] === 'ENOENT')
@@ -1716,7 +1716,7 @@ export class LocalMemoryGraph {
     removeVerifiedRotationFile(path, identity, reason) {
         let current;
         try {
-            current = lstatSync(path, { bigint: true });
+            current = graphPathSnapshot(path);
         }
         catch {
             throw new Error(reason);
@@ -1736,7 +1736,7 @@ export class LocalMemoryGraph {
     readVerifiedRotationFile(path, maxBytes, optional, reason, range) {
         let pathBefore;
         try {
-            pathBefore = lstatSync(path, { bigint: true });
+            pathBefore = graphPathSnapshot(path);
         }
         catch (error) {
             if (optional && isObject(error) && error['code'] === 'ENOENT')
@@ -1772,7 +1772,7 @@ export class LocalMemoryGraph {
             const openedAfter = fstatSync(fd, { bigint: true });
             let pathAfter;
             try {
-                pathAfter = lstatSync(path, { bigint: true });
+                pathAfter = graphPathSnapshot(path);
             }
             catch {
                 throw new Error(reason);
@@ -1811,7 +1811,7 @@ export class LocalMemoryGraph {
         const path = join(this.dir, name);
         let identity;
         try {
-            identity = lstatSync(path, { bigint: true });
+            identity = graphPathSnapshot(path);
         }
         catch (error) {
             if (isObject(error) && error['code'] === 'ENOENT')
@@ -1935,7 +1935,7 @@ export class LocalMemoryGraph {
             if (!this.secureRegularFile(activePath)) {
                 throw new MemoryGraphImportStateRejectedError();
             }
-            const activeWindow = this.activeLogicalWindow(epoch, lstatSync(activePath, { bigint: true }));
+            const activeWindow = this.activeLogicalWindow(epoch, graphPathSnapshot(activePath));
             if (activeWindow.invalid || activeWindow.size > this.maxActiveBytes) {
                 throw new MemoryGraphImportStateRejectedError();
             }
@@ -2044,7 +2044,7 @@ export class LocalMemoryGraph {
         let closed = false;
         let published = false;
         try {
-            tempIdentity = lstatSync(temp, { bigint: true });
+            tempIdentity = graphPathSnapshot(temp);
             const descriptorIdentity = fstatSync(fd, { bigint: true });
             if (!tempIdentity.isFile() || tempIdentity.isSymbolicLink()
                 || !descriptorIdentity.isFile() || descriptorIdentity.isSymbolicLink()
@@ -2071,7 +2071,7 @@ export class LocalMemoryGraph {
             }
             if (!published && tempIdentity !== null) {
                 try {
-                    const currentIdentity = lstatSync(temp, { bigint: true });
+                    const currentIdentity = graphPathSnapshot(temp);
                     if (currentIdentity.isFile() && !currentIdentity.isSymbolicLink()
                         && sameGraphFileIdentity(tempIdentity, currentIdentity))
                         unlinkSync(temp);
@@ -2187,7 +2187,7 @@ export class LocalMemoryGraph {
         if (!existsSync(path))
             return null;
         try {
-            const identity = lstatSync(path, { bigint: true });
+            const identity = graphPathSnapshot(path);
             if (epoch.baseline?.recovery
                 && serializedSnapshotMatches(epoch.baseline.recovery, identity))
                 return null;
@@ -2717,6 +2717,10 @@ function writeAll(fd, payload, position = null) {
             throw new Error('memory_graph_write_failed');
         offset += written;
     }
+}
+function graphPathSnapshot(path) {
+    const named = lstatSync(path, { bigint: true });
+    return named.isFile() && !named.isSymbolicLink() ? assetstore.captureRegularAssetFileSnapshot(path) : named;
 }
 function sameGraphFileIdentity(left, right) {
     const hasStableFileId = left.dev !== 0n || left.ino !== 0n || right.dev !== 0n || right.ino !== 0n;

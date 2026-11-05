@@ -5,10 +5,9 @@
 // `<session_id>.jsonl`, so recall matches them by session id (falling back to the most-recent inject for un-stamped
 // events / runtimes with no id). Pure logic lives in evolver-core/ops/recall; this module is the IO glue (read
 // transcript -> turns, resolve genes from the store, pull geneIds off the matching inject event).
-import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { assetstore, events, ops } from '@evomap/evolver-core';
-import { adapterForPath } from '@evomap/evolver-runtime-adapters';
+import { adapterForPath, readSessionLog } from '@evomap/evolver-runtime-adapters';
 /** Claude Code names a transcript `<session_id>.jsonl`, so the basename (minus extension) is the session id used to
  *  match the inject event that produced THIS session (#205). Other runtimes' names simply won't match any stamped
  *  sessionId, and the caller falls back to the most-recent inject — safe, never wrong, just less precise. */
@@ -146,7 +145,7 @@ export async function runRecall(argv, deps = {}) {
     }
     let content;
     try {
-        content = (deps.readFile ?? ((p) => readFileSync(p, 'utf8')))(transcript);
+        content = (deps.readFile ?? readSessionLog)(transcript);
     }
     catch (e) {
         err(`recall: cannot read ${transcript}: ${e instanceof Error ? e.message : String(e)}`);

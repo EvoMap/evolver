@@ -329,13 +329,15 @@ export class EventStore {
                     if (canonicalEventPath(this.path) !== path || localParentIdentity(path) !== parent)
                         throw new RootOperationError('target_changed');
                     if (prior) {
+                        let submitted = false;
                         if (prior.state === 'planned' && await repairRootOperation(path, handle, prior, budget)) {
                             await commitAuditLine(handle, prior.line, maxBytes, budget);
+                            submitted = true;
                         }
-                        return confirmRootOperation(path, handle, prior, journal, budget, maxBytes);
+                        return confirmRootOperation(path, handle, prior, journal, budget, maxBytes, submitted);
                     }
                     const history = await readRootOperationHistory(path, handle, budget, maxBytes);
-                    journal.assertHistorySequence(history.at(-1)?.event.seq ?? 0);
+                    const historySequence = history.at(-1)?.event.seq ?? 0;
                     const matches = history.filter(item => item.event.auditOperationId === options.operationId
                         || options.legacyActivityId !== undefined && item.event.type === 'experience.activity'
                             && item.event.payload?.id === options.legacyActivityId);
@@ -348,7 +350,7 @@ export class EventStore {
                         validateRootOperationReceipt(found.event, raw, options);
                         const saved = { ...found, operationId: options.operationId, requestHash: hash,
                             prefixHash: await rootOperationPrefixHash(handle, 0, budget), state: 'committed' };
-                        journal.prepare(saved);
+                        journal.prepare(saved, historySequence);
                         if (preparing)
                             return ticket();
                         return confirmRootOperation(path, handle, saved, journal, budget, maxBytes);
@@ -363,11 +365,11 @@ export class EventStore {
                     assertProtectedHistoryCapacity(path, Buffer.byteLength(line));
                     const record = { operationId: options.operationId, requestHash: hash, line, offset: stat.size,
                         identity: rootOperationFileIdentity(path), prefixHash: await rootOperationPrefixHash(handle, stat.size, budget), state: 'planned' };
-                    journal.prepare(record);
+                    journal.prepare(record, historySequence);
                     if (preparing)
                         return ticket();
                     await commitAuditLine(handle, line, maxBytes, budget);
-                    return confirmRootOperation(path, handle, record, journal, budget, maxBytes);
+                    return confirmRootOperation(path, handle, record, journal, budget, maxBytes, true);
                 }, auditCleanupSequence([{ run: () => handle.close(), retryFailedOperation: true }]));
             }, options.namespaceId !== undefined);
         });

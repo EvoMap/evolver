@@ -12,10 +12,10 @@
 // (This said "not yet wired into autoexec" long after it was wired. A stale WIRING note is worse than none: it
 // reads as a real gap, and a 2026-08 audit did misreport this composition as unwired on the strength of it.)
 import { assetstore, events, observers, signals, algo } from '@evomap/evolver-core';
-import { readFileSync } from 'node:fs';
+import { readSessionLog } from '@evomap/evolver-runtime-adapters';
 import { Console } from 'node:console';
 import { assessGeneDraft } from './distillPrimitives.js';
-import { assessDraftAdmissionFromStore } from './distillAdmission.js';
+import { assessDraftAdmissionFromStore, sessionsDistilledByHost, transcriptSessionIdOf } from './distillAdmission.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { runtimeSessionSourcesForMaterial } from './materialSnapshot.js';
 /** Consumer group the distill drain claims under — independent cursor from any other material consumer. */
@@ -28,15 +28,23 @@ const DEFAULT_MAX_PER_TICK = 3;
  * acked without drafting. Best-effort per material: a missing/unparseable source never blocks the rest of the
  * batch. Every material in the claimed batch is acked (drafted, skipped, or failed) so the cursor always advances.
  */
+function sessionIdOfSource(path, readSource) {
+    try {
+        return transcriptSessionIdOf(readSource(path));
+    }
+    catch {
+        return undefined;
+    }
+}
 export function makeDistillDrain(c) {
     const review = c.review ?? reviewLedgerForStore(c.store);
     const maxPerTick = c.maxPerTick ?? DEFAULT_MAX_PER_TICK;
-    const readSource = c.readSource ?? ((p) => readFileSync(p, 'utf8'));
+    const readSource = c.readSource ?? readSessionLog;
     let diagnosticConsole;
     // Process ONE claimed material. `ack:true` ⇒ advance the cursor past it; `ack:false` ⇒ either a persist/audit
     // write failed OR the remaining per-tick draft budget was reached — leave it for a retry tick. A bad/unparseable/
     // missing source, a proxy_trace, a too-thin session, or a duplicate are all "handled" (skip + ack).
-    async function processOne(m, audited, draftLimit) {
+    async function processOne(m, audited, draftLimit, hostDistilled) {
         // Only session narration distills; proxy_trace is observation-only (no turns to draft a strategy from).
         if (m.sourceKind !== 'runtime_session' || m.kind !== 'session_log')
             return { ack: true, drafted: 0 };
@@ -47,10 +55,13 @@ export function makeDistillDrain(c) {
         catch {
             return { ack: true, drafted: 0 }; // bad / missing / unparseable source — nothing to retry
         }
+        const fileSessionId = sessionIdOfSource(m.sourcePath, readSource);
         let drafted = 0;
         for (const [sourceIndex, source] of sources.entries()) {
             if (drafted >= draftLimit)
                 return { ack: false, drafted };
+            if (hostDistilled.has(source.sessionId ?? fileSessionId ?? ''))
+                continue;
             const { candidate: draftedCandidate, diagnostics } = assessGeneDraft(source.turns, signals.extractSignals(source.turns), source.agent);
             if (!draftedCandidate) {
                 // daemon 的实际日志入口也报告不足；不创建假 Gene 或改变 ack/retry 语义。
@@ -125,6 +136,7 @@ export function makeDistillDrain(c) {
             .filter((e) => e.type === 'gene.distilled')
             .map((e) => String(e.payload?.['assetId'] ?? ''))
             .filter(Boolean));
+        const hostDistilled = await sessionsDistilledByHost(c.store);
         let totalDrafted = 0;
         let stalled = false;
         // Draft up to maxPerTick new genes, then stop. A remaining backlog OR a stuck head (a material whose write keeps
@@ -141,7 +153,7 @@ export function makeDistillDrain(c) {
                     stalled = true;
                     break;
                 }
-                const { ack, drafted } = await processOne(m, audited, maxPerTick - totalDrafted);
+                const { ack, drafted } = await processOne(m, audited, maxPerTick - totalDrafted, hostDistilled);
                 totalDrafted += drafted;
                 if (ack)
                     acked.push(m.materialId);

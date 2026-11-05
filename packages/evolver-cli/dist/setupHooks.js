@@ -10,12 +10,14 @@ import { resolveInstallComponents } from '@evomap/evolver-mcp';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { currentTopCursorGenes } from './cursorRewrite.js';
 import { resolveProxyBinPath, resolveStableNodePath } from './lifecycle.js';
 import { reviewLedgerForStore } from './reviewFilter.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
+import { AGENT_PLUGIN_NAME, pluginHostNamed } from './pluginHosts.js';
+import { protectedAuditInstallReport } from './protectedAuditStatus.js';
 import { createSetupLifecyclePlan, decodeSetupLifecyclePlan, executeSetupLifecyclePlan, SETUP_LIFECYCLE_SCHEMA, setupLifecycleCapabilities, SetupLifecycleError, verifySetupLifecycle, } from './setupHooksLifecycle.js';
 const requireFromHere = createRequire(import.meta.url);
 function configuredHomeDir() {
@@ -1022,6 +1024,13 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
     }
     const files = displayResultPaths(r.files, configRoot, scope) ?? [];
     const backups = displayResultPaths(r.backups, configRoot, scope);
+    const audit = protectedAuditInstallReport((deps.protectedAudit ?? events.protectedAuditReadiness)());
+    const warnings = [
+        ...(r.warnings ?? []),
+        ...(audit.protected_audit_next_step ? [audit.protected_audit_next_step] : []),
+        ...(runtime === 'claude-code' && f['components'] !== 'product-only' && claudeAgentPluginEnabled() ? [CLAUDE_PLUGIN_OVERLAP_WARNING] : []),
+    ];
+    const warningFields = warnings.length > 0 ? { warnings } : {};
     if (r.dryRun) {
         if (json) {
             emit({
@@ -1031,6 +1040,8 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
                 backups,
                 dryRun: true,
                 ...(r.alreadyInstalled ? { alreadyInstalled: true } : {}),
+                ...audit,
+                ...warningFields,
             });
         }
         else if (r.alreadyInstalled) {
@@ -1039,20 +1050,33 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         else {
             process.stdout.write(`dry-run: would install evolver (${r.mode}) → ${files.join(', ')}\n`);
         }
+        emitWarnings(warnings);
         return 0;
     }
     if (r.alreadyInstalled) {
         if (json)
-            emit({ runtime, outcome: 'installed', files, alreadyInstalled: true, ...(r.warnings ? { warnings: r.warnings } : {}) });
+            emit({ runtime, outcome: 'installed', files, alreadyInstalled: true, ...audit, ...warningFields });
         else
             process.stdout.write('evolver already installed (use --force to reinstall)\n');
-        emitWarnings(r.warnings);
+        emitWarnings(warnings);
         return 0;
     }
     if (json)
-        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified, ...(r.warnings ? { warnings: r.warnings } : {}) });
+        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified, ...audit, ...warningFields });
     else
         process.stdout.write(`installed evolver (${r.mode}) → ${files.join(', ')}\n`);
-    emitWarnings(r.warnings);
+    emitWarnings(warnings);
     return 0;
+}
+const CLAUDE_PLUGIN_OVERLAP_WARNING = `Claude Code already enables ${AGENT_PLUGIN_NAME}, which covers recall; the SessionStart/UserPromptSubmit hooks written by setup-hooks duplicate it. Consider removing only those two evolver hook entries from your Claude Code settings; setup-hooks did not change the plugin or its settings.`;
+function claudeAgentPluginEnabled() {
+    const marketplace = pluginHostNamed('claude-code')?.marketplace;
+    const settingsPath = join(process.env['CLAUDE_CONFIG_DIR'] || join(configuredHomeDir(), '.claude'), 'settings.json');
+    try {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+        return settings.enabledPlugins?.[`${AGENT_PLUGIN_NAME}@${marketplace}`] === true;
+    }
+    catch {
+        return false;
+    }
 }

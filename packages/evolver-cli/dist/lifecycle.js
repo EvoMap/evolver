@@ -1,11 +1,13 @@
 import { createRequire } from 'node:module';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync, } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync, } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, posix, resolve as resolvePath, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootstrap as coreBootstrap, util as coreUtil } from '@evomap/evolver-core';
+import { bootstrap as coreBootstrap, events as coreEvents, util as coreUtil } from '@evomap/evolver-core';
+import { activateAutoexecCompanion, autoexecCompanionActions, } from './lifecycleAutoexecCompanion.js';
+import { protectedAuditInstallReport, } from './protectedAuditStatus.js';
 import { expandHomePath, loadEnvFile, loadEnvFileFromEnv, parseEnvFile } from '@evomap/evolver-mcp';
 import { acquireBootstrapOwnerLock, acquireBootstrapReadinessLock, adoptLegacyBootstrapMarker, applyBootstrapCanonicalQuarantine, assertTrustedArtifactParent, assertActiveBootstrapRegistrationIntentToken, assertPlannedArtifactsAbsent, assertBootstrapTransactionClaimsAbsent, bootstrapArtifactClaimPath, bootstrapArtifactContentIdentityForFile, bootstrapArtifactIdentityForBytes, bootstrapJournalPath, bootstrapJournalFromMarker, bootstrapJournalManagerArtifactPath, bootstrapMarkerPath, bootstrapReadinessPath, captureBootstrapArtifactIdentities, createLegacyBootstrapRemovalJournal, createBootstrapJournal, ensureBootstrapManualTransition, finalizeBootstrapCanonicalQuarantine, planBootstrapCanonicalQuarantine, readBootstrapJournal, readBootstrapArtifactFile, readLegacyBootstrapMarker, readBootstrapManualTransition, readBootstrapMarker, readBootstrapReadiness, recordPublishedBootstrapArtifact, removeBootstrapJournal, removeBootstrapManualTransition, removeBootstrapReadiness, removeDurableFile, removeOwnedBootstrapArtifacts, restoreBootstrapCanonicalQuarantine, updateBootstrapJournal, writeBootstrapJournal, writeDurableBytesExclusive, writeDurableJsonExclusive, writeDurableTextExclusive, LEGACY_BOOTSTRAP_REMOVAL_OPERATION, } from './lifecycleBootstrapTransaction.js';
 import { cleanupLegacyWindowsDaemonTasks, legacyTaskProbeSkipped, restoreLegacyTaskPreimage, sweepLegacyWindowsDaemonTasksAfterBootstrap, LEGACY_TASK_SKIP_ENV, } from './windowsLegacyTaskCleanup.js';
@@ -43,7 +45,8 @@ const LAUNCHCTL_DOMAIN_NOT_FOUND_STATUS = 112;
 const LAUNCHCTL_SERVICE_NOT_FOUND_STATUS = 113;
 const UNIX_RECOVERY_CONTROLLER_FILENAME = 'evolver-recovery-controller';
 const HOST_WINDOWS_SYSTEM_ROOT = process.env['SystemRoot']?.trim() || 'C:\\Windows';
-const LIFECYCLE_USAGE = 'Usage: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows [--with-autoexec] [--autoexec-home=<path>]|remove-service --target=launchd|systemd|windows [--dry-run] [--env-file=<path>]|bootstrap [--target=launchd|systemd|windows] [--dry-run]|remove-autoexec-service --target=launchd|systemd|windows [--dry-run]|cleanup-legacy-tasks [--dry-run]|restore-legacy-task-preimage --preimage=<path>>\n';
+const INSTALL_SERVICE_OPTIONS = new Set(['target', 'dry-run', 'env-file', 'cwd', 'autoexec-home']);
+const LIFECYCLE_USAGE = 'Usage: evolver lifecycle <start|stop|restart|status|check|watch|install-service --target=launchd|systemd|windows [--autoexec-home=<path>]|remove-service --target=launchd|systemd|windows [--dry-run] [--env-file=<path>]|bootstrap [--target=launchd|systemd|windows] [--dry-run]|remove-autoexec-service --target=launchd|systemd|windows [--dry-run]|cleanup-legacy-tasks [--dry-run]|restore-legacy-task-preimage --preimage=<path>>\n';
 export function selectExistingPosixCommand(candidates, exists = existsSync) {
     if (candidates.length === 0 || candidates.some((candidate) => !posix.isAbsolute(candidate))) {
         throw new Error('trusted command candidates must be non-empty absolute POSIX paths');
@@ -245,6 +248,10 @@ async function runLifecycleCommandInner(argv, deps) {
             return 0;
         }
         case 'install-service': {
+            const unknownOption = Object.keys(flags).find((name) => !INSTALL_SERVICE_OPTIONS.has(name));
+            if (unknownOption !== undefined) {
+                throw new Error(`lifecycle install-service received an unknown option --${unknownOption}`);
+            }
             if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
                 throw new Error('--dry-run is a boolean flag and does not accept a value');
             }
@@ -295,8 +302,7 @@ async function runLifecycleCommandInner(argv, deps) {
                         if (readiness && (!marker || readiness.transactionId !== marker.transactionId)) {
                             throw new Error('install-service refused inconsistent committed bootstrap readiness; run lifecycle bootstrap recovery');
                         }
-                        const autoexecSuffix = flags['with-autoexec'] === true ? ' --with-autoexec' : '';
-                        throw new Error(`install-service cannot rewrite a committed proxy service; use lifecycle remove-service --target=${target}, then lifecycle install-service --target=${target}${autoexecSuffix}; service downtime is expected between commands`);
+                        throw new Error(`install-service cannot rewrite a committed proxy service; use lifecycle remove-service --target=${target}, then lifecycle install-service --target=${target}; service downtime is expected between commands`);
                     }
                     if (readiness) {
                         throw new Error('install-service refused while first-run bootstrap readiness is active; run lifecycle bootstrap recovery');
@@ -1433,9 +1439,6 @@ function parseBootstrapFlags(argv) {
         }
         const separator = argument.indexOf('=');
         const name = argument.slice(2, separator >= 0 ? separator : undefined);
-        if (name === 'with-autoexec' || name === 'autoexec-home') {
-            throw new Error('lifecycle bootstrap manages only the proxy supervisor; --with-autoexec and --autoexec-home are unsupported and no artifacts were changed');
-        }
         if (!['target', 'env-file', 'cwd', 'dry-run'].includes(name)) {
             throw new Error('lifecycle bootstrap received an unknown option');
         }
@@ -1868,22 +1871,11 @@ async function assertNoActiveDurableSelfUpdateRecovery(input) {
 async function installService(target, flags, env, argv1, loadUnixRecoveryController = () => import('@evomap/evolver-proxy'), options = {}) {
     const dryRun = flags['dry-run'] === true;
     const lifecycleStateDir = lifecyclePaths(env).stateDir;
-    if (flags['with-autoexec'] !== undefined && flags['with-autoexec'] !== true) {
-        throw new Error('--with-autoexec is a boolean flag and does not accept a value');
-    }
-    if (flags['autoexec-home'] === true) {
-        throw new Error('--autoexec-home requires a path');
-    }
-    const withAutoexec = flags['with-autoexec'] === true;
-    if (!withAutoexec && flags['autoexec-home'] !== undefined) {
-        throw new Error('--autoexec-home requires --with-autoexec');
-    }
-    const configuredEnvFile = typeof flags['env-file'] === 'string'
-        ? flags['env-file'].trim()
-        : nonBlankEnv(env, 'EVOLVER_ENV_FILE');
-    const envFile = configuredEnvFile
-        ? resolvePath(expandHomePath(configuredEnvFile))
-        : undefined;
+    const envFile = serviceEnvFile(flags, env);
+    const companionWorkingDirectory = serviceWorkingDirectory(flags);
+    const companion = options.proxyOnly
+        ? undefined
+        : planAutoexecCompanion(target, flags, env, argv1, envFile, companionWorkingDirectory);
     const supervised = configuredSelfUpdateTarget(env)
         ? resolveDaemonCommand(env, process.execPath, argv1)
         : resolveSelfUpdatingExecutable(process.execPath, argv1);
@@ -1926,28 +1918,9 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         unixControllerStateDir = dirname(dirname(controllerPath));
     }
     const serviceCommand = unixController ?? supervised;
-    const autoexecHomeFlag = typeof flags['autoexec-home'] === 'string' ? flags['autoexec-home'].trim() : undefined;
-    if (autoexecHomeFlag !== undefined && !autoexecHomeFlag) {
-        throw new Error('--autoexec-home requires a non-empty path');
-    }
-    const companionWorkingDirectoryFlag = typeof flags['cwd'] === 'string'
-        ? assertSingleLine(flags['cwd'].trim(), 'service working directory')
-        : undefined;
-    const companionWorkingDirectory = companionWorkingDirectoryFlag
-        ? (isAbsolute(companionWorkingDirectoryFlag) ? companionWorkingDirectoryFlag : resolvePath(companionWorkingDirectoryFlag))
-        : process.cwd();
-    const autoexecHome = autoexecHomeFlag
-        ? assertSingleLine(isAbsolute(autoexecHomeFlag) ? autoexecHomeFlag : resolvePath(companionWorkingDirectory, autoexecHomeFlag), 'autoexec home')
-        : undefined;
-    const autoexecCommand = withAutoexec
-        ? resolveAutoexecDaemonCommand(env, process.execPath, argv1, autoexecHome)
-        : undefined;
-    if (withAutoexec && !autoexecCommand) {
-        throw new Error('cannot resolve the current evolver CLI for --with-autoexec; pass a standalone Evolver binary or run through cli.js');
-    }
+    const autoexecHome = companion?.autoexecHome;
     if (target === 'systemd') {
         const path = expandHome('~/.config/systemd/user/evolver-proxy.service');
-        const autoexecPath = expandHome('~/.config/systemd/user/evolver-autoexec.service');
         const workingDirectory = typeof flags['cwd'] === 'string' ? flags['cwd'] : undefined;
         const unit = renderSystemdUnit({
             envFile,
@@ -1962,23 +1935,14 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         });
         if (!dryRun)
             writeServiceArtifact(path, unit, 0o644, options);
-        let autoexecUnit;
-        if (autoexecCommand) {
-            autoexecUnit = renderAutoexecSystemdUnit({
-                envFile,
-                workingDirectory: companionWorkingDirectory,
-                execStart: [autoexecCommand.command, ...autoexecCommand.args].map(quoteSystemdArg).join(' '),
-            });
-            if (!dryRun)
-                writeServiceArtifact(autoexecPath, autoexecUnit, 0o644, options);
-        }
+        if (companion && !dryRun)
+            writeServiceArtifact(companion.path, companion.content, 0o644, options);
         return {
             status: dryRun ? 'rendered' : 'installed',
-            files: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
-            bootstrapArtifacts: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
+            files: [path, ...(companion ? [companion.path] : []), ...(unixController ? [unixController.command] : [])],
+            bootstrapArtifacts: [path, ...(unixController ? [unixController.command] : [])],
             bootstrapArtifactIdentities: expectedBootstrapArtifactIdentities([
                 [path, unit],
-                ...(autoexecUnit ? [[autoexecPath, autoexecUnit]] : []),
                 ...(unixController && standaloneTarget && existsSync(standaloneTarget)
                     ? [[unixController.command, { sourcePath: standaloneTarget }]]
                     : []),
@@ -1989,9 +1953,8 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
     }
     if (target === 'launchd') {
         const path = expandHome('~/Library/LaunchAgents/com.evomap.evolver-proxy.plist');
-        const autoexecPath = expandHome('~/Library/LaunchAgents/com.evomap.evolver-autoexec.plist');
         const workingDirectory = companionWorkingDirectory;
-        const logDir = join(homedir(), 'Library', 'Logs');
+        const logDir = launchdLogDir();
         const plist = renderLaunchdPlist({
             envFile,
             lifecycleStateDir,
@@ -2008,24 +1971,14 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         });
         if (!dryRun)
             writeServiceArtifact(path, plist, 0o644, options);
-        let autoexecPlist;
-        if (autoexecCommand) {
-            autoexecPlist = renderAutoexecLaunchdPlist({
-                envFile,
-                workingDirectory,
-                programArguments: [autoexecCommand.command, ...autoexecCommand.args],
-                logDir,
-            });
-            if (!dryRun)
-                writeServiceArtifact(autoexecPath, autoexecPlist, 0o644, options);
-        }
+        if (companion && !dryRun)
+            writeServiceArtifact(companion.path, companion.content, 0o644, options);
         return {
             status: dryRun ? 'rendered' : 'installed',
-            files: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
-            bootstrapArtifacts: [path, ...(autoexecCommand ? [autoexecPath] : []), ...(unixController ? [unixController.command] : [])],
+            files: [path, ...(companion ? [companion.path] : []), ...(unixController ? [unixController.command] : [])],
+            bootstrapArtifacts: [path, ...(unixController ? [unixController.command] : [])],
             bootstrapArtifactIdentities: expectedBootstrapArtifactIdentities([
                 [path, plist],
-                ...(autoexecPlist ? [[autoexecPath, autoexecPlist]] : []),
                 ...(unixController && standaloneTarget && existsSync(standaloneTarget)
                     ? [[unixController.command, { sourcePath: standaloneTarget }]]
                     : []),
@@ -2035,7 +1988,7 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
         };
     }
     let path = expandHome('~/install-evolver-proxy-windows.ps1');
-    let autoexecPath = expandHome('~/install-evolver-autoexec-windows.ps1');
+    let autoexecPath = companion?.path;
     const selfUpdateStateDir = env['EVOLVER_SELF_UPDATE_STATE_DIR']?.trim();
     const standalone = standaloneTarget;
     const bootstrapArtifacts = windowsBootstrapArtifacts(path, standalone, selfUpdateStateDir, env, options.exclusive === true);
@@ -2095,28 +2048,96 @@ async function installService(target, flags, env, argv1, loadUnixRecoveryControl
             path = writeWindowsHelper(path, script);
         }
     }
-    if (autoexecCommand) {
-        const standaloneAutoexec = autoexecCommand.args[0] === 'autoexec';
-        const autoexecScript = renderWindowsAutoexecInstaller({
-            ...(standaloneAutoexec
-                ? { evolverBin: autoexecCommand.command }
-                : { nodePath: autoexecCommand.command, cliBin: autoexecCommand.args[0] }),
-            ...(envFile ? { envFile } : {}),
-            ...(autoexecHome ? { autoexecHome } : {}),
-            workingDirectory: companionWorkingDirectory,
-        });
-        if (!dryRun) {
-            options.assertOwner?.();
-            autoexecPath = writeWindowsHelper(autoexecPath, autoexecScript);
-        }
+    if (companion && !dryRun) {
+        options.assertOwner?.();
+        autoexecPath = writeWindowsHelper(companion.path, companion.content);
     }
     return {
         status: dryRun ? 'rendered' : 'installed',
-        files: [path, ...(autoexecCommand ? [autoexecPath] : [])],
+        files: [path, ...(autoexecPath ? [autoexecPath] : [])],
         bootstrapArtifacts,
         bootstrapArtifactIdentities: expectedBootstrapArtifactIdentities(windowsIdentityEntries),
         service: 'windows-scheduled-task',
         ...(autoexecHome ? { autoexecHome } : {}),
+    };
+}
+function serviceEnvFile(flags, env) {
+    const configured = typeof flags['env-file'] === 'string'
+        ? flags['env-file'].trim()
+        : nonBlankEnv(env, 'EVOLVER_ENV_FILE');
+    return configured ? resolvePath(expandHomePath(configured)) : undefined;
+}
+function serviceWorkingDirectory(flags) {
+    const flag = typeof flags['cwd'] === 'string'
+        ? assertSingleLine(flags['cwd'].trim(), 'service working directory')
+        : undefined;
+    if (!flag)
+        return process.cwd();
+    return isAbsolute(flag) ? flag : resolvePath(flag);
+}
+function launchdLogDir() {
+    return join(homedir(), 'Library', 'Logs');
+}
+function canonicalCliPath(argv1) {
+    if (!argv1)
+        return undefined;
+    try {
+        return realpathSync(argv1);
+    }
+    catch {
+        return undefined;
+    }
+}
+function planAutoexecCompanion(target, flags, env, argv1, envFile, workingDirectory) {
+    if (flags['autoexec-home'] === true)
+        throw new Error('--autoexec-home requires a path');
+    const homeFlag = typeof flags['autoexec-home'] === 'string' ? flags['autoexec-home'].trim() : undefined;
+    if (homeFlag !== undefined && !homeFlag)
+        throw new Error('--autoexec-home requires a non-empty path');
+    const autoexecHome = homeFlag
+        ? assertSingleLine(isAbsolute(homeFlag) ? homeFlag : resolvePath(workingDirectory, homeFlag), 'autoexec home')
+        : undefined;
+    // A global npm bin is a symlink named `evolver`; only its target identifies the cli.js entry.
+    const command = resolveAutoexecDaemonCommand(env, process.execPath, argv1, autoexecHome)
+        ?? resolveAutoexecDaemonCommand(env, process.execPath, canonicalCliPath(argv1), autoexecHome);
+    if (!command) {
+        throw new Error('cannot resolve the current evolver CLI for the autoexec companion; run a standalone Evolver binary or the cli.js entry');
+    }
+    const home = autoexecHome ? { autoexecHome } : {};
+    if (target === 'systemd') {
+        return {
+            path: expandHome('~/.config/systemd/user/evolver-autoexec.service'),
+            content: renderAutoexecSystemdUnit({
+                envFile,
+                workingDirectory,
+                execStart: [command.command, ...command.args].map(quoteSystemdArg).join(' '),
+            }),
+            ...home,
+        };
+    }
+    if (target === 'launchd') {
+        return {
+            path: expandHome('~/Library/LaunchAgents/com.evomap.evolver-autoexec.plist'),
+            content: renderAutoexecLaunchdPlist({
+                envFile,
+                workingDirectory,
+                programArguments: [command.command, ...command.args],
+                logDir: launchdLogDir(),
+            }),
+            ...home,
+        };
+    }
+    return {
+        path: expandHome('~/install-evolver-autoexec-windows.ps1'),
+        content: renderWindowsAutoexecInstaller({
+            ...(command.args[0] === 'autoexec'
+                ? { evolverBin: command.command }
+                : { nodePath: command.command, cliBin: command.args[0] }),
+            ...(envFile ? { envFile } : {}),
+            ...home,
+            workingDirectory,
+        }),
+        ...home,
     };
 }
 function defaultBootstrapTarget(platform) {
@@ -2138,7 +2159,7 @@ async function adoptLegacyBootstrapService(input) {
         ? probeLegacyWindowsLauncherPath(run, commandTimeout(deadlineMs, now, BOOTSTRAP_ROLLBACK_RESERVE_MS))
         : undefined;
     assertOwner();
-    const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { assertOwner });
+    const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { proxyOnly: true, assertOwner });
     assertOwner();
     const artifactPlan = legacyBootstrapArtifactPlan(legacy, planned, target, env, lifecyclePaths(env).stateDir, legacyWindowsLauncherPath, false, true, uid);
     const receipts = captureLegacyBootstrapArtifactReceipts(artifactPlan.paths, artifactPlan.expected, target, uid);
@@ -2235,7 +2256,7 @@ async function removeLegacyBootstrapService(input) {
         ? probeLegacyWindowsLauncherPath(run, commandTimeout(deadlineMs, now, BOOTSTRAP_ROLLBACK_RESERVE_MS), managerState !== 'disabled')
         : undefined;
     assertOwner();
-    const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { assertOwner });
+    const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { proxyOnly: true, assertOwner });
     assertOwner();
     const artifactPlan = legacyBootstrapArtifactPlan(legacy, planned, target, env, stateDir, legacyWindowsLauncherPath, managerState === 'absent', false, uid);
     const receipts = captureLegacyBootstrapArtifactReceipts(artifactPlan.paths, artifactPlan.expected, target, uid);
@@ -2346,9 +2367,6 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
     if (flags['dry-run'] !== undefined && flags['dry-run'] !== true) {
         throw new Error('--dry-run is a boolean flag and does not accept a value');
     }
-    if (flags['with-autoexec'] !== undefined || flags['autoexec-home'] !== undefined) {
-        throw new Error('lifecycle bootstrap manages only the proxy supervisor; --with-autoexec and --autoexec-home are unsupported and no artifacts were changed');
-    }
     const platform = deps.platform ?? process.platform;
     const target = typeof flags['target'] === 'string' ? serviceTarget(flags) : defaultBootstrapTarget(platform);
     const dryRun = flags['dry-run'] === true;
@@ -2373,13 +2391,15 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
         };
     });
     if (dryRun) {
-        const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { exclusive: true, transactionId });
+        const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { exclusive: true, proxyOnly: true, transactionId });
         const plannedFiles = planned.files ?? [];
         return {
             status: 'planned',
             files: plannedFiles,
             service: planned.service,
             actions: bootstrapActivationPlan(target, plannedFiles, uid),
+            autoexec: bootstrapAutoexecCompanion(target, installFlags, env, argv1, run, uid, true),
+            ...protectedAuditInstallReport((deps.protectedAudit ?? coreEvents.protectedAuditReadiness)()),
         };
     }
     const nativeTarget = platform === 'linux'
@@ -2485,6 +2505,7 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
                         assertForwardMutationBudget(deadlineMs, now());
                         const expected = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, {
                             exclusive: true,
+                            proxyOnly: true,
                             transactionId: existingMarker.transactionId,
                             assertOwner,
                         });
@@ -2561,7 +2582,7 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
             }
             assertForwardMutationBudget(deadlineMs, now());
             assertOwner();
-            const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { exclusive: true, transactionId, assertOwner });
+            const planned = await install(target, { ...installFlags, 'dry-run': true }, env, argv1, loadUnixRecoveryController, { exclusive: true, proxyOnly: true, transactionId, assertOwner });
             assertOwner();
             const plannedFiles = planned.files ?? [];
             const plannedArtifacts = planned.bootstrapArtifacts ?? plannedFiles;
@@ -2621,7 +2642,7 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
                     }
                 };
                 assertOwner();
-                const installed = await install(target, applyFlags, env, argv1, loadUnixRecoveryController, { exclusive: true, transactionId, onArtifactPublished, assertOwner });
+                const installed = await install(target, applyFlags, env, argv1, loadUnixRecoveryController, { exclusive: true, proxyOnly: true, transactionId, onArtifactPublished, assertOwner });
                 assertOwner();
                 const files = installed.files ?? [];
                 const actualArtifacts = installed.bootstrapArtifacts ?? files;
@@ -2783,7 +2804,46 @@ async function bootstrapService(flags, env, argv1, deps, loadUnixRecoveryControl
     });
     if (!outcome)
         throw new Error('bootstrap completed without a lifecycle outcome');
-    return outcome;
+    return {
+        ...outcome,
+        autoexec: bootstrapAutoexecCompanion(target, installFlags, env, argv1, run, uid, false),
+        ...protectedAuditInstallReport((deps.protectedAudit ?? coreEvents.protectedAuditReadiness)()),
+    };
+}
+function bootstrapAutoexecCompanion(target, flags, env, argv1, run, uid, dryRun) {
+    let plan;
+    try {
+        plan = planAutoexecCompanion(target, flags, env, argv1, serviceEnvFile(flags, env), serviceWorkingDirectory(flags));
+    }
+    catch (error) {
+        return { status: 'failed', files: [], actions: [], detail: `${boundedBootstrapError(error)}; the proxy bootstrap is unaffected` };
+    }
+    if (dryRun)
+        return { status: 'planned', files: [plan.path], actions: autoexecCompanionActions(target, plan.path, uid) };
+    return activateAutoexecCompanion({
+        target,
+        plan,
+        uid,
+        systemctl: SYSTEMCTL_PATH,
+        launchctl: LAUNCHCTL_PATH,
+        powershell: trustedWindowsPowerShell,
+        run: (command, args) => run(command, args, BOOTSTRAP_COMMAND_TIMEOUT_MS),
+        exists: existsSync,
+        writeUnit: (path, content) => { writeTextFile(path, content, 0o644, 'wx'); },
+        removeUnit: removeUnitHolding,
+        writeWindowsInstaller: writeWindowsHelper,
+    });
+}
+function removeUnitHolding(path, content) {
+    try {
+        if (readFileSync(path, 'utf8') !== content)
+            return false;
+        rmSync(path);
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 function bootstrapActivationPlan(target, files, uid) {
     if (target === 'systemd') {

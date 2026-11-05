@@ -130,7 +130,7 @@ export function regularFileFingerprint(path) {
         throw error;
     }
 }
-function nativePathIdentity(path, role, witnessAccess = constants.O_RDONLY) {
+function nativePathIdentity(path, role, witnessAccess = constants.O_RDONLY, strictSnapshot = false) {
     const current = lstatSync(path, { bigint: true });
     if (current.isSymbolicLink())
         throw new UnsafeAssetStorePathError(role, 'symlink');
@@ -146,9 +146,16 @@ function nativePathIdentity(path, role, witnessAccess = constants.O_RDONLY) {
     try {
         const identity = fstatSync(witness, { bigint: true });
         const after = lstatSync(path, { bigint: true });
+        const sameVersion = (named) => named.isFile() && !named.isSymbolicLink()
+            && (named.dev === 0n ? identity.dev !== 0n : named.dev === identity.dev)
+            && named.ino === identity.ino && named.birthtimeNs === identity.birthtimeNs
+            && named.size === identity.size && named.mode === identity.mode && named.nlink === identity.nlink
+            && named.uid === identity.uid && named.gid === identity.gid
+            && named.mtimeNs === identity.mtimeNs && named.ctimeNs === identity.ctimeNs;
         if (!identity.isFile() || after.isSymbolicLink() || !after.isFile()
             || identity.ino !== current.ino || identity.ino !== after.ino
-            || identity.birthtimeNs !== current.birthtimeNs || identity.birthtimeNs !== after.birthtimeNs) {
+            || identity.birthtimeNs !== current.birthtimeNs || identity.birthtimeNs !== after.birthtimeNs
+            || strictSnapshot && (!sameVersion(current) || !sameVersion(after))) {
             throw new UnsafeAssetStorePathError(role, 'path_changed');
         }
         result = { ok: true, identity };
@@ -241,6 +248,10 @@ export function assertAssetStoreDirectoryIdentity(path, expected) {
 export function captureRegularAssetFileIdentity(path) {
     const identity = nativePathIdentity(path, 'asset_file');
     return Object.freeze({ dev: identity.dev, ino: identity.ino, birthtimeNs: identity.birthtimeNs });
+}
+/** A path version from a real kernel witness, not a held FD or a missing-volume wildcard. */
+export function captureRegularAssetFileSnapshot(path, witnessAccess = constants.O_RDONLY) {
+    return nativePathIdentity(path, 'asset_file', witnessAccess, true);
 }
 export function assertOpenedRegularAssetFile(fd, path, expected) {
     assertOpenedPathMatches(fd, path, 'asset_file');

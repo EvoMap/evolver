@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
-import { exec, verify } from '@evomap/evolver-core';
+import { assetstore, exec, verify } from '@evomap/evolver-core';
 import { createLlmGit } from './llmGit.js';
 /** Read the operator's acceptance plan once, before any material is claimed or model dispatched. */
 export function readCycleValidationSpec(path) {
@@ -7,12 +7,19 @@ export function readCycleValidationSpec(path) {
         throw new Error('--validation-spec requires a file path');
     let fd;
     try {
-        const before = lstatSync(path, { bigint: true });
-        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > 65536n)
+        const named = lstatSync(path, { bigint: true });
+        if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1n || named.size > 65536n)
+            throw new Error();
+        const before = assetstore.captureRegularAssetFileSnapshot(path);
+        if (((process.platform !== 'win32' || named.dev !== 0n) && named.dev !== before.dev)
+            || named.ino !== before.ino || named.birthtimeNs !== before.birthtimeNs || named.nlink !== before.nlink
+            || named.mode !== before.mode || named.size !== before.size
+            || named.mtimeNs !== before.mtimeNs || named.ctimeNs !== before.ctimeNs)
             throw new Error();
         fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         const opened = fstatSync(fd, { bigint: true });
-        if (before.dev !== opened.dev || before.ino !== opened.ino || before.size !== opened.size
+        if (before.dev !== opened.dev || before.ino !== opened.ino || before.birthtimeNs !== opened.birthtimeNs
+            || before.nlink !== opened.nlink || before.mode !== opened.mode || before.size !== opened.size
             || before.mtimeNs !== opened.mtimeNs || before.ctimeNs !== opened.ctimeNs)
             throw new Error();
         const buffer = Buffer.alloc(65_537);
@@ -25,7 +32,10 @@ export function readCycleValidationSpec(path) {
         }
         const bytes = buffer.subarray(0, count);
         const after = fstatSync(fd, { bigint: true });
-        if (bytes.length > 65_536 || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs)
+        const pathAfter = assetstore.captureRegularAssetFileSnapshot(path);
+        if (bytes.length > 65_536 || [after, pathAfter].some(stat => stat.dev !== opened.dev || stat.ino !== opened.ino
+            || stat.birthtimeNs !== opened.birthtimeNs || stat.nlink !== opened.nlink || stat.mode !== opened.mode
+            || stat.size !== opened.size || stat.mtimeNs !== opened.mtimeNs || stat.ctimeNs !== opened.ctimeNs))
             throw new Error();
         return verify.parseDeclarativeValidationSpec(JSON.parse(bytes.toString('utf8')));
     }

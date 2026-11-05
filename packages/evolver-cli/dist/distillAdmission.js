@@ -33,3 +33,33 @@ export async function assessDraftAdmissionFromStore(store, candidate, additional
     ];
     return { admission: assessDraftAdmission(candidate, existing, opts), existing };
 }
+/**
+ * Sessions a host plugin already distilled (its Capsule records the host session id as `source_thread`). The
+ * transcript backfill skips them so one session never yields both a plugin draft and a structural one.
+ */
+export async function sessionsDistilledByHost(store) {
+    const capsules = await store.list('Capsule', 20_000);
+    return new Set(capsules
+        .map((capsule) => capsule['env_fingerprint']?.source_thread)
+        .filter((thread) => typeof thread === 'string' && thread.length > 0));
+}
+const SESSION_ID_SCAN_LINES = 50;
+/** The host's own session id as a transcript records it near its start (Claude `sessionId`, Codex `session_meta`). */
+export function transcriptSessionIdOf(content) {
+    for (const line of content.split('\n', SESSION_ID_SCAN_LINES)) {
+        let row;
+        try {
+            row = JSON.parse(line);
+        }
+        catch {
+            continue;
+        }
+        const direct = row['sessionId'] ?? row['session_id'];
+        if (typeof direct === 'string' && direct)
+            return direct;
+        const meta = row['type'] === 'session_meta' ? row['payload']?.id : undefined;
+        if (typeof meta === 'string' && meta)
+            return meta;
+    }
+    return undefined;
+}

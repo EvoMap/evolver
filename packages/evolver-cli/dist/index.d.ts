@@ -3,6 +3,7 @@ import { assetstore } from '@evomap/evolver-core';
 import { type ImportV1Options } from './migrate/v1Import.js';
 import { type LifecyclePaths } from './lifecycle.js';
 import { type NonGitWorkspaceNoticeOptions } from './nonGitWorkspaceNotice.js';
+import { type ProtectedAuditSessionNoticeOptions } from './protectedAuditStatus.js';
 import { type IngestDeps } from './sessionIngest.js';
 export { runSessionIngestTick, scanSessionDirs, type IngestDeps, type SessionIngestTickResult, } from './sessionIngest.js';
 export interface DistillDeps extends IngestDeps {
@@ -164,6 +165,8 @@ export interface InjectDeps {
     legacyTaskSweep?: () => void;
     /** Test seam for the non-git workspace notice. Production uses cwd + ~/.evomap throttle state. */
     nonGitNotice?: NonGitWorkspaceNoticeOptions;
+    /** Test seam for the protected audit probe and its per-session notice state. */
+    protectedAuditNotice?: ProtectedAuditSessionNoticeOptions;
     /** Resolving means bytes written, not host receipt or execution. */
     stdout?: (text: string) => void | Promise<void>;
     contextTimeoutMs?: number;

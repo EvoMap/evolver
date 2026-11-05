@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { bootstrap as coreBootstrap, util as coreUtil } from '@evomap/evolver-core';
+import { type AutoexecCompanionOutcome } from './lifecycleAutoexecCompanion.js';
+import { type ProtectedAuditInstallState, type ProtectedAuditReadiness } from './protectedAuditStatus.js';
 import { type BootstrapTransactionJournal, type BootstrapArtifactIdentity, type LegacyBootstrapMarkerRead } from './lifecycleBootstrapTransaction.js';
 import { type LegacyTaskCleanupResult, type LegacyTaskRun } from './windowsLegacyTaskCleanup.js';
 export declare function selectExistingPosixCommand(candidates: readonly string[], exists?: (path: string) => boolean): string;
@@ -46,6 +48,9 @@ export interface LifecycleResult {
     service?: string;
     autoexecHome?: string;
     actions?: string[];
+    autoexec?: AutoexecCompanionOutcome;
+    protected_audit?: ProtectedAuditInstallState;
+    protected_audit_next_step?: string;
     /** Files whose absent pre-state is owned by a first-run bootstrap transaction. */
     bootstrapArtifacts?: string[];
     /** Expected bytes recorded before a first-run bootstrap mutates the filesystem. */
@@ -100,6 +105,8 @@ export interface BootstrapServiceDeps {
     inspectSelfUpdate?: InspectDurableSelfUpdate;
     /** Test seam for the post-activation legacy v1 Windows task sweep (#956). */
     legacyTaskCleanupRun?: LegacyTaskRun;
+    /** Test seam for the read-only protected audit service probe. */
+    protectedAudit?: () => ProtectedAuditReadiness;
 }
 interface ServiceControlResult {
     status: number | null;
@@ -107,6 +114,8 @@ interface ServiceControlResult {
     stdout?: string;
 }
 interface InstallServiceOptions {
+    /** Bootstrap's transaction owns only the proxy manager; it installs the autoexec companion separately. */
+    proxyOnly?: boolean;
     exclusive?: boolean;
     transactionId?: string;
     onArtifactPublished?: (path: string, claimPath: string) => void;

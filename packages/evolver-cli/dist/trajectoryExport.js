@@ -2,7 +2,7 @@ import { closeSync, existsSync, lstatSync, openSync, readSync, readdirSync, read
 import { basename, delimiter, dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { events, ops, trace } from '@evomap/evolver-core';
-import { ADAPTERS, isRemovedAdapter, adapterForPath, genericChatAdapter, isCursorStateVscdbPath, parseCursorStateVscdb, parseJsonlLines, parseJsonlLinesWithStats, } from '@evomap/evolver-runtime-adapters';
+import { ADAPTERS, isRemovedAdapter, adapterForPath, genericChatAdapter, isCursorStateVscdbPath, parseCursorStateVscdb, parseJsonlLines, readSessionLog, parseJsonlLinesWithStats, } from '@evomap/evolver-runtime-adapters';
 const TRACE_FILE_RE = /(^|[/\\])llm-trace-[^/\\]*\.jsonl$/i;
 const RUNTIME_SESSION_ENABLE_ENV = 'EVOLVER_TRAJECTORY_RUNTIME_SESSIONS';
 const RUNTIME_SESSION_ENABLE_ENV_LEGACY = 'EVOLVER_TRAJECTORY_EXPORT_RUNTIME_SESSIONS';
@@ -862,7 +862,7 @@ export async function runTrajectoryExport(argv) {
                     continue;
                 }
             }
-            const chunk = readFileSync(file.path, 'utf8');
+            const chunk = file.kind === 'session' ? readSessionLog(file.path) : readFileSync(file.path, 'utf8');
             if (file.kind === 'trace') {
                 const result = trace.readTraceRowsFromJsonl(chunk, readOpts);
                 allRows.push(...result.rows);

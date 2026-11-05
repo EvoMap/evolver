@@ -49,11 +49,14 @@ export function rootEventReuseTallies(path = events.rootEventsPath()) {
         }
     };
 }
-function recalledAsset(hit) {
+const TRIAL_NOTICE = '[On trial, not yet verified] ';
+const TRIAL_BAN_FAILURES = 2;
+function recalledAsset(hit, trial) {
     // Only notes recall matched to this project leave the store; a record's own fields cannot carry any.
     const { project_notes: _unvouched, recall: _claimed, ...gene } = hit.gene;
     return {
         ...gene,
+        ...(trial && typeof gene['summary'] === 'string' ? { summary: `${TRIAL_NOTICE}${gene['summary']}` } : {}),
         similarity: LOCAL_SIMILARITY_FLOOR + (1 - LOCAL_SIMILARITY_FLOOR) * hit.relevance,
         ...(hit.projectNotes.length > 0 ? { project_notes: hit.projectNotes } : {}),
         recall: {
@@ -64,8 +67,31 @@ function recalledAsset(hit) {
             project_match: hit.projectMatch,
             reuse: hit.reuse,
             merged_asset_ids: hit.mergedAssetIds,
+            ...(trial ? { trial: true } : {}),
         },
     };
+}
+/** Quarantined drafts that may be tried once: every other gate still applies, and two failures end the trial. */
+function trialPool(genes, capsules, eligibility) {
+    const onTrial = genes.filter((gene) => eligibility.review.get(gene.asset_id)?.state === 'quarantined');
+    if (onTrial.length === 0)
+        return [];
+    const review = new Map(eligibility.review);
+    for (const gene of onTrial)
+        review.delete(gene.asset_id);
+    const relaxed = { ...eligibility, review };
+    const failures = new Map();
+    for (const capsule of capsules) {
+        if (capsule['outcome']?.status !== 'failed' || capsule['resolution_status'] === 'pending')
+            continue;
+        const geneId = String(capsule['gene'] ?? '');
+        failures.set(geneId, (failures.get(geneId) ?? 0) + 1);
+    }
+    const trialGenes = onTrial.filter((gene) => (failures.get(String(gene['id'] ?? gene.asset_id)) ?? 0) < TRIAL_BAN_FAILURES
+        && assetstore.assetContextEligibilityReason(gene, relaxed) === undefined);
+    const ids = new Set(trialGenes.map((gene) => String(gene['id'] ?? gene.asset_id)));
+    return [...trialGenes, ...capsules.filter((capsule) => ids.has(String(capsule['gene'] ?? ''))
+            && assetstore.assetContextEligibilityReason(capsule, relaxed) === undefined)];
 }
 function diagnosticsOf(result) {
     return {
@@ -103,10 +129,19 @@ export async function recallFromLocalStore(store, text, projectDir) {
     const contexts = typeof store.readLocalContextsV1 === 'function' && capsules.length > 0
         ? await store.readLocalContextsV1(capsules.map((capsule) => capsule.asset_id)) : [];
     const query = { text, projectFingerprint: await assetstore.projectFingerprint(projectDir) };
+    const outcomeOf = (result, trial) => {
+        const rawAssets = new Map(result.hits.map((hit) => [recalledAsset(hit, trial), hit.gene]));
+        return { assets: [...rawAssets.keys()], rawAssets, diagnostics: { ...diagnosticsOf(result), ...(truncated ? { truncated } : {}) } };
+    };
     return { finish: (eligibility, reuse) => {
             const qualified = [...genes, ...capsules].filter((asset) => assetstore.assetContextEligibilityReason(asset, eligibility) === undefined);
             const result = assetstore.recallLocalAssets(qualified, query, reuse, contexts);
-            const rawAssets = new Map(result.hits.map((hit) => [recalledAsset(hit), hit.gene]));
-            return { assets: [...rawAssets.keys()], rawAssets, diagnostics: { ...diagnosticsOf(result), ...(truncated ? { truncated } : {}) } };
+            if (result.hits.length > 0)
+                return outcomeOf(result, false);
+            const trial = trialPool(genes, capsules, eligibility);
+            if (trial.length === 0)
+                return outcomeOf(result, false);
+            const trialResult = assetstore.recallLocalAssets(trial, { ...query, limit: 1 }, reuse, contexts);
+            return trialResult.hits.length > 0 ? outcomeOf(trialResult, true) : outcomeOf(result, false);
         } };
 }

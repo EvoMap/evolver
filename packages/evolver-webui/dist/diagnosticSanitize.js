@@ -15,6 +15,11 @@ const SENSITIVE_HTTP_HEADER_CANDIDATE = /\b(?:proxy[-_]?authorization|authorizat
 const SENSITIVE_HTTP_HEADER_KEY = /^(?:(?:proxy[-_]?)?authorization|(?:set[-_]?)?cookie)$/i;
 const REDACTED_HEADER_VALUE = '[redacted]';
 const REDACTED_JSON_VALUE = JSON.stringify(REDACTED_HEADER_VALUE);
+// Only complete framed placeholders are safe; attached quotes and escapes remain value content.
+const DIAGNOSTIC_CREDENTIAL_VALUE = String.raw `(?!(?:\x22|')?\[redacted\](?:\\*[\x22'](?:[\x22'\\]*[\x22'])?(?:\\\\)*)?(?=$|[\s,;)}\]]))(?:(?:\x22(?:\\.|[^\x22\\])*\x22|'(?:\\.|[^'\\])*')(?:(?:\\\\)*\\[,;]|:(?!\s)|[^\s,;:)}\]\\]|\\(?![,;]))*|(?:[^\s,;\x22'\\]+|(?:\\\\)*\\[,;]|[\x22'\\]+(?=[^\s,;)}\]\x22'\\])|\\*[\x22'](?:[\x22'\\]*[\x22'])?(?:\\\\)*\\[,;]|\\+(?![\x22'\\]))+)`;
+const DIAGNOSTIC_AUTH_ASSIGNMENT = new RegExp(String.raw `\b(proxy[-_]?authorization|authorization)\b\s*=\s*${DIAGNOSTIC_CREDENTIAL_VALUE}`, 'gi');
+const DIAGNOSTIC_COOKIE_ASSIGNMENT = new RegExp(String.raw `\b(cookie|set[-_]?cookie)\b\s*=\s*${DIAGNOSTIC_CREDENTIAL_VALUE}`, 'gi');
+const DIAGNOSTIC_SECRET_ASSIGNMENT = new RegExp(String.raw `\b(api[_-]?key|account[_-]?key|instrumentation[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key|node[_-]?secret|token|password|passwd|secret)\b\s*[:=]\s*${DIAGNOSTIC_CREDENTIAL_VALUE}`, 'gi');
 // jsonc-parser declares SyntaxKind as an ambient const enum, which cannot be imported with verbatimModuleSyntax.
 const JSON_TOKEN = {
     openBrace: 1,
@@ -750,9 +755,9 @@ export function redactDiagnosticText(value, maxChars = MAX_TEXT) {
         .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, '[redacted private key]')
         .replace(/\b(https?:\/\/)[^/\s@]+@/gi, '$1')
         .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
-        .replace(/\b(proxy[-_]?authorization|authorization)\b\s*=\s*(?!(?:\x22|')?\[redacted\](?:\x22|')?)(?:\x22[^\x22]*\x22|'[^']*'|[^\s,;\x22']+)/gi, '$1=[redacted]')
-        .replace(/\b(cookie|set[-_]?cookie)\b\s*=\s*(?!(?:\x22|')?\[redacted\](?:\x22|')?)(?:\x22[^\x22]*\x22|'[^']*'|[^\s,;\x22']+)/gi, '$1=[redacted]')
-        .replace(/\b(api[_-]?key|account[_-]?key|instrumentation[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key|node[_-]?secret|token|password|passwd|secret)\b\s*[:=]\s*(?!(?:\x22|')?\[redacted\](?:\x22|')?)(?:\x22[^\x22]*\x22|'[^']*'|[^\s,;\x22']+)/gi, '$1=[redacted]')
+        .replace(DIAGNOSTIC_AUTH_ASSIGNMENT, '$1=[redacted]')
+        .replace(DIAGNOSTIC_COOKIE_ASSIGNMENT, '$1=[redacted]')
+        .replace(DIAGNOSTIC_SECRET_ASSIGNMENT, '$1=[redacted]')
         .replace(/\b[A-Za-z]:\\[^\s"']+/g, '[path]')
         .replace(/\\\\[^\\\s"']+\\[^\\\s"']+(?:\\[^\\\s"']+)*/g, '[path]')
         .replace(/(?:\/(?:Users|home|var|tmp|private|opt)\/[^\s"']+)+/g, '[path]')

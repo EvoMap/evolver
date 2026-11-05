@@ -1,13 +1,18 @@
 import { isExecutionEligible } from '../reference/guard.js';
 import { normalizeProofOfWork, parseProofOfWork } from '../schema/proofOfWork.js';
 import { proofIndicatesOutput } from '../algo/solidify.js';
+import { isHostObservedCapsule } from '../algo/hostObservedEvidence.js';
 /** 扫该 gene 关联的 Capsule, 派生学习视图(只读, 不落库). */
 export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
     const caps = (await provider.search({ kind: 'Capsule', gene: geneId, limit: 10_000 })).filter((item) => isExecutionEligible(item, provider.referenceScope));
-    let success = 0, failed = 0, inert = 0, scoreSum = 0;
+    let success = 0, failed = 0, inert = 0, observed = 0, pending = 0, scoreSum = 0;
     for (const c of caps) {
         const outcome = c.outcome;
         if (outcome?.status === 'failed') {
+            if (c.resolution_status === 'pending') {
+                pending += 1;
+                continue;
+            }
             failed += 1;
         }
         else if (outcome?.status === 'success') {
@@ -20,14 +25,16 @@ export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
                 success += 1;
             else
                 inert += 1;
+            if (isHostObservedCapsule(c))
+                observed += 1;
         }
         if (typeof outcome?.score === 'number')
             scoreSum += outcome.score;
     }
-    const total = caps.length;
+    const total = caps.length - pending;
     const decisive = success + failed; // inert excluded from the success-rate denominator (neutral)
     return {
-        geneId, total, success, failed, inert,
+        geneId, total, success, failed, inert, observed,
         successRate: decisive > 0 ? success / decisive : 0,
         avgScore: total > 0 ? scoreSum / total : 0,
         recentCapsuleIds: caps.slice(-recentN).map((c) => c.asset_id),

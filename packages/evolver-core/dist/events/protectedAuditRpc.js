@@ -14,6 +14,51 @@ export class ProtectedAuditUnavailableError extends Error {
         this.name = 'ProtectedAuditUnavailableError';
     }
 }
+function exchangeStages(observer) {
+    const pending = new Map();
+    let settled = false;
+    const end = (phase, outcome) => {
+        const finish = pending.get(phase);
+        pending.delete(phase);
+        try {
+            finish?.(outcome);
+        }
+        catch { /* Diagnostics cannot replace the original transport result. */ }
+    };
+    return {
+        start(phase) {
+            if (settled || !observer)
+                return;
+            try {
+                const finish = observer(phase);
+                if (finish)
+                    pending.set(phase, finish);
+            }
+            catch { /* Observation never gates the exchange. */ }
+        },
+        end,
+        settleAll(outcome) {
+            settled = true;
+            for (const phase of [...pending.keys()])
+                end(phase, outcome);
+        },
+    };
+}
+function exchangeReply(received, operationId) {
+    let reply;
+    try {
+        reply = JSON.parse(received.toString('utf8'));
+    }
+    catch {
+        throw new ProtectedAuditUnavailableError('response_invalid');
+    }
+    if (reply === null || typeof reply !== 'object' || Array.isArray(reply)
+        || reply.version !== 1 || reply.operationId !== operationId || typeof reply.ok !== 'boolean'
+        || (reply.error !== undefined && typeof reply.error !== 'string')) {
+        throw new ProtectedAuditUnavailableError('response_identity_invalid');
+    }
+    return reply;
+}
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 80 * 1024 * 1024;
 let rpcChildCommand;
@@ -101,6 +146,18 @@ export function protectedAuditConfigured() {
     }
     return true;
 }
+/** Read-only admission probe: stats and parses the OS-owned config and socket, never connects or writes. */
+export function protectedAuditReadiness() {
+    try {
+        if (!protectedAuditConfigured())
+            return { state: 'not_required' };
+        protectedAuditSocketPath();
+        return { state: 'ready' };
+    }
+    catch (error) {
+        return { state: 'unavailable', reason: error instanceof ProtectedAuditUnavailableError ? error.reason : 'socket_missing' };
+    }
+}
 function clientConfig(allowService = false) {
     const path = protectedAuditClientConfigPath();
     if (!path || !existsSync(path))
@@ -182,11 +239,11 @@ export function protectedAuditRpc(method, path, payload, options) {
     return exchangeProtectedAuditFrame(socketPath, request, () => {
         if (protectedAuditSocketPath() !== socketPath)
             throw new ProtectedAuditUnavailableError('socket_replaced');
-    }, options.signal);
+    }, options.signal, method === 'prepare_delivery' ? options.observer : undefined);
 }
 /** Internal transport only. The public wrapper owns configuration, logical
  * path and OS-principal admission; its mandatory pre-write check is retained. */
-export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWrite, signal) {
+export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWrite, signal, observer) {
     const { operationId, deadlineAt } = request;
     if (!Number.isFinite(deadlineAt) || Date.now() >= deadlineAt || signal?.aborted) {
         return Promise.reject(new ProtectedAuditUnavailableError('admission_expired'));
@@ -200,7 +257,16 @@ export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWri
     return new Promise((resolveResult, rejectResult) => {
         let done = false;
         const receiver = new ProtectedAuditFrameReceiver(MAX_RESPONSE_BYTES);
-        const socket = createConnection(socketPath);
+        const stages = exchangeStages(observer);
+        stages.start('connect');
+        let socket;
+        try {
+            socket = createConnection(socketPath);
+        }
+        catch (error) {
+            stages.settleAll('rejected');
+            throw error;
+        }
         const finish = (error, result) => {
             if (done)
                 return;
@@ -208,6 +274,7 @@ export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWri
             clearTimeout(timer);
             signal?.removeEventListener('abort', abort);
             socket.destroy();
+            stages.settleAll(error === undefined ? 'fulfilled' : 'rejected');
             if (error !== undefined)
                 rejectResult(error);
             else
@@ -217,41 +284,37 @@ export function exchangeProtectedAuditFrame(socketPath, request, verifyBeforeWri
         const timer = setTimeout(() => finish(new ProtectedAuditUnavailableError('transport_timeout_unknown')), Math.max(1, Math.min(30_000, deadlineAt - Date.now())));
         signal?.addEventListener('abort', abort, { once: true });
         socket.once('connect', () => {
+            stages.end('connect', 'fulfilled');
+            stages.start('submit');
             try {
                 verifyBeforeWrite();
                 if (Date.now() >= deadlineAt || signal?.aborted)
                     throw new ProtectedAuditUnavailableError('admission_expired');
                 socket.write(frame);
+                // Submission accepts bytes into the socket API, not a server acknowledgement.
+                stages.end('submit', 'fulfilled');
+                stages.start('first_byte');
+                stages.start('reply');
             }
             catch (error) {
                 finish(error);
             }
         });
         socket.on('data', chunk => {
-            let received;
-            try {
-                received = receiver.feed(chunk);
-            }
-            catch (error) {
-                finish(new ProtectedAuditUnavailableError('response_frame_invalid', { cause: error }));
-                return;
-            }
-            if (!received)
-                return;
+            if (chunk.length)
+                stages.end('first_byte', 'fulfilled');
             let reply;
             try {
-                reply = JSON.parse(received.toString('utf8'));
+                const received = receiver.feed(chunk);
+                if (!received)
+                    return;
+                reply = exchangeReply(received, operationId);
             }
-            catch {
-                finish(new ProtectedAuditUnavailableError('response_invalid'));
+            catch (error) {
+                finish(error instanceof ProtectedAuditUnavailableError ? error : new ProtectedAuditUnavailableError('response_frame_invalid', { cause: error }));
                 return;
             }
-            if (reply === null || typeof reply !== 'object' || Array.isArray(reply)
-                || reply.version !== 1 || reply.operationId !== operationId || typeof reply.ok !== 'boolean'
-                || (reply.error !== undefined && typeof reply.error !== 'string')) {
-                finish(new ProtectedAuditUnavailableError('response_identity_invalid'));
-                return;
-            }
+            stages.end('reply', 'fulfilled');
             if (!reply.ok) {
                 finish(new ProtectedAuditUnavailableError(reply.error ?? 'service_refused'));
                 return;

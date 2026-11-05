@@ -58,14 +58,15 @@ export interface ExistingGeneSignals {
     signals_match?: readonly string[];
 }
 export interface DraftAdmissionOptions {
-    /** Reject a draft with fewer matchable signals than this (default 2): a single generic signal is too broad. */
+    /** Reject a draft with fewer domain-discriminating signals than this (default 2). Generic signals (host tool names,
+     *  `mcp__*` tools, error-shape classes) stay in signals_match for matching but do not count toward this floor. */
     minSignals?: number;
     /** Reject a draft with fewer strategy steps than this (default 1, i.e. just non-empty like intakeGene; raise it
      *  for a stricter substance floor). A real fix can be one concrete step, so the default does not over-filter. */
     minStrategy?: number;
     /** Reject a draft whose discriminating-signal Jaccard similarity to ANY existing gene is >= this (default 0.6).
-     *  Generated fallback markers and generic command runners are omitted from this SOFT comparison, while the
-     *  exact-subset check still uses the complete signal sets. */
+     *  Generic signals are omitted from this SOFT comparison, while the exact-subset check still uses the complete
+     *  signal sets. */
     maxSimilarity?: number;
 }
 export interface DraftAdmission {

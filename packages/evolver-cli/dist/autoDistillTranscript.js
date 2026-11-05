@@ -13,8 +13,9 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { algo, assetstore, events, hub, signals } from '@evomap/evolver-core';
-import { adapterForPath } from '@evomap/evolver-runtime-adapters';
+import { adapterForPath, readSessionLog } from '@evomap/evolver-runtime-adapters';
 import { asGeneCandidate, parseDistillOutput, normalizeValidation, jaccardDuplicate, resolveDistillRunner, attachDistillModelName, p3Decide, } from './autoDistillLlm.js';
+import { sessionsDistilledByHost, transcriptSessionIdOf } from './distillAdmission.js';
 import { runRequiredSandboxedValidation } from './requiredSandboxValidation.js';
 const DEFAULT_MIN_TURNS = 2;
 const DEFAULT_MIN_CHARS = 200;
@@ -258,7 +259,7 @@ export async function runTranscriptDistillTick(deps) {
     const out = { scanned: 0, distilled: 0, shadowed: 0, skipped: 0, transient: 0 };
     if (mode === 'off')
         return out;
-    const readFile = deps.readFile ?? ((p) => readFileSync(p, 'utf8'));
+    const readFile = deps.readFile ?? readSessionLog;
     const statePath = deps.statePath ?? autoDistillTranscriptStatePath();
     const now = deps.now ?? (() => Date.now());
     const maxPerTick = deps.maxPerTick ?? envInt(env, 'EVOLVER_AUTO_DISTILL_TRANSCRIPT_MAX_PER_TICK', DEFAULT_MAX_PER_TICK);
@@ -268,6 +269,7 @@ export async function runTranscriptDistillTick(deps) {
     const tpatch = (hash, patch) => patchTState(statePath, hash, patch, stateCap);
     let spawned = 0;
     const seenThisTick = new Set(); // dedup identical-content files within ONE beat (state only dedups ACROSS beats)
+    const hostDistilled = await sessionsDistilledByHost(deps.store);
     for (const file of deps.files) {
         if (spawned >= maxPerTick)
             break;
@@ -284,6 +286,11 @@ export async function runTranscriptDistillTick(deps) {
             continue;
         } // unreadable/unparseable → skip
         out.scanned += 1;
+        const sessionId = adapter.parseSession?.(content)?.sessionId ?? transcriptSessionIdOf(content);
+        if (sessionId && hostDistilled.has(sessionId)) {
+            out.skipped += 1;
+            continue;
+        }
         if (!shouldTranscriptDistill(turns).distill) {
             out.skipped += 1;
             continue;

@@ -8,6 +8,7 @@ import { bootstrap, events, issueReporter } from '@evomap/evolver-core';
 import { expandHomePath, parseEnvFile } from '@evomap/evolver-mcp';
 import { formatMemoryGraphOperatorStatus, loadMemoryGraphOperatorStatus } from './localMemoryGraph.js';
 import { LEGACY_TASK_SKIP_ENV, probeLegacyWindowsDaemonTasks } from './windowsLegacyTaskCleanup.js';
+import { PROTECTED_AUDIT_INSTALL_GUIDE } from './protectedAuditStatus.js';
 // Secrets that must live ONLY behind the EVOLVER_ENV_FILE pointer — never inlined into a runtime config (#217).
 const SECRET_KEYS = [
     'A2A_NODE_SECRET',
@@ -697,6 +698,7 @@ export function runDoctorChecks(deps = {}) {
     catch {
         checks.push({ name: 'memory-graph', status: 'warn', detail: 'state=degraded corrupt=1 oversized_lines=0 oversized_files=0 archives=0' });
     }
+    checks.push(protectedAuditCheck(deps.platform ?? process.platform, deps.protectedAudit ?? events.protectedAuditReadiness));
     // 5. windows-legacy-tasks (#956): read-only probe for legacy V1 scheduled-task residue
     //    (win32 only). A detected residue warns with the manual fix; an INCONCLUSIVE probe
     //    also warns — it must never be reported as a confirmed-negative pass.
@@ -721,6 +723,21 @@ export function runDoctorChecks(deps = {}) {
         }
     }
     return checks;
+}
+function protectedAuditCheck(platform, probe) {
+    if (platform !== 'linux' && platform !== 'darwin') {
+        return { name: 'protected-audit', status: 'pass', detail: `not required on ${platform}; audit events use the local history` };
+    }
+    const readiness = probe();
+    if (readiness.state === 'ready')
+        return { name: 'protected-audit', status: 'pass', detail: 'protected audit service is installed and its socket is owned by the service account' };
+    if (readiness.state === 'not_required')
+        return { name: 'protected-audit', status: 'pass', detail: 'protected audit service is not required for this process' };
+    return {
+        name: 'protected-audit',
+        status: 'fail',
+        detail: `protected audit service unavailable (${readiness.reason}); inject, review and autoexec cannot record events until ${PROTECTED_AUDIT_INSTALL_GUIDE}`,
+    };
 }
 export function buildEnvCatalog(deps = {}) {
     const env = deps.env ?? process.env;

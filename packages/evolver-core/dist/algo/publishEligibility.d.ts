@@ -24,8 +24,10 @@ export interface GenePublishEvidence {
  * for the publish gate; the proof/inert distinction stays where it belongs
  * (success-rate, auto-promote), not here. A gene with only failures — or one
  * never run at all — has `success + inert === 0` and is not publishable.
+ * Host-observed outcomes (a hook saw the checks pass, no verifier re-ran them) feed probation only, so they are
+ * subtracted here: publishing needs at least one outcome a verifier or the cycle established.
  */
-export declare function isGenePublishEligible(view: Pick<GeneLearningView, 'success' | 'inert'>): boolean;
+export declare function isGenePublishEligible(view: Pick<GeneLearningView, 'success' | 'inert' | 'observed'>): boolean;
 /**
  * Read-only: derive a gene's outcome evidence and whether it clears the publish
  * bar. Returns `no_proven_success` for a gene the store has never seen succeed,

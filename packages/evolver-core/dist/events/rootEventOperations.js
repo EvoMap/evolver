@@ -61,17 +61,22 @@ export function rootOperationEventHash(event) {
     const { auditOperationId: _id, auditRequestHash: _hash, ...raw } = event;
     return rootOperationRequestHash(snapshotRootOperation(raw));
 }
+function legacyReceiptMatches(event, request, admission) {
+    const id = admission.legacyActivityId;
+    if (id === undefined)
+        return false;
+    if (typeof id !== 'string' || request.type !== 'experience.activity'
+        || request.payload?.id !== id
+        || admission.operationId !== `experience-activity-${id}`)
+        throw new RootOperationError('receipt_invalid');
+    return event.auditOperationId === undefined && event.auditRequestHash === undefined
+        && event.type === 'experience.activity' && event.payload?.id === id;
+}
 export function validateRootOperationReceipt(value, raw, admission) {
     const event = rootEvent.parse(value), request = snapshotRootOperation(raw), hash = rootOperationRequestHash(request);
     validateRootOperationId(admission.operationId);
-    const legacyId = admission.legacyActivityId;
-    if (legacyId !== undefined && (typeof legacyId !== 'string' || request.type !== 'experience.activity'
-        || request.payload?.id !== legacyId
-        || admission.operationId !== `experience-activity-${legacyId}`))
-        throw new RootOperationError('receipt_invalid');
+    const unkeyedLegacy = legacyReceiptMatches(event, request, admission);
     const keyed = event.auditOperationId === admission.operationId && event.auditRequestHash === hash;
-    const unkeyedLegacy = legacyId !== undefined && event.auditOperationId === undefined && event.auditRequestHash === undefined
-        && event.type === 'experience.activity' && event.payload?.id === legacyId;
     if (event.seq < 1 || rootOperationEventHash(event) !== hash || !keyed && !unkeyedLegacy) {
         throw new RootOperationError('receipt_invalid');
     }
@@ -135,17 +140,22 @@ function transaction(db, body) {
         throw error;
     }
 }
-function parseRecord(row) {
-    const operationId = row['operation_id'], requestHash = row['request_hash'], line = row['line'];
-    validateRootOperationId(operationId);
-    if (typeof requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(requestHash)
-        || typeof line !== 'string' || Buffer.byteLength(line) > 4096 || !line.endsWith('\n')
-        || !Number.isSafeInteger(row['offset']) || Number(row['offset']) < 0
+function validateRecordStorage(row) {
+    if (!Number.isSafeInteger(row['offset']) || Number(row['offset']) < 0
         || typeof row['identity'] !== 'string' || typeof row['prefix_hash'] !== 'string'
         || !/^[a-f0-9]{64}$/.test(row['prefix_hash']) || !['planned', 'committed'].includes(String(row['state']))
         || (row['archive'] !== null && (typeof row['archive'] !== 'string' || !SEGMENT.test(row['archive'])))) {
         throw new RootOperationError('metadata_invalid');
     }
+}
+function parseRecord(row) {
+    const operationId = row['operation_id'], requestHash = row['request_hash'], line = row['line'];
+    validateRootOperationId(operationId);
+    if (typeof requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(requestHash)
+        || typeof line !== 'string' || Buffer.byteLength(line) > 4096 || !line.endsWith('\n')) {
+        throw new RootOperationError('metadata_invalid');
+    }
+    validateRecordStorage(row);
     const event = rootEvent.parse(JSON.parse(line));
     if (rootOperationEventHash(event) !== requestHash || (row['state'] === 'planned'
         && (event.auditOperationId !== operationId || event.auditRequestHash !== requestHash)))
@@ -165,14 +175,19 @@ export class RootOperationJournal {
         this.identity = identity;
         this.budget = budget;
     }
-    check() {
-        this.budget.check();
+    checkBinding() {
         if (journalIdentity(`${this.target}${JOURNAL_SUFFIX}`) !== this.identity)
             throw new RootOperationError('journal_changed');
         validateNamespace(this.db, this.target, this.identity);
     }
+    check() { this.budget.check(); this.checkBinding(); }
     namespaceId() {
-        this.check();
+        this.budget.check();
+        return this.confirmNamespace();
+    }
+    /** Finish receipt confirmation after root readback/fsync, without renewing admission. */
+    confirmNamespace() {
+        this.checkBinding();
         const value = this.db.prepare('SELECT instance FROM root_operation_instance WHERE id=1').get()?.['instance'];
         if (typeof value !== 'string')
             throw new RootOperationError('journal_changed');
@@ -209,40 +224,45 @@ export class RootOperationJournal {
         const row = this.db.prepare('SELECT * FROM root_operations WHERE operation_id=?').get(id);
         return row ? parseRecord(row) : undefined;
     }
-    assertHistorySequence(seq) {
-        this.check();
+    checkHistorySequence(seq) {
         const known = Number(this.db.prepare("SELECT coalesce(max(json_extract(line,'$.seq')),0) AS n FROM root_operations").get()?.['n']);
         if (!Number.isSafeInteger(known) || known > seq)
             throw new RootOperationError('history_missing');
     }
-    assertNoOtherPlan(id) {
-        this.check();
+    assertHistorySequence(seq) { this.check(); this.checkHistorySequence(seq); }
+    checkOtherPlan(id) {
         const row = this.db.prepare("SELECT operation_id FROM root_operations WHERE state='planned' LIMIT 1").get();
         if (row && row['operation_id'] !== id)
             throw new RootOperationError('pending');
     }
-    prepare(record) {
-        this.check();
+    assertNoOtherPlan(id) { this.check(); this.checkOtherPlan(id); }
+    prepare(record, historySequence) {
+        this.budget.check();
         transaction(this.db, () => {
-            this.assertNoOtherPlan(record.operationId);
+            // One synchronous, SQLite-write-owned group. Fence physical binding at
+            // BEGIN and after COMMIT, rather than reopening it for every SELECT.
+            this.check();
+            if (historySequence !== undefined)
+                this.checkHistorySequence(historySequence);
+            this.checkOtherPlan(record.operationId);
             this.db.prepare('INSERT INTO root_operations VALUES(?,?,?,?,?,?,?,?)').run(record.operationId, record.requestHash, record.line, record.identity, record.offset, record.archive ?? null, record.prefixHash, record.state);
         });
         this.check();
     }
     committed(id, locator) {
-        this.check();
+        // Root bytes have already been read back and synced. Finish their receipt,
+        // retaining every binding fence rather than treating it as fresh admission.
+        this.checkBinding();
         transaction(this.db, () => {
-            this.check();
+            this.checkBinding();
             if (Number(this.db.prepare("UPDATE root_operations SET state='committed',identity=?,offset=?,archive=? WHERE operation_id=?")
                 .run(locator.identity, locator.offset, locator.archive ?? null, id).changes) !== 1)
                 throw new RootOperationError('metadata_invalid');
         });
-        this.check();
+        this.checkBinding();
     }
 }
-/** Only the root lock owner may open this journal. A failed close retains that exact connection. */
-export async function withRootOperationJournal(target, budget, body, existingOnly = false) {
-    target = canonicalEventPath(target);
+async function acquireRootOperationOwner(target) {
     const prior = owners.get(target);
     if (prior?.running)
         throw new RootOperationError('cleanup_pending');
@@ -260,6 +280,12 @@ export async function withRootOperationJournal(target, budget, body, existingOnl
         throw new RootOperationError('cleanup_capacity');
     const owner = { running: true };
     owners.set(target, owner);
+    return owner;
+}
+/** Only the root lock owner may open this journal. A failed close retains that exact connection. */
+export async function withRootOperationJournal(target, budget, body, existingOnly = false) {
+    target = canonicalEventPath(target);
+    const owner = await acquireRootOperationOwner(target);
     const path = `${target}${JOURNAL_SUFFIX}`;
     try {
         budget.check();
@@ -371,16 +397,23 @@ async function checkedIdentity(handle, path) {
 async function readBytes(handle, count, budget, start = 0) {
     const bytes = Buffer.alloc(count);
     for (let offset = 0; offset < count;) {
-        budget.check();
+        budget?.check();
         const { bytesRead } = await handle.read(bytes, offset, Math.min(64 * 1024, count - offset), start + offset);
         if (bytesRead <= 0)
             throw new RootOperationError('history_changed');
         offset += bytesRead;
     }
-    budget.check();
+    budget?.check();
     return bytes;
 }
 function archiveDir(path) { return rootEventArchiveDir(path); }
+function rememberHistoryRecord(bySeq, event, locator) {
+    const prior = bySeq.get(event.seq);
+    if (prior && canonical(prior.event) !== canonical(event))
+        throw new RootOperationError('history_conflict');
+    if (!prior || locator.archive === undefined)
+        bySeq.set(event.seq, locator);
+}
 /** Read active and immutable archives under the caller's root lock, on checked existing descriptors. */
 export async function readRootOperationHistory(path, active, budget, maxBytes) {
     const bySeq = new Map();
@@ -407,11 +440,7 @@ export async function readRootOperationHistory(path, active, budget, maxBytes) {
             const event = rootEvent.parse(JSON.parse(raw));
             if (previous !== undefined && event.seq !== previous + 1)
                 throw new RootOperationError('history_gap');
-            const prior = bySeq.get(event.seq);
-            if (prior && canonical(prior.event) !== canonical(event))
-                throw new RootOperationError('history_conflict');
-            if (!prior || archive === undefined)
-                bySeq.set(event.seq, { event, line, offset, identity, ...(archive ? { archive } : {}) });
+            rememberHistoryRecord(bySeq, event, { event, line, offset, identity, ...(archive ? { archive } : {}) });
             previous = event.seq;
             offset += Buffer.byteLength(line);
         }
@@ -446,8 +475,23 @@ export async function readRootOperationHistory(path, active, budget, maxBytes) {
 export async function rootOperationPrefixHash(handle, offset, budget) {
     return digest(await readBytes(handle, offset, budget));
 }
+async function confirmHistoryLocator(path, active, locator, confirm, budget, maxBytes) {
+    if (!locator.archive) {
+        if (!await confirm(active, path))
+            throw new RootOperationError('history_changed');
+        return;
+    }
+    const file = join(archiveDir(path), locator.archive), handle = await openAuditFile(file, maxBytes, budget, true);
+    await withAuditCleanup(async () => { if (!await confirm(handle, file))
+        throw new RootOperationError('history_changed'); }, auditCleanupSequence([{ run: () => handle.close(), retryFailedOperation: true }]));
+}
 /** Existing-only readback: missing receipt evidence is never permission to append again. */
-export async function confirmRootOperation(path, active, record, journal, budget, maxBytes) {
+export async function confirmRootOperation(path, active, record, journal, budget, maxBytes, submitted = false) {
+    // Only this invocation's completed append can finish an exact active slot
+    // after expiry. It never authorizes history search, repair or another append.
+    if (submitted && (record.state !== 'planned' || record.archive || Buffer.byteLength(record.line) > 4096)) {
+        throw new RootOperationError('metadata_invalid');
+    }
     let locator = record;
     const confirm = async (handle, file) => {
         if (await checkedIdentity(handle, file) !== locator.identity)
@@ -455,7 +499,7 @@ export async function confirmRootOperation(path, active, record, journal, budget
         const bytes = Buffer.from(record.line), stat = await handle.stat();
         if (stat.size < locator.offset + bytes.length)
             return false;
-        if (!(await readBytes(handle, bytes.length, budget, locator.offset)).equals(bytes))
+        if (!(await readBytes(handle, bytes.length, submitted ? undefined : budget, locator.offset)).equals(bytes))
             return false;
         await handle.sync();
         if (await checkedIdentity(handle, file) !== locator.identity)
@@ -464,7 +508,7 @@ export async function confirmRootOperation(path, active, record, journal, budget
             journal.committed(record.operationId, locator);
         }
         else
-            journal.namespaceId(); // Revalidate the same journal binding without rewriting a durable receipt.
+            journal.confirmNamespace(); // Revalidate the same journal binding without rewriting a durable receipt.
         return true;
     };
     if (record.archive) {
@@ -482,22 +526,14 @@ export async function confirmRootOperation(path, active, record, journal, budget
     }
     else if (await confirm(active, path))
         return rootEvent.parse(JSON.parse(record.line));
-    if (record.state !== 'committed')
+    if (submitted || record.state !== 'committed')
         throw new RootOperationError('target_changed');
     const history = await readRootOperationHistory(path, active, budget, maxBytes);
     const matches = history.filter(item => item.line === record.line);
     if (matches.length !== 1)
         throw new RootOperationError('history_missing');
     locator = matches[0];
-    if (!locator.archive) {
-        if (!await confirm(active, path))
-            throw new RootOperationError('history_changed');
-    }
-    else {
-        const file = join(archiveDir(path), locator.archive), handle = await openAuditFile(file, maxBytes, budget, true);
-        await withAuditCleanup(async () => { if (!await confirm(handle, file))
-            throw new RootOperationError('history_changed'); }, auditCleanupSequence([{ run: () => handle.close(), retryFailedOperation: true }]));
-    }
+    await confirmHistoryLocator(path, active, locator, confirm, budget, maxBytes);
     return rootEvent.parse(JSON.parse(record.line));
 }
 /** The lock and exact prefix/identity prove that a dead writer's reserved suffix may be repaired. */

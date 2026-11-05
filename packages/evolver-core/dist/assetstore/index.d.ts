@@ -1,4 +1,4 @@
-export { assertOpenedRegularAssetFile, captureRegularAssetFileIdentity, ExperienceRecoveryRequiredError, type AssetFileIdentity } from './assetStoreStorage.js';
+export { assertOpenedRegularAssetFile, captureRegularAssetFileIdentity, captureRegularAssetFileSnapshot, ExperienceRecoveryRequiredError, type AssetFileIdentity } from './assetStoreStorage.js';
 export * from './provider.js';
 export { assertPromptProviderNotProxy, isBuiltInPromptProvider } from './promptAdapterTrust.js';
 export { beginLocalContextReadV1 } from './contextReadOperationV1.js';

@@ -6,7 +6,7 @@
 // rejects it. See feedback_public_repo_no_internal_leak.
 import { computeAssetId } from '../wire/index.js';
 import { sanitizeExecutionCommand, sanitizeExecutionPayload } from '../verify/executionRedaction.js';
-import { redactQuotedCredentialText, redactBearerCredentials, readQuotedCredentialValue, remapCredentialTextRanges } from '../verify/authenticationRedaction.js';
+import { redactQuotedCredentialText, redactBearerCredentials, readQuotedCredentialValue, readUnquotedCredentialValue, remapCredentialTextRanges } from '../verify/authenticationRedaction.js';
 import { checkEmbeddedSourceIntegrity, embeddedSourceTexts, sanitizeEmbeddedSourceContent } from './embeddedSource.js';
 export { checkEmbeddedSourceIntegrity } from './embeddedSource.js';
 export const REDACTED = '[REDACTED]';
@@ -143,21 +143,6 @@ function readBlockStructuredValue(input, parentIndent, start) {
 function readQuotedStructuredValue(input, start) {
     return readQuotedCredentialValue(input, start);
 }
-function readUnquotedStructuredValue(input, start) {
-    if (input.startsWith(REDACTED, start)) {
-        return { end: start + REDACTED.length, raw: REDACTED, quote: '' };
-    }
-    let end = start;
-    while (end < input.length) {
-        const char = input[end] ?? '';
-        if (/[\s,;)}\]]/.test(char) || (char === ':' && /\s/.test(input[end + 1] ?? '')))
-            break;
-        end += 1;
-    }
-    if (end === start)
-        return undefined;
-    return { end, raw: input.slice(start, end), quote: '' };
-}
 function redactStructuredCredentials(input, credentialFields, processed) {
     const edits = processed?.length ? [] : undefined;
     let cursor = 0;
@@ -237,7 +222,7 @@ function redactStructuredCredentials(input, credentialFields, processed) {
             block = readBlockStructuredValue(input, parentIndent, valueStart);
         }
         const span = block
-            ?? readQuotedStructuredValue(input, valueStart) ?? readUnquotedStructuredValue(input, valueStart);
+            ?? readQuotedStructuredValue(input, valueStart) ?? readUnquotedCredentialValue(input, valueStart);
         if (!span) {
             match = STRUCTURED_CREDENTIAL_PREFIX.exec(input);
             continue;
@@ -313,8 +298,12 @@ function isAllowlisted(match) {
 // ~/proj/src/auth.ts"), not a secret — only the user/home prefix is PII. Strip the prefix to `~`, keeping the
 // rest of the path so the shared experience stays useful, instead of [REDACTED]-ing the whole thing.
 const ANONYMIZE_PATTERNS = [
+    // Agent scratch dirs embed the user's project path and the session id: /private/tmp/claude-501/-Users-alice-repo/<uuid>/x
+    [/(?:\/private)?\/tmp\/claude-\d+\/[^/\s"',;)}\]]+(?:\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?/gi, '<agent-tmp>'],
     [/\/(?:home|Users)\/[^/\s"',;)}\]]+/g, '~'], // /home/alice/proj → ~/proj
     [/[A-Za-z]:\\Users\\[^\\/\s"',;)}\]]+/g, '~'], // C:\Users\alice\proj → ~\proj
+    [/-(?:home|Users)-[A-Za-z0-9_.]+-/g, '-~-'], // agent project dirs: -Users-alice-repo → -~-repo
+    [/%2F(?:home|Users)%2F[^%/\s"',;)}\]]+/gi, '%2F~'], // URL-encoded session dirs: %2FUsers%2Falice → %2F~
 ];
 /** Apply every redaction pattern (secrets → [REDACTED]) then anonymize local paths (~/...) to a single string. */
 export function redactString(s) {

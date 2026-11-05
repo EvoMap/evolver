@@ -14,8 +14,12 @@ import { classifyDiscoveryUpstreamError } from './discoveryErrors.js';
 import { LOCAL_RECALL_STALE_MS, LOCAL_RECALL_TIMEOUT_MS, MAX_OUTSTANDING_LOCAL_READS, recallFromLocalStore, rootEventReuseTallies } from './localRecall.js';
 import { PublishBindingLedger } from './publishBindingLedger.js';
 import { recallContextOf } from './recallContext.js';
+import { CURATION_IDLE_MS, CURATION_INTERVAL_MS, curationStatus, runCurationTick } from './backgroundCuration.js';
+import { VerificationContextStore, isObservedCheckEvidence, recordObservedReuse, verificationContextOf } from './observedEvidence.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
+// A host-observed distillation carries the turn's diff (≤256 KiB) beside the conversation itself.
+const MAX_DISTILL_BODY_BYTES = 512 * 1024;
 export const DEFAULT_IPC_PORT = 19820;
 // V1 local-proxy compatibility contract; independent of the V2 mailbox envelope schema.
 const PROXY_PROTOCOL_VERSION = '0.1.0';
@@ -137,6 +141,10 @@ export class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     wakeRunnerPending = false;
     started = false;
+    verificationContexts;
+    lastRouteAt = 0;
+    curationTimer;
+    curationRunning = false;
     feedbackRecovery;
     lifecycleArmed = false;
     lastTickAt;
@@ -192,6 +200,8 @@ export class ProxyDaemon {
             ? new assetstore.ProvenanceStore(this.assetStore.baseDir) : undefined);
         this.sourceReview = deps.sourceReview ?? (this.assetStore instanceof assetstore.LocalJsonlProvider
             ? new assetstore.ReviewLedger(this.assetStore.baseDir) : undefined);
+        this.verificationContexts = this.assetStore instanceof assetstore.LocalJsonlProvider
+            ? new VerificationContextStore(this.assetStore.baseDir) : undefined;
         const referenceBase = assetStoreDir ?? deps.assetStore?.baseDir;
         this.referenceStore = referenceBase ? new reference.ReferenceStore(join(referenceBase, 'references')) : undefined;
         this.referenceStore?.search({ max_assets: 1 });
@@ -371,7 +381,7 @@ export class ProxyDaemon {
                     this.publishBindingLedger.verify(assets, publishReceipt);
                 },
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
-                routeBodyLimits: hubNs.recipeIpcBodyLimits,
+                routeBodyLimits: { ...hubNs.recipeIpcBodyLimits, 'POST /conversation/distill': MAX_DISTILL_BODY_BYTES },
                 extraRoutes: [(ctx) => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx))],
             });
             const port = await this.listenIpc(this.ipc);
@@ -389,6 +399,7 @@ export class ProxyDaemon {
             }
             catch { /* verifier availability must not block proxy startup */ }
             this.started = true;
+            this.scheduleCuration();
             return port;
         }
         catch (err) {
@@ -405,6 +416,107 @@ export class ProxyDaemon {
             this.lifecycleArmed = false;
             throw err;
         }
+    }
+    scheduleCuration() {
+        if (!this.assetStore || !this.sourceReview || !this.verificationContexts)
+            return;
+        this.curationTimer = setInterval(() => { void this.curateWhenIdle(); }, CURATION_INTERVAL_MS);
+        this.curationTimer.unref?.();
+    }
+    async curateWhenIdle() {
+        if (!this.started || this.curationRunning || this.now() - this.lastRouteAt < CURATION_IDLE_MS)
+            return;
+        if (!this.assetStore || !this.sourceReview || !this.verificationContexts)
+            return;
+        this.curationRunning = true;
+        try {
+            const verifierForRoot = this.deps.publishVerifierForRoot;
+            await runCurationTick({
+                store: this.assetStore,
+                review: this.sourceReview,
+                contexts: this.verificationContexts,
+                verifierForRoot,
+                verify: (body, verifier, planDigest) => resolveVerifiedExecutionAfterPreflight(verifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal], this.publishBindingLedger.runtimeDomain, undefined, planDigest),
+                enqueue: (body, verified, planDigest, commit) => this.enqueueVerifiedDistillation(body, verified, planDigest, commit),
+                now: () => new Date(this.now()),
+            });
+        }
+        catch (err) {
+            this.recordTickError('core', err instanceof Error ? err : new Error(String(err)));
+        }
+        finally {
+            this.curationRunning = false;
+        }
+    }
+    async enqueueVerifiedDistillation(body, verifiedExecution, validationPlanDigest, commit) {
+        if (this.hubAuthFailed())
+            return { queued: false, reason: 'hub_auth_failed' };
+        const signal = this.publishAbortController.signal;
+        const distill = await hubNs.distillConversation(body, {
+            persist: true,
+            store: this.assetStore,
+            verifiedExecution,
+            validationPlanDigest,
+            // Distillation verifies the receipt before persistence; only the final review fence may register it.
+            registerPublishReceipt: (receipt, bundle) => hubNs.assertPublishBindingReceipt(bundle, receipt, this.publishBindingLedger.runtimeDigest),
+            publishSignal: signal,
+            ...(this.deps.publishSanitizeEnv ? { publishSanitizeEnv: this.deps.publishSanitizeEnv } : {}),
+        });
+        if (!distill.ok)
+            return { queued: false, reason: distill.reason ?? 'distill_failed' };
+        if (distill.publishable !== true || !distill.event || !distill.publish_receipt)
+            return { queued: false, reason: 'publish_binding_missing' };
+        if (signal.aborted)
+            return { queued: false, reason: 'publish_binding_aborted' };
+        const envelope = this.distillPublicationEnvelope(body, distill, this.now());
+        const receipt = distill.publish_receipt;
+        const outcome = commit(() => this.store.sendWithState(envelope, () => this.registerDistillPublication(envelope, receipt)).stored);
+        if (outcome !== 'stored' && outcome !== 'not_stored')
+            return { queued: false, reason: outcome };
+        if (outcome === 'stored')
+            this.notifyNewOutbound();
+        return { queued: outcome === 'stored', envelopeId: envelope.id,
+            assetIds: [distill.gene.asset_id, distill.capsule.asset_id, distill.event.asset_id] };
+    }
+    trackStoredDraft(body, gene, capsule, checks) {
+        this.sourceReview?.quarantineIfAbsent(gene.asset_id, 'host-observed distillation — on trial until promoted');
+        if (capsule['outcome']?.status !== 'success')
+            return;
+        const context = verificationContextOf(body, gene, new Date(this.now()), checks);
+        if (context)
+            this.verificationContexts?.put(context);
+    }
+    enqueueDistillPublication(body, distill, now) {
+        const env = this.distillPublicationEnvelope(body, distill, now);
+        this.registerDistillPublication(env, distill.publish_receipt);
+        const r = this.store.send(env);
+        if (r.stored)
+            this.notifyNewOutbound();
+        return { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored };
+    }
+    registerDistillPublication(envelope, receipt) {
+        const bundle = this.submitEnvelopeAssets(envelope);
+        this.publishBindingLedger.register(receipt, bundle);
+        this.publishBindingLedger.verify(bundle, receipt);
+    }
+    distillPublicationEnvelope(body, distill, now) {
+        const publicationBundle = [distill.gene, distill.capsule, distill.event];
+        hubNs.assertEvolutionEventPublishBundle(publicationBundle);
+        return mailbox.createEnvelope({
+            type: 'asset_submit',
+            payload: {
+                source: 'conversation_distillation',
+                distill_id: distill.distill_id,
+                assets: publicationBundle,
+                publish_receipt: distill.publish_receipt,
+                compose_recipe: body['publish_recipe'] !== false,
+                title: typeof body.title === 'string' ? body.title : undefined,
+                description: typeof body.summary === 'string' ? body.summary : undefined,
+                [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
+            },
+            runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
+            now,
+        });
     }
     async listenIpc(ipc) {
         const requestedPort = this.deps.ipcPort ?? DEFAULT_IPC_PORT;
@@ -644,6 +756,10 @@ export class ProxyDaemon {
             this.publishAbortController.abort(new Error('proxy_daemon_stopped'));
         }
         this.nextTickDueAt = undefined;
+        if (this.curationTimer) {
+            clearInterval(this.curationTimer);
+            this.curationTimer = undefined;
+        }
         if (this.forceUpdateTimer) {
             clearTimeout(this.forceUpdateTimer);
             this.forceUpdateTimer = undefined;
@@ -1043,6 +1159,7 @@ export class ProxyDaemon {
         }
     }
     async handleProxyRoute(ctx) {
+        this.lastRouteAt = this.now();
         const expectedHeader = singleHeader(ctx.req.headers['x-evomap-expected-hub-mode']);
         if (hubModeMismatch(expectedHeader, this.deps.hubMode)) {
             ctx.json(409, { error: 'proxy_hub_mode_mismatch' });
@@ -1099,6 +1216,9 @@ export class ProxyDaemon {
                     feedback_destination_id_format: 'proxy-bound.v1',
                 } : {}),
                 recipe_execution_scope: recipeIpcScope(this.hub.recipes?.execution),
+                ...(this.verificationContexts && this.sourceReview ? {
+                    background_curation: curationStatus(this.verificationContexts, this.sourceReview, this.deps.publishVerifierForRoot !== undefined),
+                } : {}),
                 outbound_pending: this.store.countPending('proxy', this.deps.runtimeNamespace),
                 inbound_pending: this.store.countPending('agent', this.deps.runtimeNamespace) + this.store.countPending('core', this.deps.runtimeNamespace),
                 last_sync_at: this.store.getState('sync:last_sync_at') ?? null,
@@ -1613,8 +1733,11 @@ export class ProxyDaemon {
                 ctx.json(400, { recorded: false, error: parsed.error });
                 return true;
             }
+            const local = isObservedCheckEvidence(parsed.report.evidence) && this.assetStore
+                ? await recordObservedReuse(this.assetStore, parsed.report.assetId, parsed.report.taskId, parsed.report.outcome === 'success').catch(() => 'failed')
+                : undefined;
             if (expectedDestination === undefined && !this.reuseResultReporter) {
-                ctx.json(200, { recorded: false, reason: 'reuse_result_not_configured' });
+                ctx.json(200, { recorded: false, reason: 'reuse_result_not_configured', ...(local ? { local } : {}) });
                 return true;
             }
             try {
@@ -1764,7 +1887,9 @@ export class ProxyDaemon {
                 : undefined;
             if (publishRequested && abortPublish())
                 return true;
+            let observedChecks;
             const distill = await hubNs.distillConversation(body, {
+                onObservedValidationPlan: (checks) => { observedChecks = checks; },
                 // 调用方明确要求持久化时，即使发布被证据或质量闸门拦截，也保留可审查草稿；永不因此进入队列。
                 persist: body.persist === true,
                 store: this.assetStore,
@@ -1784,6 +1909,8 @@ export class ProxyDaemon {
                 });
                 return true;
             }
+            if (!publishRequested && distill.status === 'stored')
+                this.trackStoredDraft(body, distill.gene, distill.capsule, observedChecks);
             let submission = null;
             if (publishRequested) {
                 if (abortPublish())
@@ -1815,29 +1942,7 @@ export class ProxyDaemon {
                     ctx.json(422, { error: 'publish_binding_missing', stored: false, queued: false });
                     return true;
                 }
-                const publicationBundle = [distill.gene, distill.capsule, distill.event];
-                hubNs.assertEvolutionEventPublishBundle(publicationBundle);
-                this.publishBindingLedger.register(distill.publish_receipt, publicationBundle);
-                this.publishBindingLedger.verify(publicationBundle, distill.publish_receipt);
-                const env = mailbox.createEnvelope({
-                    type: 'asset_submit',
-                    payload: {
-                        source: 'conversation_distillation',
-                        distill_id: distill.distill_id,
-                        assets: publicationBundle,
-                        publish_receipt: distill.publish_receipt,
-                        compose_recipe: body['publish_recipe'] !== false,
-                        title: typeof body.title === 'string' ? body.title : undefined,
-                        description: typeof body.summary === 'string' ? body.summary : undefined,
-                        [OUTBOUND_HUB_MODE_FIELD]: this.currentHubMode(),
-                    },
-                    runtimeNamespace: this.deps.runtimeNamespace ?? 'default',
-                    now: ctx.now,
-                });
-                const r = this.store.send(env);
-                if (r.stored)
-                    this.notifyNewOutbound();
-                submission = { id: env.id, message_id: env.id, receiptId: r.receiptId, status: 'pending', stored: r.stored };
+                submission = this.enqueueDistillPublication(body, { ...distill, event: distill.event, publish_receipt: distill.publish_receipt }, ctx.now);
             }
             ctx.json(200, {
                 ...distill,
@@ -2777,7 +2882,7 @@ function declaredValidationCommands(input) {
     }
     return commands;
 }
-async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs, parentSignals = [], runtimeDomain = 'standalone', genePolicy) {
+async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs, parentSignals = [], runtimeDomain = 'standalone', genePolicy, validationPlanDigest) {
     if (!verifier)
         return undefined;
     if (parentSignals.some((signal) => signal.aborted))
@@ -2789,7 +2894,7 @@ async function resolveVerifiedExecutionAfterPreflight(verifier, input, timeoutMs
     if (!validation)
         return undefined;
     // 只把通过质量与命令策略预检的最小验证输入交给宿主，绝不转发调用方的 execution/status/trace。
-    const verificationRequest = Object.freeze(hubNs.createConversationVerificationRequest(input, validation, runtimeDomain, randomUUID(), genePolicy));
+    const verificationRequest = Object.freeze(hubNs.createConversationVerificationRequest(input, validation, runtimeDomain, randomUUID(), genePolicy, validationPlanDigest));
     return resolveVerifiedExecution(verifier, { validation, verification_request: verificationRequest }, validation, timeoutMs, parentSignals);
 }
 async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTimeoutMs, ledger, sanitizeEnv = process.env, ...parentSignals) {

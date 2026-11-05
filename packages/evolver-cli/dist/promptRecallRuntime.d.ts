@@ -1,4 +1,5 @@
 import * as recall from '@evomap/evolver-core/prompt-recall';
+import { type ProtectedAuditSessionNoticeOptions } from './protectedAuditStatus.js';
 type HookInputReader = (signal?: AbortSignal) => string | undefined | Promise<string | undefined>;
 export interface PromptRecallHookDeps {
     store?: recall.AssetStoreProvider;
@@ -15,6 +16,8 @@ export interface PromptRecallHookDeps {
     /** External delivery writers must own preparation, projection and terminal release. */
     ingestor?: Pick<recall.Ingestor, 'prepareContextDelivery'> & Partial<Pick<recall.Ingestor, 'prepareContextDeliveryAsync' | 'recoverContextDeliveries'>>;
     selectionTimeoutMs?: number;
+    /** Test seam for the protected audit probe and its per-session notice state. */
+    protectedAuditNotice?: ProtectedAuditSessionNoticeOptions;
 }
 /**
  * Shared Claude Code/Codex UserPromptSubmit entrypoint. It is intentionally local-only and fail-open: no Hub

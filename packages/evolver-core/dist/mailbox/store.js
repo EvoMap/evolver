@@ -755,6 +755,24 @@ export class MailboxStore {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(e.id, e.type, e.direction, e.status, e.handler, JSON.stringify(e.payload), e.correlationId, e.replyTo, e.receiptId, e.idempotencyKey, e.sourceAgent, e.targetAgent, e.runtimeNamespace, e.priority, e.attempts, e.nextRetryAt, e.ttlAt, e.createdAt, e.updatedAt, e.schemaVersion, e.feedsMaterial ? 1 : 0, e.lastError);
         return { receiptId: e.id, stored: Number(r.changes) > 0 };
     }
+    /** Store an envelope and its required authorization state on this connection in one commit. */
+    sendWithState(e, writeState) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+            const result = this.send(e);
+            if (result.stored)
+                writeState();
+            this.db.exec('COMMIT');
+            return result;
+        }
+        catch (error) {
+            try {
+                this.db.exec('ROLLBACK');
+            }
+            catch { /* Preserve the primary transaction error. */ }
+            throw error;
+        }
+    }
     getById(id) {
         const r = this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id);
         return r ? rowToEnvelope(r) : undefined;

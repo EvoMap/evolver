@@ -12,6 +12,12 @@ export declare function readQuotedCredentialValue(input: string, start: number):
     quote: string;
     raw: string;
 } | undefined;
+/** Markers are value content; only a framed delimiter can end the value. */
+export declare function readUnquotedCredentialValue(input: string, start: number): {
+    end: number;
+    quote: string;
+    raw: string;
+} | undefined;
 /** Redact inside owned string values, not apostrophes paired across unrelated prose.
  * JSON escapes are decoded one scalar at a time; unchanged scalars keep their original bytes. */
 export declare function redactQuotedCredentialText(input: string, redact: (text: string) => string, processed?: CredentialTextRange[]): string;

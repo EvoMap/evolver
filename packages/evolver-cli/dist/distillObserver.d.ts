@@ -17,12 +17,6 @@ export interface DistillComposition {
     /** Read a session source file → raw chunk. Default fs read; injectable for tests. */
     readSource?: (path: string) => string;
 }
-/**
- * The injected drain side-effect: claim ready material → draft + quarantine genes. `runtime_session` material is
- * distilled (its narration drafts a strategy); `proxy_trace` is observation-only (metadata, no narration) and is
- * acked without drafting. Best-effort per material: a missing/unparseable source never blocks the rest of the
- * batch. Every material in the claimed batch is acked (drafted, skipped, or failed) so the cursor always advances.
- */
 export declare function makeDistillDrain(c: DistillComposition): () => Promise<{
     drafted: number;
     stalled: boolean;

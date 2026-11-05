@@ -47,13 +47,23 @@ export function wrapGeneContext(context, prefix, suffix) {
 // One submitted write owns the stream until callback/close, including after
 // caller timeout. Refuse retries instead of accumulating listeners and queued bytes.
 const pendingStdoutWrites = new WeakMap();
+class HookStdoutNotSubmittedError extends Error {
+    constructor() { super('hook_stdout_unconfirmed'); }
+}
+/** Only the transport's own pre-dispatch refusal proves no bytes were submitted. */
+export function hookStdoutNotSubmitted(error) {
+    return error instanceof HookStdoutNotSubmittedError;
+}
 /** A successful callback means stdout_written, not host_received. One attempt only, even on EPIPE. */
 export function writeHookStdout(text, options = {}) {
     return new Promise((resolve, reject) => {
         const stdout = process.stdout;
-        if (pendingStdoutWrites.has(stdout)) {
-            options.onSettled?.(false);
-            reject(new Error('hook_stdout_unconfirmed'));
+        if (pendingStdoutWrites.has(stdout) || stdout.destroyed || stdout.writableEnded) {
+            try {
+                options.onSettled?.(false);
+            }
+            catch { /* The observer does not own the stream. */ }
+            reject(new HookStdoutNotSubmittedError());
             return;
         }
         const owner = {};

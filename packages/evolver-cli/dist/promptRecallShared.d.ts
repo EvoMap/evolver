@@ -11,6 +11,8 @@ export declare function waitContextDelivery<T>(promise: Promise<T>, timeoutMs?: 
 export declare function promptRecallMode(env?: NodeJS.ProcessEnv): PromptRecallMode;
 /** Rebind section offsets/digest to the actual prompt, including wrappers; never slice an assembled body. */
 export declare function wrapGeneContext(context: assetstore.AssembledGeneContext, prefix: string, suffix: string): assetstore.AssembledGeneContext;
+/** Only the transport's own pre-dispatch refusal proves no bytes were submitted. */
+export declare function hookStdoutNotSubmitted(error: unknown): boolean;
 /** A successful callback means stdout_written, not host_received. One attempt only, even on EPIPE. */
 export declare function writeHookStdout(text: string, options?: {
     destroyOnTimeout?: boolean;

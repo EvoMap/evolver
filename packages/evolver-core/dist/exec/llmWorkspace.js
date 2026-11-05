@@ -1,5 +1,6 @@
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, rmdirSync, rmSync, unlinkSync, writeFileSync, writeSync, } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { captureRegularAssetFileSnapshot } from '../assetstore/assetStoreStorage.js';
 import { acquireWorkspaceLease } from './workspaceLease.js';
 const JOURNAL_PREFIX = '.evolver-llm-recovery-';
 const forbidden = (name) => {
@@ -8,10 +9,14 @@ const forbidden = (name) => {
 };
 class RecoveryConflict extends Error {
 }
-function sameIdentity(a, b) { return a.dev === b.dev && a.ino === b.ino; }
+function sameIdentity(a, b) { return a.dev === b.dev && a.ino === b.ino && a.birthtimeNs === b.birthtimeNs; }
 function sameVersion(a, b) {
     return sameIdentity(a, b) && a.size === b.size && a.mode === b.mode && a.nlink === b.nlink
         && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+function filePathVersion(path) {
+    const named = lstatSync(path, { bigint: true });
+    return named.isFile() && !named.isSymbolicLink() ? captureRegularAssetFileSnapshot(path) : named;
 }
 function code(error) {
     return error instanceof RecoveryConflict ? error.message : 'filesystem_operation_failed';
@@ -103,7 +108,7 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
     const openFile = (path) => {
         let stat;
         try {
-            stat = lstatSync(path, { bigint: true });
+            stat = filePathVersion(path);
         }
         catch (error) {
             if (isMissing(error))
@@ -149,7 +154,7 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
         assertParents(entry);
         const actual = version(fd);
         if (!sameVersion(entry.last.stat, actual.stat) || !entry.last.bytes.equals(actual.bytes)
-            || !sameVersion(actual.stat, lstatSync(path, { bigint: true })))
+            || !sameVersion(actual.stat, filePathVersion(path)))
             throw new RecoveryConflict('file_changed');
     };
     const record = (path, entry, phase) => {
@@ -212,7 +217,7 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
         },
         read(path) {
             const target = inside(path);
-            const initial = lstatSync(target, { bigint: true });
+            const initial = filePathVersion(target);
             if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n)
                 throw new Error('linked or non-regular file is off limits');
             if (initial.size > BigInt(maxFileBytes))
@@ -224,7 +229,7 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
                     throw new Error('file changed');
                 assertParents({ before: null, parents });
                 const result = version(fd);
-                if (!sameVersion(result.stat, lstatSync(target, { bigint: true })))
+                if (!sameVersion(result.stat, filePathVersion(target)))
                     throw new Error('file changed');
                 assertParents({ before: null, parents });
                 return result.bytes.toString('utf8');
@@ -293,7 +298,7 @@ export function workspaceAt(root, maxFileBytes = 64 * 1024, lease) {
                         const partial = version(fd);
                         if (!sameIdentity(initial.stat, partial.stat) || initial.stat.mode !== partial.stat.mode || initial.stat.uid !== partial.stat.uid
                             || !partial.bytes.equals(expected)
-                            || !sameVersion(partial.stat, lstatSync(target, { bigint: true })))
+                            || !sameVersion(partial.stat, filePathVersion(target)))
                             throw new RecoveryConflict('write_not_confirmed');
                         entry.last = partial;
                         record(target, entry, 'write_interrupted');

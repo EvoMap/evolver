@@ -78,6 +78,8 @@ export interface SessionLogAdapter {
     sessionIdFromPath?(path: string): string | undefined;
     /** Resolve a harness-bound native session identity from a verified transcript source. */
     resumeIdentityFromSource?(path: string, rawChunk: string): NativeResumeIdentity | undefined;
+    /** Turn the on-disk bytes into the text parse() reads, for hosts that do not store plain UTF-8 JSONL. */
+    decodeSource?(bytes: Uint8Array): string;
     parse(rawChunk: string): NormalizedTurn[];
     parseSession?(rawChunk: string): NormalizedSession;
     parseSessions?(rawChunk: string): NormalizedSession[];

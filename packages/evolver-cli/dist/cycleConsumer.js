@@ -150,6 +150,9 @@ function resolveMaterialRunner(material, requestedRunner) {
                 error: `sourceAgent '${sourceAgent}' execute capability is ${capability.status}: ${capability.evidence}`,
             };
         }
+        case 'workbuddy':
+        case 'dsh':
+        case 'grok':
         case 'kiro':
         case 'opencode':
         case 'generic-chat':

@@ -26,6 +26,7 @@ import { runPromptRecallHook, wrapGeneContext } from './promptRecallHook.js';
 import { deliverContextOutput, waitContextDelivery } from './contextDelivery.js';
 import { withContextReadDiagnostics } from '@evomap/evolver-core/prompt-recall';
 import { writeContextReadDiagnostic } from './promptRecallShared.js';
+import { writeProtectedAuditSessionNotice, protectedAuditNoticeStatePath } from './protectedAuditStatus.js';
 import { INGEST_CONSUMER_GROUP, recordSessionMaterial, resolveIngestDeps, toMaterialSourceAgent, } from './sessionIngest.js';
 export { runSessionIngestTick, scanSessionDirs, } from './sessionIngest.js';
 /** Minimal `--flag value` parser (last wins); bare positionals are ignored. */
@@ -1700,6 +1701,7 @@ async function runInjectOwned(argv, deps) {
             ...(deps.readHookInput ? { readHookInput: deps.readHookInput } : {}),
             ...(deps.stdout ? { stdout: deps.stdout } : {}),
             ...(deps.ingestor ? { ingestor: deps.ingestor } : {}),
+            ...(deps.protectedAuditNotice ? { protectedAuditNotice: deps.protectedAuditNotice } : {}),
         });
     }
     if (sub !== 'session-start') {
@@ -1726,6 +1728,11 @@ async function runInjectOwned(argv, deps) {
         // is written to stdout below — a worst-case sweep (probe + lock wait + cleanup ≈ 170s) must never
         // delay the injection past the host SessionStart hook timeout (see the write-out point below).
         maybeEmitNonGitWorkspaceNotice(deps.nonGitNotice);
+        const auditReadiness = (deps.protectedAuditNotice?.readiness ?? events.protectedAuditReadiness)();
+        if (auditReadiness.state === 'unavailable') {
+            await writeProtectedAuditSessionNotice(deps.sessionId ?? await readHookSessionId(deps.readHookInput), auditReadiness, deps.protectedAuditNotice?.statePath ?? protectedAuditNoticeStatePath(events.evomapHome()), deps);
+            return 0;
+        }
     }
     const store = deps.store ?? new assetstore.LocalJsonlProvider(events.assetsDir());
     try {

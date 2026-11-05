@@ -189,15 +189,27 @@ function transaction(db, run, timing) {
             catch { /* Timing cannot replace an actual transaction outcome. */ }
         }
     };
-    step('begin', () => db.exec('BEGIN IMMEDIATE'));
+    const sql = (part, statement) => {
+        const phases = { begin: 'delivery_journal_begin', commit: 'delivery_journal_commit', rollback: 'delivery_journal_rollback' };
+        const finish = timing ? startContextReadStage(phases[part]) : undefined;
+        try {
+            step(part, () => db.exec(statement));
+            finish?.('fulfilled');
+        }
+        catch (error) {
+            finish?.('rejected');
+            throw error;
+        }
+    };
+    sql('begin', 'BEGIN IMMEDIATE');
     try {
         const result = step('body', run);
-        step('commit', () => db.exec('COMMIT'));
+        sql('commit', 'COMMIT');
         return result;
     }
     catch (error) {
         try {
-            step('rollback', () => db.exec('ROLLBACK'));
+            sql('rollback', 'ROLLBACK');
         }
         catch { /* database cleanup remains owned */ }
         throw error;

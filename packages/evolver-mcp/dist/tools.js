@@ -229,6 +229,10 @@ export function buildEvolverTools(deps) {
     // task_id labels which task a reuse report is about; the Hub records every report (evomap-hub#3647). Agents that
     // omit taskId are labelled with this MCP session id, which also keeps Hubs still enforcing a required task_id
     // (a486b9589, before #3647) from rejecting the report.
+    // This is ALSO the session dimension of the Hub-side reuse idempotency key (#1497). It must identify
+    // ONE toolset: `deps.cycleId` when the transport supplies one (stdio mints a real connId), otherwise a
+    // per-toolset random id. A literal 'mcp' fallback here would make two independent sessions that share an
+    // asset/taskId/outcome emit the SAME key, and one Hub reporter would merge two genuine reuses into one.
     const sessionTaskId = deps.cycleId ?? `mcp-${randomUUID()}`;
     // Best-effort + never throws: reuse-feedback is an optimization, so an ingest failure can never break the tool
     // the agent is calling (mirrors the autoexec reuse seam contract). Returns whether the event was recorded
@@ -648,7 +652,7 @@ export function buildEvolverTools(deps) {
                 },
             },
             handler: async (a) => {
-                const input = { ...a, platform: a['platform'] || 'mcp', model: bootstrap.detectModelName() };
+                const input = { ...agentReportedExecution(a), platform: a['platform'] || 'mcp', model: bootstrap.detectModelName() };
                 if (deps.proxy)
                     return deps.proxy.distillConversation(input);
                 return hub.distillConversation(input, { persist: a['persist'] === true, store: deps.store });
@@ -661,7 +665,7 @@ export function buildEvolverTools(deps) {
     // aggregation (prior behavior + return shape preserved).
     tools.push({
         name: 'evolver_asset_reuse_result',
-        description: '上报某复用资产的实际结果(success/failed/mismatched/stale/unsafe). 任何模式下 success 会在本地 value-ledger 记一笔 reuse(让经 MCP 接入的任何 AI 都能反哺本地经验环, #268);proxy 模式还会转发到 PHub. taskId 标识该报告对应的任务; 省略时用本 MCP 会话 id. Hub 会记录每一次上报.',
+        description: 'Report the actual outcome of a reused asset (success/failed/mismatched/stale/unsafe). In every mode a success also credits one local value-ledger reuse (so any AI reached through MCP can feed the local experience loop, #268); proxy mode additionally forwards the report to PHub. taskId names the task the asset was reused for AND is the dedup handle: WITH an explicit taskId the Hub records ONE report per (session, asset, taskId, outcome), so retrying the same report does not count the reuse twice. WITHOUT a taskId the report is labelled with this MCP session id and the Hub records EVERY report, because a later genuine reuse of the same asset cannot be told apart from a retry.',
         annotations: deps.proxy ? REMOTE_WRITE : LOCAL_WRITE,
         inputSchema: {
             type: 'object',
@@ -669,7 +673,7 @@ export function buildEvolverTools(deps) {
             properties: {
                 assetId: { type: 'string' },
                 outcome: { type: 'string', enum: ['success', 'failed', 'mismatched', 'stale', 'unsafe'] },
-                taskId: { type: 'string', minLength: 1, maxLength: HUB_TASK_ID_MAX_LENGTH, pattern: HUB_TASK_ID_PATTERN, description: 'Labels which task the asset was reused for: at most 256 characters, plus an optional :correction or :retention suffix for a follow-up report on the same task. Omit to use this MCP session id. The Hub records every report.' },
+                taskId: { type: 'string', minLength: 1, maxLength: HUB_TASK_ID_MAX_LENGTH, pattern: HUB_TASK_ID_PATTERN, description: 'Labels which task the asset was reused for: at most 256 characters, plus an optional :correction or :retention suffix for a follow-up report on the same task. Omit to use this MCP session id. With an explicit taskId the Hub records one report per (session, asset, taskId, outcome), so a retry of the same report is deduplicated; without one the Hub records every report.' },
                 traceId: { type: 'string' },
                 tokensSaved: { type: 'number', minimum: 0, description: 'Deprecated compatibility field. Ignored unless future measurement metadata proves a measured baseline.' },
                 timeSavedSeconds: { type: 'number', minimum: 0 },
@@ -682,7 +686,7 @@ export function buildEvolverTools(deps) {
             // Keep validating the deprecated field for caller compatibility, but never forward it as ROI by itself.
             optionalNonNegativeNumberArg(a, 'tokensSaved', 'invalid_tokens_saved');
             const timeSavedSeconds = optionalNonNegativeNumberArg(a, 'timeSavedSeconds', 'invalid_time_saved_seconds');
-            const evidence = optionalEvidenceArg(a);
+            const evidence = agentReportedEvidence(optionalEvidenceArg(a));
             const assetId = str(a['assetId']);
             if (!reference.isExecutionEligible(a, referenceScope))
                 return { recorded: false, reason: 'reference_not_execution_evidence' };
@@ -695,8 +699,12 @@ export function buildEvolverTools(deps) {
             // the MCP session id, and two GENUINE reuses of the same asset in one session are
             // indistinguishable from a retry — so no key is sent and the Hub keeps recording every
             // report (Bugbot #269).
+            // The session dimension is `sessionTaskId` — ONE identity per toolset (the transport's connId, or a
+            // per-toolset random id) — NOT a literal 'mcp'. A shared literal made two independent sessions that
+            // reported the same asset/taskId/outcome send the SAME key, so one Hub reporter merged two genuine
+            // reuses into one event (#1497).
             const idempotencyKey = taskId
-                ? hub.reuseResultIdempotencyKey([deps.cycleId ?? 'mcp', assetId, taskId, outcome])
+                ? hub.reuseResultIdempotencyKey([sessionTaskId, assetId, taskId, outcome])
                 : undefined;
             // Local-first: feed the local experience loop even with no proxy/hub (the MCP-only path). SUCCESS credits the
             // $ rail (reuse_hit); a non-success records the keep/prune verdict (reuse_outcome) — the cross-runtime signal.
@@ -883,4 +891,20 @@ function agentSearchArgs(args) {
         ...(typeof args['limit'] === 'number' ? { limit: args['limit'] } : {}),
         ...(args['timeoutMs'] !== undefined ? { timeoutMs: discoveryTimeout(args['timeoutMs']) } : {}),
     };
+}
+/** An MCP agent describes its own run; only a host hook may label a trace as observed. */
+// An agent's own report is never host-observed evidence, whatever source it names.
+function agentReportedEvidence(evidence) {
+    return evidence && { ...evidence, source: 'reported' };
+}
+function agentReportedExecution(args) {
+    const execution = args['execution'];
+    if (!execution || typeof execution !== 'object' || Array.isArray(execution))
+        return args;
+    const record = execution;
+    if (!Array.isArray(record['trace']))
+        return args;
+    const trace = record['trace'].map((row) => (row && typeof row === 'object' && !Array.isArray(row)
+        ? { ...row, source: 'reported' } : row));
+    return { ...args, execution: { ...record, trace } };
 }

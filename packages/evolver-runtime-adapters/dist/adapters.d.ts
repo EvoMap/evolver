@@ -12,5 +12,7 @@ export declare const opencodeRemovedAdapter: SessionLogAdapter;
 export declare const REMOVED_ADAPTERS: readonly SessionLogAdapter[];
 export declare const ADAPTERS: readonly SessionLogAdapter[];
 export declare function adapterForPath(path: string): SessionLogAdapter | undefined;
+/** Read a session log as the text its adapter parses; plain JSONL hosts are UTF-8, others decode their bytes. */
+export declare function readSessionLog(path: string): string;
 /** True when the agent id has an explicit removed transcript sentinel (see REMOVED_ADAPTERS). */
 export declare function isRemovedAdapter(agent: string): boolean;

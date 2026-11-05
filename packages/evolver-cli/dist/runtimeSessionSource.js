@@ -1,7 +1,7 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { adapterForPath, isCursorStateVscdbPath, parseJsonlLinesWithStats, parseCursorStateVscdb, stripUtf8Bom, } from '@evomap/evolver-runtime-adapters';
+import { adapterForPath, isCursorStateVscdbPath, parseJsonlLinesWithStats, parseCursorStateVscdb, readSessionLog, stripUtf8Bom, } from '@evomap/evolver-runtime-adapters';
 const EMPTY_DIAGNOSTICS = { rowsScanned: 0, rowsRead: 0, invalidJson: 0 };
 function canonicalNativeSessionSource(path, agent, nativeSessionHome) {
     const runtimeRoot = agent === 'claude-code'
@@ -46,7 +46,7 @@ function diagnosticsForRuntimeSource(raw) {
         return parseJsonlLinesWithStats(raw).stats;
     }
 }
-export function parseRuntimeSessionSourcesWithDiagnostics(path, readSource = (p) => readFileSync(p, 'utf8'), nativeSessionHome = homedir()) {
+export function parseRuntimeSessionSourcesWithDiagnostics(path, readSource = readSessionLog, nativeSessionHome = homedir()) {
     const absPath = resolve(path);
     if (isCursorStateVscdbPath(absPath)) {
         const sources = parseCursorStateVscdb(absPath)
@@ -103,6 +103,6 @@ export function parseRuntimeSessionSourcesWithDiagnostics(path, readSource = (p)
         diagnostics: diagnosticsForRuntimeSource(raw),
     };
 }
-export function parseRuntimeSessionSources(path, readSource = (p) => readFileSync(p, 'utf8'), nativeSessionHome = homedir()) {
+export function parseRuntimeSessionSources(path, readSource = readSessionLog, nativeSessionHome = homedir()) {
     return parseRuntimeSessionSourcesWithDiagnostics(path, readSource, nativeSessionHome).sources;
 }

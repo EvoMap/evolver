@@ -5,6 +5,7 @@ import { type SelfUpdateDeps } from '../selfUpdate/executor.js';
 import type { AtpOrderConsentGate } from './atpConsent.js';
 import type { PrivateBoundReuseFeedback } from '../private/adapterLoader.js';
 import { type ReuseTallies } from './localRecall.js';
+import { type VerificationPlan } from './backgroundCuration.js';
 import { type PublishRecallVerifierPort } from './publishRecallVerifier.js';
 type HubCapability = hubNs.HubCapability;
 type AssetStoreProvider = assetstore.AssetStoreProvider;
@@ -102,6 +103,8 @@ export interface ProxyDaemonDeps {
      * 宿主专属的真实执行验证器。缺失时，conversation distill 只能返回草稿，绝不持久化或排队发布。
      */
     publishExecutionVerifier?: ConversationDistillExecutionVerifier;
+    /** Builds a verifier bound to one validation copy; the background curation pass verifies each Gene in its own copy. */
+    publishVerifierForRoot?: (root: string, plan?: VerificationPlan) => ConversationDistillExecutionVerifier;
     /** 验证器响应的硬超时，防止发布请求因宿主执行器挂起而永久占用连接。 */
     publishExecutionVerifierTimeoutMs?: number;
 }
@@ -210,6 +213,10 @@ export declare class ProxyDaemon {
     /** A poke that arrived between ticks (no sleep in flight) parks the wake here so it is not lost. */
     private wakeRunnerPending;
     private started;
+    private readonly verificationContexts;
+    private lastRouteAt;
+    private curationTimer;
+    private curationRunning;
     private feedbackRecovery;
     private lifecycleArmed;
     private lastTickAt;
@@ -237,6 +244,13 @@ export declare class ProxyDaemon {
     private recordTickError;
     /** 启动: 锁 + IPC 监听 + 初次 hello. 返回 IPC 端口. */
     start(): Promise<number>;
+    private scheduleCuration;
+    private curateWhenIdle;
+    private enqueueVerifiedDistillation;
+    private trackStoredDraft;
+    private enqueueDistillPublication;
+    private registerDistillPublication;
+    private distillPublicationEnvelope;
     private listenIpc;
     private drainTriggerFeedbackRecovery;
     /** 单轮: core pump/TTL/wake + proxy 出站 + hub 入站 + 到点心跳. */

@@ -177,4 +177,8 @@ export class ReviewLedger {
     isExplicitlyApproved(assetId) {
         return this.withFreshRead((index) => index.get(assetId)?.state === 'approved');
     }
+    /** Run one synchronous side effect while an explicit approval still owns the review lock. */
+    withExplicitApproval(assetId, effect) {
+        return this.withFreshRead((index) => index.get(assetId)?.state === 'approved' ? effect() : undefined);
+    }
 }

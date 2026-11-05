@@ -15,6 +15,8 @@ export interface GeneLearningView {
      * views (absent ⇒ 0). When derived here, success + failed + inert === total.
      */
     inert?: number;
+    /** Success or inert capsules whose outcome a host only observed; counted in `success`/`inert`, excluded from publish. */
+    observed?: number;
     successRate: number;
     avgScore: number;
     recentCapsuleIds: string[];

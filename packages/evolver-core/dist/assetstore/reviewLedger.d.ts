@@ -72,4 +72,6 @@ export declare class ReviewLedger {
      * negative-memory asset must never inherit the ledger's backward-compatible "no record = eligible" default.
      */
     isExplicitlyApproved(assetId: string): boolean;
+    /** Run one synchronous side effect while an explicit approval still owns the review lock. */
+    withExplicitApproval<T extends string>(assetId: string, effect: () => T): T | undefined;
 }

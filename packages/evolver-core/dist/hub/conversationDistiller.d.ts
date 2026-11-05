@@ -1,4 +1,5 @@
 import type { AssetRecord, AssetStoreProvider } from '../assetstore/provider.js';
+import { type ObservedCheck } from '../verify/sandboxedValidation.js';
 import { type PublishBindingReceipt, type PublishVerificationEvidence, type PublishVerificationRequest } from './publishBinding.js';
 import { type GepCategory } from '../wire/index.js';
 import { EXECUTION_REDACTION_POLICY_VERSION, type ExecutionRedactionReason } from '../verify/executionRedaction.js';
@@ -55,6 +56,8 @@ interface NormalizedExecution {
         lines: number;
     };
     untrustedStatusClaim: boolean;
+    hostObserved: boolean;
+    hostObservedPassed: boolean;
     redactionBlocked: boolean;
     redactionReasons: ExecutionRedactionReason[];
 }
@@ -91,6 +94,9 @@ export interface ConversationDistillOptions {
     registerPublishReceipt?: (receipt: PublishBindingReceipt, bundle: readonly AssetRecord[]) => void | Promise<void>;
     /** 受信任适配器在验证前声明的 Gene 策略；进入 request digest 与最终资产。 */
     genePolicy?: ConversationGenePolicy;
+    /** Host-only binding for the exact replay plan, never taken from the request body. */
+    validationPlanDigest?: string;
+    onObservedValidationPlan?: (checks: readonly ObservedCheck[]) => void;
     publishSanitizeEnv?: Record<string, string | undefined>;
     publishSignal?: AbortSignal;
 }
@@ -147,6 +153,6 @@ export declare function evaluateGate(input: ConversationDistillInput, normalized
 export declare function answerValues(finalAnswer: string, prompt: string): string[];
 export declare function projectSpecificTerms(texts: readonly string[], patterns?: RegExp[]): string[];
 export declare function normalizeConversationInput(input: ConversationDistillInput): NormalizedConversation;
-export declare function createConversationVerificationRequest(input: ConversationDistillInput, validation: readonly string[], runtime: string, nonce: string, policy?: ConversationGenePolicy): PublishVerificationRequest;
+export declare function createConversationVerificationRequest(input: ConversationDistillInput, validation: readonly string[], runtime: string, nonce: string, policy?: ConversationGenePolicy, validationPlanDigest?: string): PublishVerificationRequest;
 export declare function distillConversation(input: ConversationDistillInput, opts?: ConversationDistillOptions): Promise<ConversationDistillResult>;
 export {};

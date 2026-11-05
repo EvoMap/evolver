@@ -11,6 +11,10 @@ export interface ProtectedAuditRequest {
     readonly payload?: unknown;
     readonly deadlineAt: number;
 }
+type ProtectedAuditExchangeStage = 'connect' | 'submit' | 'first_byte' | 'reply';
+type ExchangeStageCompletion = (outcome: 'fulfilled' | 'rejected') => void;
+/** Internal, synchronous metadata observer; never serialized into a request. */
+export type ProtectedAuditExchangeObserver = (phase: ProtectedAuditExchangeStage) => ExchangeStageCompletion | undefined;
 /** Set only with an administrator-owned service config naming this distinct UID. */
 export declare function markProtectedAuditServiceProcess(configPath: string): void;
 export declare function isProtectedAuditServiceProcess(): boolean;
@@ -24,6 +28,16 @@ export declare function configureProtectedAuditRpcChildCommand(value: {
 export declare function protectedAuditClientConfigPath(): string | undefined;
 /** POSIX admission is fail-closed by default. Only privileged migration fixtures and Vite-isolated tests use local history. */
 export declare function protectedAuditConfigured(): boolean;
+export type ProtectedAuditReadiness = {
+    readonly state: 'ready';
+} | {
+    readonly state: 'not_required';
+} | {
+    readonly state: 'unavailable';
+    readonly reason: string;
+};
+/** Read-only admission probe: stats and parses the OS-owned config and socket, never connects or writes. */
+export declare function protectedAuditReadiness(): ProtectedAuditReadiness;
 /**
  * A socket in a client-writable parent can be swapped after checking it.
  * Every ancestor must be non-writable by the client, and the socket must be
@@ -38,10 +52,11 @@ export declare function protectedAuditRpc<T>(method: string, path: string, paylo
     readonly deadlineAt: number;
     readonly operationId?: string;
     readonly signal?: AbortSignal;
+    readonly observer?: ProtectedAuditExchangeObserver;
 }): Promise<T>;
 /** Internal transport only. The public wrapper owns configuration, logical
  * path and OS-principal admission; its mandatory pre-write check is retained. */
-export declare function exchangeProtectedAuditFrame<T>(socketPath: string, request: ProtectedAuditRequest, verifyBeforeWrite: () => void, signal?: AbortSignal): Promise<T>;
+export declare function exchangeProtectedAuditFrame<T>(socketPath: string, request: ProtectedAuditRequest, verifyBeforeWrite: () => void, signal?: AbortSignal, observer?: ProtectedAuditExchangeObserver): Promise<T>;
 /**
  * The public root-event and call-log readers are synchronous. A separate,
  * bounded client process performs the same authenticated socket protocol;
@@ -61,3 +76,4 @@ export declare function decodeSnapshotChunk(encoded: unknown, offset: number, si
 /** Internal chunk protocol. Its caller retains socket/principal authentication. */
 export declare function readProtectedAuditSnapshotChunks<T>(kind: 'root' | 'root_strict' | 'call', request: (method: string, payload: unknown, deadlineAt: number) => unknown, options?: unknown): T;
 export declare function validateProtectedAuditSnapshotHeader(value: unknown): void;
+export {};

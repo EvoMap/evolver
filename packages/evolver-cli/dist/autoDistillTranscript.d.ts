@@ -69,7 +69,7 @@ export interface TranscriptDistillTickDeps {
     statePath?: string;
     now?: () => number;
     maxPerTick?: number;
-    /** Test seam: read a session file. Default readFileSync utf8. */
+    /** Test seam: read a session file. Default readSessionLog (UTF-8, or the adapter's own decoding). */
     readFile?: (path: string) => string;
 }
 export interface TranscriptDistillTickResult {

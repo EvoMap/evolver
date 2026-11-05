@@ -1,4 +1,5 @@
-const MAX_RECALL_CONTEXT_BYTES = 4096;
+// Clients send up to 4000 characters of task: about 12 KiB of CJK text.
+const MAX_RECALL_CONTEXT_BYTES = 16_384;
 /** A recall context is forwarded whole when it is a plain JSON object of bounded size; anything else is dropped. */
 export function recallContextOf(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value))

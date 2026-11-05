@@ -2,6 +2,7 @@ import * as recall from '@evomap/evolver-core/prompt-recall';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { deliverContextOutput, waitContextDelivery } from './contextDelivery.js';
+import { writeProtectedAuditSessionNotice, protectedAuditNoticeStatePath } from './protectedAuditStatus.js';
 import { MAX_PROMPT_RECALL_STDIN_BYTES, MAX_PROMPT_RECALL_LOCAL_FILE_BYTES, MAX_PROMPT_RECALL_LOCAL_TOTAL_BYTES, promptRecallMode, wrapGeneContext, writeHookStdout, writeContextReadDiagnostic } from './promptRecallShared.js';
 const PROMPT_RECALL_STDIN_TIMEOUT_MS = 250;
 const PROMPT_RECALL_SELECTION_TIMEOUT_MS = 750;
@@ -542,6 +543,11 @@ async function runPromptRecallHookOwned(argv, deps) {
         const input = JSON.parse(raw);
         if (typeof input.hook_event_name === 'string' && input.hook_event_name !== 'UserPromptSubmit') {
             throw new Error('unexpected hook event');
+        }
+        const auditReadiness = (deps.protectedAuditNotice?.readiness ?? recall.protectedAuditReadiness)();
+        if (auditReadiness.state === 'unavailable') {
+            await writeProtectedAuditSessionNotice(typeof input.session_id === 'string' ? input.session_id : undefined, auditReadiness, deps.protectedAuditNotice?.statePath ?? protectedAuditNoticeStatePath(recall.evomapHome(env)), deps, '{}\n');
+            return 0;
         }
         const prompt = input.prompt;
         if (typeof prompt !== 'string')

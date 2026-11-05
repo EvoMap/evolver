@@ -1,6 +1,6 @@
 {
   "name": "@evomap/evolver-core",
-  "version": "2.0.48",
+  "version": "2.0.49",
   "private": false,
   "type": "module",
   "engines": {
@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./canonical-event-path": {
+      "types": "./dist/util/canonicalEventPath.d.ts",
+      "default": "./dist/util/canonicalEventPath.js"
     },
     "./v1-env-compat": {
       "types": "./dist/bootstrap/v1EnvCompat.d.ts",

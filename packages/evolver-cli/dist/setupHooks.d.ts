@@ -1,11 +1,14 @@
 import { type InstallScope } from '@evomap/evolver-mcp';
 import { assetstore } from '@evomap/evolver-core';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
+import { type ProtectedAuditReadiness } from './protectedAuditStatus.js';
 interface SetupHooksDeps {
     emitNonGitWorkspaceNotice?: typeof maybeEmitNonGitWorkspaceNotice;
     runtimeAvailable?: (runtime: 'opencode' | 'kiro', configRoot: string, scope: InstallScope) => boolean;
     /** Test seam proving service-only/manual paths do not resolve an unrelated MCP Node executable. */
     resolveMcpNodePath?: () => string;
+    /** Test seam for the read-only protected audit service probe. */
+    protectedAudit?: () => ProtectedAuditReadiness;
 }
 export declare function commandNamesForPath(command: string, platform: NodeJS.Platform, pathExt: string | undefined): string[];
 /** Paths under package-manager stores are volatile: the linked Node disappears on the next install/upgrade,

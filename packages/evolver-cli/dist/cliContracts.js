@@ -762,42 +762,19 @@ function checkValidationCommands(original) {
         return { allowed: true, unsafeCommands: [] };
     }
     const unsafeCommands = [];
+    // 诊断只列出拒绝类别（不暴露原始命令文本，避免泄露安全策略细节）
+    const reasons = new Set();
     for (const cmd of validation) {
         if (typeof cmd !== 'string')
             continue;
-        if (!verify.isValidationCommandAllowed(cmd)) {
+        const rejection = verify.validationCommandRejection(cmd);
+        if (rejection) {
             unsafeCommands.push(cmd);
+            reasons.add(rejection);
         }
     }
     if (unsafeCommands.length === 0) {
         return { allowed: true, unsafeCommands: [] };
-    }
-    // 构建诊断信息（不暴露原始命令文本，避免泄露安全策略细节）
-    const reasons = new Set();
-    for (const cmd of unsafeCommands) {
-        if (/`|\$\(/.test(cmd)) {
-            reasons.add('command_substitution');
-            continue;
-        }
-        const stripped = cmd.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, '');
-        if (verify.SHELL_METACHARS.test(stripped)) {
-            reasons.add('shell_metacharacters');
-            continue;
-        }
-        const tokens = cmd.split(/\s+/);
-        const executable = tokens[0] ?? '';
-        const args = tokens.slice(1);
-        const badFlag = verify.isNodeExecutable(executable) ? verify.nodeFlagViolation(executable, args) : null;
-        if (badFlag) {
-            reasons.add('blocked_node_flag');
-            continue;
-        }
-        if (!cmd.trim().startsWith('node ')) {
-            reasons.add('non_node_command');
-        }
-        else {
-            reasons.add('unsafe_pattern');
-        }
     }
     return {
         allowed: false,

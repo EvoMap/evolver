@@ -1,4 +1,5 @@
 import { type MemoryGraphOperatorStatus } from './localMemoryGraph.js';
+import { type ProtectedAuditReadiness } from './protectedAuditStatus.js';
 type DoctorStatus = 'pass' | 'warn' | 'fail';
 export interface DoctorCheck {
     name: string;
@@ -49,6 +50,8 @@ export interface DoctorDeps {
         legacy: string[];
         detail: string;
     };
+    /** Test seam for the read-only protected audit service probe (POSIX only). */
+    protectedAudit?: () => ProtectedAuditReadiness;
 }
 export interface EnvCatalogResult {
     profile: DoctorProfile;

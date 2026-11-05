@@ -4,13 +4,34 @@
 // allowlist stays data-driven in the ValidationPlan (runValidation checks it before calling this); this
 // module hardens EXECUTION: blocked node eval-flags, shell-metachar rejection, a fresh wiped temp cwd,
 // a scrubbed env (no secrets leak in), and a SIGKILL timeout. Output is folded + truncated.
+import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { watchProcessGroup } from './processGroupWatchdog.js';
+import { accountHome, seatbeltCommand, seatbeltIsolationAvailable } from './seatbeltSandbox.js';
+import { validationCommandRejection } from './validationCommandPolicy.js';
+import { resolveValidationToolchain, safeValidationReadRoots } from './validationToolchain.js';
 import { PRIVATE_ROOT_GUARDIAN, privateRootFilesystemSetup, privateRootPathsAllowed, sourceHasNestedMounts } from './privateRootFilesystem.js';
 import { trustedValidationRuntime } from './trustedValidationRuntime.js';
-import { classifyNodeValidationInvocation, isNodeExecutable, nodeFlagViolation, SHELL_METACHARS, tokenizeValidationCommand, } from './validation.js';
+import { classifyNodeValidationInvocation, isNodeExecutable, nodeFlagViolation, parseValidationInvocation, SHELL_METACHARS, } from './validationSyntax.js';
+const RUN_MARKER_VAR = 'EVOLVER_SANDBOX_RUN';
+const realPaths = (paths) => paths.flatMap((path) => {
+    if (!path)
+        return [];
+    try {
+        return [realpathSync(path)];
+    }
+    catch {
+        return [];
+    }
+});
+// Only temporary directories count: a manual run may validate a person's own project, where their processes work.
+function runDirectories(...paths) {
+    const temporary = realPaths([tmpdir(), '/var/tmp']);
+    return [...new Set(realPaths(paths).filter((path) => temporary.some((root) => pathIsWithin(root, path))))];
+}
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 4000;
@@ -26,6 +47,17 @@ const RESOURCE_LIMITS = {
     cpuQuota: '100000 100000',
     scratchBytes: 256 * 1024 * 1024,
 };
+const DEFAULT_RESOURCE_BUDGET = { memoryBytes: RESOURCE_LIMITS.memoryBytes, processes: RESOURCE_LIMITS.processes };
+// A full test suite (vitest forks a worker per core) needs several GiB; beyond these bounds a budget stops being one.
+const RESOURCE_BUDGET_BOUNDS = { memoryBytes: [256 * 1024 * 1024, 32 * 1024 * 1024 * 1024], processes: [16, 1024] };
+/** The requested aggregate budget, or null when it is outside the bounds a caller may ask for. */
+export function sandboxResourceBudget(requested) {
+    const budget = requested ?? DEFAULT_RESOURCE_BUDGET;
+    const within = (value, [min, max]) => Number.isSafeInteger(value) && value >= min && value <= max;
+    return within(budget.memoryBytes, RESOURCE_BUDGET_BOUNDS.memoryBytes) && within(budget.processes, RESOURCE_BUDGET_BOUNDS.processes)
+        ? { memoryBytes: budget.memoryBytes, processes: budget.processes }
+        : null;
+}
 // Env scrub: only these keys reach the child, so node-secrets/tokens in the parent env cannot leak into validation.
 const DEFAULT_ENV_ALLOW = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'SYSTEMROOT'];
 /** Credential dirs hidden under $HOME when hideHomeSecrets is set (dirs only — never where binaries live). */
@@ -34,11 +66,19 @@ const SECRET_HOME_DIRS = ['.evomap', '.ssh', '.aws', '.gnupg', '.docker', '.kube
 // is passed as POSITIONAL args (`exec "$@"`), never interpolated into the script — no shell-injection vector.
 const HIDE_SECRETS_SETUP = `PATH=${TRUSTED_SYSTEM_PATH}; export PATH; for d in ${SECRET_HOME_DIRS.map((d) => `"$HOME/${d}"`).join(' ')}; do if [ -d "$d" ]; then mount -t tmpfs none "$d" 2>/dev/null || exit 126; fi; done`;
 const READ_ONLY_FILESYSTEM_SETUP = [
+    // The runner's PATH is meant for the workload; setup itself only ever resolves trusted system tools.
+    'workload_path="$PATH"',
     `PATH=${TRUSTED_SYSTEM_PATH}; export PATH`,
     'session_tmp="$1"; shift',
     'validation_root="$1"; shift',
     'validation_cwd="$1"; shift',
     'host_bin="$1"; shift',
+    'workload_bin="$1"; shift',
+    'source_writable="$1"; shift',
+    'bind_count="$1"; shift',
+    'case "$workload_bin" in /*) ;; *) exit 126 ;; esac',
+    'case "$source_writable" in 0|1) ;; *) exit 126 ;; esac',
+    'case "$bind_count" in ""|*[!0-9]*) exit 126 ;; esac',
     '[ -n "$HOME" ] && [ "$HOME" != / ] && [ -d "$HOME" ] || exit 126',
     'case "$validation_cwd/" in "$validation_root/"*) ;; *) exit 126 ;; esac',
     'case "$HOME/" in "$validation_root/"*) exit 126 ;; esac',
@@ -48,16 +88,22 @@ const READ_ONLY_FILESYSTEM_SETUP = [
     ': > "$session_tmp/node" || exit 126',
     'mount --bind "$validation_root" "$session_tmp/source" 2>/dev/null || exit 126',
     'mount --bind "$host_bin" "$session_tmp/node" 2>/dev/null || exit 126',
+    // Toolchain and dependency directories under HOME are stashed before HOME is hidden, then bound back at their
+    // original paths so the read-only remount below covers them like the rest of the host root.
+    'mkdir -p "$session_tmp/binds" || exit 126',
+    'i=0; while [ "$i" -lt "$bind_count" ]; do bind_root="$1"; shift; case "$bind_root/" in "$HOME"/?*) ;; *) exit 126 ;; esac; mkdir -p "$session_tmp/binds/$i" || exit 126; mount --bind "$bind_root" "$session_tmp/binds/$i" 2>/dev/null || exit 126; printf "%s" "$bind_root" > "$session_tmp/binds/$i.path" || exit 126; i=$((i + 1)); done',
     'for device in null zero random urandom; do : > "$session_tmp/dev/$device" || exit 126; mount --bind "/dev/$device" "$session_tmp/dev/$device" 2>/dev/null || exit 126; done',
     'mount -t tmpfs none "$HOME" 2>/dev/null || exit 126',
     '[ ! -d /run ] || mount -t tmpfs none /run 2>/dev/null || exit 126',
     'mount -t tmpfs none /tmp 2>/dev/null || exit 126',
+    'i=0; while [ "$i" -lt "$bind_count" ]; do bind_root="$(cat "$session_tmp/binds/$i.path")" || exit 126; mkdir -p "$bind_root" || exit 126; mount --bind "$session_tmp/binds/$i" "$bind_root" 2>/dev/null || exit 126; i=$((i + 1)); done',
     'mkdir -p "$validation_root" || exit 126',
     'mount --bind "$session_tmp/source" "$validation_root" 2>/dev/null || exit 126',
     'mounts="$(findmnt -rn -o TARGET -R /)" || exit 126',
     '[ -n "$mounts" ] || exit 126',
     'printf "%s\\n" "$mounts" | while IFS= read -r target; do mount -o remount,bind,ro "$target" 2>/dev/null || exit 126; done || exit 126',
     'mount -o remount,bind,rw,exec "$session_tmp" 2>/dev/null || exit 126',
+    '[ "$source_writable" = 0 ] || mount -o remount,bind,rw "$validation_root" 2>/dev/null || exit 126',
     'mount -t tmpfs -o mode=755,size=65536,nr_inodes=64 none /dev 2>/dev/null || exit 126',
     'for device in null zero random urandom; do : > "/dev/$device" || exit 126; mount --bind "$session_tmp/dev/$device" "/dev/$device" 2>/dev/null || exit 126; done',
     'mount -o remount,ro /dev 2>/dev/null || exit 126',
@@ -68,7 +114,9 @@ const READ_ONLY_FILESYSTEM_SETUP = [
 const DROP_NAMESPACE_PRIVILEGES = [
     'supervisor_pid=$$',
     'exec 3<&0',
-    'setpriv --no-new-privs --securebits=+noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all -- /tmp/node "$@" </dev/null 3<&- & workload_pid=$!',
+    'setpriv_bin="$(command -v setpriv)" || exit 126',
+    'PATH="$workload_path"; export PATH',
+    '"$setpriv_bin" --no-new-privs --securebits=+noroot,+noroot_locked --bounding-set=-all --inh-caps=-all --ambient-caps=-all -- "$workload_bin" "$@" </dev/null 3<&- & workload_pid=$!',
     // The pipe is owned by the parent Node process. Kernel EOF is therefore a reliable parent-death signal,
     // including SIGKILL, while unshare --kill-child propagates supervisor death through the PID namespace.
     '(IFS= read -r _ <&3 || kill -KILL "$supervisor_pid") & watchdog_pid=$!',
@@ -114,15 +162,15 @@ function sandboxCgroupParent() {
     return ['cpu', 'memory', 'pids'].every((controller) => enabled.has(controller)) ? parent : null;
 }
 /** Configure an already-created cgroup. Kept separate so limit values are testable without resource exhaustion. */
-export function configureSandboxResourceGroup(path) {
+export function configureSandboxResourceGroup(path, budget = DEFAULT_RESOURCE_BUDGET) {
     try {
         const required = ['cgroup.procs', 'cgroup.kill', 'memory.max', 'memory.swap.max', 'memory.oom.group', 'pids.max', 'cpu.max'];
         if (!required.every((name) => existsSync(join(path, name))))
             return false;
-        writeFileSync(join(path, 'memory.max'), String(RESOURCE_LIMITS.memoryBytes));
+        writeFileSync(join(path, 'memory.max'), String(budget.memoryBytes));
         writeFileSync(join(path, 'memory.swap.max'), '0');
         writeFileSync(join(path, 'memory.oom.group'), '1');
-        writeFileSync(join(path, 'pids.max'), String(RESOURCE_LIMITS.processes));
+        writeFileSync(join(path, 'pids.max'), String(budget.processes));
         writeFileSync(join(path, 'cpu.max'), RESOURCE_LIMITS.cpuQuota);
         return true;
     }
@@ -131,7 +179,7 @@ export function configureSandboxResourceGroup(path) {
     }
 }
 /** Allocate a delegated cgroup v2 for one validation command. Returns null unless every limit is enforceable. */
-export function createSandboxResourceGroup() {
+export function createSandboxResourceGroup(budget = DEFAULT_RESOURCE_BUDGET) {
     if (process.platform !== 'linux' || !existsSync(join(CGROUP_ROOT, 'cgroup.controllers')))
         return null;
     let path = null;
@@ -143,7 +191,7 @@ export function createSandboxResourceGroup() {
         path = join(parent, `evolver-validation-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         mkdirSync(path, { mode: 0o700 });
         created = true;
-        if (!configureSandboxResourceGroup(path))
+        if (!configureSandboxResourceGroup(path, budget))
             throw new Error('required cgroup v2 controllers are not delegated');
         let cleaned = false;
         return {
@@ -189,7 +237,6 @@ export function sandboxResourceLimitsAvailable() {
     group.cleanup();
     return true;
 }
-/** Wrap an (executable,args) in unprivileged namespaces per the requested isolation (pure — testable). */
 export function isolationCommand(bin, args, opts) {
     if (opts.readOnlyFilesystem && !opts.writableTmpDir) {
         throw new Error('read-only filesystem isolation requires writableTmpDir');
@@ -229,7 +276,9 @@ export function isolationCommand(bin, args, opts) {
             cmd: SYSTEM_UNSHARE,
             args: [...base, SYSTEM_SH, '-c', setup, 'sh', ...(opts.readOnlyFilesystem
                     ? [opts.writableTmpDir, opts.readOnlyRoot, opts.cwd]
-                    : []), bin, ...args],
+                    : []), bin, ...(opts.readOnlyFilesystem
+                    ? [opts.workloadBin ?? '/tmp/node', opts.writableReadOnlyRoot ? '1' : '0', String(opts.homeBindRoots?.length ?? 0), ...opts.homeBindRoots ?? []]
+                    : []), ...args],
         }
         : { cmd: SYSTEM_UNSHARE, args: [...base, bin, ...args] };
 }
@@ -249,11 +298,30 @@ export function unshareNetAvailable() {
     }
     return unshareCache;
 }
-function parse(cmd) {
-    const tokens = tokenizeValidationCommand(cmd);
-    if (!tokens)
-        return null;
-    return { executable: tokens[0] ?? '', args: tokens.slice(1) };
+/**
+ * Package managers and test runners only run in the read-only tier, after the shared command policy accepted
+ * them, and only when the toolchain resolves to locations the boundary can expose read-only.
+ */
+function isolatedToolchain(cmd, executable, opts, seatbelt) {
+    if (validationCommandRejection(cmd) !== null)
+        return 'rejected: command is outside the validation policy';
+    const home = seatbelt ? accountHome() : process.env['HOME'] ?? '';
+    const toolchain = resolveValidationToolchain(executable, {
+        hostPath: process.env['PATH'] ?? '',
+        home,
+        root: opts.readOnlyRoot ?? opts.cwd ?? '',
+        ...(opts.mirroredVenvRoot ? { mirroredVenvRoot: opts.mirroredVenvRoot } : {}),
+        env: process.env,
+    });
+    if (!toolchain)
+        return `rejected: ${executable} is unavailable inside the sandbox`;
+    const hiddenByTmpfs = [...toolchain.readRoots, ...opts.extraReadRoots ?? []]
+        .some((root) => ['/tmp', '/run'].some((hidden) => pathIsWithin(hidden, root)));
+    return !seatbelt && hiddenByTmpfs ? 'rejected: toolchain lives under a path the sandbox replaces' : toolchain;
+}
+function homeBindRoots(roots) {
+    const home = process.env['HOME'] ?? '';
+    return isAbsolute(home) ? roots.filter((root) => root !== home && pathIsWithin(home, root)) : [];
 }
 function scrubEnv(allow) {
     const out = {};
@@ -374,10 +442,10 @@ export function makeSandboxRunner(opts = {}) {
         const deny = (msg, code = 126) => finish({ exitCode: code, stdout: `[sandbox] ${msg}` });
         if (activeSignal?.aborted)
             return deny('cancelled', 130);
-        const parsed = parse(cmd);
+        const parsed = parseValidationInvocation(cmd);
         if (!parsed)
             return deny('invalid command syntax', 1);
-        const { executable, args } = parsed;
+        const { executable, args, env: commandEnv } = parsed;
         if (!executable)
             return deny('empty command', 1);
         if (isNodeExecutable(executable) && (args.length === 0 || (args.length === 1 && args[0] === '--'))) {
@@ -396,10 +464,23 @@ export function makeSandboxRunner(opts = {}) {
                     : deny('rejected: node script is required');
             }
         }
+        // macOS has no namespaces; its read-only tier is a Seatbelt profile plus a polling resource watchdog.
+        const seatbelt = process.platform === 'darwin' && opts.readOnlyFilesystem === true;
         // Isolation (#26): fail-safe — if we can't actually create the namespaces, refuse rather than run un-isolated.
-        if ((opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.privateRootFilesystem) && !(opts.unshareCheck ?? unshareNetAvailable)()) {
+        if ((opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.privateRootFilesystem)
+            && !(opts.unshareCheck ?? (seatbelt ? seatbeltIsolationAvailable : unshareNetAvailable))()) {
             return deny('rejected: requested namespace isolation is unavailable');
         }
+        if (seatbelt && !opts.writableTmpDir)
+            return deny('rejected: seatbelt isolation requires writableTmpDir');
+        const tool = opts.readOnlyFilesystem && !isNodeExecutable(executable) ? isolatedToolchain(cmd, executable, opts, seatbelt) : undefined;
+        if (typeof tool === 'string')
+            return deny(tool);
+        const readRoots = opts.extraReadRoots
+            ? safeValidationReadRoots([...opts.extraReadRoots, ...tool?.readRoots ?? []], seatbelt ? accountHome() : process.env['HOME'] ?? '')
+            : tool?.readRoots ?? [];
+        if (!readRoots)
+            return deny('rejected: a dependency root would expose a protected path');
         let privatePaths;
         if (opts.privateRootFilesystem) {
             try {
@@ -417,10 +498,13 @@ export function makeSandboxRunner(opts = {}) {
                 return deny('rejected: private-root source mount topology is unavailable');
             }
         }
-        const resourceGroup = opts.resourceLimits
-            ? (opts.resourceGroupFactory ?? createSandboxResourceGroup)()
+        const budget = sandboxResourceBudget(opts.resourceBudget);
+        if (!budget)
+            return deny('rejected: resource budget is outside the allowed bounds');
+        const resourceGroup = opts.resourceLimits && !seatbelt
+            ? (opts.resourceGroupFactory ?? createSandboxResourceGroup)(budget)
             : null;
-        if (opts.resourceLimits && !resourceGroup)
+        if (opts.resourceLimits && !seatbelt && !resourceGroup)
             return deny('rejected: cgroup v2 resource limits are unavailable');
         const ownTemp = !opts.cwd;
         let cwd;
@@ -434,6 +518,7 @@ export function makeSandboxRunner(opts = {}) {
         let cleaned = false;
         let launcherCleanup;
         let launcherCleanupFailed = false;
+        let watchdog;
         const cleanup = () => {
             if (cleaned)
                 return;
@@ -457,13 +542,25 @@ export function makeSandboxRunner(opts = {}) {
         };
         // Resolve 'node' to the running binary so spawn(shell:false) works on Windows too (where bare 'node' would ENOENT).
         try {
-            const requestedBin = isNodeExecutable(executable) ? process.execPath : executable;
+            const requestedBin = isNodeExecutable(executable) ? process.execPath : tool?.bin ?? executable;
             const bin = opts.privateRootFilesystem ? privateRootExecutable(requestedBin, cwd) : requestedBin;
-            const bunInterpreter = process.platform === 'linux' && process.versions['bun'] && isNodeExecutable(executable)
+            const bunInterpreter = process.versions['bun'] && isNodeExecutable(executable)
                 && (opts.readOnlyFilesystem || opts.privateRootFilesystem);
             // `node script` must not acquire Bun's automatic dotenv/config/preload/install behavior.
-            const workloadArgs = bunInterpreter ? ['--no-env-file', '--config=/dev/null', '--no-install', ...args] : args;
-            const launch = isolationCommand(bin, workloadArgs, {
+            const workloadArgs = bunInterpreter ? ['--no-env-file', '--config=/dev/null', '--no-install', ...args] : [...tool?.argsPrefix ?? [], ...args];
+            const launch = seatbelt ? seatbeltCommand(bin, workloadArgs, {
+                readOnlyRoot: opts.readOnlyRoot ?? cwd,
+                cwd,
+                writableTmpDir: opts.writableTmpDir,
+                runtime: process.execPath,
+                home: accountHome(),
+                readRoots,
+                writableSource: opts.writableReadOnlyRoot === true,
+            }, {
+                cpuSeconds: timeout / 1000,
+                fileSizeBytes: RESOURCE_LIMITS.scratchBytes,
+                processes: opts.resourceLimits ? budget.processes : RESOURCE_BUDGET_BOUNDS.processes[1],
+            }) : isolationCommand(bin, workloadArgs, {
                 noNetwork: opts.noNetwork,
                 hideHomeSecrets: opts.hideHomeSecrets,
                 readOnlyFilesystem: opts.readOnlyFilesystem,
@@ -472,20 +569,28 @@ export function makeSandboxRunner(opts = {}) {
                 writableTmpDir: privatePaths?.scratch ?? opts.writableTmpDir,
                 readOnlyRoot: privatePaths?.root ?? opts.readOnlyRoot ?? cwd,
                 cwd,
+                ...(tool && !tool.javascriptRuntime ? { workloadBin: tool.bin } : {}),
+                homeBindRoots: homeBindRoots(readRoots),
+                writableReadOnlyRoot: opts.writableReadOnlyRoot === true,
             });
             launcherCleanup = launch.cleanup;
             const { cmd: spawnCmd, args: spawnArgs, env: launcherEnv, cwd: launcherCwd } = launch;
             const env = scrubEnv(envAllow);
-            Object.assign(env, launcherEnv);
             // A compiled Bun executable needs runtime mode when acting as the selected JavaScript interpreter.
             if (bunInterpreter)
                 env['BUN_BE_BUN'] = '1';
             if (opts.noNetwork || opts.hideHomeSecrets || opts.readOnlyFilesystem || opts.privateRootFilesystem || opts.resourceLimits) {
-                env['PATH'] = TRUSTED_SYSTEM_PATH;
+                env['PATH'] = [...tool?.pathDirs ?? [], TRUSTED_SYSTEM_PATH].join(':');
             }
             if (opts.readOnlyFilesystem || opts.privateRootFilesystem) {
                 Object.assign(env, { TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp' });
             }
+            Object.assign(env, launcherEnv);
+            Object.assign(env, tool?.env(env['TMPDIR'] ?? tmpdir()), commandEnv);
+            // Every process of this run inherits the marker, so the watchdog can still find one that left the group.
+            const runId = randomUUID();
+            if (seatbelt)
+                env[RUN_MARKER_VAR] = runId;
             const limited = resourceGroup ? resourceLimitedCommand(spawnCmd, spawnArgs, resourceGroup.procsFile) : { cmd: spawnCmd, args: spawnArgs };
             const child = spawn(limited.cmd, limited.args, {
                 shell: false,
@@ -498,12 +603,16 @@ export function makeSandboxRunner(opts = {}) {
                 stdio: [opts.readOnlyFilesystem || opts.privateRootFilesystem ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             });
             let childClosed = false;
+            let limitExceeded;
             let out = '';
             const cap = (d) => { if (out.length < MAX_OUTPUT_CHARS)
                 out += String(d); };
             child.stdout?.on('data', cap);
             child.stderr?.on('data', cap);
             const complete = async (result) => {
+                if (limitExceeded)
+                    result = { exitCode: 137, stdout: `${result.stdout}\n[sandbox] aggregate ${limitExceeded} limit exceeded`.trimStart() };
+                await watchdog?.stop();
                 if (terminationStarted)
                     await waitForProcessTreeExit(child.pid);
                 cleanup();
@@ -515,6 +624,9 @@ export function makeSandboxRunner(opts = {}) {
                 childClosed = true;
                 void complete({ exitCode: aborted ? 130 : timedOut ? 137 : 127, stdout: `[sandbox] spawn error: ${err.message}` });
             });
+            // Linux tears the namespace down when its supervisor exits; here leftover background processes would keep
+            // the output pipes open, so the tree is swept as soon as the launcher exits.
+            child.on('exit', () => watchdog?.terminate());
             child.on('close', (code, childSignal) => {
                 childClosed = true;
                 void complete({
@@ -532,7 +644,15 @@ export function makeSandboxRunner(opts = {}) {
                 timedOut = reason === 'timeout';
                 resourceGroup?.cleanup();
                 terminateProcessTree(child);
+                watchdog?.terminate();
             };
+            if (seatbelt && child.pid !== undefined) {
+                const limits = opts.resourceLimits ? budget : { memoryBytes: Infinity, processes: Infinity };
+                watchdog = watchProcessGroup(child.pid, limits, (reason) => {
+                    limitExceeded = reason;
+                    terminate('resource');
+                }, { marker: `${RUN_MARKER_VAR}=${runId}`, roots: runDirectories(cwd, opts.readOnlyRoot, opts.writableTmpDir) });
+            }
             const onAbort = () => terminate('abort');
             if (activeSignal) {
                 removeAbortListener = () => activeSignal.removeEventListener('abort', onAbort);

@@ -420,27 +420,32 @@ export function assessGeneDraft(turns, sigs, agent) {
         generation_meta: { source: 'distilled' },
     });
 }
-// Signals injected by the fallback itself, plus generic command runners, carry no domain identity. Including them
-// in Jaccard makes unrelated capabilities (for example GitHub vs Playwright) look 60% identical even though their
-// one discriminating signal differs. Keep them for exact-subset detection, but omit them from soft similarity.
-const GENERIC_NOVELTY_SIGNALS = new Set([
-    'reusable_capability',
-    'verified_workflow',
-    'shell_command',
-    'bash',
-    'powershell',
-    'pwsh',
-    'sh',
-    'cmd',
-    'command',
-    'verified-success',
-    'verified_success',
+// A signal that every session can emit carries no domain identity: the fallback's own markers, the error classes
+// that only describe a failure's shape, the built-in tools of every supported host, and MCP / Evolver tools. Two
+// unrelated drafts sharing them must not look alike, and a draft made only of them is not a reusable capability.
+const GENERIC_SIGNALS = new Set([
+    'reusable_capability', 'verified_workflow', 'verified-success', 'verified_success', 'structured_error', 'error_result',
+    ...SIGNAL_ERROR_CLASSES.map(([, token]) => token),
+    'shell', 'shell_command', 'exec_command', 'bash', 'powershell', 'pwsh', 'sh', 'cmd', 'command', 'run_command',
+    'run_shell_command', 'run_terminal_command',
+    'read', 'read_file', 'view_file', 'write', 'write_file', 'write_to_file', 'edit', 'multiedit', 'replace',
+    'search_replace', 'apply_patch', 'grep', 'glob', 'ls', 'list_dir', 'list_directory', 'search_file_content',
+    'webfetch', 'web_fetch', 'websearch', 'web_search', 'google_web_search', 'notebookedit', 'notebookread',
+    'task', 'agent', 'subagent', 'todowrite', 'todo_write', 'update_plan', 'manage_task', 'taskcreate', 'taskupdate',
+    'tasklist', 'taskoutput', 'taskstop', 'bashoutput', 'killshell', 'job_output', 'job_kill', 'list_agents',
+    'send_message', 'get_command_or_subagent_output', 'skill', 'toolsearch', 'search_tool', 'use_tool',
+    'deferexecutetool', 'askuserquestion', 'ask_user_question', 'ask_question', 'exitplanmode', 'enterplanmode',
+    'present', 'present_files', 'senduserfile', 'read_image', 'view_image', 'show_widget', 'widget_guidelines',
 ]);
+const GENERIC_SIGNAL_PREFIXES = ['mcp_', 'evolver_'];
+function isGenericSignal(signal) {
+    return GENERIC_SIGNALS.has(signal) || GENERIC_SIGNAL_PREFIXES.some((prefix) => signal.startsWith(prefix));
+}
 function normalizeSignalSet(values) {
     return new Set((values ?? []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
 }
 function noveltySignalSet(signals) {
-    const discriminating = [...signals].filter((signal) => !GENERIC_NOVELTY_SIGNALS.has(signal));
+    const discriminating = [...signals].filter((signal) => !isGenericSignal(signal));
     return discriminating.length > 0 ? new Set(discriminating) : signals;
 }
 /**
@@ -456,9 +461,13 @@ export function assessDraftAdmission(candidate, existing = [], opts = {}) {
     const minStrategy = opts.minStrategy ?? 1;
     const maxSimilarity = opts.maxSimilarity ?? 0.6;
     const sigs = [...normalizeSignalSet(candidate.signals_match)];
+    const discriminating = sigs.filter((signal) => !isGenericSignal(signal));
     const strategy = (candidate.strategy ?? []).filter((s) => String(s).trim());
-    if (sigs.length < minSignals)
-        return { admit: false, reason: `too few signals (${sigs.length} < ${minSignals})` };
+    if (sigs.length > 0 && discriminating.length === 0)
+        return { admit: false, reason: 'no_discriminating_signal' };
+    if (discriminating.length < minSignals) {
+        return { admit: false, reason: `too few signals (${discriminating.length} discriminating < ${minSignals})` };
+    }
     if (strategy.length < minStrategy)
         return { admit: false, reason: `strategy too thin (${strategy.length} < ${minStrategy} steps)` };
     const newSet = new Set(sigs);

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { dshAdapter, grokAdapter, workbuddyAdapter } from './hostTranscripts.js';
 import { parseJsonlLines, extractContent, isMetaText, correlateToolNames, stripUtf8Bom } from './types.js';
 function isRecord(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -143,8 +145,9 @@ function withSourceMetadata(turns, source) {
 // VERIFICATION BAR: an adapter only ships once its parse() is checked against a REAL session log from that tool
 // — a trimmed, sanitized sample + a golden test (see the golden tests in adapters.test.ts). A guessed schema is
 // worse than no adapter: it silently yields 0 turns on real logs while looking supported. Today: claude-code,
-// codex, cursor, Gemini, and Antigravity are verified against trimmed sanitized real-log samples. opencode/kiro
-// stay removed until each has a real-log golden test.
+// codex, cursor, Gemini, Antigravity, WorkBuddy, DeepSeek Harness and Grok (hostTranscripts.ts) are verified
+// against trimmed sanitized real-log samples. opencode/kiro/qoder stay unregistered until each has a real-log
+// golden test.
 // claude-code AND cursor share the Anthropic content-block transcript shape: one JSONL record per turn,
 // { role|type: 'user'|'assistant', message: { content: [ {type:'text',text} | {type:'tool_use',name,id?} |
 // {type:'tool_result',...} ] } }. correlateToolNames backfills a tool_result's tool name from its tool_use id.
@@ -1291,12 +1294,17 @@ export const REMOVED_ADAPTERS = [kiroRemovedAdapter, opencodeRemovedAdapter];
 // Only verified adapters are registered for content/path discovery. Removed runtimes are listed in
 // REMOVED_ADAPTERS and selected only via adapterForPath path match (then parse throws).
 // genericChatAdapter is LAST so any tool-specific path (claude/cursor/codex/gemini/antigravity/kimi) resolves first.
-export const ADAPTERS = [claudeCodeAdapter, codexAdapter, cursorAdapter, geminiAdapter, antigravityAdapter, kimiAdapter, genericChatAdapter];
+export const ADAPTERS = [claudeCodeAdapter, codexAdapter, cursorAdapter, geminiAdapter, antigravityAdapter, workbuddyAdapter, dshAdapter, grokAdapter, kimiAdapter, genericChatAdapter];
 export function adapterForPath(path) {
     const removed = REMOVED_ADAPTERS.find((a) => a.detect(path));
     if (removed)
         return removed;
     return ADAPTERS.find((a) => a.detect(path));
+}
+/** Read a session log as the text its adapter parses; plain JSONL hosts are UTF-8, others decode their bytes. */
+export function readSessionLog(path) {
+    const decode = adapterForPath(path)?.decodeSource;
+    return decode ? decode(readFileSync(path)) : readFileSync(path, 'utf8');
 }
 /** True when the agent id has an explicit removed transcript sentinel (see REMOVED_ADAPTERS). */
 export function isRemovedAdapter(agent) {

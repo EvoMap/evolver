@@ -6,12 +6,17 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isolationCommand, makeSandboxRunner, sandboxResourceLimitsAvailable, } from './sandboxRunner.js';
-import { runValidation, tokenizeValidationCommand, validationScriptPath, } from './validation.js';
+import { isolationCommand, makeSandboxRunner, sandboxResourceBudget, sandboxResourceLimitsAvailable, } from './sandboxRunner.js';
+import { runValidation, validationScriptPath, } from './validation.js';
+import { parseValidationInvocation } from './validationSyntax.js';
 import { sanitizeExecutionCommand, sanitizeExecutionPayload } from './executionRedaction.js';
 import { trustedValidationRuntime } from './trustedValidationRuntime.js';
+import { seatbeltIsolationAvailable } from './seatbeltSandbox.js';
+import { provideValidationDependencies } from './validationDependencies.js';
 // Keep the public helper available, but never scan an untrusted tree inside validation's daemon path.
 export { treeFingerprint } from './validationTreeFingerprint.js';
+export { normalizeObservedCheck } from './observedCheck.js';
+export { validationCommandRejection } from './validationCommandPolicy.js';
 let readOnlyIsolationAvailableCache;
 let readOnlyFilesystemIsolationAvailableCache;
 let privateRootIsolationAvailableCache;
@@ -123,6 +128,8 @@ export function availableIsolationTier() {
     return privateRootIsolationAvailable() ? 'no-network' : 'none';
 }
 export function readOnlyIsolationAvailable() {
+    if (process.platform === 'darwin')
+        return seatbeltIsolationAvailable();
     if (process.platform !== 'linux')
         return false;
     if (readOnlyIsolationAvailableCache !== undefined)
@@ -211,16 +218,28 @@ function classifyValidationScript(cmd, script, validationCwd, readOnlyRoot) {
 }
 /**
  * Run validation commands in the hardened sandbox. Isolation (no-network + hidden home secrets) is requested only
- * when unprivileged namespaces are available; elsewhere (Windows/macOS) it degrades to the non-namespace hardening
- * rather than denying every command. The allowlist is derived from the declared commands' own executables, so this
+ * when an OS boundary is available; elsewhere (Windows, or a host whose probe failed) it degrades to the
+ * non-namespace hardening rather than denying every command. The allowlist is derived from the declared commands' own executables, so this
  * runs exactly the commands the caller asked for — just hardened. An EMPTY command set passes (nothing to verify),
  * preserving prior behavior; note this differs from runValidation's own "no commands = not verified" stance.
  */
 export async function runSandboxedValidation(cmds, cwd, opts = {}) {
+    return runSandboxedChecks(cmds.map((command) => ({ command })), cwd, opts);
+}
+/**
+ * Same boundary and result as runSandboxedValidation, for checks that carry their own working directory
+ * (relative to the read-only root), such as the output of normalizeObservedCheck.
+ */
+export async function runSandboxedChecks(checks, cwd, opts = {}) {
     if (opts.signal?.aborted)
         return { passed: false, cancelled: true, score: 0.2, results: [], skipped: [], isolated: false, isolationTier: 'none' };
     const tier = resolveIsolationTier(opts);
     const isolated = tier !== 'none';
+    const boundary = {
+        isolated,
+        isolationTier: tier,
+        ...(tier === 'read-only' ? { resourceLimitEnforcement: process.platform === 'darwin' ? 'watchdog' : 'kernel' } : {}),
+    };
     // `tier === 'none'` is rejected on its own, not just via the floor: the floor comes from the caller, and a
     // JavaScript caller can hand us 'none' past the type. requireIsolation must never be satisfiable by no boundary.
     const validFloor = opts.minimumIsolation === undefined || opts.minimumIsolation === 'read-only' || opts.minimumIsolation === 'no-network';
@@ -236,17 +255,24 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
         readOnlyRoot = realpathSync(readOnlyRoot);
     }
     catch {
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated, isolationTier: tier };
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], ...boundary };
     }
     if (dirname(readOnlyRoot) === readOnlyRoot || !pathIsWithin(readOnlyRoot, validationCwd)) {
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], isolated, isolationTier: tier };
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], ...boundary };
     }
     // ONLY a truly empty command set is a vacuous pass (nothing to verify). A non-empty set with blank entries is a
     // malformed plan, NOT a pass: blanks are kept (trimmed to '') so they fall outside the allowlist and fail, rather
     // than being silently dropped into a pass (Bugbot).
-    if (cmds.length === 0)
-        return { passed: true, cancelled: false, score: 0.95, results: [], skipped: [], isolated, isolationTier: tier };
-    const list = cmds.map((c) => String(c ?? '').trim());
+    if (checks.length === 0)
+        return { passed: true, cancelled: false, score: 0.95, results: [], skipped: [], ...boundary };
+    const entries = checks.map((check) => ({
+        cmd: String(check?.command ?? '').trim(),
+        cwd: commandCwd(readOnlyRoot, validationCwd, check?.cwd),
+    }));
+    if (entries.some((entry) => entry.cwd === null)) {
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped: [], ...boundary };
+    }
+    const list = entries.map((entry) => entry.cmd);
     const sanitizedPlan = list.map((command) => sanitizeExecutionCommand(command));
     if (sanitizedPlan.some((command) => command.changed || command.blocked)) {
         return {
@@ -264,18 +290,17 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
                 passed: false,
             })),
             skipped: [],
-            isolated,
-            isolationTier: tier,
+            ...boundary,
         };
     }
     // Validation plans may reference repo-relative scripts that do not exist in this checkout; skip those, but never
     // execute a script that is absolute, escapes the root, resolves through a symlink, or is not a regular file.
     const skipped = [];
     const runnable = [];
-    for (const cmd of list) {
+    for (const { cmd, cwd: commandDir } of entries) {
         const script = validationScriptPath(cmd);
         if (script) {
-            const classification = classifyValidationScript(cmd, script, validationCwd, readOnlyRoot);
+            const classification = classifyValidationScript(cmd, script, commandDir, readOnlyRoot);
             if (!classification.ok) {
                 skipped.push(classification.skipped);
                 if (classification.skipped.reason === 'missing_script') {
@@ -287,19 +312,27 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
                 continue;
             }
         }
-        runnable.push(cmd);
+        runnable.push({ cmd, cwd: commandDir });
     }
     if (runnable.length === 0)
-        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped, isolated, isolationTier: tier };
+        return { passed: false, cancelled: opts.signal?.aborted === true, score: 0.2, results: [], skipped, ...boundary };
     let scratch;
+    let dependencies;
     try {
+        if ((opts.dependencySourceRoot !== undefined || opts.writableCheckout) && tier !== 'read-only')
+            throw new Error('copy options need the read-only tier');
+        if (!sandboxResourceBudget(opts.resourceBudget))
+            throw new Error('resource budget is outside the allowed bounds');
         scratch = isolated ? mkdtempSync('/var/tmp/evolver-validation-') : undefined;
+        dependencies = opts.dependencySourceRoot !== undefined ? provideValidationDependencies(opts.dependencySourceRoot, readOnlyRoot) : undefined;
     }
     catch {
-        return { passed: false, cancelled: opts.signal?.aborted === true, failureReason: 'sandbox_setup_failed', score: 0.2, results: [], skipped, isolated, isolationTier: tier };
+        if (scratch)
+            rmSync(scratch, { recursive: true, force: true });
+        return { passed: false, cancelled: opts.signal?.aborted === true, failureReason: 'sandbox_setup_failed', score: 0.2, results: [], skipped, ...boundary };
     }
-    const runner = makeSandboxRunner({
-        cwd: validationCwd,
+    const runnerFor = (commandDir) => makeSandboxRunner({
+        cwd: commandDir,
         noNetwork: isolated,
         hideHomeSecrets: isolated,
         readOnlyFilesystem: tier === 'read-only',
@@ -307,6 +340,10 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
         resourceLimits: tier === 'read-only',
         writableTmpDir: scratch,
         readOnlyRoot,
+        ...(dependencies ? { extraReadRoots: dependencies.readRoots } : {}),
+        ...(dependencies?.venvRoot ? { mirroredVenvRoot: dependencies.venvRoot } : {}),
+        ...(opts.writableCheckout ? { writableReadOnlyRoot: true } : {}),
+        ...(opts.resourceBudget ? { resourceBudget: opts.resourceBudget } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(opts.resourceGroupFactory ? { resourceGroupFactory: opts.resourceGroupFactory } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
@@ -314,10 +351,10 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
     });
     // Re-check each script immediately before its spawn. The initial pass supplies precise skipped reasons, while
     // this second gate closes the degraded-mode window where an earlier validator could replace a later path.
-    const guardedRunner = async (cmd, signal) => {
+    const guardedRunner = async (cmd, signal, commandDir = validationCwd) => {
         const script = validationScriptPath(cmd);
         if (script) {
-            const classification = classifyValidationScript(cmd, script, validationCwd, readOnlyRoot);
+            const classification = classifyValidationScript(cmd, script, commandDir, readOnlyRoot);
             if (!classification.ok) {
                 return {
                     exitCode: 126,
@@ -325,19 +362,25 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
                 };
             }
         }
-        return runner(cmd, signal);
+        return runnerFor(commandDir)(cmd, signal);
     };
     const allowlist = [...new Set(runnable
-            .map((c) => tokenizeValidationCommand(c)?.[0] ?? '')
+            .map(({ cmd }) => parseValidationInvocation(cmd)?.executable ?? '')
             .filter(Boolean))];
     let results;
     let passed;
     let cancelled;
     let cleaned = true;
     try {
-        ({ results, passed, cancelled } = await runValidation({ commands: runnable.map((cmd) => ({ cmd })), allowlist }, guardedRunner, opts.signal));
+        ({ results, passed, cancelled } = await runValidation({ commands: runnable, allowlist }, guardedRunner, opts.signal));
     }
     finally {
+        try {
+            dependencies?.cleanup();
+        }
+        catch {
+            cleaned = false;
+        }
         if (scratch) {
             try {
                 rmSync(scratch, { recursive: true, force: true });
@@ -347,8 +390,8 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
             }
         }
     }
-    // Both isolated tiers prevent source mutations at the mount boundary. No host-side content scan or mutable
-    // retry baseline is needed; even a failed or cancelled validator leaves the caller's source bytes untouched.
+    // Both isolated tiers prevent source mutations at the mount (Linux) or Seatbelt (macOS) boundary; only an explicit
+    // writableCheckout opens the copy itself. No host-side content scan or mutable retry baseline is needed.
     const complete = skipped.length === 0 && !cancelled && cleaned;
     return sanitizeExecutionPayload({
         passed: passed && complete,
@@ -357,11 +400,24 @@ export async function runSandboxedValidation(cmds, cwd, opts = {}) {
         score: passed && complete ? 0.95 : 0.2,
         results,
         skipped,
-        isolated,
-        isolationTier: tier,
+        ...boundary,
     }).value;
 }
 function pathIsWithin(root, target) {
     const rel = relative(root, target);
     return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+/** A per-command directory is relative to the checkout root and must canonically stay inside it. */
+function commandCwd(readOnlyRoot, fallback, requested) {
+    if (requested === undefined || requested === '')
+        return fallback;
+    if (isAbsolute(requested))
+        return null;
+    try {
+        const resolved = realpathSync(resolve(readOnlyRoot, requested));
+        return pathIsWithin(readOnlyRoot, resolved) && lstatSync(resolved).isDirectory() ? resolved : null;
+    }
+    catch {
+        return null;
+    }
 }

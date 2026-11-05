@@ -7,7 +7,9 @@ const MAX_STAGES = 16;
 const phases = new Set(['worker_first_ipc', 'worker_close', 'gene_snapshot',
     'related_snapshot', 'prompt_selection', 'prompt_assembly', 'delivery_prepare',
     'delivery_validate', 'delivery_journal_open', 'delivery_journal_transaction',
-    'delivery_journal_close', 'delivery_cleanup', 'worker_bootstrap', 'worker_native_ready', 'worker_lstat', 'snapshot_owned']);
+    'delivery_journal_begin', 'delivery_journal_commit', 'delivery_journal_rollback',
+    'delivery_journal_close', 'delivery_cleanup', 'worker_bootstrap', 'worker_native_ready', 'worker_lstat', 'snapshot_owned',
+    'delivery_rpc_connect', 'delivery_rpc_submit', 'delivery_rpc_first_byte', 'delivery_rpc_reply']);
 const rejectionCodes = new Map([
     ['transport_timeout_unknown', 'transport_timeout_unknown'], ['transport_aborted_unknown', 'transport_aborted_unknown'],
     ['transport_closed_unknown', 'transport_closed_unknown'], ['admission_expired', 'admission_expired'],
@@ -138,7 +140,18 @@ export function withContextReadDiagnostics(enabled, run, report) {
     })();
 }
 export function startContextReadStage(phase) {
+    return startCollectedStage(diagnostic.getStore(), phase);
+}
+/** Capture this invocation; socket events must never switch to another caller's collector. */
+export function contextDeliveryRpcObserver() {
     const collector = diagnostic.getStore();
+    if (!collector)
+        return undefined;
+    const stages = { connect: 'delivery_rpc_connect', submit: 'delivery_rpc_submit',
+        first_byte: 'delivery_rpc_first_byte', reply: 'delivery_rpc_reply' };
+    return phase => startCollectedStage(collector, stages[phase]);
+}
+function startCollectedStage(collector, phase) {
     if (!collector || !phases.has(phase))
         return undefined;
     // Clock acquisition is observation, not operation admission. Do not leave a
@@ -182,7 +195,7 @@ export function startContextReadStage(phase) {
                     collector.stages.splice(collector.stages.indexOf(representative), 1);
                 }
                 else {
-                    // Fewer distinct allowed phases than slots: admit a missing phase by
+                    // Admit a missing phase within the fixed capacity by
                     // evicting only a duplicate, never its first valid transaction settlement.
                     const duplicate = collector.stages.findIndex(stage => representativeStage(collector.stages, stage.phase) !== stage);
                     if (duplicate < 0)

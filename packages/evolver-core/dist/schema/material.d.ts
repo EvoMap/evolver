@@ -17,6 +17,9 @@ export declare const material: z.ZodObject<{
         gemini: "gemini";
         antigravity: "antigravity";
         kimi: "kimi";
+        workbuddy: "workbuddy";
+        dsh: "dsh";
+        grok: "grok";
         kiro: "kiro";
         opencode: "opencode";
         "generic-chat": "generic-chat";

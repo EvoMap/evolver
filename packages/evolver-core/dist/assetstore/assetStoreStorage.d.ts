@@ -1,4 +1,4 @@
-import type { Stats } from 'node:fs';
+import type { BigIntStats, Stats } from 'node:fs';
 import { acquireLock, releaseLock, type ReleaseLockResult } from '../util/fileLock.js';
 export type UnsafeAssetStorePathReason = 'symlink' | 'not_directory' | 'not_regular_file' | 'path_changed';
 export type AssetStorePathRole = 'base_directory' | 'asset_file' | 'lock_file' | 'temp_file';
@@ -51,6 +51,8 @@ export interface AssetFileIdentity {
 export declare function captureAssetStoreDirectoryIdentity(path: string): AssetFileIdentity;
 export declare function assertAssetStoreDirectoryIdentity(path: string, expected: AssetFileIdentity): void;
 export declare function captureRegularAssetFileIdentity(path: string): AssetFileIdentity;
+/** A path version from a real kernel witness, not a held FD or a missing-volume wildcard. */
+export declare function captureRegularAssetFileSnapshot(path: string, witnessAccess?: number): BigIntStats;
 export declare function assertOpenedRegularAssetFile(fd: number, path: string, expected?: AssetFileIdentity): void;
 export declare function readRegularBuffer(path: string, maxBytes?: number, check?: () => void): Buffer | null;
 export declare function readUtf8Regular(path: string, maxBytes?: number): string | null;

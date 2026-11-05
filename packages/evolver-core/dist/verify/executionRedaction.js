@@ -1,4 +1,4 @@
-import { redactQuotedCredentialText, redactBearerCredentials, readQuotedCredentialValue, remapCredentialTextRanges } from './authenticationRedaction.js';
+import { redactQuotedCredentialText, redactBearerCredentials, readQuotedCredentialValue, readUnquotedCredentialValue, remapCredentialTextRanges } from './authenticationRedaction.js';
 export const EXECUTION_REDACTION_POLICY_VERSION = 'execution-redaction.v1';
 export const EXECUTION_REDACTED = '[REDACTED]';
 const MAX_EXECUTION_TEXT_LENGTH = 64 * 1024;
@@ -186,13 +186,7 @@ function readStructuredValue(input, start) {
         return quoted;
     if (input[start] === '"' || input[start] === "'")
         return undefined;
-    if (input.startsWith(EXECUTION_REDACTED, start)) {
-        return { end: start + EXECUTION_REDACTED.length, raw: EXECUTION_REDACTED, quote: '' };
-    }
-    let end = start;
-    while (end < input.length && !/[\s,;)}\]]/.test(input[end] ?? ''))
-        end += 1;
-    return end > start ? { end, raw: input.slice(start, end), quote: '' } : undefined;
+    return readUnquotedCredentialValue(input, start);
 }
 function structuredValueIsDiagnostic(key, value) {
     const normalizedKey = normalizeName(key);
@@ -299,6 +293,11 @@ function redactUrlQueryCredentials(raw, reasons) {
         return `${separator}${encodedKey}=${EXECUTION_REDACTED}`;
     });
     return quote ? `${quote}${redacted}${quote}` : redacted;
+}
+function isCredentialShaped(raw) {
+    const value = semanticValue(raw).trim();
+    return /^[A-Za-z0-9._~+/=:-]{8,}$/.test(value) && /[0-9._~+/=:-]/.test(value) && !isClearlyNonSecret(value)
+        && !DIAGNOSTIC_STATUS_VALUE.test(value.replace(/[_:-]+/g, ' ').trim());
 }
 function replacementForValue(raw, force, reason, reasons) {
     if (!semanticValue(raw).trim())
@@ -439,6 +438,13 @@ function sanitizeText(input) {
                 continue;
             }
             const next = nextValueToken(parsed.tokens, index + 1);
+            // A bare topic word ("the authorization bypass path", grep "token" src/) is prose; a flag or a bare
+            // credential noun ("password hunter2") still takes the next token as its value, and so does a topic word
+            // followed by one dense credential-shaped token ("token ab12-cd34-ef56").
+            const takesValue = semantic.startsWith('-') || BARE_CREDENTIAL_WORDS.has(lower)
+                || (next !== undefined && isCredentialShaped(parsed.tokens[next]?.raw ?? ''));
+            if (!takesValue)
+                continue;
             if (next !== undefined) {
                 const nextRaw = parsed.tokens[next]?.raw ?? '';
                 replacements.set(next, replacementForValue(nextRaw, true, 'sensitive_flag', reasons));
@@ -492,6 +498,7 @@ export function sanitizeExecutionCommand(value) {
 export function sanitizeExecutionDiagnostic(value) {
     return result(String(value ?? ''), 'diagnostic');
 }
+const BARE_CREDENTIAL_WORDS = new Set(['password', 'passwd', 'passphrase', 'secret']);
 const COMMAND_KEYS = new Set(['cmd', 'command']);
 const COMMAND_ARRAY_KEYS = new Set(['validation', 'verification', 'validation_commands']);
 /**

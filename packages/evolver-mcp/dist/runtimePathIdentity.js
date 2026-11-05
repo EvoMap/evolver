@@ -1,4 +1,4 @@
-import { util } from '@evomap/evolver-core';
+import { canonicalEventPath } from '@evomap/evolver-core/canonical-event-path';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -54,7 +54,7 @@ function existingPrefix(path) {
 export function sameRuntimePath(left, right) {
     if (resolve(left) === resolve(right) || process.platform !== 'win32') {
         try {
-            return util.canonicalEventPath(left) === util.canonicalEventPath(right);
+            return canonicalEventPath(left) === canonicalEventPath(right);
         }
         catch {
             return false;

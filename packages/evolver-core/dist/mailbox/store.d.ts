@@ -69,6 +69,11 @@ export declare class MailboxStore {
         receiptId: string;
         stored: boolean;
     };
+    /** Store an envelope and its required authorization state on this connection in one commit. */
+    sendWithState(e: Envelope, writeState: () => void): {
+        receiptId: string;
+        stored: boolean;
+    };
     getById(id: string): Envelope | undefined;
     list(opts?: {
         status?: Status;

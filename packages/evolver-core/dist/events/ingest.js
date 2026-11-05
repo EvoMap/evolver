@@ -10,7 +10,7 @@ import { readGeneContextDeliveryReceipt } from '../ops/geneContextDelivery.js';
 import { protectedAuditConfigured, protectedAuditRpc, protectedAuditRpcSync } from './protectedAuditRpc.js';
 import { readRootEventHistoryStrict } from './eventArchive.js';
 import { protectedAuditReadSnapshotSync } from './protectedAuditRpc.js';
-import { startContextReadStage } from '../assetstore/contextReadDiagnostics.js';
+import { contextDeliveryRpcObserver, startContextReadStage } from '../assetstore/contextReadDiagnostics.js';
 const builtInEventStore = EventStore.isBuiltInObservationStore;
 const builtInEventClock = EventStore.usesBuiltInClock;
 /** 已知事件类型 (军杰 §9; 可 registerEventType 扩展). */
@@ -148,7 +148,8 @@ export class Ingestor {
         const deadlineAt = opts.deadlineAt ?? Date.now() + DEFAULT_CONTEXT_PREPARATION_BUDGET_MS, signal = opts.signal;
         const snapshot = validatedPreparation(raw, referenceScope);
         if (protectedAuditConfigured()) {
-            const prepared = await protectedAuditRpc('prepare_delivery', path, snapshot, { deadlineAt, ...(signal ? { signal } : {}) });
+            const observer = contextDeliveryRpcObserver();
+            const prepared = await protectedAuditRpc('prepare_delivery', path, snapshot, { deadlineAt, ...(signal ? { signal } : {}), ...(observer ? { observer } : {}) });
             return protectedPreparedDelivery(path, prepared.operationId);
         }
         return prepareContextDelivery(snapshot, path, projector(referenceScope), { deadlineAt, ...(signal ? { signal } : {}) });

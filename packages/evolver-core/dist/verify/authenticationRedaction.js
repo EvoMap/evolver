@@ -48,8 +48,77 @@ export function readQuotedCredentialValue(input, start) {
     }
     return undefined;
 }
+const REDACTION_MARKER = /\[redacted\]/iy;
+function credentialFramingEnd(input, start) {
+    let end = start;
+    let lastQuote = start - 1;
+    while (/["'\\]/.test(input[end] ?? '')) {
+        if (input[end] !== '\\')
+            lastQuote = end;
+        end++;
+    }
+    // An escaped separator is value content even after a quote.
+    if ((end - lastQuote - 1) % 2 === 1 && /[,;]/.test(input[end] ?? ''))
+        return end + 1;
+    // Serialized strings can end with several encoded closing quotes.
+    if (lastQuote >= start && valueBoundary(input, end))
+        return start;
+    return end;
+}
+/** Markers are value content; only a framed delimiter can end the value. */
+export function readUnquotedCredentialValue(input, start) {
+    let end = start;
+    while (end < input.length) {
+        if (/["'\\]/.test(input[end] ?? '')) {
+            const framing = credentialFramingEnd(input, end);
+            if (framing === end)
+                break;
+            end = framing;
+            continue;
+        }
+        REDACTION_MARKER.lastIndex = end;
+        if (input[end] === '[' && REDACTION_MARKER.test(input)) {
+            end = REDACTION_MARKER.lastIndex;
+            continue;
+        }
+        if (/[\s,;)}\]]/.test(input[end]) || (input[end] === ':' && /\s/.test(input[end + 1] ?? '')))
+            break;
+        end += 1;
+    }
+    return end > start ? { end, quote: '', raw: input.slice(start, end) } : undefined;
+}
 function valueBoundary(input, end) {
     return end === input.length || /[\s,;)}\]]/.test(input[end]);
+}
+function ownsQuotedValue(input, start, end, authentication) {
+    let prefix = start - 1;
+    while (prefix >= 0 && /\s/.test(input[prefix]))
+        prefix--;
+    const fieldValue = prefix >= 0 && /[:=]/.test(input[prefix]);
+    const arrayValue = prefix >= 0 && (input[prefix] === '[' || input[prefix] === ',');
+    if (start !== 0 && !fieldValue && !arrayValue && !authentication)
+        return false;
+    if (!authentication && !valueBoundary(input, end))
+        return false;
+    return !arrayValue || !/^\s*:/.test(input.slice(end));
+}
+function redactQuotedValue(raw, quote, redact) {
+    let inner = raw.slice(quote.length, -quote.length);
+    let json = false;
+    if (quote === '"') {
+        try {
+            const decoded = JSON.parse(raw);
+            if (typeof decoded === 'string') {
+                inner = decoded;
+                json = true;
+            }
+        }
+        catch { /* Non-JSON diagnostic quotes retain their existing raw escape semantics. */ }
+    }
+    const sanitized = redact(inner);
+    if (sanitized === inner)
+        return raw;
+    return json ? JSON.stringify(sanitized) : `${quote}${sanitized}${quote}`;
 }
 /** Redact inside owned string values, not apostrophes paired across unrelated prose.
  * JSON escapes are decoded one scalar at a time; unchanged scalars keep their original bytes. */
@@ -67,37 +136,12 @@ export function redactQuotedCredentialText(input, redact, processed) {
             start = end - ((end - start) % 2 === 0 ? 1 : 0);
             continue;
         }
-        if (!span)
+        if (!span || !ownsQuotedValue(input, start, span.end, authentication))
             continue;
-        let prefix = start - 1;
-        while (prefix >= 0 && /\s/.test(input[prefix]))
-            prefix--;
-        const fieldValue = prefix >= 0 && /[:=]/.test(input[prefix]);
-        const arrayValue = prefix >= 0 && (input[prefix] === '[' || input[prefix] === ',');
-        if (start !== 0 && !fieldValue && !arrayValue && !authentication)
-            continue;
-        if (!authentication && !valueBoundary(input, span.end))
-            continue;
-        if (arrayValue && /^\s*:/.test(input.slice(span.end)))
-            continue;
-        let inner = span.raw.slice(span.quote.length, -span.quote.length);
-        let json = false;
-        if (span.quote === '"') {
-            try {
-                const decoded = JSON.parse(span.raw);
-                if (typeof decoded === 'string') {
-                    inner = decoded;
-                    json = true;
-                }
-            }
-            catch { /* Non-JSON diagnostic quotes retain their existing raw escape semantics. */ }
-        }
-        const sanitized = redact(inner);
-        const rendered = sanitized === inner ? span.raw
-            : json ? JSON.stringify(sanitized) : `${span.quote}${sanitized}${span.quote}`;
+        const rendered = redactQuotedValue(span.raw, span.quote, redact);
         const at = output.length + start - cursor;
         processed?.push({ start: at + span.quote.length, end: at + rendered.length - span.quote.length });
-        if (sanitized !== inner) {
+        if (rendered !== span.raw) {
             output += input.slice(cursor, start);
             output += rendered;
             cursor = span.end;

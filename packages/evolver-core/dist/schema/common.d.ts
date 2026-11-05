@@ -25,6 +25,9 @@ export declare const sourceAgent: z.ZodEnum<{
     gemini: "gemini";
     antigravity: "antigravity";
     kimi: "kimi";
+    workbuddy: "workbuddy";
+    dsh: "dsh";
+    grok: "grok";
     kiro: "kiro";
     opencode: "opencode";
     "generic-chat": "generic-chat";

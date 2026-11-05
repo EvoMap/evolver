@@ -49,14 +49,19 @@ export declare class RootOperationJournal {
     private readonly identity;
     private readonly budget;
     constructor(db: SqliteDatabase, target: string, identity: string, budget: AuditBudget);
+    private checkBinding;
     private check;
     namespaceId(): string;
+    /** Finish receipt confirmation after root readback/fsync, without renewing admission. */
+    confirmNamespace(): string;
     assertTicket(namespaceId: string, operationId: string, requestHash: string): void;
     admission(id: string, requestHash: string, namespaceId?: string): RootOperationRecord | undefined;
     get(id: string): RootOperationRecord | undefined;
+    private checkHistorySequence;
     assertHistorySequence(seq: number): void;
+    private checkOtherPlan;
     assertNoOtherPlan(id?: string): void;
-    prepare(record: RootOperationRecord): void;
+    prepare(record: RootOperationRecord, historySequence?: number): void;
     committed(id: string, locator: RootOperationLocator): void;
 }
 /** Only the root lock owner may open this journal. A failed close retains that exact connection. */
@@ -68,6 +73,6 @@ export declare function assertNoPendingRootOperation(target: string): void;
 export declare function readRootOperationHistory(path: string, active: AuditFileHandle, budget: AuditBudget, maxBytes: number): Promise<RootHistoryRecord[]>;
 export declare function rootOperationPrefixHash(handle: AuditFileHandle, offset: number, budget: AuditBudget): Promise<string>;
 /** Existing-only readback: missing receipt evidence is never permission to append again. */
-export declare function confirmRootOperation(path: string, active: AuditFileHandle, record: RootOperationRecord, journal: RootOperationJournal, budget: AuditBudget, maxBytes: number): Promise<RootEvent>;
+export declare function confirmRootOperation(path: string, active: AuditFileHandle, record: RootOperationRecord, journal: RootOperationJournal, budget: AuditBudget, maxBytes: number, submitted?: boolean): Promise<RootEvent>;
 /** The lock and exact prefix/identity prove that a dead writer's reserved suffix may be repaired. */
 export declare function repairRootOperation(path: string, handle: AuditFileHandle, record: RootOperationRecord, budget: AuditBudget): Promise<boolean>;
