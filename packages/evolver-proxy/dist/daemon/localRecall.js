@@ -1,4 +1,5 @@
-import { assetstore, events, ops } from '@evomap/evolver-core';
+import { assetstore, events, hub, ops } from '@evomap/evolver-core';
+import { isTrialHoldout } from './distillMeasures.js';
 const MAX_LOCAL_RECALL_RECORDS = 20_000;
 // Passing the local strength gate is already the evidence; the floor keeps a local hit above the host's own
 // similarity cut (0.3) and comparable with the Hub's scores, which the host ranks the merged candidates by.
@@ -71,6 +72,14 @@ function recalledAsset(hit, trial) {
         },
     };
 }
+/** A project-bound Gene is recalled only in the project one of its Capsules was distilled in. */
+function isBoundHere(gene, capsules, fingerprint) {
+    if (!fingerprint)
+        return false;
+    const geneId = String(gene['id'] ?? gene.asset_id);
+    return capsules.some((capsule) => capsule['gene'] === geneId
+        && capsule['content']?.project_fingerprint === fingerprint);
+}
 /** Quarantined drafts that may be tried once: every other gate still applies, and two failures end the trial. */
 function trialPool(genes, capsules, eligibility) {
     const onTrial = genes.filter((gene) => eligibility.review.get(gene.asset_id)?.state === 'quarantined');
@@ -103,7 +112,7 @@ function diagnosticsOf(result) {
     };
 }
 /** The local Gene, with its project's notes, that this prompt should get from the local store, or none. */
-export async function recallFromLocalStore(store, text, projectDir) {
+export async function recallFromLocalStore(store, text, projectDir, onWithheld = () => undefined) {
     const [geneRead, capsuleRead] = await Promise.allSettled([
         Promise.resolve().then(() => store.list('Gene', MAX_LOCAL_RECALL_RECORDS + 1)),
         Promise.resolve().then(() => store.list('Capsule', MAX_LOCAL_RECALL_RECORDS + 1)),
@@ -133,15 +142,24 @@ export async function recallFromLocalStore(store, text, projectDir) {
         const rawAssets = new Map(result.hits.map((hit) => [recalledAsset(hit, trial), hit.gene]));
         return { assets: [...rawAssets.keys()], rawAssets, diagnostics: { ...diagnosticsOf(result), ...(truncated ? { truncated } : {}) } };
     };
+    const inScope = genes.filter((gene) => !hub.isProjectBoundGene(gene) || isBoundHere(gene, capsules, query.projectFingerprint));
     return { finish: (eligibility, reuse) => {
-            const qualified = [...genes, ...capsules].filter((asset) => assetstore.assetContextEligibilityReason(asset, eligibility) === undefined);
+            const qualified = [...inScope, ...capsules].filter((asset) => assetstore.assetContextEligibilityReason(asset, eligibility) === undefined);
             const result = assetstore.recallLocalAssets(qualified, query, reuse, contexts);
             if (result.hits.length > 0)
                 return outcomeOf(result, false);
-            const trial = trialPool(genes, capsules, eligibility);
+            const trial = trialPool(inScope, capsules, eligibility);
             if (trial.length === 0)
                 return outcomeOf(result, false);
             const trialResult = assetstore.recallLocalAssets(trial, { ...query, limit: 1 }, reuse, contexts);
-            return trialResult.hits.length > 0 ? outcomeOf(trialResult, true) : outcomeOf(result, false);
+            const drafted = trialResult.hits[0]?.gene;
+            if (!drafted)
+                return outcomeOf(result, false);
+            if (!isTrialHoldout(String(drafted['id'] ?? drafted.asset_id), text))
+                return outcomeOf(trialResult, true);
+            const withheldId = onWithheld(drafted.asset_id);
+            const withheld = outcomeOf(result, false);
+            const named = { asset_id: drafted.asset_id, ...(withheldId ? { withheld_id: withheldId } : {}) };
+            return { ...withheld, diagnostics: { ...withheld.diagnostics, trial_withheld: named } };
         } };
 }

@@ -214,8 +214,11 @@ export declare class ProxyDaemon {
     private wakeRunnerPending;
     private started;
     private readonly verificationContexts;
+    private readonly distillOutcomes;
+    private readonly trialControls;
     private lastRouteAt;
     private curationTimer;
+    private lastCurationAt;
     private curationRunning;
     private feedbackRecovery;
     private lifecycleArmed;
@@ -248,6 +251,8 @@ export declare class ProxyDaemon {
     private curateWhenIdle;
     private enqueueVerifiedDistillation;
     private trackStoredDraft;
+    /** The control arm of a trial draft: a turn that ran its checks with the draft withheld. */
+    private recordTrialControl;
     private enqueueDistillPublication;
     private registerDistillPublication;
     private distillPublicationEnvelope;

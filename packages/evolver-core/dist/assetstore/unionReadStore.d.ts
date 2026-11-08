@@ -18,6 +18,7 @@ export declare class UnionReadStore implements AssetStoreProvider {
     readonly putFrozen?: (record: AssetRecord) => Promise<PutResult>;
     readonly putFrozenConditional?: (record: AssetRecord, options?: ConditionalPutOptions) => Promise<ConditionalPutResult>;
     readonly findByLogicalId?: (id: string, limit?: number, kind?: AssetKind) => Promise<AssetRecord[]>;
+    readonly listRecent?: (kind: AssetKind, limit?: number) => Promise<AssetRecord[]>;
     /**
      * @param primary the writable pool this engine owns; every mutation lands here
      * @param readOnly additional pools to read, in precedence order after `primary`
@@ -41,6 +42,7 @@ export declare class UnionReadStore implements AssetStoreProvider {
     queryRelatedCapsules(query: RelatedCapsuleQuery): Promise<RelatedCapsuleResult>;
     put(asset: AssetRecord): Promise<PutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
+    getMany(assetIds: readonly string[]): Promise<ReadonlyMap<string, AssetRecord>>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
     search(q: SearchQuery): Promise<AssetRecord[]>;
 }

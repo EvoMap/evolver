@@ -1,10 +1,12 @@
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
-import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
+import { commitSharedFile, SharedFileConflictError, sharedFilePublicationAttempted, withSharedFileCompensation } from './sharedFileCommit.js';
 import { sameRuntimePath } from './runtimePathIdentity.js';
+import { runManagedInstallerTransaction } from './installerRuntimeTransaction.js';
+import { matchesUninstallPostimage } from './installerUninstallVerification.js';
 const CONFIG_MODE = 0o600;
 const DIR_MODE = 0o700;
 const BACKUP_VERSION = 1;
@@ -30,9 +32,10 @@ export function _setJsonMcpBeforeBackupRemoveHookForTest(hook) {
 export function _setJsonMcpBeforeSharedFileCommitHookForTest(hook) {
     beforeSharedFileCommitHookForTest = hook;
 }
-function removeBackup(path) {
+function removeBackup(path, expectedRaw) {
     beforeBackupRemoveHookForTest?.(path);
-    rmSync(path);
+    assertSafePath(path, 'runtime config backup');
+    commitSharedFile({ path, expectedRaw, nextRaw: undefined });
 }
 export class McpConfigConflictError extends Error {
     diff;
@@ -155,6 +158,14 @@ function resolveUninstallRuntimeConfig(spec, opts) {
     const candidates = resolution.uninstallDiscoveryPaths
         ?? resolution.uninstallCandidatePaths
         ?? [resolution.configPath];
+    if (opts.dryRun) {
+        const verified = candidates.filter(path => (!opts.targetPath || sameSelectedTargetPath(path, opts.targetPath)) && matchesUninstallPostimage(path));
+        if (verified.length === 1) {
+            const configPath = verified[0];
+            return { ...resolution, safeRoot: resolution.uninstallSafeRoot ?? resolution.safeRoot, configPath,
+                conflictingPaths: resolution.uninstallConflictingPaths?.(configPath) ?? [] };
+        }
+    }
     if (candidates.length < 2)
         return resolution;
     const discoveryResolution = resolution.uninstallSafeRoot
@@ -421,21 +432,8 @@ function createBackup(configPath, originalRaw, installedRaw, installedEntry) {
     };
     const raw = backupRaw(record);
     mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE });
-    const tempPath = join(dirname(path), `.${randomUUID()}.tmp`);
-    try {
-        writeFileSync(tempPath, raw, { encoding: 'utf8', mode: CONFIG_MODE, flag: 'wx' });
-        chmodSync(tempPath, CONFIG_MODE);
-        linkSync(tempPath, path);
-    }
-    catch (error) {
-        if (error.code === 'EEXIST') {
-            throw new McpConfigChangedError('Evolver backup', path);
-        }
-        throw error;
-    }
-    finally {
-        rmSync(tempPath, { force: true });
-    }
+    assertSafePath(path, 'runtime config backup');
+    commitSharedFile({ path, expectedRaw: undefined, nextRaw: raw, mode: CONFIG_MODE });
     return { record, raw };
 }
 function replaceBackup(configPath, current, nextRecord) {
@@ -454,7 +452,7 @@ function removeBackupIfUnchanged(configPath, expectedRaw) {
     const path = backupPath(configPath);
     assertSafePath(path, 'runtime config backup');
     if (readRawIfExists(path) === expectedRaw)
-        rmSync(path);
+        withSharedFileCompensation(() => commitSharedFile({ path, expectedRaw, nextRaw: undefined }));
 }
 function readBackup(configPath) {
     const path = backupPath(configPath);
@@ -574,6 +572,7 @@ function retrySharedConfigTransaction(operation) {
         }
         catch (error) {
             if (!(error instanceof SharedFileConflictError)
+                || error.retryable === false
                 || error.recoveryPath !== undefined
                 || attempt >= SHARED_CONFIG_WRITE_RETRIES)
                 throw error;
@@ -582,7 +581,7 @@ function retrySharedConfigTransaction(operation) {
 }
 export const _retrySharedConfigTransactionForTest = retrySharedConfigTransaction;
 export function installJsonMcpRuntime(spec, plan, opts) {
-    return retrySharedConfigTransaction(() => installJsonMcpRuntimeOnce(spec, plan, opts));
+    return runManagedInstallerTransaction(spec.runtime, opts, 'install', verification => installJsonMcpRuntimeOnce(spec, plan, { ...opts, dryRun: true, ...(verification ? { force: false } : {}) }), targetPath => retrySharedConfigTransaction(() => installJsonMcpRuntimeOnce(spec, plan, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) })), plan);
 }
 function installJsonMcpRuntimeOnce(spec, plan, opts) {
     validateServer(opts.server);
@@ -701,10 +700,12 @@ function installJsonMcpRuntimeOnce(spec, plan, opts) {
         let restored = currentRaw === snapshot.raw;
         if (installReachedConfig) {
             try {
-                if (snapshot.raw === null)
-                    guardedRemove(spec.runtime, safeRoot, configPath, installedRaw);
-                else
-                    guardedAtomicWrite(spec.runtime, safeRoot, configPath, snapshot.raw, snapshot.mode, installedRaw);
+                withSharedFileCompensation(() => {
+                    if (snapshot.raw === null)
+                        guardedRemove(spec.runtime, safeRoot, configPath, installedRaw);
+                    else
+                        guardedAtomicWrite(spec.runtime, safeRoot, configPath, snapshot.raw, snapshot.mode, installedRaw);
+                });
                 restored = readRawIfExists(configPath) === snapshot.raw;
             }
             catch (rollbackError) {
@@ -713,13 +714,18 @@ function installJsonMcpRuntimeOnce(spec, plan, opts) {
         }
         if (error instanceof McpConfigVerificationError && restored)
             error.markRestored();
-        if (!configReplaced || restored) {
+        if (restored || !configReplaced && sharedFilePublicationAttempted(configPath) === false) {
             if (!backupExisted && activeBackup) {
-                removeBackupIfUnchanged(configPath, activeBackup.raw);
+                try {
+                    removeBackupIfUnchanged(configPath, activeBackup.raw);
+                }
+                catch (rollbackError) {
+                    error.backupRollbackError = rollbackError;
+                }
             }
             else if (previousBackup && activeBackup && activeBackup.raw !== previousBackup.raw) {
                 try {
-                    guardedAtomicWrite('Evolver backup', dirname(backupPath(configPath)), backupPath(configPath), previousBackup.raw, CONFIG_MODE, activeBackup.raw);
+                    withSharedFileCompensation(() => guardedAtomicWrite('Evolver backup', dirname(backupPath(configPath)), backupPath(configPath), previousBackup.raw, CONFIG_MODE, activeBackup.raw));
                 }
                 catch (rollbackError) {
                     error.backupRollbackError = rollbackError;
@@ -742,7 +748,7 @@ function withoutEvolver(data, containerKey) {
     return next;
 }
 export function uninstallJsonMcpRuntime(spec, runtime, opts) {
-    return retrySharedConfigTransaction(() => uninstallJsonMcpRuntimeOnce(spec, runtime, opts));
+    return runManagedInstallerTransaction(spec.runtime, opts, 'uninstall', () => uninstallJsonMcpRuntimeOnce(spec, runtime, { ...opts, dryRun: true }), targetPath => retrySharedConfigTransaction(() => uninstallJsonMcpRuntimeOnce(spec, runtime, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) })));
 }
 function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
     const resolution = resolveUninstallRuntimeConfig(spec, opts);
@@ -764,7 +770,7 @@ function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
             return { ok: true, runtime, mode: 'uninstall', files: [], backups: [backupFile], dryRun: true, verified: true };
         }
         assertBackupUnchanged(configPath, backup.raw);
-        removeBackup(backupFile);
+        removeBackup(backupFile, backup.raw);
         return { ok: true, runtime, mode: 'uninstall', files: [], backups: [backupFile], verified: true };
     }
     const snapshot = readSnapshot(spec.runtime, configPath);
@@ -776,7 +782,7 @@ function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
             return { ok: true, runtime, mode: 'uninstall', files: [], backups: [backupFile], dryRun: true, verified: true };
         }
         assertBackupUnchanged(configPath, backup.raw);
-        removeBackup(backupFile);
+        removeBackup(backupFile, backup.raw);
         return { ok: true, runtime, mode: 'uninstall', files: [], backups: [backupFile], verified: true };
     }
     const currentRaw = snapshot.raw;
@@ -791,6 +797,9 @@ function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
     }
     else {
         if (!backup) {
+            if (opts.dryRun && matchesUninstallPostimage(configPath, snapshot.raw)) {
+                return { ok: true, runtime, mode: 'uninstall', files: [], dryRun: true, verified: true };
+            }
             throw new McpConfigOwnershipError(spec.runtime, 'an Evolver entry exists without a managed backup; ownership cannot be proven');
         }
         if (!Object.prototype.hasOwnProperty.call(backup.record, 'installedEntry')) {
@@ -844,13 +853,13 @@ function uninstallJsonMcpRuntimeOnce(spec, runtime, opts) {
             if (readRawIfExists(backupFile) !== backup.raw) {
                 throw new McpConfigChangedError('Evolver backup', backupFile);
             }
-            removeBackup(backupFile);
+            removeBackup(backupFile, backup.raw);
         }
     }
     catch (error) {
         if (configChanged && readRawIfExists(configPath) === nextRaw) {
             try {
-                guardedAtomicWrite(spec.runtime, safeRoot, configPath, snapshot.raw, snapshot.mode, nextRaw, backupGuard);
+                withSharedFileCompensation(() => guardedAtomicWrite(spec.runtime, safeRoot, configPath, snapshot.raw, snapshot.mode, nextRaw, backupGuard));
                 if (readRawIfExists(configPath) !== snapshot.raw) {
                     throw new McpConfigVerificationError(spec.runtime, configPath);
                 }

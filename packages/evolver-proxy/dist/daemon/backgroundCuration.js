@@ -6,6 +6,9 @@ import { createRecordedCheckout, RecordedTreeMismatch } from './curationGit.js';
 import { hasVerificationPlan } from './observedEvidence.js';
 export const CURATION_INTERVAL_MS = 10 * 60_000;
 export const CURATION_IDLE_MS = 2 * 60_000;
+// Host relays reach the Proxy every minute or two; checking only at each interval boundary would almost always land
+// inside their activity, so the quiet window is polled for and a run still starts at most once per interval.
+export const CURATION_POLL_MS = 30_000;
 function geneDigest(gene) {
     return wire.canonicalize(gene);
 }
@@ -88,7 +91,7 @@ async function enqueueCurrentVerification(deps, context, body, verified, geneBef
         saveCurrentObservation(deps.contexts, context, { published: { at, envelopeId: '', assetIds: [] } });
         return 'stored';
     }) ?? 'review_not_approved';
-    const publication = await deps.enqueue(body, verified, context.planDigest, commit);
+    const publication = await deps.enqueue(body, verified, context.planDigest, commit, context.geneAssetId);
     if (!publication.queued)
         return publication.reason ?? 'publish_blocked';
     const latest = deps.contexts.get(context.geneAssetId);

@@ -163,8 +163,14 @@ function isClearlyNonSecret(value) {
         return true;
     return false;
 }
+// A test runner's selector names a file and then what to run in it: pytest's `tests/test_x.py::TestA::test_b[1]`.
+// Measured whole, the path makes it look dense; each path segment and each name it selects is judged on its own.
+const TEST_SELECTOR = /^((?:[\w.-]+[\\/])*[\w.-]+\.[A-Za-z0-9]{1,12})::(\S+)$/;
 function isHighEntropyCredential(raw) {
     const candidate = semanticValue(raw).trim();
+    const selector = TEST_SELECTOR.exec(candidate);
+    if (selector)
+        return [...selector[1].split(/[\\/]/), ...selector[2].split('::')].some((part) => isHighEntropyCredential(part));
     if (isClearlyNonSecret(candidate) || /\s/.test(candidate))
         return false;
     const compact = candidate.replace(/[._~+/=-]/g, '');
@@ -420,6 +426,13 @@ function sanitizeText(input) {
                     reasons.add('nested_command');
                 }
             }
+            continue;
+        }
+        // A selector is a value even when a test it names reads like a credential word (`test_password`).
+        if (TEST_SELECTOR.test(semantic)) {
+            const replaced = replacementForValue(raw, false, 'high_entropy_value', reasons);
+            if (replaced !== raw)
+                replacements.set(index, replaced);
             continue;
         }
         if (isSensitiveName(semantic)) {

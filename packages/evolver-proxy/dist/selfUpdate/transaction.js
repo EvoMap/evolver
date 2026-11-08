@@ -1,13 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { constants, watch } from 'node:fs';
+import { constants, fstatSync, watch } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, realpath, rename, rm, writeFile, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { promisify } from 'node:util';
-import { ops } from '@evomap/evolver-core';
+import { assetstore, ops } from '@evomap/evolver-core';
 import { resolveSelfUpdateTarget } from './releaseBinary.js';
 import { SELF_UPDATE_FAILURE_CODES, selfUpdateFailure } from './failureCodes.js';
-import { selfUpdateFileMetadata } from './fileMetadata.js';
 import { bindWindowsManagedExecutable, prepareWindowsExecutableSwap, resolveWindowsUpdaterPaths, } from './windowsUpdater.js';
 const execFileAsync = promisify(execFile);
 const JOURNAL_SCHEMA_VERSION = 2;
@@ -95,6 +94,7 @@ export async function provisionStableUnixRecoveryController(options) {
     }
     const owner = await acquireLock(paths.lock, options.pid ?? process.pid, undefined, paths.stateRootIdentity);
     const notifyPublished = () => observeArtifactPublicationAliases(paths, () => options.onArtifactPublished?.(configuredControllerPath, configuredTemporaryPath));
+    let temporaryWritten = false;
     let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
         await assertStateRootIdentity(paths);
@@ -118,14 +118,16 @@ export async function provisionStableUnixRecoveryController(options) {
                     throw error;
             }
         }
-        const targetIdentity = await assertRegularNonSymlink(paths.targetPath, 'target');
-        const targetBytes = await readRegularFile(paths.targetPath);
+        const targetStat = await assertRegularNonSymlink(paths.targetPath, 'target');
+        const targetIdentity = { dev: targetStat.dev, ino: targetStat.ino, birthtimeNs: targetStat.birthtimeNs };
+        const targetBytes = await readRegularFile(paths.targetPath, targetIdentity);
         await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
             ? {
                 ownershipReceiptPath,
                 onClaimCreated: notifyPublished,
             }
             : undefined);
+        temporaryWritten = true;
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
         if (options.replaceExisting === false) {
             await link(temporaryPath, controllerPath);
@@ -148,7 +150,7 @@ export async function provisionStableUnixRecoveryController(options) {
         return controllerPath;
     }
     finally {
-        if (!retainClaimOnFailure) {
+        if (!retainClaimOnFailure && temporaryWritten) {
             try {
                 await assertStateRootIdentity(paths);
                 if (ownershipReceiptPath)
@@ -230,6 +232,7 @@ export async function provisionStableWindowsRecoveryController(options, processE
     }
     const owner = await acquireLock(paths.lock, options.pid ?? process.pid, undefined, paths.stateRootIdentity);
     const notifyPublished = () => observeArtifactPublicationAliases(paths, () => options.onArtifactPublished?.(configuredControllerPath, configuredTemporaryPath));
+    let temporaryWritten = false;
     let retainClaimOnFailure = options.replaceExisting === false && options.artifactClaimPath !== undefined;
     try {
         await assertStateRootIdentity(paths);
@@ -261,14 +264,16 @@ export async function provisionStableWindowsRecoveryController(options, processE
                     throw error;
             }
         }
-        const targetIdentity = await assertRegularNonSymlink(paths.targetPath, 'target');
-        const targetBytes = await readRegularFile(paths.targetPath);
+        const targetStat = await assertRegularNonSymlink(paths.targetPath, 'target');
+        const targetIdentity = { dev: targetStat.dev, ino: targetStat.ino, birthtimeNs: targetStat.birthtimeNs };
+        const targetBytes = await readRegularFile(paths.targetPath, targetIdentity);
         await writeExclusiveFile(temporaryPath, targetBytes, 0o700, ownershipReceiptPath
             ? {
                 ownershipReceiptPath,
                 onClaimCreated: notifyPublished,
             }
             : undefined);
+        temporaryWritten = true;
         await assertSameFileIdentity(paths.targetPath, targetIdentity);
         if (options.replaceExisting !== false) {
             try {
@@ -301,7 +306,7 @@ export async function provisionStableWindowsRecoveryController(options, processE
         return controllerPath;
     }
     finally {
-        if (!retainClaimOnFailure) {
+        if (!retainClaimOnFailure && temporaryWritten) {
             try {
                 await assertStateRootIdentity(paths);
                 if (ownershipReceiptPath)
@@ -417,8 +422,9 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
                 const backupName = `${journal.transaction_id}.backup`;
                 const backupPath = join(paths.backups, backupName);
                 const targetStat = await assertRegularNonSymlink(paths.targetPath, 'target');
+                const targetIdentity = { dev: targetStat.dev, ino: targetStat.ino, birthtimeNs: targetStat.birthtimeNs };
                 const targetMode = Number(targetStat.mode) & 0o777;
-                await copyRegularFile(paths.targetPath, backupPath, targetMode);
+                await copyRegularFile(paths.targetPath, backupPath, targetMode, targetIdentity);
                 await persist('backed_up', { backup_name: backupName });
                 if ((options.platform ?? process.platform) === 'win32') {
                     try {
@@ -456,7 +462,7 @@ export async function beginDurableSelfUpdate(targetVersion, options) {
                         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REJECTED_VERIFICATION, 'staged_artifact_changed_after_verification');
                     }
                     await writeExclusiveFile(installTmp, stagedBytes, targetMode);
-                    await assertSameFileIdentity(paths.targetPath, targetStat);
+                    await assertSameFileIdentity(paths.targetPath, targetIdentity);
                     await rename(installTmp, paths.targetPath);
                     await persist('installed');
                 }
@@ -1061,9 +1067,16 @@ async function assertDirectoryNonSymlink(path) {
     await realpath(path);
 }
 async function assertRegularNonSymlink(path, kind) {
-    const info = await lstat(path);
+    const info = await lstat(path, { bigint: true });
     if (info.isSymbolicLink() || !info.isFile()) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, `${kind}_not_regular`);
+    }
+    if (process.platform === 'win32' && info.dev === 0n) {
+        const witnessed = captureSelfUpdateFileIdentity(path, `${kind}_changed_during_capture`);
+        if (witnessed.ino !== info.ino || witnessed.birthtimeNs !== info.birthtimeNs) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, `${kind}_changed_during_capture`);
+        }
+        Object.assign(info, { dev: witnessed.dev });
     }
     return info;
 }
@@ -1080,61 +1093,138 @@ async function moveRegularFile(source, destination, mode) {
         await rm(source, { force: true });
     }
 }
-async function copyRegularFile(source, destination, mode) {
-    await writeExclusiveFile(destination, await readRegularFile(source), mode);
+function captureSelfUpdateFileIdentity(path, detail) {
+    try {
+        return assetstore.captureRegularAssetFileIdentity(path);
+    }
+    catch (error) {
+        if (isUnsafeAssetFileIdentity(error)) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, detail, { cause: error });
+        }
+        throw error;
+    }
 }
-async function readRegularFile(source) {
+function isUnsafeAssetFileIdentity(error) {
+    return isErrno(error, 'UNSAFE_ASSET_STORE_PATH');
+}
+async function copyRegularFile(source, destination, mode, expected) {
+    await writeExclusiveFile(destination, await readRegularFile(source, expected), mode);
+}
+async function readRegularFile(source, expected) {
+    const before = expected ?? captureSelfUpdateFileIdentity(source, 'source_not_regular');
     const sourceHandle = await open(source, constants.O_RDONLY | noFollowFlag());
     try {
-        const sourceStat = await sourceHandle.stat();
-        if (!sourceStat.isFile())
-            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'source_not_regular');
-        return await sourceHandle.readFile();
+        assetstore.assertOpenedRegularAssetFile(sourceHandle.fd, source, before);
+        const bytes = await sourceHandle.readFile();
+        assetstore.assertOpenedRegularAssetFile(sourceHandle.fd, source, before);
+        return bytes;
+    }
+    catch (error) {
+        if (isUnsafeAssetFileIdentity(error)) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'source_changed_during_read', { cause: error });
+        }
+        throw error;
     }
     finally {
         await sourceHandle.close().catch(() => { });
     }
 }
+async function readBoundedFile(handle, maxBytes) {
+    const bytes = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, null);
+        if (bytesRead === 0)
+            break;
+        offset += bytesRead;
+    }
+    return bytes.subarray(0, offset);
+}
+function assertExclusivePublicationIdentity(fd, path, expected, detail) {
+    try {
+        assetstore.assertOpenedRegularAssetFile(fd, path, expected, 'write');
+    }
+    catch (error) {
+        if (isUnsafeAssetFileIdentity(error)) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, detail, { cause: error });
+        }
+        throw error;
+    }
+}
+function sameNativeFileIdentity(actual, expected) {
+    return actual.dev === expected.dev && actual.ino === expected.ino && actual.birthtimeNs === expected.birthtimeNs;
+}
+function sameExclusiveFileSnapshot(actual, expected) {
+    return actual.isFile() && !actual.isSymbolicLink() && actual.nlink === 1n
+        && sameNativeFileIdentity(actual, expected) && actual.size === expected.size
+        && actual.mode === expected.mode && actual.uid === expected.uid && actual.gid === expected.gid
+        && actual.mtimeNs === expected.mtimeNs && actual.ctimeNs === expected.ctimeNs;
+}
+async function discardExclusiveFile(path, directoryIdentity, snapshot) {
+    if (!snapshot)
+        return;
+    try {
+        await assertDirectoryIdentity(dirname(path), directoryIdentity);
+        const current = assetstore.captureRegularAssetFileSnapshot(path, constants.O_WRONLY);
+        if (!sameExclusiveFileSnapshot(current, snapshot))
+            return;
+        await rm(path, { force: true });
+        await syncDirectoryDurably(dirname(path));
+    }
+    catch { /* Retain receipts whose ownership or file version can no longer be proven. */ }
+}
 async function writeExclusiveFile(destination, bytes, mode, publication) {
     const stagingPath = await directoryCreationPath(publication?.ownershipReceiptPath ?? destination);
+    const stagingDirectory = dirname(stagingPath);
+    const stagingDirectoryIdentity = await readDirectoryIdentity(stagingDirectory);
     if (publication
         && dirname(resolve(publication.ownershipReceiptPath)) !== dirname(resolve(destination))) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_outside_directory');
     }
-    let stagingCreated = false;
     let claimPublished = false;
-    const destinationHandle = await open(stagingPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
-    stagingCreated = true;
+    let completed = false;
+    let cleanupSnapshot;
+    const destinationHandle = await open(stagingPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollowFlag(), mode);
     try {
+        // Capture the created inode from the held FD before the first fallible await.
+        const created = fstatSync(destinationHandle.fd, { bigint: true });
+        if (created.isFile() && created.size === 0n && created.nlink === 1n)
+            cleanupSnapshot = created;
+        const openedIdentity = { dev: created.dev, ino: created.ino, birthtimeNs: created.birthtimeNs };
+        const opened = await destinationHandle.stat({ bigint: true });
+        if (!opened.isFile() || !sameNativeFileIdentity(opened, openedIdentity)) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'destination_not_regular');
+        }
+        assertExclusivePublicationIdentity(destinationHandle.fd, stagingPath, openedIdentity, 'destination_changed_during_write');
+        // An interrupted write has unknown bytes; retain it unless a complete version is captured.
+        cleanupSnapshot = undefined;
         await destinationHandle.writeFile(bytes);
         await destinationHandle.chmod(mode);
+        cleanupSnapshot = fstatSync(destinationHandle.fd, { bigint: true });
         await destinationHandle.sync();
+        await assertDirectoryIdentity(stagingDirectory, stagingDirectoryIdentity);
         if (publication) {
             await syncDirectoryDurably(dirname(destination));
-            const [opened, receipt] = await Promise.all([
-                destinationHandle.stat({ bigint: true }),
-                selfUpdateFileMetadata(publication.ownershipReceiptPath, constants.O_WRONLY),
-            ]);
-            if (!opened.isFile() || opened.dev <= 0n || opened.ino <= 0n
-                || receipt.dev !== opened.dev || receipt.ino !== opened.ino) {
+            if (opened.dev <= 0n || opened.ino <= 0n) {
                 throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_ownership_receipt_mismatch');
             }
+            assertExclusivePublicationIdentity(destinationHandle.fd, publication.ownershipReceiptPath, openedIdentity, 'bootstrap_controller_ownership_receipt_mismatch');
             await link(stagingPath, await directoryCreationPath(destination));
             await syncDirectoryDurably(dirname(destination));
             claimPublished = true;
-            const claim = await selfUpdateFileMetadata(destination, constants.O_WRONLY);
-            if (claim.dev !== opened.dev || claim.ino !== opened.ino) {
-                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'bootstrap_controller_claim_receipt_mismatch');
-            }
+            await assertDirectoryIdentity(stagingDirectory, stagingDirectoryIdentity);
+            assertExclusivePublicationIdentity(destinationHandle.fd, destination, openedIdentity, 'bootstrap_controller_claim_receipt_mismatch');
             await publication.onClaimCreated();
         }
+        else {
+            assertExclusivePublicationIdentity(destinationHandle.fd, stagingPath, openedIdentity, 'destination_changed_during_write');
+        }
+        completed = true;
     }
     finally {
         await destinationHandle.close().catch(() => { });
-        if (publication && stagingCreated && !claimPublished) {
-            await rm(stagingPath, { force: true }).catch(() => { });
-            await syncDirectoryDurably(dirname(stagingPath)).catch(() => { });
-        }
+        if (!completed && !claimPublished)
+            await discardExclusiveFile(stagingPath, stagingDirectoryIdentity, cleanupSnapshot);
     }
 }
 async function restoreBackup(paths, journal, force = false) {
@@ -1181,33 +1271,40 @@ async function writeJournal(path, journal) {
 }
 async function readJournal(path) {
     let journalHandle;
+    let identity;
     try {
-        const pathInfo = await selfUpdateFileMetadata(path);
-        if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) {
-            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal');
-        }
+        identity = captureSelfUpdateFileIdentity(path, 'unsafe_journal');
         journalHandle = await open(path, constants.O_RDONLY | noFollowFlag());
     }
     catch (error) {
-        if (isErrno(error, 'ENOENT'))
+        if (isErrno(error, 'ENOENT') && !identity)
             return undefined;
+        if (isErrno(error, 'ENOENT') || isErrno(error, 'ELOOP')) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal', { cause: error });
+        }
         throw error;
     }
     try {
+        assetstore.assertOpenedRegularAssetFile(journalHandle.fd, path, identity);
         const info = await journalHandle.stat({ bigint: true });
-        const currentPathInfo = await selfUpdateFileMetadata(path);
-        if (!info.isFile()
-            || currentPathInfo.isSymbolicLink()
-            || !currentPathInfo.isFile()
-            || currentPathInfo.dev !== info.dev
-            || currentPathInfo.ino !== info.ino
-            || info.size > BigInt(MAX_JOURNAL_BYTES)) {
+        if (info.size > BigInt(MAX_JOURNAL_BYTES)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal');
         }
-        const parsed = JSON.parse(await journalHandle.readFile('utf8'));
+        const bytes = await readBoundedFile(journalHandle, MAX_JOURNAL_BYTES);
+        assetstore.assertOpenedRegularAssetFile(journalHandle.fd, path, identity);
+        if (bytes.byteLength > MAX_JOURNAL_BYTES) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal');
+        }
+        const parsed = JSON.parse(bytes.toString('utf8'));
         if (!isJournal(parsed))
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.RECOVERY_REQUIRED, 'invalid_journal');
         return parsed;
+    }
+    catch (error) {
+        if (isUnsafeAssetFileIdentity(error)) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'unsafe_journal', { cause: error });
+        }
+        throw error;
     }
     finally {
         await journalHandle.close().catch(() => { });
@@ -1378,17 +1475,17 @@ async function readLockGeneration(path) {
 async function readLockOwner(path) {
     let handle;
     try {
-        const before = await selfUpdateFileMetadata(path);
-        if (before.isSymbolicLink() || !before.isFile() || before.size > 4096n)
+        const before = await lstat(path);
+        if (before.isSymbolicLink() || !before.isFile() || before.size > 4_096)
             return undefined;
+        const identity = assetstore.captureRegularAssetFileIdentity(path);
         handle = await open(path, constants.O_RDONLY | noFollowFlag());
+        assetstore.assertOpenedRegularAssetFile(handle.fd, path, identity);
         const opened = await handle.stat({ bigint: true });
-        if (!opened.isFile()
-            || opened.size > 4096n
-            || opened.dev !== before.dev
-            || opened.ino !== before.ino)
+        if (opened.size > 4096n)
             return undefined;
-        const bytes = await handle.readFile();
+        const bytes = await readBoundedFile(handle, 4_096);
+        assetstore.assertOpenedRegularAssetFile(handle.fd, path, identity);
         if (bytes.byteLength > 4_096)
             return undefined;
         const parsed = JSON.parse(bytes.toString('utf8'));
@@ -1404,7 +1501,8 @@ async function readLockOwner(path) {
             : undefined;
     }
     catch (error) {
-        if (isErrno(error, 'ENOENT') || isErrno(error, 'ELOOP') || error instanceof SyntaxError)
+        if (isUnsafeAssetFileIdentity(error)
+            || isErrno(error, 'ENOENT') || isErrno(error, 'ELOOP') || error instanceof SyntaxError)
             return undefined;
         throw error;
     }
@@ -1451,8 +1549,9 @@ function processAlive(pid) {
     }
 }
 async function assertSameFileIdentity(path, expected) {
-    const current = await assertRegularNonSymlink(path, 'target');
-    if (Number(current.dev) !== Number(expected.dev) || Number(current.ino) !== Number(expected.ino)) {
+    await assertRegularNonSymlink(path, 'target');
+    const current = captureSelfUpdateFileIdentity(path, 'target_changed_during_update');
+    if (!sameNativeFileIdentity(current, expected)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'target_changed_during_update');
     }
 }

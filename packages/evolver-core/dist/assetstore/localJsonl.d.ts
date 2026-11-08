@@ -12,6 +12,7 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     private readonly bundleJournalPath;
     private fileState;
     private loaded;
+    private readonly recentIndex;
     readonly referenceScope: ReferenceScope;
     constructor(baseDir: string);
     private captureFileState;
@@ -20,6 +21,11 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     private refreshUnderLock;
     private ensureFresh;
     private updateFileStateAfterWrite;
+    /** 仅在新 identity 已成功追加后更新其 kind；Capsule/Event 不影响 Gene 近期窗口。 */
+    private indexAppendedRecord;
+    /** 在任何持久化副作用前捕获实际 JSON 表示，热索引只持有该独立表示。 */
+    private prepareAppend;
+    private appendPreparedRecord;
     private readPendingBundle;
     private recoverPendingBundleUnderLock;
     private hasPendingBundle;
@@ -49,8 +55,10 @@ export declare class LocalJsonlProvider implements AssetStoreProvider {
     putFrozen(record: AssetRecord): Promise<PutResult>;
     putFrozenConditional(record: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
+    getMany(assetIds: readonly string[]): Promise<ReadonlyMap<string, AssetRecord>>;
     findByLogicalId(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
+    listRecent(kind: AssetKind, limit?: number): Promise<AssetRecord[]>;
     listAll(kind?: AssetKind): AssetRecord[];
     search(q: SearchQuery): Promise<AssetRecord[]>;
     /**

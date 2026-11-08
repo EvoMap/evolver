@@ -25,10 +25,13 @@ export function runtimeSupport(runtime) {
         return { runtime, outcome: 'manual', reason };
     return { runtime, outcome: 'unsupported', reason: `unknown runtime '${runtime}' (supported: ${SETUP_RUNTIMES.join(', ')})` };
 }
-/**
- * 按 runtime 规划 MCP 工具注入(M5-5). MVP: CC(hooks)+codex(plugin) 做工具注入,
- * 其余仅被动会话日志消费(待确认 a / 批注#39). 注入方式差异大, 故每 runtime 一策略.
- */
+export function cursorInjectionPlan() {
+    return {
+        runtime: 'cursor', mode: 'cursor-rules', config: {},
+        note: 'cursor: 渲染静默 top-gene hints 进 .cursor/rules/evolver.mdc (alwaysApply:true); daemon 在 gene 集变化时重写',
+    };
+}
+/** 按实际 adapter 规划接入。Cursor 提供规则记忆，其余宿主提供 MCP；只有 CC/Codex 带已验证的 hooks。 */
 export function planInjection(runtime, server) {
     switch (runtime) {
         case 'claude-code':
@@ -48,15 +51,7 @@ export function planInjection(runtime, server) {
                 note: 'codex: 写 .codex/config.toml [mcp_servers.evolver] + [[hooks.SessionStart]]; agent 经 MCP tool list 发现 evolver 能力',
             };
         case 'cursor':
-            return {
-                runtime, mode: 'cursor-rules',
-                // cursor has no MCP-server-config + SessionStart-hook hybrid; its stable injection point is a project
-                // rules file. The active path renders quiet top-gene hints into .cursor/rules/evolver.mdc
-                // (alwaysApply:true) and a daemon rewrites it on gene-set change. This is gene-memory
-                // injection (NOT MCP tool discovery), so it carries no MCP server config here.
-                config: {},
-                note: 'cursor: 渲染静默 top-gene hints 进 .cursor/rules/evolver.mdc (alwaysApply:true); daemon 在 gene 集变化时重写',
-            };
+            return cursorInjectionPlan();
         case 'antigravity':
             return {
                 runtime, mode: 'mcp-config',

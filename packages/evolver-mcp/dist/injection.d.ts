@@ -45,10 +45,8 @@ export interface McpServerCmd {
     args?: string[];
     env?: Record<string, string>;
 }
-/**
- * 按 runtime 规划 MCP 工具注入(M5-5). MVP: CC(hooks)+codex(plugin) 做工具注入,
- * 其余仅被动会话日志消费(待确认 a / 批注#39). 注入方式差异大, 故每 runtime 一策略.
- */
+export declare function cursorInjectionPlan(): InjectionPlan;
+/** 按实际 adapter 规划接入。Cursor 提供规则记忆，其余宿主提供 MCP；只有 CC/Codex 带已验证的 hooks。 */
 export declare function planInjection(runtime: RuntimeId, server: McpServerCmd): InjectionPlan;
 /** 哪些 runtime 经 MCP server 注入工具发现(CC+codex). cursor 注入的是 gene 记忆(rules 文件)而非 MCP 工具,
  *  故不计入此处;passive runtime 也为 false. */

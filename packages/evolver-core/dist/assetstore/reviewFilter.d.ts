@@ -38,4 +38,6 @@ export declare function pendingReviewRecords(review: ReviewLedger, excludeAssetI
 export declare function pendingGeneReviewRecords(store: AssetStoreProvider, review: ReviewLedger): Promise<ReviewRecord[]>;
 export declare function listApprovedGenes(store: AssetStoreProvider, review: ReviewLedger, maxGenes: number, provenance?: ProvenanceStore, options?: SourceSelectionOptions): Promise<AssetRecord[]>;
 /** Same trust/review/source gate for the asynchronous read-only snapshot path. */
-export declare function approvedGenesFromSnapshot(snapshot: Pick<import('./boundedSnapshot.js').GeneReadSnapshot, 'genes' | 'provenance' | 'review'>, maxGenes: number, options?: SourceSelectionOptions, scanLimit?: number): AssetRecord[];
+export declare function approvedGenesFromSnapshot(snapshot: Pick<import('./boundedSnapshot.js').GeneReadSnapshot, 'genes' | 'recentGenes' | 'provenance' | 'review'>, maxGenes: number, options?: SourceSelectionOptions & {
+    recent?: boolean;
+}, scanLimit?: number): AssetRecord[];

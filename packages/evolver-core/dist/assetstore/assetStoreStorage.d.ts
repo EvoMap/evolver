@@ -48,12 +48,15 @@ export interface AssetFileIdentity {
     readonly ino: bigint;
     readonly birthtimeNs: bigint;
 }
+export type AssetFileWitnessAccess = 'read' | 'write';
 export declare function captureAssetStoreDirectoryIdentity(path: string): AssetFileIdentity;
 export declare function assertAssetStoreDirectoryIdentity(path: string, expected: AssetFileIdentity): void;
-export declare function captureRegularAssetFileIdentity(path: string): AssetFileIdentity;
+/** Preserve pathname type/content guards, filling only a regular file's missing Windows volume from a native witness. */
+export declare function lstatWithAssetFileIdentity(path: string, witnessAccess?: AssetFileWitnessAccess): BigIntStats;
+export declare function captureRegularAssetFileIdentity(path: string, witnessAccess?: AssetFileWitnessAccess): AssetFileIdentity;
 /** A path version from a real kernel witness, not a held FD or a missing-volume wildcard. */
 export declare function captureRegularAssetFileSnapshot(path: string, witnessAccess?: number): BigIntStats;
-export declare function assertOpenedRegularAssetFile(fd: number, path: string, expected?: AssetFileIdentity): void;
+export declare function assertOpenedRegularAssetFile(fd: number, path: string, expected?: AssetFileIdentity, witnessAccess?: AssetFileWitnessAccess): void;
 export declare function readRegularBuffer(path: string, maxBytes?: number, check?: () => void): Buffer | null;
 export declare function readUtf8Regular(path: string, maxBytes?: number): string | null;
 export declare function createBufferDurableExclusive(path: string, value: Buffer, opts?: DurableWriteOptions): void;

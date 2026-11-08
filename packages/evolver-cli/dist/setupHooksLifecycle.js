@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, claudeCodeTargets, codexConfigTarget, installInjection, uninstallInjection, resolveInstallComponents, cursorRulesPath, resolveAntigravityConfigTargets, resolveOpenCodeConfig, resolveKiroConfig, } from '@evomap/evolver-mcp';
+import { DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, claudeCodeTargets, codexConfigTarget, installInjection, uninstallInjection, resolveInstallComponents, cursorRulesPath, resolveAntigravityConfigTargets, resolveOpenCodeConfig, resolveKiroConfig, readSharedFileSnapshot, INSTALLER_TRANSACTION_SCHEMA, } from '@evomap/evolver-mcp';
+import { executeSetupTransaction, recoverSetupTransaction } from './setupHooksTransaction.js';
+export { inspectSetupTransactions } from './setupHooksTransaction.js';
 export const SETUP_LIFECYCLE_SCHEMA = 'evolver.setup_hooks.lifecycle.v1';
 export const SETUP_LIFECYCLE_PLAN_TTL_MS = 120_000;
 export class SetupLifecycleError extends Error {
@@ -24,6 +25,7 @@ export function setupLifecycleCapabilities(runtime, scope) {
         supported,
         hookCommandsBound: runtime === 'claude-code' || runtime === 'codex',
         standaloneMcp: true,
+        transactions: { schema: INSTALLER_TRANSACTION_SCHEMA, durable: supported, atomicVisibility: false, recovery: supported },
         operations: {
             plan: supported,
             verify: supported,
@@ -51,9 +53,9 @@ function lifecycleIntentDigest(context, action) {
     const options = lifecycleInstallOptions(context);
     const targetResolution = {
         components: resolveInstallComponents(options.components),
-        configRoot: context.configRoot,
+        configRoot: resolve(context.configRoot),
         scope: context.scope,
-        homeDir: options.homeDir,
+        homeDir: resolve(options.homeDir ?? homedir()),
         codexHome: options.codexHome,
         kiroHome: options.kiroHome,
         xdgConfigHome: options.xdgConfigHome,
@@ -92,22 +94,7 @@ function lifecycleIntentDigest(context, action) {
     return digest(JSON.stringify(canonicalJson(intent)));
 }
 function fileIdentity(path) {
-    try {
-        const stat = lstatSync(path);
-        if (stat.isSymbolicLink())
-            return digest(`symlink:${path}`);
-        if (!stat.isFile())
-            return digest(`non-file:${path}:${stat.mode}`);
-        return digest(Buffer.concat([
-            Buffer.from(`file:${path}:${stat.mode}:`),
-            readFileSync(path),
-        ]));
-    }
-    catch (error) {
-        if (error.code === 'ENOENT')
-            return digest(`absent:${path}`);
-        throw error;
-    }
+    return digest(JSON.stringify([path, readSharedFileSnapshot(path).identity]));
 }
 function displayTarget(path, context) {
     const base = context.scope === 'user' ? context.installOptions.homeDir ?? homedir() : context.configRoot;
@@ -129,21 +116,6 @@ function applyLifecycleMutation(context, action, targetPath) {
     return action === 'install'
         ? installInjection(context.injectionPlan, options)
         : uninstallInjection(context.runtime, options);
-}
-function applyConfirmedTargets(context, plan, paths) {
-    const files = [];
-    for (const target of plan.targets) {
-        if (target.disposition === 'already_satisfied')
-            continue;
-        const path = paths.get(target.target_id);
-        if (!path)
-            throw new SetupLifecycleError('PLAN_STALE', 'confirmed target is no longer resolved');
-        const result = applyLifecycleMutation(context, plan.action, path);
-        files.push(...result.files);
-        if (!result.ok)
-            return { ...result, files };
-    }
-    return { ok: true, runtime: context.runtime, mode: context.injectionPlan.mode, files };
 }
 function lifecycleConfigPaths(context) {
     const options = lifecycleInstallOptions(context);
@@ -168,14 +140,15 @@ function planForTimes(context, action, createdAt, expiresAt, resolvedPaths) {
     if (!dryRun.ok)
         throw new SetupLifecycleError('PLAN_INVALID', dryRun.error ?? 'lifecycle plan failed');
     if (resolvedPaths) {
-        const paths = [...lifecycleConfigPaths(context), ...dryRun.files];
+        const paths = [...lifecycleConfigPaths(context), ...dryRun.files, ...(dryRun.backups ?? []).map(path => path.replace(/\.evolver-backup\.json$/, ''))];
         for (const path of paths.map((path) => resolve(path))) {
             resolvedPaths.set(digest(`${context.runtime}\0${context.scope}\0${path}`).slice(0, 32), path);
         }
     }
-    const files = [...new Set(dryRun.files.map((path) => resolve(path)))].sort();
+    const files = [...new Set([...dryRun.files, ...(dryRun.backups ?? []).map(path => path.replace(/\.evolver-backup\.json$/, ''))].map((path) => resolve(path)))].sort();
     const targets = files.map((path) => {
-        const expectedIdentity = fileIdentity(path);
+        const backups = (dryRun.backups ?? []).filter(backup => resolve(backup) === `${path}.evolver-backup.json`);
+        const expectedIdentity = digest(JSON.stringify([fileIdentity(path), ...backups.map(fileIdentity)]));
         const targetId = digest(`${context.runtime}\0${context.scope}\0${path}`).slice(0, 32);
         return {
             target_id: targetId,
@@ -257,214 +230,12 @@ export function verifySetupLifecycle(context) {
     const result = installInjection(context.injectionPlan, { ...lifecycleInstallOptions(context), dryRun: true });
     return result.ok && result.alreadyInstalled === true && result.verified === true && result.files.length === 0;
 }
+const transactionDriver = {
+    intent: lifecycleIntentDigest, plan: planForTimes, preview: planResult, apply: applyLifecycleMutation, verify: verifySetupLifecycle,
+};
 export function executeSetupLifecyclePlan(context, confirmed, options = {}) {
-    if (confirmed.runtime !== context.runtime || confirmed.scope !== context.scope) {
-        throw new SetupLifecycleError('PLAN_INVALID', 'confirmed lifecycle plan does not match runtime scope');
-    }
-    const { plan_id: confirmedPlanID, ...confirmedBase } = confirmed;
-    if (digest(JSON.stringify(confirmedBase)) !== confirmedPlanID) {
-        throw new SetupLifecycleError('PLAN_INVALID', 'confirmed lifecycle plan identity is invalid');
-    }
-    if (lifecycleIntentDigest(context, confirmed.action) !== confirmed.intent_digest) {
-        throw new SetupLifecycleError('PLAN_STALE', 'lifecycle write intent changed; create a fresh plan');
-    }
-    const now = (context.now ?? (() => new Date()))();
-    const createdAt = new Date(confirmed.created_at);
-    const expiresAt = new Date(confirmed.expires_at);
-    if (!Number.isFinite(createdAt.getTime()) || !Number.isFinite(expiresAt.getTime())) {
-        throw new SetupLifecycleError('PLAN_INVALID', 'confirmed lifecycle plan has invalid timestamps');
-    }
-    const continuingTargetExecution = options.targetId !== undefined && (options.completedTargetIds?.length ?? 0) > 0;
-    if (now.getTime() > expiresAt.getTime() && !continuingTargetExecution) {
-        throw new SetupLifecycleError('PLAN_EXPIRED', 'confirmed lifecycle plan expired; create a fresh plan');
-    }
-    if (options.targetId !== undefined) {
-        return executeSetupLifecycleTarget(context, confirmed, options.targetId, options.completedTargetIds ?? [], createdAt, expiresAt);
-    }
-    const resolvedPaths = new Map();
-    const current = planForTimes(context, confirmed.action, createdAt, expiresAt, resolvedPaths);
-    const sameTargets = JSON.stringify(current.targets.map((target) => target.target_id))
-        === JSON.stringify(confirmed.targets.map((target) => target.target_id));
-    if (current.plan_id !== confirmed.plan_id
-        || current.generation !== confirmed.generation
-        || current.target_set_digest !== confirmed.target_set_digest
-        || !sameTargets) {
-        throw new SetupLifecycleError('PLAN_STALE', 'lifecycle target identity changed; create a fresh plan');
-    }
-    let result;
-    let executionFailed = false;
-    try {
-        result = context.runtime === 'claude-code' || context.runtime === 'codex'
-            ? applyLifecycleMutation(context, confirmed.action)
-            : applyConfirmedTargets(context, confirmed, resolvedPaths);
-        executionFailed = !result.ok;
-    }
-    catch {
-        executionFailed = true;
-    }
-    let verified = false;
-    if (!executionFailed) {
-        try {
-            verified = confirmed.action === 'install'
-                ? verifySetupLifecycle(context)
-                : planResult(context, 'uninstall').files.length === 0;
-        }
-        catch {
-            executionFailed = true;
-        }
-    }
-    const targets = confirmed.targets.map((target) => {
-        const path = resolvedPaths.get(target.target_id);
-        const committed = path !== undefined && fileIdentity(path) !== target.expected_identity;
-        const targetVerified = !executionFailed && verified;
-        return {
-            target_id: target.target_id,
-            outcome: target.disposition === 'already_satisfied' || !committed && targetVerified
-                ? confirmed.action === 'uninstall' ? 'already_absent' : 'already_satisfied'
-                : committed
-                    ? confirmed.action === 'install' ? 'installed' : 'removed'
-                    : 'failed',
-            committed,
-            verified: targetVerified,
-            ...(!targetVerified ? { recovery: committed ? 'RETRY_VERIFICATION' : 'OPEN_CONFIG' } : {}),
-        };
-    });
-    return {
-        schema: SETUP_LIFECYCLE_SCHEMA,
-        action: confirmed.action,
-        runtime: context.runtime,
-        scope: context.scope,
-        plan_id: confirmed.plan_id,
-        generation: confirmed.generation,
-        target_set_digest: confirmed.target_set_digest,
-        complete: verified,
-        verified,
-        targets,
-    };
+    return executeSetupTransaction(context, confirmed, options, transactionDriver);
 }
-function executeSetupLifecycleTarget(context, confirmed, targetId, completedTargetIds, createdAt, expiresAt) {
-    const selected = confirmed.targets.find((target) => target.target_id === targetId);
-    if (!selected)
-        throw new SetupLifecycleError('PLAN_INVALID', 'selected lifecycle target is not in the confirmed plan');
-    const confirmedIds = new Set(confirmed.targets.map((target) => target.target_id));
-    const completed = new Set(completedTargetIds);
-    if (completed.size !== completedTargetIds.length || completed.has(targetId) || [...completed].some((id) => !confirmedIds.has(id))) {
-        throw new SetupLifecycleError('PLAN_INVALID', 'completed lifecycle target set is invalid');
-    }
-    const resolvedPaths = new Map();
-    const current = planForTimes(context, confirmed.action, createdAt, expiresAt, resolvedPaths);
-    const currentTargets = current.targets.filter((target) => target.disposition !== 'already_satisfied');
-    const currentByID = new Map(currentTargets.map((target) => [target.target_id, target]));
-    if (currentTargets.some((target) => !confirmedIds.has(target.target_id))) {
-        throw new SetupLifecycleError('PLAN_STALE', 'lifecycle target set changed; create a fresh plan');
-    }
-    const currentSelected = currentByID.get(targetId);
-    if (currentSelected && (currentSelected.target_ref !== selected.target_ref || currentSelected.disposition !== selected.disposition)) {
-        throw new SetupLifecycleError('PLAN_STALE', 'selected lifecycle target metadata changed');
-    }
-    if (selected.disposition === 'already_satisfied') {
-        if (current.plan_id !== confirmed.plan_id)
-            throw new SetupLifecycleError('PLAN_STALE', 'no-op lifecycle plan changed');
-        return {
-            schema: SETUP_LIFECYCLE_SCHEMA,
-            action: confirmed.action,
-            runtime: context.runtime,
-            scope: context.scope,
-            plan_id: confirmed.plan_id,
-            generation: confirmed.generation,
-            target_set_digest: confirmed.target_set_digest,
-            complete: true,
-            verified: true,
-            targets: [{
-                    target_id: targetId,
-                    outcome: confirmed.action === 'uninstall' ? 'already_absent' : 'already_satisfied',
-                    committed: false,
-                    verified: true,
-                }],
-        };
-    }
-    const targetPath = resolvedPaths.get(targetId);
-    if (targetPath === undefined
-        || displayTarget(targetPath, context) !== selected.target_ref
-        || selected.disposition !== (confirmed.action === 'install' ? 'installable' : 'removable')) {
-        throw new SetupLifecycleError('PLAN_STALE', 'selected lifecycle target is not owned by this operation');
-    }
-    for (const target of confirmed.targets) {
-        if (target.disposition === 'already_satisfied')
-            continue;
-        const currentTarget = currentByID.get(target.target_id);
-        if (completed.has(target.target_id)) {
-            if (currentTarget)
-                throw new SetupLifecycleError('PLAN_STALE', 'a completed lifecycle target is no longer verified');
-            continue;
-        }
-        if (target.target_id === targetId) {
-            if (currentTarget && currentTarget.expected_identity !== target.expected_identity) {
-                throw new SetupLifecycleError('PLAN_STALE', 'selected lifecycle target identity changed');
-            }
-            continue;
-        }
-        if (!currentTarget || currentTarget.expected_identity !== target.expected_identity) {
-            throw new SetupLifecycleError('PLAN_STALE', 'a pending lifecycle target identity changed');
-        }
-    }
-    const alreadyApplied = !currentByID.has(targetId);
-    if (alreadyApplied) {
-        return {
-            schema: SETUP_LIFECYCLE_SCHEMA,
-            action: confirmed.action,
-            runtime: context.runtime,
-            scope: context.scope,
-            plan_id: confirmed.plan_id,
-            generation: confirmed.generation,
-            target_set_digest: confirmed.target_set_digest,
-            complete: true,
-            verified: true,
-            targets: [{
-                    target_id: targetId,
-                    outcome: confirmed.action === 'uninstall' ? 'already_absent' : 'already_satisfied',
-                    committed: false,
-                    verified: true,
-                }],
-        };
-    }
-    let executionFailed = false;
-    try {
-        const result = applyLifecycleMutation(context, confirmed.action, targetPath);
-        executionFailed = !result.ok;
-    }
-    catch {
-        executionFailed = true;
-    }
-    let verified = false;
-    try {
-        const after = planForTimes(context, confirmed.action, createdAt, expiresAt);
-        verified = !after.targets.some((target) => target.target_id === targetId);
-    }
-    catch {
-        executionFailed = true;
-    }
-    const committed = fileIdentity(targetPath) !== selected.expected_identity;
-    const targetVerified = !executionFailed && verified;
-    const outcome = targetVerified
-        ? confirmed.action === 'install' ? 'installed' : 'removed'
-        : 'failed';
-    return {
-        schema: SETUP_LIFECYCLE_SCHEMA,
-        action: confirmed.action,
-        runtime: context.runtime,
-        scope: context.scope,
-        plan_id: confirmed.plan_id,
-        generation: confirmed.generation,
-        target_set_digest: confirmed.target_set_digest,
-        complete: targetVerified,
-        verified: targetVerified,
-        targets: [{
-                target_id: targetId,
-                outcome,
-                committed,
-                verified: targetVerified,
-                ...(!targetVerified ? { recovery: committed ? 'RETRY_VERIFICATION' : 'OPEN_CONFIG' } : {}),
-            }],
-    };
+export function recoverSetupLifecycle(context, id, recovery, confirmedState) {
+    return recoverSetupTransaction(context, id, recovery, transactionDriver, confirmedState);
 }

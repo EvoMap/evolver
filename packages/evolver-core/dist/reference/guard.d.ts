@@ -19,5 +19,7 @@ export declare function isReferenceObject(value: unknown): boolean;
 /** Explicit evidence modes never enter procedural paths. Legacy source_type is unrelated. */
 export declare function hasEvidenceMode(value: unknown): boolean;
 export declare function isKnownReferenceId(id: unknown, scope?: ReferenceScope | undefined): boolean;
+/** Scope-owned IDs only; intrinsic reference provenance is not source ownership or execution approval. */
+export declare function hasScopedReferenceId(value: unknown, scope?: ReferenceScope | undefined): boolean;
 export declare function isExecutionEligible(value: unknown, scope?: ReferenceScope | undefined): boolean;
 export declare function assertExecutionEligible(value: unknown, scope?: ReferenceScope | undefined): void;

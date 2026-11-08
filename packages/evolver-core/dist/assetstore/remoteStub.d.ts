@@ -7,6 +7,7 @@ export interface RemoteTransport {
     getRemote(assetId: string): Promise<AssetRecord | null>;
     searchRemote(query: SearchQuery): Promise<AssetRecord[]>;
     listRemote(kind: AssetKind | undefined, limit: number): Promise<AssetRecord[]>;
+    listRecentRemote?(kind: AssetKind, limit: number): Promise<AssetRecord[]>;
 }
 /**
  * 远程资产库参考实现(M3-1). 与 LocalJsonlProvider 同接口, 证明 wire protocol provider-无关.
@@ -14,6 +15,7 @@ export interface RemoteTransport {
  */
 export declare class RemoteStubProvider implements AssetStoreProvider {
     private readonly transport;
+    readonly listRecent?: (kind: AssetKind, limit?: number) => Promise<AssetRecord[]>;
     constructor(transport: RemoteTransport);
     put(asset: AssetRecord): Promise<PutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
@@ -23,6 +25,7 @@ export declare class RemoteStubProvider implements AssetStoreProvider {
 /** 内存传输桩(测试/本地演示用). */
 export declare class InMemoryTransport implements RemoteTransport {
     private readonly db;
+    listRecentRemote(kind: AssetKind, limit: number): Promise<AssetRecord[]>;
     putRemote(record: AssetRecord): Promise<{
         stored: boolean;
     }>;

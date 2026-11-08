@@ -120,6 +120,9 @@ export interface AssetStoreProvider {
     /** Optional atomic capability; use supportsAtomicConditionalPut() before calling through this interface. */
     putConditional?(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     get(assetId: string): Promise<AssetRecord | null>;
+    /** Exact all-kind identity/source priority as get, preserving source reference denials; missing ids are omitted.
+     * Optional so legacy and remote providers retain their mandatory single-id protocol. */
+    getMany?(assetIds: readonly string[]): Promise<ReadonlyMap<string, AssetRecord>>;
     /** Optional direct lookup for non-content-addressed logical ids. Callers must handle 0, 1, or multiple matches. */
     findByLogicalId?(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     /**
@@ -134,7 +137,12 @@ export interface AssetStoreProvider {
     putFrozenConditional?(record: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
     search(query: SearchQuery): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
+    /** 可选最近语料能力：单源按首次不同 asset_id 写入顺序倒序，幂等重复不刷新年龄。
+     * limit 为 1..1000；不改变 list 的历史顺序。组合源采用稳定 round-robin，不宣称全局时间。 */
+    listRecent?(kind: AssetKind, limit?: number): Promise<AssetRecord[]>;
 }
+/** Capture optional batch authority once; explicit absence preserves an overridden get. */
+export declare function getAssetsById(store: AssetStoreProvider, assetIds: readonly string[], capturedReader?: AssetStoreProvider['getMany']): Promise<ReadonlyMap<string, AssetRecord>>;
 export type AtomicConditionalPutProvider = AssetStoreProvider & {
     putConditional(asset: AssetRecord, options?: ConditionalPutOptions): Promise<ConditionalPutResult>;
 };

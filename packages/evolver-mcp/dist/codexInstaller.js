@@ -23,8 +23,9 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { util } from '@evomap/evolver-core';
+import { runManagedInstallerTransaction, implicitInstallerPreflightActive, attestPreservedBridgeVerification } from './installerRuntimeTransaction.js';
 import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
-import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, evolverManagedHookStatus, stripEvolverHookEntries, resolveInstallComponents, } from './installerShared.js';
+import { SymlinkRefusedError, DEFAULT_HOOK_COMMAND, DEFAULT_PROMPT_RECALL_HOOK_COMMAND, PRODUCT_BRIDGE_PRESERVED_WARNING, evolverManagedHookStatus, stripEvolverHookEntries, resolveInstallComponents, } from './installerShared.js';
 import { withCodexProductBridge, isOwnedProductBridge, restoreProductBridgeEntry, PRODUCT_BRIDGE_SERVER_ID } from './productBridge.js';
 /** The MCP server id evolver registers under [mcp_servers.evolver] / removes on uninstall. */
 export const CODEX_MCP_SERVER_ID = 'evolver';
@@ -335,6 +336,9 @@ function codexAlreadyInstalled(cfg, sessionStartCommand, promptRecallCommand) {
  * lifecycle hooks. Idempotent (re-running without --force is a no-op) and symlink-safe.
  */
 export function installCodex(plan, opts) {
+    return runManagedInstallerTransaction(plan.runtime, opts, 'install', verification => installCodexOnce(plan, { ...opts, dryRun: true, ...(verification ? { force: false } : {}) }), targetPath => installCodexOnce(plan, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) }), plan);
+}
+function installCodexOnce(plan, opts) {
     const components = resolveInstallComponents(opts.components);
     const evolution = components !== 'product-only';
     const product = components !== 'evolution-only';
@@ -348,6 +352,7 @@ export function installCodex(plan, opts) {
     }
     const assertSafe = codexPathGuard(target);
     assertSafe();
+    let productBridgePreserved = false;
     const update = (current) => {
         const merged = evolution && (opts.force || !codexAlreadyInstalled(current, hookCommand, promptRecallHookCommand))
             ? mergeCodexConfig(current, codexMcpServerEntry(opts.server), codexSessionStartHook(hookCommand), codexUserPromptSubmitHook(promptRecallHookCommand))
@@ -355,7 +360,10 @@ export function installCodex(plan, opts) {
         if (!product)
             return { changed: merged !== current, data: merged };
         const bridged = withCodexProductBridge(merged, opts.force === true, opts.productBridgeNodePath);
-        if (bridged.skipped && (!evolution || opts.dryRun))
+        productBridgePreserved ||= bridged.skipped === true;
+        if (bridged.skipped && !warnings.includes(PRODUCT_BRIDGE_PRESERVED_WARNING))
+            warnings.push(PRODUCT_BRIDGE_PRESERVED_WARNING);
+        if (bridged.skipped && (!evolution || opts.dryRun && !implicitInstallerPreflightActive()))
             throw new Error('[setup-hooks] product bridge is user-owned; explicit --force is required');
         return { changed: merged !== current || bridged.changed, data: bridged.data };
     };
@@ -363,16 +371,16 @@ export function installCodex(plan, opts) {
         const current = readTomlSnapshot(configPath).data;
         const next = update(current);
         const alreadyInstalled = !next.changed;
-        return {
+        return attestPreservedBridgeVerification({
             ok: true,
             runtime: plan.runtime,
             mode: plan.mode,
             files: next.changed ? [configPath] : [],
             ...(alreadyInstalled ? { alreadyInstalled: true } : {}),
             dryRun: true,
-            verified: alreadyInstalled && !next.changed,
+            verified: alreadyInstalled && !next.changed && !productBridgePreserved,
             ...(warnings.length > 0 ? { warnings } : {}),
-        };
+        }, alreadyInstalled && !next.changed, productBridgePreserved);
     }
     mkdirSync(codexDir, { recursive: true, mode: 0o700 });
     const changed = writeTomlWithRetry(configPath, update, assertSafe);
@@ -387,6 +395,9 @@ export function installCodex(plan, opts) {
 }
 /** Remove Evolver's MCP registration and hooks from the requested Codex scope, leaving user content intact. */
 export function uninstallCodex(runtime, opts) {
+    return runManagedInstallerTransaction(runtime, opts, 'uninstall', () => uninstallCodexOnce(runtime, { ...opts, dryRun: true }), targetPath => uninstallCodexOnce(runtime, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) }));
+}
+function uninstallCodexOnce(runtime, opts) {
     resolveInstallComponents(opts.components);
     const target = codexConfigTarget(opts);
     const { configPath } = target;

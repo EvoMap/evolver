@@ -1,16 +1,12 @@
-import { lstatSync, mkdirSync, readFileSync, statSync, } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { installJsonMcpRuntime, uninstallJsonMcpRuntime } from './jsonMcpInstaller.js';
-import { util } from '@evomap/evolver-core';
+import { runManagedInstallerTransaction } from './installerRuntimeTransaction.js';
 import { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, } from './installerShared.js';
-import { commitSharedFile, SharedFileConflictError } from './sharedFileCommit.js';
 import { sameRuntimePath } from './runtimePathIdentity.js';
 const ENV_FILE_KEY = 'EVOLVER_ENV_FILE';
 const CONFIG_FILE = 'mcp_config.json';
-const CONFIG_WRITE_RETRIES = 5;
-const NEW_CONFIG_MODE = 0o600;
-const NEW_DIR_MODE = 0o700;
 export const ANTIGRAVITY_NAMESPACES = ['antigravity', 'antigravity-ide'];
 export class AntigravityConfigShapeError extends Error {
     constructor(path, detail) {
@@ -107,58 +103,6 @@ function readStrictSnapshot(path) {
     validateConfigShape(parsed, path);
     return { data: parsed, raw };
 }
-function readRawIfExists(path) {
-    try {
-        return readFileSync(path, 'utf8');
-    }
-    catch (error) {
-        if (error.code === 'ENOENT')
-            return null;
-        throw error;
-    }
-}
-function existingFileMode(path) {
-    try {
-        return statSync(path).mode & 0o777;
-    }
-    catch (error) {
-        if (error.code === 'ENOENT')
-            return undefined;
-        throw error;
-    }
-}
-function updateConfigWithRetry(path, update) {
-    const lockPath = `${path}.evolver.lock`;
-    util.acquireLock(lockPath);
-    try {
-        for (let attempt = 0; attempt < CONFIG_WRITE_RETRIES; attempt++) {
-            const snapshot = readStrictSnapshot(path);
-            const next = update(snapshot.data);
-            if (!next.changed)
-                return false;
-            if (readRawIfExists(path) !== snapshot.raw)
-                continue;
-            try {
-                commitSharedFile({
-                    path,
-                    expectedRaw: snapshot.raw ?? undefined,
-                    nextRaw: `${JSON.stringify(next.data, null, 2)}\n`,
-                    mode: existingFileMode(path) ?? NEW_CONFIG_MODE,
-                });
-                return true;
-            }
-            catch (error) {
-                if (error instanceof SharedFileConflictError)
-                    continue;
-                throw error;
-            }
-        }
-    }
-    finally {
-        util.releaseLock(lockPath);
-    }
-    throw new Error(`[setup-hooks] refusing to overwrite Antigravity MCP config (${path}): the file changed repeatedly while evolver was merging it. Retry after Antigravity finishes writing it.`);
-}
 const SECRET_FLAG_RE = /(?:^|\s)--?(?:api[-_]?key|password|passwd|secret|token)(?:=|\s+)/i;
 const SECRET_ASSIGNMENT_RE = /\b(?:A2A_NODE_SECRET|EVOMAP_ENTERPRISE_TOKEN|EVOMAP_PRIVATE_HUB_TOKEN|EVOMAP_NODE_SECRET|EVOLVER_IPC_TOKEN|EVOLVER_LLM_TOKEN|PHUB_ENTERPRISE_TOKEN|PRIVATE_HUB_ENTERPRISE_TOKEN)\b\s*=/;
 const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
@@ -211,18 +155,6 @@ export function stripAntigravityManaged(current) {
         delete data['mcpServers'];
     return { changed: true, data };
 }
-function hasEvolver(current) {
-    const mcpServers = current['mcpServers'];
-    return isObj(mcpServers) && 'evolver' in mcpServers;
-}
-function ensureTargetRoot(target) {
-    const geminiRoot = dirname(target.root);
-    assertDirectoryOrMissing(geminiRoot, '~/.gemini');
-    mkdirSync(dirname(target.configPath), { recursive: true, mode: NEW_DIR_MODE });
-    assertDirectoryOrMissing(geminiRoot, '~/.gemini');
-    assertDirectoryOrMissing(target.root, `~/.gemini/${target.namespace}`);
-    assertFileNotSymlink(target.configPath, `~/.gemini/${target.namespace}/${CONFIG_FILE}`);
-}
 function managedAntigravityTargets(opts) {
     const targets = resolveAntigravityConfigTargets(opts.homeDir);
     if (opts.targetPath === undefined)
@@ -246,58 +178,30 @@ function combineManagedResults(runtime, mode, results) {
         ok: results.every((result) => result.ok), runtime, mode,
         files: results.flatMap((result) => result.files),
         backups: results.flatMap((result) => result.backups ?? []),
-        alreadyInstalled: results.every((result) => result.alreadyInstalled),
+        ...(results.every((result) => result.alreadyInstalled) ? { alreadyInstalled: true } : {}),
         verified: results.every((result) => result.verified),
         ...(results.every((result) => result.dryRun) ? { dryRun: true } : {}),
     };
 }
-/** Install MCP tool discovery only. Antigravity has no verified SessionStart hook contract. */
+/** Install MCP discovery. Exact targetPath owns one namespace; the normal path owns a recoverable set. */
 export function installAntigravity(plan, opts) {
-    if (opts.dryRun || opts.targetPath !== undefined) {
-        const targets = managedAntigravityTargets(opts);
-        const preview = targets.map((target) => installJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), plan, { ...opts, dryRun: true }));
-        if (opts.dryRun)
-            return combineManagedResults(plan.runtime, plan.mode, preview);
-        return combineManagedResults(plan.runtime, plan.mode, targets.map((target) => installJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), plan, opts)));
-    }
-    const serverEntry = antigravityMcpServerEntry(opts.server);
-    const targets = resolveAntigravityConfigTargets(opts.homeDir);
-    // Validate every shared config before the first mutation so one corrupt namespace cannot leave a partial install.
-    const snapshots = targets.map((target) => ({ target, snapshot: readStrictSnapshot(target.configPath) }));
-    if (!opts.force && snapshots.every(({ snapshot }) => hasEvolver(snapshot.data))) {
-        return { ok: true, runtime: plan.runtime, mode: plan.mode, files: [], alreadyInstalled: true };
-    }
-    const files = [];
-    for (const { target } of snapshots) {
-        ensureTargetRoot(target);
-        const changed = updateConfigWithRetry(target.configPath, (current) => {
-            if (!opts.force && hasEvolver(current))
-                return { changed: false, data: current };
-            return { changed: true, data: mergeAntigravityConfig(current, serverEntry) };
-        });
-        if (changed)
-            files.push(target.configPath);
-    }
-    return { ok: true, runtime: plan.runtime, mode: plan.mode, files };
+    return runManagedInstallerTransaction(plan.runtime, opts, 'install', verification => installAntigravityOnce(plan, { ...opts, dryRun: true, ...(verification ? { force: false } : {}) }), targetPath => installAntigravityOnce(plan, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) }), plan);
 }
-/** Remove only mcpServers.evolver. The shared config file and all unrelated user content always remain. */
+function installAntigravityOnce(plan, opts) {
+    antigravityMcpServerEntry(opts.server);
+    const targets = managedAntigravityTargets(opts);
+    for (const target of targets)
+        readStrictSnapshot(target.configPath);
+    const results = targets.map(target => installJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), plan, opts));
+    return combineManagedResults(plan.runtime, plan.mode, results);
+}
+/** Ownership-backed removal, including restoration of force-replaced user entries. */
 export function uninstallAntigravity(runtime, opts) {
-    if (opts.dryRun || opts.targetPath !== undefined) {
-        const targets = managedAntigravityTargets(opts);
-        const preview = targets.map((target) => uninstallJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), runtime, { ...opts, dryRun: true }));
-        if (opts.dryRun)
-            return combineManagedResults(runtime, 'uninstall', preview);
-        return combineManagedResults(runtime, 'uninstall', targets.map((target) => uninstallJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), runtime, opts)));
-    }
-    const targets = resolveAntigravityConfigTargets(opts.homeDir);
-    const snapshots = targets.map((target) => ({ target, snapshot: readStrictSnapshot(target.configPath) }));
-    const files = [];
-    for (const { target, snapshot } of snapshots) {
-        if (!hasEvolver(snapshot.data))
-            continue;
-        const changed = updateConfigWithRetry(target.configPath, stripAntigravityManaged);
-        if (changed)
-            files.push(target.configPath);
-    }
-    return { ok: true, runtime, mode: 'uninstall', files };
+    return runManagedInstallerTransaction(runtime, opts, 'uninstall', () => uninstallAntigravityOnce(runtime, { ...opts, dryRun: true }), targetPath => uninstallAntigravityOnce(runtime, { ...opts, ...(targetPath === undefined ? {} : { targetPath }) }));
+}
+function uninstallAntigravityOnce(runtime, opts) {
+    const targets = managedAntigravityTargets(opts);
+    for (const target of targets)
+        readStrictSnapshot(target.configPath);
+    return combineManagedResults(runtime, 'uninstall', targets.map(target => uninstallJsonMcpRuntime(managedAntigravitySpec(target, opts.homeDir), runtime, opts)));
 }

@@ -1,5 +1,7 @@
-import { assertExecutionEligible } from '../reference/guard.js';
+import { assertExecutionEligible, brandReferenceObject, isExecutionEligible } from '../reference/guard.js';
+import { types } from 'node:util';
 import { canonicalize, computeAssetId, verifyAssetId } from '../wire/index.js';
+import { captureRecentAssetResult } from './recentRecords.js';
 export class FrozenAssetIdCollisionError extends Error {
     assetId;
     code = 'FROZEN_ASSET_ID_COLLISION';
@@ -76,6 +78,44 @@ export function validateConditionalPutResult(value, expectedAssetId, options) {
         throw new InvalidConditionalPutResultError('collision_bypass');
     }
     return value;
+}
+/** Capture optional batch authority once; explicit absence preserves an overridden get. */
+export async function getAssetsById(store, assetIds, capturedReader) {
+    const ids = [...new Set(assetIds)];
+    if (ids.length === 0)
+        return new Map();
+    const readMany = arguments.length >= 3 ? capturedReader : store.getMany;
+    const records = new Map();
+    const capture = (id, record) => {
+        if (!record || typeof record !== 'object' || types.isProxy(record))
+            throw new Error('invalid asset lookup result');
+        const descriptor = Object.getOwnPropertyDescriptor(record, 'type');
+        const kind = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+        if (kind !== 'Gene' && kind !== 'Capsule' && kind !== 'EvolutionEvent' && kind !== 'AntiGene') {
+            throw new Error('invalid asset lookup result');
+        }
+        const snapshot = captureRecentAssetResult([record], kind, 1)[0];
+        if (snapshot.asset_id !== id)
+            throw new Error('invalid asset lookup result');
+        if (!isExecutionEligible(record, store.referenceScope))
+            brandReferenceObject(snapshot);
+        records.set(id, snapshot);
+    };
+    if (readMany) {
+        const result = await readMany.call(store, ids);
+        for (const id of ids) {
+            const record = result.get(id);
+            if (record !== undefined)
+                capture(id, record);
+        }
+        return records;
+    }
+    for (const id of ids) {
+        const record = await store.get(id);
+        if (record !== null)
+            capture(id, record);
+    }
+    return records;
 }
 export function supportsAtomicConditionalPut(provider) {
     return typeof provider.putConditional === 'function';

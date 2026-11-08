@@ -1,4 +1,5 @@
-import { type InjectionPlan, type InstallOptions, type InstallScope, type RuntimeId } from '@evomap/evolver-mcp';
+import { INSTALLER_TRANSACTION_SCHEMA, type InstallerTransactionSummary, type InjectionPlan, type InstallOptions, type InstallScope, type RuntimeId } from '@evomap/evolver-mcp';
+export { inspectSetupTransactions } from './setupHooksTransaction.js';
 export declare const SETUP_LIFECYCLE_SCHEMA = "evolver.setup_hooks.lifecycle.v1";
 export declare const SETUP_LIFECYCLE_PLAN_TTL_MS = 120000;
 export type SetupLifecycleAction = 'install' | 'uninstall';
@@ -11,6 +12,12 @@ export interface SetupLifecycleCapabilities {
     hookCommandsBound: boolean;
     standaloneMcp: boolean;
     operations: Record<SetupLifecycleOperation, boolean>;
+    transactions: {
+        schema: typeof INSTALLER_TRANSACTION_SCHEMA;
+        durable: boolean;
+        atomicVisibility: false;
+        recovery: boolean;
+    };
 }
 export interface SetupLifecycleTarget {
     target_id: string;
@@ -37,7 +44,8 @@ export interface SetupLifecycleTargetResult {
     outcome: 'installed' | 'removed' | 'already_satisfied' | 'already_absent' | 'failed';
     committed: boolean;
     verified: boolean;
-    recovery?: 'REFRESH_PLAN' | 'OPEN_CONFIG' | 'RETRY_VERIFICATION';
+    recovery?: 'REFRESH_PLAN' | 'OPEN_CONFIG' | 'RETRY_VERIFICATION' | 'ROLLBACK_TRANSACTION';
+    rolled_back?: boolean;
 }
 export interface SetupLifecycleExecutionResult {
     schema: typeof SETUP_LIFECYCLE_SCHEMA;
@@ -50,6 +58,13 @@ export interface SetupLifecycleExecutionResult {
     complete: boolean;
     verified: boolean;
     targets: SetupLifecycleTargetResult[];
+    transaction?: InstallerTransactionSummary;
+    failure?: {
+        code: string;
+        target_id?: string;
+        message: string;
+        recovery: 'REFRESH_PLAN' | 'ROLLBACK_TRANSACTION';
+    };
 }
 export interface SetupLifecycleExecutionOptions {
     targetId?: string;
@@ -73,3 +88,4 @@ export declare function encodeSetupLifecyclePlan(plan: SetupLifecyclePlan): stri
 export declare function decodeSetupLifecyclePlan(raw: string): SetupLifecyclePlan;
 export declare function verifySetupLifecycle(context: SetupLifecycleContext): boolean;
 export declare function executeSetupLifecyclePlan(context: SetupLifecycleContext, confirmed: SetupLifecyclePlan, options?: SetupLifecycleExecutionOptions): SetupLifecycleExecutionResult;
+export declare function recoverSetupLifecycle(context: SetupLifecycleContext, id: string, recovery: 'resume' | 'rollback' | 'accept-current', confirmedState?: string): InstallerTransactionSummary | SetupLifecycleExecutionResult;

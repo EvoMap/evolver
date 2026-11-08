@@ -64,7 +64,13 @@ export interface CursorInstallOptions {
 export declare function installCursorRules(opts: CursorInstallOptions): InstallResult & {
     rewritten: boolean;
 };
-/** Retain the original inode, durably record intent, and publish only an exclusive postimage. */
+/** Compatibility producer for the prior Cursor recovery format; new lifecycle writes use the shared journal. */
+export declare function uninstallCursorRulesLegacy(opts: {
+    configRoot: string;
+    dryRun?: boolean;
+    targetPath?: string;
+}): InstallResult;
+/** Finish valid prior-format recovery before starting a new shared installer transaction. */
 export declare function uninstallCursorRules(opts: {
     configRoot: string;
     dryRun?: boolean;

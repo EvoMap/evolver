@@ -12,6 +12,7 @@ export * from './hubReview.js';
 export * from './reuseDecision.js';
 export * from './reuseIdempotency.js';
 export * from './conversationDistiller.js';
+export { SESSION_GENE_IR_VERSION, isProjectBoundGene, type RecordLine, type SessionGeneIr } from './sessionGeneIr.js';
 export * from './publishBinding.js';
 export * from './publishReverification.js';
 export * from './recipeCompose.js';

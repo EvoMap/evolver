@@ -6,8 +6,8 @@
 // cleanly removes only evolver's entries.
 import { planInjection, installInjection, uninstallInjection, runtimeSupport, renderManualWiring, renderServiceGuidance, SETUP_RUNTIMES, SERVICE_TARGETS, kiroConfigRoot, resolveOpenCodeConfig, McpConfigConflictError, McpConfigOwnershipError, McpConfigVerificationError, McpServerValidationError } from '@evomap/evolver-mcp';
 import { assetstore, events } from '@evomap/evolver-core';
-import { resolveInstallComponents } from '@evomap/evolver-mcp';
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { resolveInstallComponents, InstallerTransactionError, installerTransactionFromError } from '@evomap/evolver-mcp';
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -18,13 +18,21 @@ import { reviewLedgerForStore } from './reviewFilter.js';
 import { maybeEmitNonGitWorkspaceNotice } from './nonGitWorkspaceNotice.js';
 import { AGENT_PLUGIN_NAME, pluginHostNamed } from './pluginHosts.js';
 import { protectedAuditInstallReport } from './protectedAuditStatus.js';
-import { createSetupLifecyclePlan, decodeSetupLifecyclePlan, executeSetupLifecyclePlan, SETUP_LIFECYCLE_SCHEMA, setupLifecycleCapabilities, SetupLifecycleError, verifySetupLifecycle, } from './setupHooksLifecycle.js';
+import { createSetupLifecyclePlan, decodeSetupLifecyclePlan, executeSetupLifecyclePlan, inspectSetupTransactions, recoverSetupLifecycle, SETUP_LIFECYCLE_SCHEMA, setupLifecycleCapabilities, SetupLifecycleError, verifySetupLifecycle, } from './setupHooksLifecycle.js';
 const requireFromHere = createRequire(import.meta.url);
 function configuredHomeDir() {
     const configured = process.platform === 'win32'
         ? process.env['USERPROFILE']
         : process.env['HOME'];
     return configured && configured.trim() ? configured : homedir();
+}
+function projectRootIsDirectoryOrMissing(path) {
+    try {
+        return lstatSync(path).isDirectory();
+    }
+    catch (error) {
+        return error.code === 'ENOENT';
+    }
 }
 function parseFlags(argv) {
     const out = {};
@@ -46,7 +54,8 @@ function parseFlags(argv) {
     }
     return out;
 }
-const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--components=product-only|evolution-only|both] [--root=<dir>] [--lifecycle=capabilities|plan|verify|execute] [--action=install|uninstall] [--confirmed-plan=<base64url>] [--target-id=<id>] [--completed-targets=<id,id>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--prompt-recall-hook-command="evolver inject prompt-recall"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for claude-code, codex, opencode and kiro\n  lifecycle operations are versioned JSON and require --json\n`;
+const USAGE = `usage: evolver setup-hooks [--runtime=${SETUP_RUNTIMES.join('|')}] [--scope=user|project|global] [--components=product-only|evolution-only|both] [--root=<dir>] [--lifecycle=capabilities|plan|verify|execute|status|recover] [--action=install|uninstall] [--confirmed-plan=<base64url>] [--target-id=<id>] [--completed-targets=<id,id>] [--env-file=<path>] [--profile-descriptor=<json>] [--service=${SERVICE_TARGETS.join('|')}] [--verify] [--uninstall] [--dry-run] [--force] [--json] [--hook-command="evolver inject session-start"] [--prompt-recall-hook-command="evolver inject prompt-recall"] [--server-node=<absolute-node>] [--server-command=<cmd>] [--server-args=a,b] [--service-command=<cmd>] [--service-args=a,b]\n  --verify is read-only for claude-code, codex, opencode and kiro\n  lifecycle operations are versioned JSON and require --json\n`;
+const TRANSACTION_USAGE = '\nRecovery (configuration files and ownership backups; sequential, not instant cross-file visibility):\n  --lifecycle=status --json [--transaction-id=<id>]\n  --lifecycle=recover --json --transaction-id=<id> --recovery=rollback\n  --lifecycle=recover --json --transaction-id=<id> --recovery=resume --action=install|uninstall\n  After manually reconciling a blocked config, inspect status again, then explicitly preserve that reviewed state:\n  --lifecycle=recover --json --transaction-id=<id> --recovery=accept-current --confirmed-state=<resolution_digest>\nUse the same runtime, scope, root and original install options. Concurrent edits block rollback rather than being overwritten.\n';
 export function commandNamesForPath(command, platform, pathExt) {
     if (platform !== 'win32' || /\.[^\\/]+$/.test(command))
         return [command];
@@ -203,6 +212,8 @@ function displayResultPaths(paths, configRoot, scope) {
 }
 export function safeSetupOperationError(error) {
     if (error instanceof Error && error.message === '[setup-hooks] product bridge is user-owned; explicit --force is required')
+        return error.message;
+    if (error instanceof InstallerTransactionError)
         return error.message;
     if (error instanceof McpConfigConflictError)
         return error.message;
@@ -527,7 +538,7 @@ function appendAdapterNotes(text, hints) {
         : text;
 }
 const SETUP_VALUE_FLAGS = new Set([
-    'runtime', 'platform', 'scope', 'root', 'components', 'lifecycle', 'action', 'confirmed-plan', 'target-id', 'completed-targets', 'env-file', 'profile-descriptor', 'service',
+    'runtime', 'platform', 'scope', 'root', 'components', 'lifecycle', 'action', 'confirmed-plan', 'transaction-id', 'recovery', 'confirmed-state', 'target-id', 'completed-targets', 'env-file', 'profile-descriptor', 'service',
     'hook-command', 'server-node', 'server-command', 'server-args', 'service-command', 'service-args',
 ]);
 function setupHelpRequested(argv) {
@@ -564,7 +575,7 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
     };
     if (f['json'] !== true)
         return fail('PLAN_INVALID', 'lifecycle operations require --json');
-    if (typeof operation !== 'string' || !['capabilities', 'plan', 'verify', 'execute'].includes(operation)) {
+    if (typeof operation !== 'string' || !['capabilities', 'plan', 'verify', 'execute', 'status', 'recover'].includes(operation)) {
         return fail('PLAN_INVALID', 'invalid --lifecycle operation');
     }
     if (f['verify'] !== undefined || f['uninstall'] !== undefined || f['dry-run'] !== undefined || f['force'] !== undefined) {
@@ -589,8 +600,20 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
     }
     if (!capabilities.supported)
         return fail('CAPABILITY_UNAVAILABLE', `lifecycle protocol is unavailable for ${runtime}/${scope}`);
+    if ((f['transaction-id'] !== undefined && operation !== 'status' && operation !== 'recover')
+        || (f['recovery'] !== undefined && operation !== 'recover')
+        || (f['confirmed-state'] !== undefined && (operation !== 'recover' || f['recovery'] !== 'accept-current'))) {
+        return fail('PLAN_INVALID', 'transaction recovery flags require --lifecycle=status|recover');
+    }
+    const transactionID = f['transaction-id'];
+    const recovery = f['recovery'];
+    if ((transactionID !== undefined && (typeof transactionID !== 'string' || !/^[a-f0-9]{64}$/.test(transactionID)))
+        || operation === 'recover' && (typeof transactionID !== 'string' || recovery !== 'resume' && recovery !== 'rollback' && recovery !== 'accept-current')
+        || recovery === 'accept-current' && (typeof f['confirmed-state'] !== 'string' || !/^[a-f0-9]{64}$/.test(f['confirmed-state']))) {
+        return fail('PLAN_INVALID', 'recovery requires --transaction-id=<id> and --recovery=resume|rollback|accept-current; accept-current also requires --confirmed-state=<resolution_digest>');
+    }
     const action = lifecycleAction(f['action']);
-    if ((operation === 'plan' || operation === 'execute') && action === undefined) {
+    if ((operation === 'plan' || operation === 'execute' || operation === 'recover' && recovery === 'resume') && action === undefined) {
         return fail('PLAN_INVALID', '--action=install|uninstall is required');
     }
     const descriptor = f['components'] === 'product-only'
@@ -600,7 +623,7 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
         return fail('PLAN_INVALID', descriptor.error, 1);
     let server = { command: 'evolver-mcp' };
     let productBridgeNodePath;
-    if (operation === 'verify' || action === 'install') {
+    if (operation === 'verify' || action === 'install' && operation !== 'status' && !(operation === 'recover' && recovery !== 'resume')) {
         try {
             const built = buildServer(f, descriptor.descriptor, deps.resolveMcpNodePath);
             server = built.server;
@@ -635,6 +658,22 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
         },
     };
     try {
+        if (operation === 'status') {
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true,
+                transactions: inspectSetupTransactions(context, typeof transactionID === 'string' ? transactionID : undefined)
+                    .filter(transaction => transaction.runtime === runtime && transaction.scope === scope) });
+            return 0;
+        }
+        if (operation === 'recover') {
+            if (recovery === 'resume') {
+                const recorded = inspectSetupTransactions(context, transactionID)[0];
+                if (recorded && recorded.action !== action)
+                    return fail('PLAN_INVALID', 'resume action does not match the durable transaction', 1);
+            }
+            const result = recoverSetupLifecycle(context, transactionID, recovery, typeof f['confirmed-state'] === 'string' ? f['confirmed-state'] : undefined);
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, result });
+            return result.complete ? 0 : 1;
+        }
         if (operation === 'plan') {
             const plan = createSetupLifecyclePlan(context, action);
             emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: true, plan });
@@ -672,12 +711,17 @@ function runSetupLifecycle(f, runtime, scope, configRoot, emit, deps) {
     catch (error) {
         if (error instanceof SetupLifecycleError)
             return fail(error.code, error.message, 1);
+        if (error instanceof InstallerTransactionError) {
+            emit({ schema: SETUP_LIFECYCLE_SCHEMA, operation, ok: false, code: error.code, error: error.message,
+                ...(error.transaction ? { transaction: error.transaction } : {}) });
+            return 1;
+        }
         return fail('VERIFY_FAILED', safeSetupOperationError(error), 1);
     }
 }
 export async function runSetupHooks(argv, store, review, deps = {}) {
     if (setupHelpRequested(argv)) {
-        process.stdout.write(USAGE);
+        process.stdout.write(USAGE + TRANSACTION_USAGE);
         return 0;
     }
     const f = parseFlags(argv);
@@ -730,6 +774,17 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         else
             process.stderr.write(`${message}\n`);
         return 2;
+    }
+    // Reject invalid project roots before Node resolution or recovery-state creation. Lifecycle recovery
+    // and user-only targets keep their existing handling of missing or unrelated project paths.
+    if (support.outcome === 'installed' && scope === 'project' && runtime !== 'antigravity'
+        && !projectRootIsDirectoryOrMissing(configRoot)) {
+        const error = '[setup-hooks] config root must be a real directory';
+        if (json)
+            emit({ runtime, outcome: 'error', files: [], error });
+        else
+            process.stderr.write(`${error}\n`);
+        return 1;
     }
     // V1 exposed setup-hooks --verify as a read-only operation. Silently ignoring it is unsafe: the command then
     // falls through to installInjection and can rewrite runtime configuration while the operator asked only to
@@ -839,7 +894,8 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         catch (error) {
             const message = safeSetupOperationError(error);
             if (json)
-                emit({ runtime, action: 'uninstall', files: [], error: message });
+                emit({ runtime, action: 'uninstall', files: [], error: message,
+                    transaction: installerTransactionFromError(error) });
             else
                 process.stderr.write(`${message}\n`);
             return 1;
@@ -862,7 +918,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
             return 0;
         }
         if (json)
-            emit({ runtime, action: 'uninstall', files, backups });
+            emit({ runtime, action: 'uninstall', files, backups, transaction: r.transaction });
         else
             process.stdout.write(files.length ? `removed evolver from: ${files.join(', ')}\n` : 'nothing to remove\n');
         return 0;
@@ -1008,7 +1064,8 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         // distinct from the support-matrix `unsupported` (an unrecognized runtime id) (Bugbot #264).
         const msg = safeSetupOperationError(e);
         if (json)
-            emit({ runtime, outcome: 'error', files: [], error: msg });
+            emit({ runtime, outcome: 'error', files: [], error: msg,
+                transaction: installerTransactionFromError(e) });
         else
             process.stderr.write(`${msg}\n`);
         return 1;
@@ -1062,7 +1119,7 @@ export async function runSetupHooks(argv, store, review, deps = {}) {
         return 0;
     }
     if (json)
-        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified, ...audit, ...warningFields });
+        emit({ runtime, outcome: 'installed', files, backups, mode: r.mode, verified: r.verified, transaction: r.transaction, ...audit, ...warningFields });
     else
         process.stdout.write(`installed evolver (${r.mode}) → ${files.join(', ')}\n`);
     emitWarnings(warnings);

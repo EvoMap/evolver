@@ -1,4 +1,4 @@
-import type { AssetStoreProvider } from '../assetstore/provider.js';
+import { type AssetStoreProvider } from '../assetstore/provider.js';
 import { type ReuseCounts } from '../ops/reuseOutcomes.js';
 import type { ProvenanceStore } from '../assetstore/provenance.js';
 import type { ReviewLedger } from '../assetstore/reviewLedger.js';
@@ -76,7 +76,8 @@ export interface SelectionPool {
 }
 /**
  * Assemble the full selection pool from the store for the given signals: the relevant scored candidates AND the
- * distilled-gene fallback pool, in a single pass over the gene list (one store.list + one ban computation). A gene
+ * distilled-gene fallback pool from the legacy gene list (one store.list + one ban computation). The independent
+ * semantic corpus uses the actual recent records when that optional capability exists. A gene
  * is a normal candidate if its signals_match literally intersects the signals OR semantically overlaps them (so a
  * '429' signal can still reach a gene tagged for 'repair'); a trusted/approved/non-banned *distilled* gene that
  * does NOT match goes to `distilledFallback` (v1 #97).

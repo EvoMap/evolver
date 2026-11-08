@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { acquireLock, releaseLock } from '../util/fileLock.js';
 import { appendUtf8Durable, assertAssetStoreDirectory, assertNoExperienceTransaction, EXPERIENCE_BUNDLE_SCHEMA, ExperienceRecoveryRequiredError, assertOptionalRegularFile, ensureAssetStoreDirectory, fsyncDirectoryBestEffort, readUtf8Regular, regularFileFingerprint, replaceUtf8Durable, } from './assetStoreStorage.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
-import { FrozenAssetIdCollisionError, frozenAssetRecordsEqual, normalizeForPut, } from './provider.js';
+import { assertRecentLimit, captureRecentAssetResult, MAX_RECENT_ASSETS, recentRecords } from './recentRecords.js';
+import { FrozenAssetIdCollisionError, frozenAssetRecordsEqual, getAssetsById, normalizeForPut, } from './provider.js';
 function resultLogicalId(logicalId) {
     return logicalId !== undefined && logicalId.length > 0 && logicalId === logicalId.trim()
         ? logicalId
@@ -49,6 +50,7 @@ export class LocalJsonlProvider {
     bundleJournalPath;
     fileState = new Map();
     loaded = false;
+    recentIndex = new Map();
     referenceScope;
     // `baseDir` is public-readonly so callers that inject a store (e.g. the CLI under test) can co-locate sidecars
     // — the ReviewLedger/ProvenanceStore — in the SAME directory, instead of defaulting to the real ~/.evomap.
@@ -93,13 +95,14 @@ export class LocalJsonlProvider {
                     continue;
                 try {
                     const r = JSON.parse(line);
-                    if (r.asset_id)
-                        next.set(r.asset_id, r); // preserve legacy read behavior
+                    if (typeof r.asset_id === 'string' && r.asset_id.length > 0)
+                        next.set(r.asset_id, r);
                 }
-                catch { /* skip 坏行 for legacy readers */ }
+                catch { /* skip 坏行 */ }
             }
         }
         this.index.clear();
+        this.recentIndex.clear();
         for (const [assetId, record] of next)
             this.index.set(assetId, record);
         this.fileState = state;
@@ -127,6 +130,35 @@ export class LocalJsonlProvider {
     updateFileStateAfterWrite() {
         this.fileState = this.captureFileState();
         this.loaded = true;
+    }
+    /** 仅在新 identity 已成功追加后更新其 kind；Capsule/Event 不影响 Gene 近期窗口。 */
+    indexAppendedRecord(record) {
+        this.index.set(record.asset_id, record);
+        const recent = this.recentIndex.get(record.type);
+        if (recent) {
+            recent.unshift(record);
+            if (recent.length > MAX_RECENT_ASSETS)
+                recent.pop();
+        }
+    }
+    /** 在任何持久化副作用前捕获实际 JSON 表示，热索引只持有该独立表示。 */
+    prepareAppend(record) {
+        const assetId = record.asset_id;
+        const kind = record.type;
+        const json = JSON.stringify(record);
+        assertExecutionEligible(record, this.referenceScope);
+        const captured = JSON.parse(json);
+        if (!captured || typeof captured !== 'object' || Array.isArray(captured)
+            || captured.asset_id !== assetId || captured.type !== kind) {
+            throw new Error('asset store serialized record is invalid');
+        }
+        const snapshot = captured;
+        assertExecutionEligible(snapshot, this.referenceScope);
+        return { record: snapshot, line: `${json}\n` };
+    }
+    appendPreparedRecord({ record, line }) {
+        appendUtf8Durable(join(this.baseDir, LOCAL_ASSET_FILES[record.type]), line);
+        this.indexAppendedRecord(record);
     }
     readPendingBundle() {
         if (assertOptionalRegularFile(this.bundleJournalPath, 'temp_file') === null)
@@ -187,8 +219,7 @@ export class LocalJsonlProvider {
                     throw new FrozenAssetIdCollisionError(record.asset_id);
                 continue;
             }
-            appendUtf8Durable(join(this.baseDir, LOCAL_ASSET_FILES[record.type]), `${JSON.stringify(record)}\n`);
-            this.index.set(record.asset_id, record);
+            this.appendPreparedRecord(this.prepareAppend(record));
         }
         if (contextBody !== undefined)
             writeLocalProjectContexts(this.baseDir, contextBody);
@@ -233,7 +264,6 @@ export class LocalJsonlProvider {
     }
     async putConditional(asset, options) {
         const { record, verified } = normalizeForPut(asset, this.referenceScope);
-        const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
         const logicalId = typeof record.id === 'string' ? record.id : undefined;
         let collision;
         assertOptionalRegularFile(this.lockPath, 'lock_file');
@@ -269,8 +299,7 @@ export class LocalJsonlProvider {
                     collisionWithAssetId: collision.asset_id,
                 };
             }
-            appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
-            this.index.set(record.asset_id, record);
+            this.appendPreparedRecord(this.prepareAppend(record));
             this.updateFileStateAfterWrite();
         }
         finally {
@@ -353,18 +382,29 @@ export class LocalJsonlProvider {
             }
             if (pending.length === 0 && !context)
                 return results;
+            // 每一条的序列化/解析必须在 journal 发布前完成，恢复与追加共用捕获内容。
+            const captured = (context ? [...seen.values()].map(({ record }) => record) : pending)
+                .map((record) => this.prepareAppend(record));
+            for (const { record } of captured) {
+                const existing = this.index.get(record.asset_id);
+                if (existing && !frozenAssetRecordsEqual(existing, record))
+                    throw new FrozenAssetIdCollisionError(record.asset_id);
+            }
+            const pendingIds = new Set(pending.map((record) => record.asset_id));
+            const prepared = captured.filter(({ record }) => pendingIds.has(record.asset_id));
             const contextBody = context ? mergeLocalProjectContexts(this.baseDir, [context]) : undefined;
+            const contextRecords = context ? captured.map(({ record }) => record) : [];
+            if (context)
+                assertLocalContextBundle(context, contextRecords);
             const journal = `${JSON.stringify(context
-                ? { schema: CONTEXT_BUNDLE_JOURNAL_SCHEMA, assets: normalized.map(({ record }) => record), localContexts: [context] }
-                : { schema: BUNDLE_JOURNAL_SCHEMA, assets: pending })}\n`;
+                ? { schema: CONTEXT_BUNDLE_JOURNAL_SCHEMA, assets: contextRecords, localContexts: [context] }
+                : { schema: BUNDLE_JOURNAL_SCHEMA, assets: prepared.map(({ record }) => record) })}\n`;
             if (Buffer.byteLength(journal, 'utf8') > MAX_BUNDLE_JOURNAL_BYTES) {
                 throw new Error('asset store bundle is too large');
             }
             replaceUtf8Durable(this.bundleJournalPath, journal);
-            for (const record of pending) {
-                appendUtf8Durable(join(this.baseDir, LOCAL_ASSET_FILES[record.type]), `${JSON.stringify(record)}\n`);
-                this.index.set(record.asset_id, record);
-            }
+            for (const append of prepared)
+                this.appendPreparedRecord(append);
             if (contextBody !== undefined)
                 writeLocalProjectContexts(this.baseDir, contextBody);
             unlinkSync(this.bundleJournalPath);
@@ -387,7 +427,6 @@ export class LocalJsonlProvider {
         assertExecutionEligible(record, this.referenceScope);
         if (!record.asset_id)
             throw new Error('putFrozen 需 record 自带冻结 asset_id');
-        const file = join(this.baseDir, LOCAL_ASSET_FILES[record.type]);
         let logicalId;
         let collision;
         assertOptionalRegularFile(this.lockPath, 'lock_file');
@@ -419,8 +458,7 @@ export class LocalJsonlProvider {
                     collisionWithAssetId: collision.asset_id,
                 };
             }
-            appendUtf8Durable(file, `${JSON.stringify(record)}\n`);
-            this.index.set(record.asset_id, record);
+            this.appendPreparedRecord(this.prepareAppend(record));
             this.updateFileStateAfterWrite();
         }
         finally {
@@ -441,6 +479,21 @@ export class LocalJsonlProvider {
         this.ensureFresh();
         const asset = this.index.get(assetId);
         return asset && isExecutionEligible(asset, this.referenceScope) ? asset : null;
+    }
+    async getMany(assetIds) {
+        if (this.get !== LocalJsonlProvider.prototype.get)
+            return getAssetsById(this, assetIds, undefined);
+        const records = new Map();
+        if (assetIds.length === 0)
+            return records;
+        this.ensureFresh();
+        for (const id of new Set(assetIds)) {
+            const record = this.index.get(id);
+            if (record && isExecutionEligible(record, this.referenceScope)) {
+                records.set(id, captureRecentAssetResult([record], record.type, 1)[0]);
+            }
+        }
+        return records;
     }
     async findByLogicalId(id, limit = 2, kind) {
         this.ensureFresh();
@@ -467,6 +520,23 @@ export class LocalJsonlProvider {
                 break;
         }
         return out;
+    }
+    async listRecent(kind, limit = MAX_RECENT_ASSETS) {
+        assertRecentLimit(limit);
+        this.ensureFresh();
+        let records = this.recentIndex.get(kind);
+        if (!records) {
+            records = recentRecords(this.index.values(), kind);
+            this.recentIndex.set(kind, records);
+        }
+        // The reference fence can change without an asset-file generation change.
+        // Return detached records so callers cannot mutate either in-memory index.
+        try {
+            return structuredClone(records.filter((record) => isExecutionEligible(record, this.referenceScope)).slice(0, limit));
+        }
+        catch {
+            throw new Error('recent asset snapshot failed');
+        }
     }
     listAll(kind) {
         this.ensureFresh();

@@ -245,16 +245,27 @@ export function assertAssetStoreDirectoryIdentity(path, expected) {
         throw new UnsafeAssetStorePathError('base_directory', 'path_changed');
     }
 }
-export function captureRegularAssetFileIdentity(path) {
-    const identity = nativePathIdentity(path, 'asset_file');
+/** Preserve pathname type/content guards, filling only a regular file's missing Windows volume from a native witness. */
+export function lstatWithAssetFileIdentity(path, witnessAccess = 'read') {
+    const named = lstatSync(path, { bigint: true });
+    if (process.platform !== 'win32' || named.dev !== 0n || named.isSymbolicLink() || !named.isFile())
+        return named;
+    const identity = captureRegularAssetFileIdentity(path, witnessAccess);
+    if (named.ino !== identity.ino || named.birthtimeNs !== identity.birthtimeNs) {
+        throw new UnsafeAssetStorePathError('asset_file', 'path_changed');
+    }
+    return Object.assign(named, { dev: identity.dev });
+}
+export function captureRegularAssetFileIdentity(path, witnessAccess = 'read') {
+    const identity = nativePathIdentity(path, 'asset_file', witnessAccess === 'write' ? constants.O_WRONLY : constants.O_RDONLY);
     return Object.freeze({ dev: identity.dev, ino: identity.ino, birthtimeNs: identity.birthtimeNs });
 }
 /** A path version from a real kernel witness, not a held FD or a missing-volume wildcard. */
 export function captureRegularAssetFileSnapshot(path, witnessAccess = constants.O_RDONLY) {
     return nativePathIdentity(path, 'asset_file', witnessAccess, true);
 }
-export function assertOpenedRegularAssetFile(fd, path, expected) {
-    assertOpenedPathMatches(fd, path, 'asset_file');
+export function assertOpenedRegularAssetFile(fd, path, expected, witnessAccess = 'read') {
+    assertOpenedPathMatches(fd, path, 'asset_file', witnessAccess === 'write' ? constants.O_WRONLY : constants.O_RDONLY);
     if (expected) {
         const actual = fstatSync(fd, { bigint: true });
         if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.birthtimeNs !== expected.birthtimeNs) {

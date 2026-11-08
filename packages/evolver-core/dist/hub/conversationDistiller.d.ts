@@ -1,5 +1,7 @@
 import type { AssetRecord, AssetStoreProvider } from '../assetstore/provider.js';
 import { type ObservedCheck } from '../verify/sandboxedValidation.js';
+import { type ProjectProvenance } from './projectTerms.js';
+import type { IrRejection } from './sessionGeneIr.js';
 import { type PublishBindingReceipt, type PublishVerificationEvidence, type PublishVerificationRequest } from './publishBinding.js';
 import { type GepCategory } from '../wire/index.js';
 import { EXECUTION_REDACTION_POLICY_VERSION, type ExecutionRedactionReason } from '../verify/executionRedaction.js';
@@ -66,6 +68,7 @@ interface NormalizedConversation {
     summary: string;
     userPrompt: string;
     projectNotes: string[];
+    unknowns: string[];
     answerValues: string[];
     signals: string[];
     preconditions: string[];
@@ -76,12 +79,18 @@ interface NormalizedConversation {
     model: string;
     source_thread: string;
 }
+export type QualityRejection = 'insufficient_reusable_signal' | 'not_portable' | 'too_project_specific' | 'answer_leak' | IrRejection;
 export interface QualityGate {
     ok: boolean;
     score: number;
     threshold: number;
     reasons: string[];
-    reason?: string;
+    reason?: QualityRejection;
+    /** The words the rejection is about, for the person to move into project notes or drop. */
+    terms?: string[];
+    /** Where in the IR an `ir_invalid` or `ref_unresolved` rejection points. */
+    field?: string;
+    metrics?: Record<string, number>;
 }
 export interface ConversationDistillOptions {
     persist?: boolean;
@@ -97,6 +106,11 @@ export interface ConversationDistillOptions {
     /** Host-only binding for the exact replay plan, never taken from the request body. */
     validationPlanDigest?: string;
     onObservedValidationPlan?: (checks: readonly ObservedCheck[]) => void;
+    /**
+     * Host-only, for a background publication: the Gene that was tried and verified. A re-derived Gene that differs (the
+     * distiller changed since) is refused before anything is stored, so only the Gene that earned its promotion is sent.
+     */
+    expectedGeneAssetId?: string;
     publishSanitizeEnv?: Record<string, string | undefined>;
     publishSignal?: AbortSignal;
 }
@@ -149,10 +163,18 @@ export type ConversationDistillResult = {
     publish_receipt?: PublishBindingReceipt;
 }));
 export declare function inferSignals(text: string, providedSignals?: unknown): string[];
-export declare function evaluateGate(input: ConversationDistillInput, normalized: NormalizedConversation): QualityGate;
-export declare function answerValues(finalAnswer: string, prompt: string): string[];
-export declare function projectSpecificTerms(texts: readonly string[], patterns?: RegExp[]): string[];
+/** What the gate checks a Gene against: the text an agent elsewhere would follow, and what this project declared. */
+export interface PortabilityCheck {
+    surface: readonly string[];
+    /** Exact contracts: checked for this machine's paths only. */
+    verbatim?: readonly string[];
+    provenance: ProjectProvenance;
+    /** An IR passed its structural checks already; only the free-form input still earns its admission by score. */
+    structural: boolean;
+}
+export declare function evaluateGate(input: ConversationDistillInput, normalized: NormalizedConversation, check: PortabilityCheck, alsoPublished?: readonly string[]): QualityGate;
 export declare function normalizeConversationInput(input: ConversationDistillInput): NormalizedConversation;
+/** Binds what will be published: a session IR is compiled first, exactly as distillation compiles it. */
 export declare function createConversationVerificationRequest(input: ConversationDistillInput, validation: readonly string[], runtime: string, nonce: string, policy?: ConversationGenePolicy, validationPlanDigest?: string): PublishVerificationRequest;
-export declare function distillConversation(input: ConversationDistillInput, opts?: ConversationDistillOptions): Promise<ConversationDistillResult>;
+export declare function distillConversation(request: ConversationDistillInput, requestOpts?: ConversationDistillOptions): Promise<ConversationDistillResult>;
 export {};

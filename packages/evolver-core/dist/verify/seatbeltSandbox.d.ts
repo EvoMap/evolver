@@ -12,6 +12,8 @@ export interface SeatbeltPaths {
     home: string;
     /** Toolchain and dependency directories that stay readable even inside the hidden subpaths. */
     readRoots?: readonly string[];
+    /** Symlinks a toolchain path resolves through into its read roots; only the link itself becomes visible. */
+    readLinks?: readonly string[];
     /** Let the workload write the checkout itself (a disposable verification copy), never anything else. */
     writableSource?: boolean;
 }

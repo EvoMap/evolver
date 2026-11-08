@@ -22,11 +22,12 @@ export declare class ForeignJsonlSource implements AssetStoreProvider {
     readonly baseDir: string;
     static isBuiltInPromptReader(value: unknown): value is ForeignJsonlSource;
     private readonly reportedUnreadable;
+    private readonly parsedFiles;
     constructor(baseDir: string);
     /**
      * Read one foreign file, degrading it to "empty" on ANY failure.
      *
-     * `readUtf8Regular` returns null only for a missing file and THROWS for a symlink, a non-regular file,
+     * The readable-generation probe and payload reader reject symlinks, non-regular files,
      * EACCES, ELOOP or ENOTDIR. This read runs inside gene selection (aggregateLearningHistory →
      * candidateAssembly), where an exception would abort the host's whole cycle — a pool we do not own, and
      * whose contents are optional extra evidence, must never have that power. Degrading is per file so one
@@ -37,6 +38,7 @@ export declare class ForeignJsonlSource implements AssetStoreProvider {
      */
     private readOrDegrade;
     private read;
+    private detach;
     queryGeneSnapshot(query?: GeneSnapshotQuery): Promise<GeneReadSnapshot>;
     beginPromptGeneSnapshotV1(query: GeneSnapshotQuery): import("./provider.js").ContextReadOperationV1<GeneReadSnapshot>;
     beginPromptRelatedCapsulesV1(query: RelatedCapsuleQuery): import("./provider.js").ContextReadOperationV1<RelatedCapsuleResult>;
@@ -51,9 +53,14 @@ export declare class ForeignJsonlSource implements AssetStoreProvider {
     beginGeneScanV1(query?: GeneSnapshotQuery): import("./geneScanV1.js").GeneScanSessionV1;
     queryRelatedCapsules(query: RelatedCapsuleQuery): Promise<RelatedCapsuleResult>;
     put(asset: AssetRecord): Promise<PutResult>;
+    /** One fresh all-kind read for Union authority, retaining only requested identities.
+     * This is operation-local evidence, not an atomic snapshot across files or a persistent index. */
+    existingAssetIds(requested: ReadonlySet<string>): ReadonlySet<string>;
     get(assetId: string): Promise<AssetRecord | null>;
+    getMany(assetIds: readonly string[]): Promise<ReadonlyMap<string, AssetRecord>>;
     /** Filters by logical id BEFORE the cap, so `limit` bounds matches returned, never records scanned. */
     findByLogicalId(id: string, limit?: number, kind?: AssetKind): Promise<AssetRecord[]>;
     list(kind?: AssetKind, limit?: number): Promise<AssetRecord[]>;
+    listRecent(kind: AssetKind, limit?: number): Promise<AssetRecord[]>;
     search(q: SearchQuery): Promise<AssetRecord[]>;
 }

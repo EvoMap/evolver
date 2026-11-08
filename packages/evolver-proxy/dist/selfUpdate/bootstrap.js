@@ -19,7 +19,7 @@ import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstat
 import { homedir } from 'node:os';
 import { basename, dirname, join, parse as parsePath, posix, resolve as resolvePath, win32, } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootstrap as coreBootstrap, util } from '@evomap/evolver-core';
+import { assetstore, bootstrap as coreBootstrap, util } from '@evomap/evolver-core';
 import { isSelfUpdateExplicit, resolveSelfUpdatePolicy, selfUpdateSupervisorAttested, } from './policy.js';
 import { isStandaloneReleaseBinaryName, resolveSelfUpdateTarget, } from './releaseBinary.js';
 import { expandHomePath, parseEnvFile } from '../bin/envFile.js';
@@ -146,12 +146,6 @@ function boundedBootstrapDetail(value) {
     }
     return normalized.slice(0, MAX_BOOTSTRAP_DETAIL_LENGTH);
 }
-function bootstrapPathMetadata(path) {
-    const stat = lstatSync(path, { bigint: true });
-    // Reuse the native file witness; a missing Windows volume is not an identity.
-    return process.platform === 'win32' && stat.dev === 0n && stat.isFile() && !stat.isSymbolicLink()
-        ? util.statRegularFileIdentity(path) : stat;
-}
 function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_STATE_BYTES) {
     const injected = options.exists !== undefined || options.readFile !== undefined;
     try {
@@ -164,7 +158,7 @@ function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_S
             }
             return { status: 'present', raw };
         }
-        const before = bootstrapPathMetadata(path);
+        const before = assetstore.lstatWithAssetFileIdentity(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
             || before.size > BigInt(maxBytes)
             || before.dev <= 0n || before.ino <= 0n) {
@@ -174,7 +168,7 @@ function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_S
         const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
             const opened = fstatSync(descriptor, { bigint: true });
-            if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
+            if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.birthtimeNs !== before.birthtimeNs
                 || opened.size !== before.size) {
                 return { status: 'invalid', detail: `changed durable state: ${basename(path)}` };
             }
@@ -191,14 +185,14 @@ function readBoundedBootstrapStateFile(path, options, maxBytes = MAX_BOOTSTRAP_S
             }
             const raw = bytes.subarray(0, offset).toString('utf8');
             const after = fstatSync(descriptor, { bigint: true });
-            if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
+            if (after.dev !== opened.dev || after.ino !== opened.ino || after.birthtimeNs !== opened.birthtimeNs || after.size !== opened.size
                 || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) {
                 return { status: 'invalid', detail: `changed durable state: ${basename(path)}` };
             }
             (options.assertIntentFileTrust ?? assertNativeBootstrapIntentFileTrust)(path);
-            const settled = bootstrapPathMetadata(path);
+            const settled = assetstore.lstatWithAssetFileIdentity(path);
             if (!settled.isFile() || settled.isSymbolicLink() || settled.nlink !== 1n
-                || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.size !== opened.size
+                || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.birthtimeNs !== opened.birthtimeNs || settled.size !== opened.size
                 || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
                 return { status: 'invalid', detail: `changed durable state: ${basename(path)}` };
             }
@@ -274,7 +268,7 @@ function readLegacyBootstrapProofFile(receipt, options) {
     const directory = dirname(receipt.path);
     assertDirectoryTrust(directory);
     assertFileTrust(receipt.path);
-    const before = bootstrapPathMetadata(receipt.path);
+    const before = assetstore.lstatWithAssetFileIdentity(receipt.path);
     if (!before.isFile() || before.isSymbolicLink()
         || before.dev <= 0n || before.ino <= 0n
         || before.size !== BigInt(receipt.size)
@@ -286,7 +280,7 @@ function readLegacyBootstrapProofFile(receipt, options) {
     try {
         const opened = fstatSync(descriptor, { bigint: true });
         if (!opened.isFile()
-            || opened.dev !== before.dev || opened.ino !== before.ino
+            || opened.dev !== before.dev || opened.ino !== before.ino || opened.birthtimeNs !== before.birthtimeNs
             || opened.size !== before.size
             || opened.mtimeNs !== before.mtimeNs || opened.ctimeNs !== before.ctimeNs) {
             throw new Error('legacy bootstrap proof changed while opening');
@@ -309,16 +303,16 @@ function readLegacyBootstrapProofFile(receipt, options) {
         if (!first.equals(second)
             || first.length !== receipt.size
             || createHash('sha256').update(first).digest('hex') !== receipt.sha256
-            || after.dev !== opened.dev || after.ino !== opened.ino
+            || after.dev !== opened.dev || after.ino !== opened.ino || after.birthtimeNs !== opened.birthtimeNs
             || after.size !== opened.size
             || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) {
             throw new Error('legacy bootstrap proof changed while reading');
         }
         assertDirectoryTrust(directory);
         assertFileTrust(receipt.path);
-        const settled = bootstrapPathMetadata(receipt.path);
+        const settled = assetstore.lstatWithAssetFileIdentity(receipt.path);
         if (!settled.isFile() || settled.isSymbolicLink()
-            || settled.dev !== opened.dev || settled.ino !== opened.ino
+            || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.birthtimeNs !== opened.birthtimeNs
             || settled.size !== opened.size
             || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
             throw new Error('legacy bootstrap proof path changed while reading');
@@ -2043,7 +2037,7 @@ function syncBootstrapDirectory(path) {
 function readBootstrapRegistrationIntentFile(options, path, registrationPath, terminalPath, clearingPath, expectedLinkCount = 1n) {
     try {
         assertBootstrapIntentFileTrust(options, path, Number(expectedLinkCount));
-        const before = bootstrapPathMetadata(path);
+        const before = assetstore.lstatWithAssetFileIdentity(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== expectedLinkCount
             || before.dev <= 0n || before.ino <= 0n
             || before.size > BigInt(MAX_BOOTSTRAP_REGISTRATION_INTENT_BYTES)
@@ -2064,7 +2058,7 @@ function readBootstrapRegistrationIntentFile(options, path, registrationPath, te
         try {
             const opened = fstatSync(descriptor, { bigint: true });
             if (!opened.isFile() || opened.nlink !== expectedLinkCount
-                || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+                || opened.dev !== before.dev || opened.ino !== before.ino || opened.birthtimeNs !== before.birthtimeNs || opened.size !== before.size) {
                 return { status: 'invalid', detail: 'registration intent changed before read' };
             }
             const bytes = Buffer.alloc(MAX_BOOTSTRAP_REGISTRATION_INTENT_BYTES + 1);
@@ -2080,7 +2074,7 @@ function readBootstrapRegistrationIntentFile(options, path, registrationPath, te
             }
             raw = bytes.subarray(0, offset).toString('utf8');
             const settled = fstatSync(descriptor, { bigint: true });
-            if (settled.dev !== opened.dev || settled.ino !== opened.ino
+            if (settled.dev !== opened.dev || settled.ino !== opened.ino || settled.birthtimeNs !== opened.birthtimeNs
                 || settled.size !== opened.size || settled.mtimeNs !== opened.mtimeNs
                 || settled.ctimeNs !== opened.ctimeNs) {
                 return { status: 'invalid', detail: 'registration intent changed during read' };
@@ -2089,9 +2083,9 @@ function readBootstrapRegistrationIntentFile(options, path, registrationPath, te
         finally {
             closeSync(descriptor);
         }
-        const after = bootstrapPathMetadata(path);
+        const after = assetstore.lstatWithAssetFileIdentity(path);
         if (!after.isFile() || after.isSymbolicLink() || after.nlink !== expectedLinkCount
-            || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
+            || after.dev !== before.dev || after.ino !== before.ino || after.birthtimeNs !== before.birthtimeNs || after.size !== before.size
             || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
             return { status: 'invalid', detail: 'registration intent changed after read' };
         }
@@ -2179,7 +2173,7 @@ function readBootstrapRegistrationPublisherClaim(options, stateDir) {
     const path = join(stateDir, name);
     try {
         assertBootstrapIntentFileTrust(options, path);
-        const before = bootstrapPathMetadata(path);
+        const before = assetstore.lstatWithAssetFileIdentity(path);
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
             || before.size !== 0n || before.dev <= 0n || before.ino <= 0n) {
             return { status: 'invalid', detail: 'registration publisher claim is unsafe' };
@@ -2189,7 +2183,7 @@ function readBootstrapRegistrationPublisherClaim(options, stateDir) {
             descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
             const opened = fstatSync(descriptor, { bigint: true });
             if (!opened.isFile() || opened.nlink !== 1n || opened.size !== 0n
-                || opened.dev !== before.dev || opened.ino !== before.ino
+                || opened.dev !== before.dev || opened.ino !== before.ino || opened.birthtimeNs !== before.birthtimeNs
                 || opened.mtimeNs !== before.mtimeNs || opened.ctimeNs !== before.ctimeNs) {
                 return { status: 'invalid', detail: 'registration publisher claim changed before read' };
             }
@@ -2198,9 +2192,9 @@ function readBootstrapRegistrationPublisherClaim(options, stateDir) {
             if (descriptor !== undefined)
                 closeSync(descriptor);
         }
-        const after = bootstrapPathMetadata(path);
+        const after = assetstore.lstatWithAssetFileIdentity(path);
         if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n || after.size !== 0n
-            || after.dev !== before.dev || after.ino !== before.ino
+            || after.dev !== before.dev || after.ino !== before.ino || after.birthtimeNs !== before.birthtimeNs
             || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
             return { status: 'invalid', detail: 'registration publisher claim changed after read' };
         }
@@ -2472,9 +2466,9 @@ function createBootstrapRegistrationPublisherClaim(options, stateDir, owner) {
         throw new Error('bootstrap registration publisher claim failed');
     syncBootstrapDirectory(stateDir);
     assertBootstrapIntentFileTrust(options, path);
-    const settled = bootstrapPathMetadata(path);
+    const settled = assetstore.lstatWithAssetFileIdentity(path, 'write');
     if (!settled.isFile() || settled.isSymbolicLink() || settled.nlink !== 1n
-        || settled.size !== 0n || settled.dev !== opened.dev || settled.ino !== opened.ino
+        || settled.size !== 0n || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.birthtimeNs !== opened.birthtimeNs
         || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
         throw new Error('bootstrap registration publisher claim is unconfirmed');
     }
@@ -2574,9 +2568,9 @@ function publishBootstrapRegistrationIntent(options) {
         if (!opened)
             throw new Error('bootstrap registration intent publication failed');
         assertBootstrapIntentFileTrust(options, publishingPath);
-        const prepared = bootstrapPathMetadata(publishingPath);
+        const prepared = assetstore.lstatWithAssetFileIdentity(publishingPath, 'write');
         if (!prepared.isFile() || prepared.isSymbolicLink() || prepared.nlink !== 1n
-            || prepared.dev !== opened.dev || prepared.ino !== opened.ino
+            || prepared.dev !== opened.dev || prepared.ino !== opened.ino || prepared.birthtimeNs !== opened.birthtimeNs
             || prepared.size !== opened.size || prepared.mtimeNs !== opened.mtimeNs
             || prepared.ctimeNs !== opened.ctimeNs) {
             throw new Error('bootstrap registration intent temp changed before publication');
@@ -2587,13 +2581,13 @@ function publishBootstrapRegistrationIntent(options) {
         options.afterIntentPublicationStep?.('directory_fsync', stateDir);
         assertBootstrapIntentFileTrust(options, publishingPath, 2);
         assertBootstrapIntentFileTrust(options, path, 2);
-        const linkedTemp = bootstrapPathMetadata(publishingPath);
-        const linkedCanonical = bootstrapPathMetadata(path);
+        const linkedTemp = assetstore.lstatWithAssetFileIdentity(publishingPath, 'write');
+        const linkedCanonical = assetstore.lstatWithAssetFileIdentity(path, 'write');
         if (!linkedTemp.isFile() || linkedTemp.isSymbolicLink() || linkedTemp.nlink !== 2n
             || !linkedCanonical.isFile() || linkedCanonical.isSymbolicLink()
             || linkedCanonical.nlink !== 2n
-            || linkedTemp.dev !== opened.dev || linkedTemp.ino !== opened.ino
-            || linkedCanonical.dev !== opened.dev || linkedCanonical.ino !== opened.ino
+            || linkedTemp.dev !== opened.dev || linkedTemp.ino !== opened.ino || linkedTemp.birthtimeNs !== opened.birthtimeNs
+            || linkedCanonical.dev !== opened.dev || linkedCanonical.ino !== opened.ino || linkedCanonical.birthtimeNs !== opened.birthtimeNs
             || linkedTemp.size !== opened.size || linkedCanonical.size !== opened.size
             || linkedTemp.mtimeNs !== opened.mtimeNs || linkedCanonical.mtimeNs !== opened.mtimeNs) {
             throw new Error('bootstrap registration intent canonical claim is unconfirmed');
@@ -2604,9 +2598,9 @@ function publishBootstrapRegistrationIntent(options) {
             throw new Error('bootstrap registration intent temp retirement is unconfirmed');
         }
         assertBootstrapIntentFileTrust(options, path);
-        const published = bootstrapPathMetadata(path);
+        const published = assetstore.lstatWithAssetFileIdentity(path, 'write');
         if (!published.isFile() || published.isSymbolicLink() || published.nlink !== 1n
-            || published.dev !== opened.dev || published.ino !== opened.ino
+            || published.dev !== opened.dev || published.ino !== opened.ino || published.birthtimeNs !== opened.birthtimeNs
             || published.size !== opened.size || published.mtimeNs !== opened.mtimeNs) {
             throw new Error('bootstrap registration intent changed during publication');
         }
@@ -2640,7 +2634,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     }
     assertBootstrapIntentDirectoryTrust(options, dirname(lease.currentPath), true);
     assertBootstrapIntentFileTrust(options, lease.currentPath);
-    const current = bootstrapPathMetadata(lease.currentPath);
+    const current = assetstore.lstatWithAssetFileIdentity(lease.currentPath);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
         || current.dev !== lease.device || current.ino !== lease.inode || current.size !== lease.size
         || current.mtimeNs !== lease.mtimeNs || current.ctimeNs !== lease.ctimeNs) {
@@ -2694,7 +2688,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     if (!settled)
         throw new Error('bootstrap registration intent terminal publication failed');
     assertBootstrapIntentFileTrust(options, lease.terminalPath);
-    const after = bootstrapPathMetadata(lease.terminalPath);
+    const after = assetstore.lstatWithAssetFileIdentity(lease.terminalPath, 'write');
     if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n
         || after.dev !== settled.dev || after.ino !== settled.ino
         || after.size !== settled.size || after.mtimeNs !== settled.mtimeNs
@@ -2704,7 +2698,7 @@ function terminalizeBootstrapRegistrationIntent(options, lease, outcome, transac
     const stateDir = dirname(lease.currentPath);
     syncBootstrapDirectory(stateDir);
     options.afterIntentTerminalPublish?.();
-    const active = bootstrapPathMetadata(lease.path);
+    const active = assetstore.lstatWithAssetFileIdentity(lease.path);
     if (!active.isFile() || active.isSymbolicLink() || active.nlink !== 1n
         || active.dev !== lease.device || active.ino !== lease.inode || active.size !== lease.size
         || active.mtimeNs !== lease.mtimeNs || active.ctimeNs !== lease.ctimeNs) {
@@ -2734,7 +2728,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
     assertBootstrapIntentDirectoryTrust(options, stateDir, true);
     if (lease.staleRegistering) {
         assertBootstrapIntentFileTrust(options, lease.staleRegistering.path);
-        const stale = bootstrapPathMetadata(lease.staleRegistering.path);
+        const stale = assetstore.lstatWithAssetFileIdentity(lease.staleRegistering.path);
         if (!stale.isFile() || stale.isSymbolicLink() || stale.nlink !== 1n
             || stale.dev !== lease.staleRegistering.device || stale.ino !== lease.staleRegistering.inode
             || stale.size !== lease.staleRegistering.size
@@ -2749,7 +2743,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         }
     }
     assertBootstrapIntentFileTrust(options, lease.currentPath);
-    const current = bootstrapPathMetadata(lease.currentPath);
+    const current = assetstore.lstatWithAssetFileIdentity(lease.currentPath);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
         || current.dev !== lease.device || current.ino !== lease.inode || current.size !== lease.size
         || current.mtimeNs !== lease.mtimeNs || current.ctimeNs !== lease.ctimeNs) {
@@ -2767,7 +2761,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         }
         renameSync(lease.terminalPath, lease.clearingPath);
         syncBootstrapDirectory(stateDir);
-        const renamed = bootstrapPathMetadata(lease.clearingPath);
+        const renamed = assetstore.lstatWithAssetFileIdentity(lease.clearingPath);
         if (!renamed.isFile() || renamed.isSymbolicLink() || renamed.nlink !== 1n
             || renamed.dev !== lease.device || renamed.ino !== lease.inode
             || renamed.size !== lease.size) {
@@ -2786,7 +2780,7 @@ function clearBootstrapRegistrationIntent(options, lease) {
         throw new Error('bootstrap registration intent path is unexpected');
     }
     assertBootstrapIntentFileTrust(options, clearingLease.currentPath);
-    const moved = bootstrapPathMetadata(clearingLease.currentPath);
+    const moved = assetstore.lstatWithAssetFileIdentity(clearingLease.currentPath);
     if (!moved.isFile() || moved.isSymbolicLink() || moved.nlink !== 1n
         || moved.dev !== clearingLease.device || moved.ino !== clearingLease.inode
         || moved.size !== clearingLease.size || moved.mtimeNs !== clearingLease.mtimeNs
@@ -2822,7 +2816,7 @@ function sameBootstrapIncompletePublication(left, right) {
 }
 function assertBootstrapRegistrationIntentFileIdentity(options, expected) {
     assertBootstrapIntentFileTrust(options, expected.path, Number(expected.linkCount));
-    const current = bootstrapPathMetadata(expected.path);
+    const current = assetstore.lstatWithAssetFileIdentity(expected.path);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== expected.linkCount
         || current.dev !== expected.device || current.ino !== expected.inode
         || current.size !== expected.size || current.mtimeNs !== expected.mtimeNs
@@ -2848,7 +2842,7 @@ function clearBootstrapIncompletePublication(options, publication) {
             && publication.registration.identity.device === publication.publishing.device
             && publication.registration.identity.inode === publication.publishing.inode) {
             assertBootstrapIntentFileTrust(options, publication.publishing.path);
-            const remaining = bootstrapPathMetadata(publication.publishing.path);
+            const remaining = assetstore.lstatWithAssetFileIdentity(publication.publishing.path);
             if (!remaining.isFile() || remaining.isSymbolicLink() || remaining.nlink !== 1n
                 || remaining.dev !== publication.publishing.device
                 || remaining.ino !== publication.publishing.inode
@@ -3033,7 +3027,7 @@ function recoverBootstrapRegistrationIntent(options) {
                 };
             }
             assertBootstrapIntentFileTrust(options, intent.terminalFile.path);
-            const partial = bootstrapPathMetadata(intent.terminalFile.path);
+            const partial = assetstore.lstatWithAssetFileIdentity(intent.terminalFile.path);
             if (!partial.isFile() || partial.isSymbolicLink() || partial.nlink !== 1n
                 || partial.dev !== intent.terminalFile.device || partial.ino !== intent.terminalFile.inode) {
                 throw new Error('incomplete terminal receipt ownership changed');

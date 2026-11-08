@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readSync, renameSync, rmSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { bootstrap as coreBootstrap, util } from '@evomap/evolver-core';
+import { assetstore, bootstrap as coreBootstrap, util } from '@evomap/evolver-core';
 import { resolveBootstrapStateDir } from './bootstrap.js';
 const MAX_READINESS_BYTES = 16 * 1024;
 function isErrno(error, code) {
@@ -32,13 +32,18 @@ function readExistingReadiness(path) {
             before = util.statRegularFileIdentity(path);
         }
         if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(MAX_READINESS_BYTES)
-            || before.dev <= 0n || before.ino <= 0n) {
+            || before.ino <= 0n) {
+            throw new Error('bootstrap readiness path is not a bounded regular file');
+        }
+        const identity = assetstore.captureRegularAssetFileIdentity(path);
+        if (identity.dev <= 0n || identity.ino <= 0n) {
             throw new Error('bootstrap readiness path is not a bounded regular file');
         }
         const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
+            assetstore.assertOpenedRegularAssetFile(descriptor, path, identity);
             const opened = fstatSync(descriptor, { bigint: true });
-            if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+            if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== before.ino) {
                 throw new Error('bootstrap readiness path changed while opening');
             }
             const bytes = Buffer.alloc(MAX_READINESS_BYTES + 1);
@@ -57,6 +62,13 @@ function readExistingReadiness(path) {
             if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
                 || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) {
                 throw new Error('bootstrap readiness path changed while reading');
+            }
+            assetstore.assertOpenedRegularAssetFile(descriptor, path, identity);
+            const settled = assetstore.lstatWithAssetFileIdentity(path);
+            if (!settled.isFile() || settled.isSymbolicLink() || settled.dev !== after.dev || settled.ino !== after.ino
+                || settled.birthtimeNs !== after.birthtimeNs || settled.size !== after.size
+                || settled.mtimeNs !== after.mtimeNs || settled.ctimeNs !== after.ctimeNs) {
+                throw new Error('bootstrap readiness path changed after reading');
             }
             const parsed = coreBootstrap.parseLifecycleBootstrapReadinessJson(raw);
             if (!parsed)

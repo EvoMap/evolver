@@ -130,7 +130,8 @@ function settle(path, saved, check = () => undefined) {
         const target = locationPath(path, locator);
         if (assertOptionalRegularFile(target) === null || journalFileIdentity(target) !== locator.identity)
             continue;
-        const result = ownedFile(path, target, constants.O_RDWR | constants.O_APPEND, fd => {
+        const projected = saved.state === 'projected';
+        const result = ownedFile(path, target, projected ? constants.O_RDONLY : constants.O_RDWR | constants.O_APPEND, fd => {
             assertOpenedRegularAssetFile(fd, target);
             const size = fstatSync(fd).size, line = Buffer.from(saved.line);
             if (size < locator.offset)
@@ -157,11 +158,13 @@ function settle(path, saved, check = () => undefined) {
                     at += n;
                 }
             }
-            fsyncSync(fd);
+            if (!projected)
+                fsyncSync(fd);
             assertOpenedRegularAssetFile(fd, target);
             if (journalFileIdentity(target) !== locator.identity)
                 return fail();
-            database(path, true, db => db.prepare("UPDATE experience_audit SET state='projected' WHERE key=? AND hash=?").run(saved.key, saved.hash));
+            if (!projected)
+                database(path, true, db => db.prepare("UPDATE experience_audit SET state='projected' WHERE key=? AND hash=?").run(saved.key, saved.hash));
             return rootEvent.parse(JSON.parse(saved.line));
         });
         if (result)

@@ -265,6 +265,7 @@ async function selectPromptGenes(prompt, snapshot, maxGenes, budget, benchmark) 
     const boundedPrompt = promptTokens.join(' ');
     const receipts = new Map();
     const approved = recall.approvedGenesFromSnapshot(snapshot, PROMPT_RECALL_SCAN_LIMIT, {
+        recent: true,
         signal: budget.signal, deadlineAt: budget.deadlineAt,
         ...(benchmark ? { benchmark } : {}),
         onQualification: (values) => { for (const receipt of values)
@@ -574,6 +575,7 @@ async function runPromptRecallHookOwned(argv, deps) {
                     if (!recall.isBuiltInPromptProvider(store))
                         throw new Error('unsupported_prompt_context_provider_v1');
                     return store.beginPromptGeneSnapshotV1({
+                        recent: true,
                         deadlineAt: budget.deadlineAt, signal: budget.signal,
                         maxFileBytes: MAX_PROMPT_RECALL_LOCAL_FILE_BYTES, maxTotalBytes: MAX_PROMPT_RECALL_LOCAL_TOTAL_BYTES
                     });

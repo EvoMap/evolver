@@ -8,6 +8,7 @@ export interface CursorGene {
 /** Default command used by runtimes that support a SessionStart hook. The flag enables session-id capture. */
 export declare const DEFAULT_HOOK_COMMAND = "evolver inject session-start --hook-stdin";
 export declare const DEFAULT_PROMPT_RECALL_HOOK_COMMAND = "evolver inject prompt-recall --hook-stdin";
+export declare const PRODUCT_BRIDGE_PRESERVED_WARNING = "product_bridge_user_owned_preserved: the user-owned product bridge was left unchanged; use explicit --force only after reviewing it if a managed bridge is required";
 export declare const EVOLVER_HOOK_STATUS = "evolver-managed-hook";
 /** Bind custom-command ownership to that exact command without adding undocumented hook-schema fields. */
 export declare function evolverManagedHookStatus(command: string): string;
@@ -106,6 +107,7 @@ export interface InstallResult {
     backups?: string[];
     warnings?: string[];
     error?: string;
+    transaction?: import('./installerTransaction.js').InstallerTransactionSummary;
 }
 export declare class SymlinkRefusedError extends Error {
     constructor(label: string, path: string);

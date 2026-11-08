@@ -19,10 +19,13 @@ import { queryLocalRelatedCapsules } from './relatedCapsules.js';
 import { beginLocalGeneScanV1, readLocalGeneSnapshot } from './boundedSnapshot.js';
 import { beginLocalContextReadV1 } from './contextReadOperationV1.js';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { readUtf8Regular } from './assetStoreStorage.js';
+import { readUtf8Regular, regularFileFingerprint } from './assetStoreStorage.js';
 import { LOCAL_ASSET_FILES } from './assetStoreLayout.js';
 import { signalsOf } from './localJsonl.js';
+import { assertRecentLimit, recentRecords } from './recentRecords.js';
+import { getAssetsById } from './provider.js';
 /** Thrown by every mutating method: a foreign pool is readable, never writable. */
 export class ForeignStoreReadOnlyError extends Error {
     baseDir;
@@ -57,13 +60,16 @@ function parseJsonlRecords(raw) {
             continue;
         try {
             const record = JSON.parse(line);
-            if (record.asset_id)
+            if (typeof record.asset_id === 'string' && record.asset_id.length > 0)
                 out.push(record);
         }
         catch { /* skip corrupt line, same tolerance LocalJsonlProvider applies */ }
     }
     return out;
 }
+// 每个 kind 最多缓存 4 MiB/10,000 行的解析结果；大文件仍按原完整读取路径处理，不截断资产。
+const MAX_CACHED_FOREIGN_BYTES = 4 * 1024 * 1024;
+const MAX_CACHED_FOREIGN_RECORDS = 10_000;
 function matchesQuery(record, q) {
     if (q.kind && record.type !== q.kind)
         return false;
@@ -85,9 +91,9 @@ function matchesQuery(record, q) {
     return true;
 }
 /**
- * Read-only provider over a foreign asset directory. Re-reads on every call rather than caching: the
- * owning engine appends to these files behind our back, and a stale cache would silently freeze a gene's
- * evidence at whatever it was when this process started.
+ * Read-only provider over a foreign asset directory. Every call reads a fresh regular-file snapshot;
+ * only its content digest can reuse bounded parsed data. Another engine's writes, replacement,
+ * deletion or access failure never cause previously cached bytes to be returned instead.
  */
 const builtInPromptForeignReaders = new WeakSet();
 export class ForeignJsonlSource {
@@ -96,6 +102,7 @@ export class ForeignJsonlSource {
         return typeof value === 'object' && value !== null && builtInPromptForeignReaders.has(value);
     }
     reportedUnreadable = new Set();
+    parsedFiles = new Map();
     constructor(baseDir) {
         this.baseDir = baseDir;
         Object.defineProperty(this, 'baseDir', { value: baseDir, enumerable: true, writable: false, configurable: false });
@@ -104,7 +111,7 @@ export class ForeignJsonlSource {
     /**
      * Read one foreign file, degrading it to "empty" on ANY failure.
      *
-     * `readUtf8Regular` returns null only for a missing file and THROWS for a symlink, a non-regular file,
+     * The readable-generation probe and payload reader reject symlinks, non-regular files,
      * EACCES, ELOOP or ENOTDIR. This read runs inside gene selection (aggregateLearningHistory →
      * candidateAssembly), where an exception would abort the host's whole cycle — a pool we do not own, and
      * whose contents are optional extra evidence, must never have that power. Degrading is per file so one
@@ -115,28 +122,58 @@ export class ForeignJsonlSource {
      */
     readOrDegrade(path) {
         try {
-            return readUtf8Regular(path);
+            const before = regularFileFingerprint(path);
+            if (before === 'missing') {
+                this.parsedFiles.delete(path);
+                return [];
+            }
+            const cached = this.parsedFiles.get(path);
+            this.parsedFiles.delete(path);
+            const raw = readUtf8Regular(path);
+            if (raw === null || regularFileFingerprint(path) !== before) {
+                throw new Error('foreign asset file changed while reading');
+            }
+            // 不把 metadata 当作不可伪造的 generation；所有平台读取内容摘要后才能复用解析结果。
+            const digest = createHash('sha256').update(raw).digest('hex');
+            if (cached?.digest === digest) {
+                this.parsedFiles.set(path, cached);
+                return cached.records;
+            }
+            const records = parseJsonlRecords(raw);
+            if (Buffer.byteLength(raw, 'utf8') <= MAX_CACHED_FOREIGN_BYTES
+                && records.length <= MAX_CACHED_FOREIGN_RECORDS) {
+                this.parsedFiles.set(path, { digest, records });
+            }
+            return records;
         }
         catch (error) {
+            this.parsedFiles.delete(path);
             if (!this.reportedUnreadable.has(path)) {
                 this.reportedUnreadable.add(path);
                 const message = error instanceof Error ? error.message : String(error);
                 console.warn(`[ForeignAssetPool] Failed to read ${path} (non-fatal, treated as empty): ${message}`);
             }
-            return null;
+            return [];
         }
     }
     read(kind) {
         const files = kind ? [LOCAL_ASSET_FILES[kind]] : Object.values(LOCAL_ASSET_FILES);
         const byAssetId = new Map();
         for (const file of files) {
-            const raw = this.readOrDegrade(join(this.baseDir, file));
-            if (raw === null)
-                continue;
-            for (const record of parseJsonlRecords(raw))
+            for (const record of this.readOrDegrade(join(this.baseDir, file)))
                 byAssetId.set(record.asset_id, record);
         }
         return [...byAssetId.values()];
+    }
+    detach(records) {
+        try {
+            return structuredClone(records);
+        }
+        catch {
+            // 极深但合法的 JSON 可能超过 clone 深度；清空派生缓存后返回本次独占数据，维持旧读取能力。
+            this.parsedFiles.clear();
+            return records;
+        }
     }
     queryGeneSnapshot(query = {}) {
         return readLocalGeneSnapshot(this.baseDir, query);
@@ -170,19 +207,37 @@ export class ForeignJsonlSource {
     async put(asset) {
         throw new ForeignStoreReadOnlyError(this.baseDir, asset.type);
     }
+    /** One fresh all-kind read for Union authority, retaining only requested identities.
+     * This is operation-local evidence, not an atomic snapshot across files or a persistent index. */
+    existingAssetIds(requested) {
+        return new Set(this.read().filter(record => requested.has(record.asset_id)).map(record => record.asset_id));
+    }
     async get(assetId) {
-        return this.read().find((record) => record.asset_id === assetId) ?? null;
+        return this.detach(this.read().filter((record) => record.asset_id === assetId).slice(0, 1))[0] ?? null;
+    }
+    async getMany(assetIds) {
+        if (this.get !== ForeignJsonlSource.prototype.get)
+            return getAssetsById(this, assetIds, undefined);
+        const requested = new Set(assetIds);
+        if (requested.size === 0)
+            return new Map();
+        const records = this.detach(this.read().filter(record => requested.has(record.asset_id)));
+        return new Map(records.map(record => [record.asset_id, record]));
     }
     /** Filters by logical id BEFORE the cap, so `limit` bounds matches returned, never records scanned. */
     async findByLogicalId(id, limit = 1000, kind) {
-        return this.read(kind)
+        return this.detach(this.read(kind)
             .filter((record) => record['id'] === id && (kind === undefined || record.type === kind))
-            .slice(0, Math.max(1, limit));
+            .slice(0, Math.max(1, limit)));
     }
     async list(kind, limit = 1000) {
-        return this.read(kind).slice(0, limit);
+        return this.detach(this.read(kind).slice(0, limit));
+    }
+    async listRecent(kind, limit = 1000) {
+        assertRecentLimit(limit);
+        return this.detach(recentRecords(this.read(kind), kind, limit));
     }
     async search(q) {
-        return this.read(q.kind).filter((record) => matchesQuery(record, q)).slice(0, q.limit ?? 1000);
+        return this.detach(this.read(q.kind).filter((record) => matchesQuery(record, q)).slice(0, q.limit ?? 1000));
     }
 }

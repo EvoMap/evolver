@@ -48,19 +48,26 @@ export function hasEvidenceMode(value) {
 export function isKnownReferenceId(id, scope = activeScope.getStore()) {
     return typeof id === 'string' && (scope?.hasId(id) ?? false);
 }
-export function isExecutionEligible(value, scope = activeScope.getStore()) {
-    if (hasEvidenceMode(value))
+function isEligible(value, scope, checkEvidence) {
+    if (checkEvidence && hasEvidenceMode(value))
         return false;
     if (typeof value === 'string')
         return !isKnownReferenceId(value, scope);
     if (!value || typeof value !== 'object')
         return true;
     if (Array.isArray(value))
-        return value.every((item) => isExecutionEligible(item, scope));
+        return value.every((item) => isEligible(item, scope, checkEvidence));
     const r = value;
     if (['asset_id', 'assetId', 'id', 'gene', 'gene_id', 'geneId', 'capsule_id', 'capsuleId', 'reused_asset_id', 'selectedAssetId', 'selected_asset_id', 'selectedGeneId', 'selected_gene_id', 'forcedGeneId', 'gene_asset_id', 'capsule_asset_id'].some((key) => isKnownReferenceId(r[key], scope)))
         return false;
-    return ['payload', 'asset', 'assets', 'capsule', 'gene', 'hubAsset', 'results', 'used_asset_ids', 'usedAssetIds', 'assetIds', 'genes_used', 'genesUsed', 'geneIds', 'event', 'metadata', 'selection', 'selected_context', 'result', 'execution_binding', 'candidate'].every((key) => isExecutionEligible(r[key], scope));
+    return ['payload', 'asset', 'assets', 'capsule', 'gene', 'hubAsset', 'results', 'used_asset_ids', 'usedAssetIds', 'assetIds', 'genes_used', 'genesUsed', 'geneIds', 'event', 'metadata', 'selection', 'selected_context', 'result', 'execution_binding', 'candidate'].every((key) => isEligible(r[key], scope, checkEvidence));
+}
+/** Scope-owned IDs only; intrinsic reference provenance is not source ownership or execution approval. */
+export function hasScopedReferenceId(value, scope = activeScope.getStore()) {
+    return !isEligible(value, scope, false);
+}
+export function isExecutionEligible(value, scope = activeScope.getStore()) {
+    return isEligible(value, scope, true);
 }
 export function assertExecutionEligible(value, scope = activeScope.getStore()) {
     if (!isExecutionEligible(value, scope))

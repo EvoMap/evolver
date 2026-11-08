@@ -3,3 +3,5 @@ export type { AcquireLockOptions, AttachLockGuardianResult, ClearLockGuardianRes
 export * from './fetchPort.js';
 export * from './version.js';
 export { canonicalEventPath } from './canonicalEventPath.js';
+export { loadReferenceFfi as loadNativeFfi } from '../benchmark/referenceNativeRuntime.js';
+export { pinWindowsPathIdentity, readWindowsDescriptorIdentity, sameWindowsOpenedPathIdentity, type WindowsPathIdentity } from './windowsPathIdentity.js';

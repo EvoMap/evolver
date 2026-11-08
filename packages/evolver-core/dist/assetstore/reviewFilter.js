@@ -145,7 +145,8 @@ export function approvedGenesFromSnapshot(snapshot, maxGenes, options = {}, scan
             options.onQualification?.([]);
         return [];
     }
-    return approvedGeneRecords({ ...snapshot, genes: snapshot.genes.slice(0, scanLimit) }, maxGenes, options);
+    const window = options.recent ? snapshot.recentGenes ?? snapshot.genes : snapshot.genes;
+    return approvedGeneRecords({ ...snapshot, genes: window.slice(0, scanLimit) }, maxGenes, options);
 }
 function approvedGeneRecords(snapshot, maxGenes, options) {
     const all = snapshot.genes;

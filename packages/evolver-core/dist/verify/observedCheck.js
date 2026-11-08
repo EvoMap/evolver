@@ -2,6 +2,8 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { SHELL_METACHARS, splitValidationInvocation, tokenizeValidationCommand } from './validationSyntax.js';
 const TIMEOUT_DURATION = /^\d+(\.\d+)?[smhd]?$/;
+const TRAILING_STDERR_MERGE = /\s+2>&1$/;
+const TRAILING_OUTPUT_TRIM = /\s*\|\s*(?:tail|head)\s+(?:-n\s*)?-?\d+$/;
 const PLAIN_TOKEN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 /** The path with every symlink in its existing part followed; a part that does not exist yet is kept as written. */
 function realPathOf(path) {
@@ -69,10 +71,12 @@ function withoutTimeout(tokens) {
 /**
  * Reduce a check command a host observed (`cd pkg && CI=1 timeout 600 pnpm test`) to the single invocation the
  * sandbox runs plus its working directory. Anything that needs a real shell to mean the same thing is refused
- * rather than approximated, so the verified command is exactly what the host ran.
+ * rather than approximated, so the verified command is exactly what the host ran. A trailing `2>&1` and a final
+ * `| tail -N` or `| head -N` only shape what the host printed: the sandbox captures both streams and replays the check
+ * itself, so its exit code is the check's own rather than the trimming filter's.
  */
 export function normalizeObservedCheck(command, projectRoot) {
-    const text = String(command ?? '').trim();
+    const text = String(command ?? '').trim().replace(TRAILING_STDERR_MERGE, '').replace(TRAILING_OUTPUT_TRIM, '').replace(TRAILING_STDERR_MERGE, '');
     if (!text)
         return undefined;
     const segments = splitConjunction(text);

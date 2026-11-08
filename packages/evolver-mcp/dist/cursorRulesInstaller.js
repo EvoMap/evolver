@@ -16,8 +16,11 @@
 // file. Hardened exactly like the other installers: atomic writes (tmp+rename) and refusal to follow a symlink
 // at any adapter-owned path (a hostile workspace could redirect writes/unlinks outside the project).
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { commitSharedFile, readSharedFileSnapshot, sharedFileTransactionActive } from './sharedFileCommit.js';
+import { runManagedInstallerTransaction } from './installerRuntimeTransaction.js';
+import { cursorInjectionPlan } from './injection.js';
 import { parseDocument } from 'yaml';
 import { sameRuntimePath } from './runtimePathIdentity.js';
 import { SymlinkRefusedError } from './installerShared.js';
@@ -66,9 +69,8 @@ function assertCursorRulePathsNotSymlink(configRoot, paths) {
 function cleanupAtomicTemp(filePath) {
     try {
         const stat = lstatSync(filePath);
-        if (!stat.isFile() && !stat.isSymbolicLink()) {
+        if (!stat.isFile() && !stat.isSymbolicLink())
             return new Error(`Refusing to clean non-file atomic temp path: ${filePath}`);
-        }
         unlinkSync(filePath);
         return undefined;
     }
@@ -76,34 +78,12 @@ function cleanupAtomicTemp(filePath) {
         return error.code === 'ENOENT' ? undefined : error;
     }
 }
-function writeTextAtomic(filePath, text, beforeCommit) {
-    const tmp = join(dirname(filePath), `${basename(filePath)}.${randomUUID()}.tmp`);
-    let writeCompleted = false;
-    let renameCompleted = false;
-    let operationFailed = false;
-    let operationError;
-    let cleanupError;
-    try {
-        writeFileSync(tmp, text, { encoding: 'utf8', flag: 'wx' });
-        writeCompleted = true;
-        beforeCommit?.();
-        assertNotSymlink(filePath, '.cursor/rules/evolver.mdc');
-        renameSync(tmp, filePath);
-        renameCompleted = true;
-    }
-    catch (error) {
-        operationFailed = true;
-        operationError = error;
-    }
-    finally {
-        const collidedBeforeWrite = !writeCompleted && operationError?.code === 'EEXIST';
-        if (!renameCompleted && !collidedBeforeWrite)
-            cleanupError = cleanupAtomicTemp(tmp);
-    }
-    if (operationFailed)
-        throw operationError;
-    if (cleanupError !== undefined)
-        throw cleanupError;
+function writeTextAtomic(filePath, text, expected, beforeCommit) {
+    commitSharedFile({
+        path: filePath, expectedRaw: expected ?? undefined, nextRaw: text,
+        mode: expected === null ? 0o600 : statSync(filePath).mode & 0o777,
+        beforeCommitForTest: beforeCommit,
+    });
 }
 // ── pure rendering (exported for tests) ───────────────────────────────────────
 /** One compact line for a gene in the rules body. Deterministic; defensively caps the hint length. */
@@ -202,7 +182,7 @@ function assertCursorTarget(filePath, targetPath) {
     }
 }
 function assertCursorSnapshot(filePath, expected) {
-    const actual = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
+    const actual = readSharedFileSnapshot(filePath).raw;
     if (actual !== expected)
         throw new Error('Cursor rules changed while applying the confirmed plan');
 }
@@ -215,28 +195,20 @@ function assertCursorSnapshot(filePath, expected) {
  * Symlink-hardened on every adapter-owned path; other `.cursor/rules/*.mdc` files are never read or written.
  */
 export function installCursorRules(opts) {
+    let rewritten = false;
+    const result = runManagedInstallerTransaction('cursor', opts, 'install', () => installCursorRulesOnce({ ...opts, dryRun: true }), targetPath => {
+        const applied = installCursorRulesOnce({ ...opts, ...(targetPath === undefined ? {} : { targetPath }) });
+        rewritten = applied.rewritten;
+        return applied;
+    }, cursorInjectionPlan());
+    return { ...result, rewritten };
+}
+function installCursorRulesOnce(opts) {
     const paths = cursorRulePaths(opts.configRoot);
     assertCursorTarget(paths.filePath, opts.targetPath);
     assertCursorRulePathsNotSymlink(opts.configRoot, paths);
-    if (existsSync(paths.filePath)) {
-        const existing = readFileSync(paths.filePath, 'utf8');
-        const next = spliceManagedBlock(existing, renderManagedBlock(opts.genes, opts.maxGenes ?? DEFAULT_CURSOR_MAX_GENES));
-        if (loadableCursorRules(existing) && (opts.preserveExisting && managedCursorRules(existing) || next === existing)
-            && !readCursorUninstallRecovery(paths) && !cursorMutationLeases.has(cursorMutationKey(paths))) {
-            assertCursorRulePathsNotSymlink(opts.configRoot, paths);
-            assertCursorSnapshot(paths.filePath, existing);
-            return { ok: true, runtime: 'cursor', mode: 'cursor-rules', files: [], rewritten: false,
-                alreadyInstalled: true, verified: true, ...(opts.dryRun ? { dryRun: true } : {}) };
-        }
-    }
-    if (!existsSync(paths.cursorDir)) {
-        if (opts.dryRun)
-            return installCursorRulesWithinLease(opts);
-        mkdirSync(paths.cursorDir, { recursive: true });
-    }
-    if (opts.dryRun)
-        return installCursorRulesWithinLease(opts);
-    return withCursorMutation(paths, () => installCursorRulesWithinLease(opts));
+    assertCursorLegacyMutationIdle(paths);
+    return installCursorRulesWithinLease(opts);
 }
 function installCursorRulesWithinLease(opts) {
     const paths = cursorRulePaths(opts.configRoot);
@@ -267,7 +239,7 @@ function installCursorRulesWithinLease(opts) {
         return { ok: true, runtime: 'cursor', mode: 'cursor-rules', files: [filePath], rewritten: false, dryRun: true };
     }
     mkdirSync(rulesDir, { recursive: true });
-    writeTextAtomic(filePath, next, () => {
+    writeTextAtomic(filePath, next, snapshot, () => {
         assertCursorRulePathsNotSymlink(opts.configRoot, paths);
         assertCursorSnapshot(filePath, snapshot);
     });
@@ -405,6 +377,39 @@ function withCursorMutation(paths, operation) {
     if (failed)
         throw primary;
     return result;
+}
+/** Fresh writes use the shared scope lease; only a known prior lease can retry its own release. */
+function assertCursorLegacyMutationIdle(paths, releaseKnown = false) {
+    if (!existsSync(paths.cursorDir))
+        return;
+    const key = cursorMutationKey(paths), retained = cursorMutationLeases.get(key);
+    if (retained?.active)
+        throw Object.assign(new Error('Cursor mutation is already active'), { code: 'CURSOR_OPERATION_BUSY' });
+    if (retained && releaseKnown) {
+        releaseCursorMutation(paths, retained);
+        cursorMutationLeases.delete(key);
+    }
+    const directory = cursorDirectoryIdentity(paths.cursorDir), visited = new Set();
+    let generation = join(paths.cursorDir, '.evolver-cursor.lock');
+    for (;;) {
+        if (!sameCursorIdentity(cursorDirectoryIdentity(paths.cursorDir), directory) || visited.has(generation))
+            throw new Error('Cursor mutation generation changed');
+        const owner = readCursorMutationOwner(generation);
+        if (!owner)
+            return;
+        visited.add(generation);
+        if (!cursorMutationReleased(generation)) {
+            try {
+                process.kill(owner.pid, 0);
+                throw Object.assign(new Error('Cursor mutation is busy'), { code: 'CURSOR_OPERATION_BUSY' });
+            }
+            catch (error) {
+                if (error.code !== 'ESRCH')
+                    throw error;
+            }
+        }
+        generation = join(paths.cursorDir, `.evolver-cursor.${owner.token}.next`);
+    }
 }
 function cursorPendingPath(paths) {
     return join(paths.cursorDir, '.evolver-uninstall.pending.json');
@@ -743,8 +748,10 @@ function recoverCursorUninstall(configRoot, paths, dryRun = false) {
     // Historical retained inodes are never replayed after their intent is consumed.
     return { backups, warnings };
 }
-/** Retain the original inode, durably record intent, and publish only an exclusive postimage. */
-export function uninstallCursorRules(opts) {
+/** Compatibility producer for the prior Cursor recovery format; new lifecycle writes use the shared journal. */
+export function uninstallCursorRulesLegacy(opts) {
+    if (sharedFileTransactionActive())
+        throw new Error('Prior Cursor recovery requires a standalone removal before applying a confirmed transaction');
     const paths = cursorRulePaths(opts.configRoot);
     assertCursorTarget(paths.filePath, opts.targetPath);
     assertCursorRulePathsNotSymlink(opts.configRoot, paths);
@@ -847,10 +854,77 @@ function uninstallCursorRulesWithinLease(opts) {
     }
     return result([filePath], [...recovered.backups, recovery.backup], warnings);
 }
+/** Finish valid prior-format recovery before starting a new shared installer transaction. */
+export function uninstallCursorRules(opts) {
+    const paths = cursorRulePaths(opts.configRoot);
+    assertCursorTarget(paths.filePath, opts.targetPath);
+    assertCursorRulePathsNotSymlink(opts.configRoot, paths);
+    const pending = readCursorUninstallRecovery(paths);
+    if (pending) {
+        if (sharedFileTransactionActive())
+            throw cursorUninstallFailure(new Error('Prior Cursor recovery must finish before applying a confirmed transaction'), pending);
+        return uninstallCursorRulesLegacy(opts);
+    }
+    const run = () => {
+        const changed = readCursorUninstallRecovery(paths);
+        if (changed)
+            throw cursorUninstallFailure(new Error('Prior Cursor recovery changed; retry standalone removal before applying a confirmed transaction'), changed);
+        return runManagedInstallerTransaction('cursor', opts, 'uninstall', () => uninstallCursorRulesOnce({ ...opts, dryRun: true }), targetPath => uninstallCursorRulesOnce({ ...opts, ...(targetPath === undefined ? {} : { targetPath }) }));
+    };
+    assertCursorLegacyMutationIdle(paths, !opts.dryRun && !sharedFileTransactionActive());
+    return run();
+}
+function uninstallCursorRulesOnce(opts) {
+    const paths = cursorRulePaths(opts.configRoot), { filePath } = paths;
+    assertCursorTarget(filePath, opts.targetPath);
+    assertCursorRulePathsNotSymlink(opts.configRoot, paths);
+    const snapshot = readSharedFileSnapshot(filePath);
+    if (snapshot.raw === null)
+        return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [], verified: true, ...(opts.dryRun ? { dryRun: true } : {}) };
+    const text = snapshot.raw;
+    const { changed, text: stripped } = stripManagedBlock(text);
+    if (!changed)
+        return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [], verified: true, ...(opts.dryRun ? { dryRun: true } : {}) };
+    if (opts.dryRun)
+        return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [filePath], dryRun: true };
+    const result = commitSharedFile({
+        path: filePath, expectedRaw: text,
+        nextRaw: isEvolverOnly(text) ? undefined : stripped.endsWith('\n') ? stripped : `${stripped}\n`,
+        mode: snapshot.identity?.mode, expectedIdentity: snapshot.identity, retainOriginal: true,
+        beforeCommitForTest: () => {
+            assertCursorRulePathsNotSymlink(opts.configRoot, paths);
+            assertCursorSnapshot(filePath, text);
+        },
+    });
+    return { ok: true, runtime: 'cursor', mode: 'uninstall', files: [filePath], verified: true,
+        backups: result.retainedOriginal ? [result.retainedOriginal] : [],
+        warnings: ['已移除 Cursor 注入；原文件已保留备份，确认不再需要后可自行删除。'] };
+}
 /** Convenience for the daemon rewrite trigger: rewrite the rules file to reflect the current top genes. Returns
  *  whether the file actually changed (so callers can avoid redundant downstream work / emissions). */
 export function rewriteCursorRules(configRoot, genes, maxGenes) {
-    return installCursorRules({ configRoot, genes, ...(maxGenes !== undefined ? { maxGenes } : {}) }).rewritten;
+    // Maintenance never grants a new opt-in or recreates a rule removed by uninstall.
+    const paths = cursorRulePaths(configRoot);
+    assertCursorRulePathsNotSymlink(configRoot, paths);
+    const snapshot = readSharedFileSnapshot(paths.filePath);
+    if (snapshot.raw === null)
+        return false;
+    assertCursorLegacyMutationIdle(paths);
+    const pending = readCursorUninstallRecovery(paths);
+    if (pending)
+        throw cursorUninstallFailure(new Error('Cursor uninstall recovery is pending; maintenance will not change the rule'), pending);
+    if (!loadableCursorRules(snapshot.raw))
+        throw new Error('Cursor rules are not alwaysApply; review the existing frontmatter before installing');
+    if (!managedCursorRules(snapshot.raw))
+        return false;
+    const next = spliceManagedBlock(snapshot.raw, renderManagedBlock(genes, maxGenes));
+    if (next === snapshot.raw)
+        return false;
+    commitSharedFile({ path: paths.filePath, expectedRaw: snapshot.raw, nextRaw: next,
+        expectedIdentity: snapshot.identity, mode: snapshot.identity?.mode,
+        beforeCommitForTest: () => { assertCursorRulePathsNotSymlink(configRoot, paths); assertCursorLegacyMutationIdle(paths); },
+    });
+    return true;
 }
 /** Whether cursor's injection file is currently installed at a config root (used to gate rewrite-on-change so we
  *  only maintain the file for users who opted in via `evolver setup-hooks --runtime=cursor`). */

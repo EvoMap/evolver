@@ -10,13 +10,15 @@
 // content-addressed, so the same asset present in two pools is the same asset, and primary wins so a
 // locally-verified record is never shadowed by a foreign copy.
 import { createHash, randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types } from 'node:util';
 import { captureRelatedGenes, emptyRelatedSource, relatedQueryAborted, relatedQueryLimits } from './relatedCapsules.js';
 import { withSnapshotDeadline } from './boundedSnapshot.js';
 import { acquireContextRead, isBuiltInContextReadSource, withContextRead } from './contextRead.js';
 import { LocalJsonlProvider } from './localJsonl.js';
 import { ForeignJsonlSource } from './foreignJsonlSource.js';
-import { brandReferenceObject, brandScanRawObject, isExecutionEligible, isReferenceObject } from '../reference/guard.js';
+import { brandReferenceObject, brandScanRawObject, hasScopedReferenceId, isExecutionEligible, isReferenceObject } from '../reference/guard.js';
+import { getAssetsById } from './provider.js';
+import { assertRecentAssetResult, assertRecentLimit, listRecentAssets, MAX_RECENT_ASSETS } from './recentRecords.js';
 const DEFAULT_LIMIT = 1000;
 const MAX_REFERENCE_IDS = 32000;
 const MAX_REFERENCE_BYTES = 2 * 1024 * 1024;
@@ -48,7 +50,7 @@ function boundedJsonShape(value, limit, strings) {
             strings?.add(item);
             return;
         }
-        if (typeof item !== 'object' || !item || visited.has(item))
+        if (typeof item !== 'object' || !item || types.isProxy(item) || visited.has(item))
             throw new Error('invalid_gene_scan_accounting');
         visited.add(item);
         const array = Array.isArray(item);
@@ -59,10 +61,14 @@ function boundedJsonShape(value, limit, strings) {
             throw new Error('invalid_gene_scan_accounting');
         if (Object.getOwnPropertyDescriptor(item, 'toJSON'))
             throw new Error('invalid_gene_scan_accounting');
-        for (const key in item) {
+        // JSON/clone omit hidden properties, but downstream qualification may read
+        // them on the original row. Inspect every own string descriptor first.
+        for (const key of Object.getOwnPropertyNames(item)) {
             const property = Object.getOwnPropertyDescriptor(item, key);
             if (!property || !('value' in property))
                 throw new Error('invalid_gene_scan_accounting');
+            if (array && key === 'length')
+                continue;
             // JSON.stringify omits non-index Array properties while structuredClone
             // retains them; allowing that mismatch would evade byte accounting.
             if (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= item.length))
@@ -173,6 +179,32 @@ function captureReferenceIds(value) {
     }
     return result;
 }
+/** A recent window may only reorder records of the captured authority scan, with identical content and eligibility. */
+function captureRecentGenes(provided, genes, scope, check) {
+    if (types.isProxy(provided) || !Array.isArray(provided) || provided.length > MAX_RECENT_ASSETS)
+        throw new Error('invalid_gene_scan_accounting');
+    const records = [];
+    // Read own data descriptors before any iteration can invoke an adapter's
+    // indexed getter/iterator or treat a sparse slot as an authority record.
+    for (let index = 0; index < provided.length; index++) {
+        check();
+        const property = Object.getOwnPropertyDescriptor(provided, index);
+        if (!property || !('value' in property))
+            throw new Error('invalid_gene_scan_accounting');
+        boundedJsonShape(property.value, MAX_RAW_ROW_BYTES * 2);
+        records.push(property.value);
+    }
+    assertRecentAssetResult(records, 'Gene', MAX_RECENT_ASSETS);
+    const byId = new Map(genes.map(gene => [gene.asset_id, gene]));
+    return records.map(gene => {
+        check();
+        const captured = byId.get(gene.asset_id);
+        if (!captured || !isDeepStrictEqual(captured, gene)
+            || isExecutionEligible(captured) !== isExecutionEligible(gene, scope))
+            throw new Error('invalid_gene_scan_accounting');
+        return captured;
+    });
+}
 /** Capture in the resolving child's turn, before another child or caller can
  * mutate its metadata. Do not retain opaque authority closures across awaits. */
 function captureChildSnapshot(snapshot, maxRecords, rawRows, check) {
@@ -227,16 +259,19 @@ function captureChildSnapshot(snapshot, maxRecords, rawRows, check) {
         if (snapshot.referenceScope.hasId(id) !== denied.has(id))
             throw new Error('unsupported_reference_snapshot');
     }
-    return { genes, provenance, review, referenceIds, referenceScope: { hasId: id => denied.has(id) } };
+    const recentGenes = snapshot.recentGenes === undefined ? undefined
+        : captureRecentGenes(snapshot.recentGenes, genes, snapshot.referenceScope, check);
+    return { genes, provenance, review, referenceIds, referenceScope: { hasId: id => denied.has(id) },
+        ...(recentGenes ? { recentGenes } : {}) };
 }
 function mergeGeneSnapshots(snapshots, maxRecords, check) {
-    const seen = new Set();
+    const owners = new Map();
     const provenance = new Map();
     const review = new Map();
     const queues = [];
     const denied = new Set();
     let referenceBytes = 0;
-    for (const snapshot of snapshots) {
+    for (const [sourceIndex, snapshot] of snapshots.entries()) {
         for (const id of snapshot.referenceIds) {
             check();
             if (!denied.has(id)) {
@@ -249,9 +284,9 @@ function mergeGeneSnapshots(snapshots, maxRecords, check) {
         const queue = [];
         for (const gene of snapshot.genes) {
             check();
-            if (seen.has(gene.asset_id))
+            if (owners.has(gene.asset_id))
                 continue;
-            seen.add(gene.asset_id);
+            owners.set(gene.asset_id, sourceIndex);
             const trust = snapshot.provenance.get(gene.asset_id), decision = snapshot.review.get(gene.asset_id);
             if (trust)
                 provenance.set(gene.asset_id, trust);
@@ -262,14 +297,34 @@ function mergeGeneSnapshots(snapshots, maxRecords, check) {
         queues.push(queue);
     }
     const referenceScope = { hasId: (id) => denied.has(id) };
+    // Complete child unique rows <= cumulative scanned <= the shared maxRecords,
+    // so this merge retains all validated authority; no tail key can be missing.
     const genes = interleave(queues, maxRecords);
+    const authority = new Map(genes.map(gene => [gene.asset_id, gene]));
+    const recentSeen = new Set();
+    // A missing child capability keeps the entire composition on legacy order.
+    // Each window was captured only after that child's full authority was checked.
+    const recentGenes = snapshots.every(snapshot => snapshot.recentGenes !== undefined)
+        ? interleave(snapshots.map((snapshot, sourceIndex) => {
+            const unique = [];
+            for (const gene of snapshot.recentGenes) {
+                check();
+                // A later source cannot refresh the winning source's identity age.
+                if (owners.get(gene.asset_id) !== sourceIndex || recentSeen.has(gene.asset_id))
+                    continue;
+                recentSeen.add(gene.asset_id);
+                unique.push(authority.get(gene.asset_id));
+            }
+            return unique;
+        }), MAX_RECENT_ASSETS) : undefined;
     for (const gene of genes) {
         check();
         if (!isExecutionEligible(gene, referenceScope))
             brandReferenceObject(gene);
     }
     check();
-    return { genes, provenance, review, referenceIds: Object.freeze([...denied]), referenceScope };
+    return { genes, provenance, review, referenceIds: Object.freeze([...denied]), referenceScope,
+        ...(recentGenes ? { recentGenes } : {}) };
 }
 /**
  * Take from the queues one at a time in source order until `limit` is reached.
@@ -535,10 +590,12 @@ class UnionGeneScanV1 {
             const complete = children.every(child => child.complete);
             this.continuation = complete ? undefined : `${this.epoch}:${++this.sequence}`;
             this.complete = complete;
-            return { version: 1, sourceId: `union:${this.epoch}`, epoch: this.epoch,
+            const page = { version: 1, sourceId: `union:${this.epoch}`, epoch: this.epoch,
                 scanned: options.maxRecords - rowsLeft, bytes: options.maxBytes - bytesLeft, rawRows: Object.freeze(rawRows), complete,
                 continuation: this.continuation ?? null,
                 ...(complete ? { snapshot: mergeGeneSnapshots(children.map(child => child.snapshot), this.maxRecords, this.check) } : {}) };
+            this.check();
+            return page;
         }
         catch (error) {
             // Child sessions cannot roll back a page already consumed before a later
@@ -639,6 +696,7 @@ export class UnionReadStore {
     // those callers on a narrow answer with no truncation signal — a silent "not found" where they would
     // otherwise have said "lookup is truncated; use an exact asset_id".
     findByLogicalId;
+    listRecent;
     /**
      * @param primary the writable pool this engine owns; every mutation lands here
      * @param readOnly additional pools to read, in precedence order after `primary`
@@ -650,6 +708,17 @@ export class UnionReadStore {
         this.readOnly = Object.freeze([...readOnly]);
         unionPromptSources.set(this, Object.freeze([...new Set([primary, ...this.readOnly])]));
         const sources = this.sources;
+        const recentReaders = new Map();
+        if (sources.every(source => {
+            const readRecent = source.listRecent;
+            recentReaders.set(source, readRecent);
+            return Boolean(readRecent);
+        })) {
+            this.listRecent = (kind, limit = DEFAULT_LIMIT) => {
+                assertRecentLimit(limit);
+                return this.merged((source) => listRecentAssets(source, kind, limit, recentReaders.get(source)), limit);
+            };
+        }
         if (sources.length <= 8 && sources.every(source => source.beginPromptGeneSnapshotV1 && source.beginGeneScanV1)) {
             this.beginPromptGeneSnapshotV1 = query => UnionReadStore.prototype.promptGeneSnapshot.call(this, query);
         }
@@ -966,12 +1035,51 @@ export class UnionReadStore {
     async merged(read, limit) {
         const seen = new Set();
         const queues = [];
-        for (const source of this.sources) {
+        const sources = this.sources;
+        const windows = [];
+        for (const source of sources)
+            windows.push(await read(source));
+        const requested = new Set(windows.flatMap(records => records.map(record => record.asset_id)));
+        const foreignIds = new Map();
+        // Bounded windows cannot prove absence. Generic providers retain exact get;
+        // native Foreign reads all kinds once per merge, without retaining unrelated IDs.
+        const shadowsRecord = async (source, record) => {
+            if (source instanceof UnionReadStore
+                && Object.getPrototypeOf(source) === UnionReadStore.prototype
+                && source.get === UnionReadStore.prototype.get) {
+                for (const child of source.sources)
+                    if (await shadowsRecord(child, record))
+                        return true;
+                return false;
+            }
+            if (hasScopedReferenceId(record, source.referenceScope))
+                return true;
+            if (source instanceof ForeignJsonlSource
+                && Object.getPrototypeOf(source) === ForeignJsonlSource.prototype
+                && source.get === ForeignJsonlSource.prototype.get
+                && source.existingAssetIds === ForeignJsonlSource.prototype.existingAssetIds) {
+                if (!foreignIds.has(source))
+                    foreignIds.set(source, source.existingAssetIds(requested));
+                return foreignIds.get(source).has(record.asset_id);
+            }
+            return await source.get(record.asset_id) !== null;
+        };
+        for (const [index, records] of windows.entries()) {
             const unique = [];
-            for (const record of await read(source)) {
+            for (const record of records) {
                 if (seen.has(record.asset_id))
                     continue;
                 seen.add(record.asset_id);
+                let shadowed = false;
+                for (const earlier of sources.slice(0, index)) {
+                    if (await shadowsRecord(earlier, record)) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+                // 窗外或未匹配 query 的 identity 仍属 earlier source；不借 secondary 的位置刷新年龄/信任。
+                if (shadowed)
+                    continue;
                 unique.push(record);
             }
             queues.push(unique);
@@ -1071,6 +1179,33 @@ export class UnionReadStore {
                 return found;
         }
         return null;
+    }
+    async getMany(assetIds) {
+        if (this.get !== UnionReadStore.prototype.get)
+            return getAssetsById(this, assetIds, undefined);
+        const remaining = new Set(assetIds);
+        const records = new Map();
+        const deniedBy = (source, record) => {
+            if (hasScopedReferenceId(record, source.referenceScope))
+                return true;
+            return source instanceof UnionReadStore && Object.getPrototypeOf(source) === UnionReadStore.prototype
+                && source.get === UnionReadStore.prototype.get
+                && source.sources.some(child => deniedBy(child, record));
+        };
+        for (const [index, source] of this.sources.entries()) {
+            if (remaining.size === 0)
+                break;
+            const found = await getAssetsById(source, [...remaining]);
+            for (const id of remaining) {
+                const record = found.get(id);
+                if (record === undefined)
+                    continue;
+                if (!this.sources.slice(0, index).some(earlier => deniedBy(earlier, record)))
+                    records.set(id, record);
+                remaining.delete(id);
+            }
+        }
+        return records;
     }
     async list(kind, limit = DEFAULT_LIMIT) {
         return this.merged((source) => source.list(kind, limit), limit);

@@ -19,6 +19,11 @@ export interface LocalRecallDiagnostics {
     error?: string;
     /** The store held more records of a kind than one recall reads; the rest were not considered. */
     truncated?: boolean;
+    /** A trial draft this recall would have returned, held back so the turn can serve as its control. */
+    trial_withheld?: {
+        asset_id: string;
+        withheld_id?: string;
+    };
 }
 export interface LocalRecallOutcome {
     assets: assetstore.AssetRecord[];
@@ -33,5 +38,5 @@ interface LocalRecallRead {
  *  when that history changed. */
 export declare function rootEventReuseTallies(path?: string): ReuseTallies;
 /** The local Gene, with its project's notes, that this prompt should get from the local store, or none. */
-export declare function recallFromLocalStore(store: assetstore.AssetStoreProvider, text: string, projectDir: unknown): Promise<LocalRecallRead>;
+export declare function recallFromLocalStore(store: assetstore.AssetStoreProvider, text: string, projectDir: unknown, onWithheld?: (assetId: string) => string | undefined): Promise<LocalRecallRead>;
 export {};

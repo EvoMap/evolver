@@ -1,5 +1,6 @@
 import { type RuntimeId, type McpServerCmd, type InjectionPlan } from './injection.js';
 import { type CursorGene } from './cursorRulesInstaller.js';
+import type { InstallerTransactionSummary } from './installerTransaction.js';
 import { type InstallComponents } from './installerShared.js';
 export { EmptySharedConfigError, SymlinkRefusedError, UnparseableConfigError, resolveInstallComponents, type InstallComponents, } from './installerShared.js';
 /** Marks a config file as containing evolver-managed entries, so uninstall only removes what we added. */
@@ -46,7 +47,7 @@ export interface InstallOptions {
     force?: boolean;
     /** Plan and validate without writing config or backup files. */
     dryRun?: boolean;
-    /** Lifecycle-only exact config target. Omitted preserves the legacy all-target transaction. */
+    /** Exact config target. Omitted selects all adapter targets in a recoverable transaction. */
     targetPath?: string;
     /** Cursor only: the top genes to render into .cursor/rules/evolver.mdc. The daemon refreshes these on change;
      *  a one-shot `setup-hooks --runtime=cursor` install seeds the file (empty ⇒ a placeholder the daemon fills). */
@@ -93,7 +94,7 @@ export interface UninstallOptions {
     kiroHome?: string;
     /** Validate and report the uninstall without changing config or backup files. */
     dryRun?: boolean;
-    /** Lifecycle-only exact config target. Omitted preserves the legacy all-target transaction. */
+    /** Exact config target. Omitted selects all adapter targets in a recoverable transaction. */
     targetPath?: string;
     /** OpenCode user scope only: explicit XDG_CONFIG_HOME used to resolve the global config. */
     xdgConfigHome?: string;
@@ -114,6 +115,7 @@ export interface InstallResult {
     backups?: string[];
     warnings?: string[];
     error?: string;
+    transaction?: InstallerTransactionSummary;
 }
 type SharedConfigRaceHook = (path: string, attempt: number) => void;
 export declare function _setSharedConfigRaceHookForTest(hook?: SharedConfigRaceHook): void;

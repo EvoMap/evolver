@@ -2044,7 +2044,7 @@ export class LocalMemoryGraph {
         let closed = false;
         let published = false;
         try {
-            tempIdentity = graphPathSnapshot(temp);
+            tempIdentity = graphPathSnapshot(temp, 'write');
             const descriptorIdentity = fstatSync(fd, { bigint: true });
             if (!tempIdentity.isFile() || tempIdentity.isSymbolicLink()
                 || !descriptorIdentity.isFile() || descriptorIdentity.isSymbolicLink()
@@ -2071,7 +2071,7 @@ export class LocalMemoryGraph {
             }
             if (!published && tempIdentity !== null) {
                 try {
-                    const currentIdentity = graphPathSnapshot(temp);
+                    const currentIdentity = graphPathSnapshot(temp, 'write');
                     if (currentIdentity.isFile() && !currentIdentity.isSymbolicLink()
                         && sameGraphFileIdentity(tempIdentity, currentIdentity))
                         unlinkSync(temp);
@@ -2718,9 +2718,15 @@ function writeAll(fd, payload, position = null) {
         offset += written;
     }
 }
-function graphPathSnapshot(path) {
+function graphPathSnapshot(path, witnessAccess = 'read') {
     const named = lstatSync(path, { bigint: true });
-    return named.isFile() && !named.isSymbolicLink() ? assetstore.captureRegularAssetFileSnapshot(path) : named;
+    const stat = named.isFile() && !named.isSymbolicLink()
+        ? assetstore.captureRegularAssetFileSnapshot(path, witnessAccess === 'write' ? constants.O_WRONLY : constants.O_RDONLY)
+        : named;
+    if (process.platform === 'win32' && stat.isFile() && (stat.dev <= 0n || stat.ino <= 0n)) {
+        throw new Error('memory_graph_path_rejected');
+    }
+    return stat;
 }
 function sameGraphFileIdentity(left, right) {
     const hasStableFileId = left.dev !== 0n || left.ino !== 0n || right.dev !== 0n || right.ino !== 0n;

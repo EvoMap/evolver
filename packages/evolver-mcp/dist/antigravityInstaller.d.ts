@@ -26,7 +26,7 @@ export declare function stripAntigravityManaged(current: Record<string, unknown>
     changed: boolean;
     data: Record<string, unknown>;
 };
-/** Install MCP tool discovery only. Antigravity has no verified SessionStart hook contract. */
+/** Install MCP discovery. Exact targetPath owns one namespace; the normal path owns a recoverable set. */
 export declare function installAntigravity(plan: InjectionPlan, opts: InstallOptions): InstallResult;
-/** Remove only mcpServers.evolver. The shared config file and all unrelated user content always remain. */
+/** Ownership-backed removal, including restoration of force-replaced user entries. */
 export declare function uninstallAntigravity(runtime: RuntimeId, opts: UninstallOptions): InstallResult;

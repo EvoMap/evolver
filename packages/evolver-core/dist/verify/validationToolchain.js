@@ -1,5 +1,6 @@
-import { accessSync, closeSync, constants, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
+import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { editableSourcesInCopy } from './editableInstalls.js';
 const PYTHON_TOOLS = new Set(['python', 'python3', 'pytest']);
 const JAVASCRIPT_TOOLS = new Set(['npm', 'pnpm', 'yarn', 'npx']);
 // Credential stores that must stay hidden even when a tool happens to be installed beneath them.
@@ -18,6 +19,35 @@ const PACKAGE_MANAGER_ENV = {
 function pathIsWithin(root, target) {
     const rel = relative(root, target);
     return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+const MAX_LINK_HOPS = 64;
+/** Every symlink met while resolving `path` component by component, each spelled with a symlink-free parent. */
+function symlinksAlong(path) {
+    const links = [];
+    let pending = path.split(sep).filter(Boolean);
+    let current = sep;
+    while (pending.length > 0) {
+        const name = pending.shift();
+        if (name === '.')
+            continue;
+        if (name === '..') {
+            current = dirname(current);
+            continue;
+        }
+        const next = join(current, name);
+        if (!lstatSync(next).isSymbolicLink()) {
+            current = next;
+            continue;
+        }
+        links.push(next);
+        if (links.length > MAX_LINK_HOPS)
+            throw new Error('validation toolchain path has too many symlinks');
+        const target = readlinkSync(next);
+        if (isAbsolute(target))
+            current = sep;
+        pending = [...target.split(sep).filter(Boolean), ...pending];
+    }
+    return [...new Set(links)];
 }
 function executableIn(name, dirs) {
     for (const dir of dirs) {
@@ -61,34 +91,28 @@ function installPrefix(real) {
     const dir = dirname(real);
     return basename(dir) === 'bin' ? dirname(dir) : dir;
 }
-function venvHome(venv) {
+function venvConfig(venv) {
     const buffer = Buffer.alloc(4096);
     const fd = openSync(join(venv, 'pyvenv.cfg'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const stat = fstatSync(fd);
         if (!stat.isFile() || stat.size >= buffer.length)
-            return undefined;
-        const length = readSync(fd, buffer, 0, buffer.length, 0);
-        return /^home\s*=\s*(.+)$/m.exec(buffer.subarray(0, length).toString('utf8'))?.[1]?.trim();
+            return {};
+        const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString('utf8');
+        const home = /^home\s*=\s*(.+)$/m.exec(text)?.[1]?.trim();
+        const minorVersion = /^version(?:_info)?\s*=\s*(\d+\.\d+)/m.exec(text)?.[1];
+        return { ...(home ? { home } : {}), ...(minorVersion ? { minorVersion } : {}) };
     }
     finally {
         closeSync(fd);
     }
 }
-/** A checkout may select a host interpreter already on the daemon PATH, but cannot add a host read root. */
-function projectVenvReadRoots(shim, real, hostDirs, host) {
-    const root = realpathSync(host.root);
-    const expectedVenv = join(root, '.venv');
-    const venv = realpathSync(expectedVenv);
-    if (venv !== expectedVenv && venv !== host.mirroredVenvRoot)
-        return null;
-    if (!pathIsWithin(venv, realpathSync(dirname(shim))))
-        return null;
-    const home = venvHome(venv);
-    if (!home || !isAbsolute(home))
-        return null;
+/** The base interpreter on the daemon PATH that the venv was built from, or undefined when none qualifies. */
+function venvBaseInterpreter(layout, real, hostDirs) {
+    const { root, venv, home, minorVersion } = layout;
     const baseBin = realpathSync(home);
-    for (const name of ['python3', 'python']) {
+    // A venv built on a Python that is not the default one is found under its versioned name (`python3.11`).
+    for (const name of ['python3', 'python', ...(minorVersion ? [`python${minorVersion}`] : [])]) {
         const candidate = executableIn(name, hostDirs);
         if (!candidate)
             continue;
@@ -97,11 +121,31 @@ function projectVenvReadRoots(shim, real, hostDirs, host) {
             continue;
         if (baseBin !== dirname(interpreter) && baseBin !== realpathSync(dirname(candidate)))
             continue;
-        if (real !== interpreter && !pathIsWithin(venv, real))
-            continue;
-        return [installPrefix(interpreter)];
+        if (real === interpreter || pathIsWithin(venv, real))
+            return interpreter;
     }
-    return null;
+    return undefined;
+}
+/** A checkout may select a host interpreter already on the daemon PATH, but cannot add a host read root. */
+function projectVenvScope(shim, real, hostDirs, host) {
+    const root = realpathSync(host.root);
+    const expectedVenv = join(root, '.venv');
+    const venv = realpathSync(expectedVenv);
+    if (venv !== expectedVenv && venv !== host.mirroredVenvRoot)
+        return null;
+    if (!pathIsWithin(venv, realpathSync(dirname(shim))))
+        return null;
+    const { home, minorVersion } = venvConfig(venv);
+    if (!home || !isAbsolute(home))
+        return null;
+    const interpreter = venvBaseInterpreter({ root, venv, home, ...(minorVersion ? { minorVersion } : {}) }, real, hostDirs);
+    if (!interpreter)
+        return null;
+    return {
+        readRoots: [installPrefix(interpreter)],
+        readLinks: [join(venv, 'bin', 'python'), home].flatMap(symlinksAlong),
+        pythonPath: venv === host.mirroredVenvRoot ? editableSourcesInCopy(venv, dirname(venv), root) : [],
+    };
 }
 function corepackHome(host) {
     const configured = host.env['COREPACK_HOME'] ?? join(host.env['XDG_CACHE_HOME'] ?? join(host.home, '.cache'), 'node', 'corepack');
@@ -120,6 +164,23 @@ function rustupHome(host) {
         return undefined;
     }
 }
+function protectedHomePaths(accountHome) {
+    return SECRET_HOME_SUBPATHS.flatMap((subpath) => {
+        const path = join(accountHome, subpath);
+        try {
+            return [path, realpathSync(path)];
+        }
+        catch {
+            return [path];
+        }
+    });
+}
+/** Null when a link sits inside a credential store: even its metadata names what the store holds. */
+function safeReadLinks(links, home) {
+    const protectedPaths = protectedHomePaths(realpathSync(home));
+    const unique = [...new Set(links)];
+    return unique.some((link) => protectedPaths.some((path) => pathIsWithin(path, link))) ? null : unique;
+}
 export function safeValidationReadRoots(roots, home) {
     if (roots.length === 0)
         return [];
@@ -127,15 +188,7 @@ export function safeValidationReadRoots(roots, home) {
         return null;
     try {
         const accountHome = realpathSync(home);
-        const protectedPaths = SECRET_HOME_SUBPATHS.flatMap((subpath) => {
-            const path = join(accountHome, subpath);
-            try {
-                return [path, realpathSync(path)];
-            }
-            catch {
-                return [path];
-            }
-        });
+        const protectedPaths = protectedHomePaths(accountHome);
         const unique = [...new Set(roots.map((root) => realpathSync(root)))];
         const unsafe = unique.some((root) => dirname(root) === root || pathIsWithin(root, accountHome)
             || protectedPaths.some((path) => pathIsWithin(path, root) || pathIsWithin(root, path)));
@@ -159,20 +212,23 @@ function javascriptToolchain(name, shim, real, hostDirs, host) {
     if (corepack)
         roots.push(corepack);
     const readRoots = safeValidationReadRoots(roots, host.home);
-    if (!readRoots)
+    const readLinks = safeReadLinks(symlinksAlong(shim), host.home);
+    if (!readRoots || !readLinks)
         return null;
     return {
         bin: node,
         argsPrefix: [real],
         javascriptRuntime: true,
         readRoots,
+        readLinks,
         pathDirs: [dirname(node), dirname(shim)],
         env: () => ({ ...PACKAGE_MANAGER_ENV, ...(name === 'pnpm' ? PNPM_ENV : {}), ...(corepack ? { COREPACK_HOME: corepack } : {}) }),
     };
 }
-function nativeEnv(name, real, host) {
+function nativeEnv(name, real, host, pythonPath) {
     if (PYTHON_TOOLS.has(name)) {
-        return () => ({ PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1', PYTEST_ADDOPTS: '-p no:cacheprovider' });
+        const path = pythonPath.length > 0 ? { PYTHONPATH: pythonPath.join(delimiter) } : {};
+        return () => ({ PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1', PYTEST_ADDOPTS: '-p no:cacheprovider', ...path });
     }
     if (name === 'go') {
         return (tmp) => ({ GOPROXY: 'off', GOTOOLCHAIN: 'local', GOTELEMETRY: 'off', GOPATH: join(tmp, 'gopath'), GOCACHE: join(tmp, 'gocache') });
@@ -187,17 +243,18 @@ function nativeEnv(name, real, host) {
         ...(rustup ? { RUSTUP_HOME: rustup, RUSTUP_AUTO_INSTALL: '0' } : {}),
     });
 }
-function nativeToolchain(name, shim, real, host, venvReadRoots) {
-    const env = nativeEnv(name, real, host);
+function nativeToolchain(name, shim, real, host, venv) {
+    const env = nativeEnv(name, real, host, venv?.pythonPath ?? []);
     if (!env)
         return null;
-    const roots = venvReadRoots ?? [realpathSync(dirname(shim)), installPrefix(real)];
+    const roots = venv?.readRoots ?? [realpathSync(dirname(shim)), installPrefix(real)];
     if (basename(real) === 'rustup')
         roots.push(rustupHome(host));
     const readRoots = safeValidationReadRoots(roots, host.home);
-    if (!readRoots)
+    const readLinks = safeReadLinks([...symlinksAlong(shim), ...venv?.readLinks ?? []], host.home);
+    if (!readRoots || !readLinks)
         return null;
-    return { bin: shim, argsPrefix: [], javascriptRuntime: false, readRoots, pathDirs: [dirname(shim)], env };
+    return { bin: shim, argsPrefix: [], javascriptRuntime: false, readRoots, readLinks, pathDirs: [dirname(shim)], env };
 }
 /**
  * Resolve a validation tool on the host PATH (a project `.venv` first for Python) and describe exactly what the
@@ -216,8 +273,8 @@ export function resolveValidationToolchain(executable, host) {
             return isJavaScriptEntry(real) ? javascriptToolchain(executable, shim, real, hostDirs, host) : null;
         }
         if (PYTHON_TOOLS.has(executable) && dirname(shim) === venvBin) {
-            const readRoots = projectVenvReadRoots(shim, real, hostDirs, host);
-            return readRoots && nativeToolchain(executable, shim, real, host, readRoots);
+            const venv = projectVenvScope(shim, real, hostDirs, host);
+            return venv && nativeToolchain(executable, shim, real, host, venv);
         }
         return nativeToolchain(executable, shim, real, host);
     }

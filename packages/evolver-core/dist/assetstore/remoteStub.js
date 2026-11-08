@@ -1,3 +1,4 @@
+import { captureRecentAssetResult, assertRecentLimit, MAX_RECENT_ASSETS, recentRecords } from './recentRecords.js';
 import { normalizeForPut, } from './provider.js';
 /**
  * 远程资产库参考实现(M3-1). 与 LocalJsonlProvider 同接口, 证明 wire protocol provider-无关.
@@ -5,8 +6,17 @@ import { normalizeForPut, } from './provider.js';
  */
 export class RemoteStubProvider {
     transport;
+    listRecent;
     constructor(transport) {
         this.transport = transport;
+        const readRecent = transport.listRecentRemote;
+        if (readRecent) {
+            this.listRecent = async (kind, limit = MAX_RECENT_ASSETS) => {
+                assertRecentLimit(limit);
+                const records = await readRecent.call(transport, kind, limit);
+                return captureRecentAssetResult(records, kind, limit);
+            };
+        }
     }
     async put(asset) {
         const { record, verified } = normalizeForPut(asset);
@@ -20,6 +30,9 @@ export class RemoteStubProvider {
 /** 内存传输桩(测试/本地演示用). */
 export class InMemoryTransport {
     db = new Map();
+    async listRecentRemote(kind, limit) {
+        return structuredClone(recentRecords(this.db.values(), kind, limit));
+    }
     async putRemote(record) {
         if (this.db.has(record.asset_id))
             return { stored: false };

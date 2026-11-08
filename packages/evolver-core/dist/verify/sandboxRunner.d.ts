@@ -78,6 +78,8 @@ export interface IsolationCommandOptions {
     workloadBin?: string;
     /** Read-only tier: directories under $HOME re-exposed read-only at their original paths. */
     homeBindRoots?: readonly string[];
+    /** Read-only tier: `[link, target]` symlinks under $HOME recreated in the hidden HOME. */
+    homeLinks?: ReadonlyArray<readonly [string, string]>;
     /** Read-only tier: leave the bound checkout writable (a disposable verification copy). */
     writableReadOnlyRoot?: boolean;
 }

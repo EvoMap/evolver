@@ -6,7 +6,7 @@
 // a scrubbed env (no secrets leak in), and a SIGKILL timeout. Output is folded + truncated.
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, rmdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { watchProcessGroup } from './processGroupWatchdog.js';
@@ -92,11 +92,18 @@ const READ_ONLY_FILESYSTEM_SETUP = [
     // original paths so the read-only remount below covers them like the rest of the host root.
     'mkdir -p "$session_tmp/binds" || exit 126',
     'i=0; while [ "$i" -lt "$bind_count" ]; do bind_root="$1"; shift; case "$bind_root/" in "$HOME"/?*) ;; *) exit 126 ;; esac; mkdir -p "$session_tmp/binds/$i" || exit 126; mount --bind "$bind_root" "$session_tmp/binds/$i" 2>/dev/null || exit 126; printf "%s" "$bind_root" > "$session_tmp/binds/$i.path" || exit 126; i=$((i + 1)); done',
+    // Symlinks under HOME that toolchain paths resolve through (`cpython-3.11` → `cpython-3.11.15`) vanish with HOME
+    // and are recreated in the empty one, so the spelled paths still reach the bound roots.
+    'link_count="$1"; shift',
+    'case "$link_count" in ""|*[!0-9]*) exit 126 ;; esac',
+    'mkdir -p "$session_tmp/links" || exit 126',
+    'i=0; while [ "$i" -lt "$link_count" ]; do case "$1/" in "$HOME"/?*) ;; *) exit 126 ;; esac; printf "%s" "$1" > "$session_tmp/links/$i.path" || exit 126; printf "%s" "$2" > "$session_tmp/links/$i.target" || exit 126; shift 2; i=$((i + 1)); done',
     'for device in null zero random urandom; do : > "$session_tmp/dev/$device" || exit 126; mount --bind "/dev/$device" "$session_tmp/dev/$device" 2>/dev/null || exit 126; done',
     'mount -t tmpfs none "$HOME" 2>/dev/null || exit 126',
     '[ ! -d /run ] || mount -t tmpfs none /run 2>/dev/null || exit 126',
     'mount -t tmpfs none /tmp 2>/dev/null || exit 126',
     'i=0; while [ "$i" -lt "$bind_count" ]; do bind_root="$(cat "$session_tmp/binds/$i.path")" || exit 126; mkdir -p "$bind_root" || exit 126; mount --bind "$session_tmp/binds/$i" "$bind_root" 2>/dev/null || exit 126; i=$((i + 1)); done',
+    'i=0; while [ "$i" -lt "$link_count" ]; do link="$(cat "$session_tmp/links/$i.path")" || exit 126; mkdir -p -- "$(dirname -- "$link")" || exit 126; ln -s -- "$(cat "$session_tmp/links/$i.target")" "$link" || exit 126; i=$((i + 1)); done',
     'mkdir -p "$validation_root" || exit 126',
     'mount --bind "$session_tmp/source" "$validation_root" 2>/dev/null || exit 126',
     'mounts="$(findmnt -rn -o TARGET -R /)" || exit 126',
@@ -277,7 +284,8 @@ export function isolationCommand(bin, args, opts) {
             args: [...base, SYSTEM_SH, '-c', setup, 'sh', ...(opts.readOnlyFilesystem
                     ? [opts.writableTmpDir, opts.readOnlyRoot, opts.cwd]
                     : []), bin, ...(opts.readOnlyFilesystem
-                    ? [opts.workloadBin ?? '/tmp/node', opts.writableReadOnlyRoot ? '1' : '0', String(opts.homeBindRoots?.length ?? 0), ...opts.homeBindRoots ?? []]
+                    ? [opts.workloadBin ?? '/tmp/node', opts.writableReadOnlyRoot ? '1' : '0', String(opts.homeBindRoots?.length ?? 0), ...opts.homeBindRoots ?? [],
+                        String(opts.homeLinks?.length ?? 0), ...opts.homeLinks?.flat() ?? []]
                     : []), ...args],
         }
         : { cmd: SYSTEM_UNSHARE, args: [...base, bin, ...args] };
@@ -315,13 +323,33 @@ function isolatedToolchain(cmd, executable, opts, seatbelt) {
     });
     if (!toolchain)
         return `rejected: ${executable} is unavailable inside the sandbox`;
-    const hiddenByTmpfs = [...toolchain.readRoots, ...opts.extraReadRoots ?? []]
+    const hiddenByTmpfs = [...toolchain.readRoots, ...opts.extraReadRoots ?? [], ...toolchain.readLinks.filter((link) => !inValidationRoot(link, opts))]
         .some((root) => ['/tmp', '/run'].some((hidden) => pathIsWithin(hidden, root)));
     return !seatbelt && hiddenByTmpfs ? 'rejected: toolchain lives under a path the sandbox replaces' : toolchain;
+}
+function inValidationRoot(path, opts) {
+    const root = opts.readOnlyRoot ?? opts.cwd;
+    if (root === undefined)
+        return false;
+    try {
+        return pathIsWithin(realpathSync(root), path);
+    }
+    catch {
+        return false;
+    }
 }
 function homeBindRoots(roots) {
     const home = process.env['HOME'] ?? '';
     return isAbsolute(home) ? roots.filter((root) => root !== home && pathIsWithin(home, root)) : [];
+}
+/** Links that disappear with HOME: those inside the checkout or a bound root stay visible through their mount. */
+function homeLinks(links, boundRoots, opts) {
+    const home = process.env['HOME'] ?? '';
+    if (!isAbsolute(home))
+        return [];
+    return links
+        .filter((link) => pathIsWithin(home, link) && !inValidationRoot(link, opts) && !boundRoots.some((root) => pathIsWithin(root, link)))
+        .map((link) => [link, readlinkSync(link)]);
 }
 function scrubEnv(allow) {
     const out = {};
@@ -555,6 +583,7 @@ export function makeSandboxRunner(opts = {}) {
                 runtime: process.execPath,
                 home: accountHome(),
                 readRoots,
+                readLinks: tool?.readLinks ?? [],
                 writableSource: opts.writableReadOnlyRoot === true,
             }, {
                 cpuSeconds: timeout / 1000,
@@ -571,6 +600,7 @@ export function makeSandboxRunner(opts = {}) {
                 cwd,
                 ...(tool && !tool.javascriptRuntime ? { workloadBin: tool.bin } : {}),
                 homeBindRoots: homeBindRoots(readRoots),
+                homeLinks: homeLinks(tool?.readLinks ?? [], readRoots, opts),
                 writableReadOnlyRoot: opts.writableReadOnlyRoot === true,
             });
             launcherCleanup = launch.cleanup;

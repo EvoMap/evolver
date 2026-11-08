@@ -7,6 +7,8 @@ export interface ValidationToolchain {
     javascriptRuntime: boolean;
     /** Canonical directories the tool needs to read; everything else under HOME stays hidden. */
     readRoots: string[];
+    /** Symlinks the tool's spelled paths pass through on the way into its read roots (`cpython-3.11` → `cpython-3.11.15`). */
+    readLinks: string[];
     /** Directories placed before the trusted system PATH so the tool's own child processes resolve. */
     pathDirs: string[];
     /** Offline, no-write-to-checkout settings; `tmp` is the command's private scratch directory. */

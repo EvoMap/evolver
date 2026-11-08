@@ -8,6 +8,7 @@ import { computeAssetId } from '../wire/index.js';
 import { PosixSnapshotProcess, PosixSnapshotExitConfirmedError } from './boundedSnapshotPosix.js';
 import { WindowsSnapshotReader } from './boundedSnapshotWindows.js';
 import { createHash, randomUUID } from 'node:crypto';
+import { recentRecords } from './recentRecords.js';
 import { measureContextReadStage, startContextReadStage } from './contextReadDiagnostics.js';
 import { performance } from 'node:perf_hooks';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -113,7 +114,7 @@ export async function withSnapshotDeadline(query, run) {
         abort();
     let rejectAbort;
     try {
-        return await Promise.race([
+        const result = await Promise.race([
             Promise.resolve().then(() => {
                 // The clock or cancellation may change while dispatch is queued, before
                 // the deadline timer gets an event-loop turn. Do not start stale work.
@@ -130,6 +131,10 @@ export async function withSnapshotDeadline(query, run) {
                     rejectAbort();
             }),
         ]);
+        // Synchronous final processing can finish before the overdue timer runs.
+        if (controller.signal.aborted || Date.now() >= deadlineAt)
+            throw new Error('snapshot_aborted');
+        return result;
     }
     finally {
         clearTimeout(timer);
@@ -876,7 +881,10 @@ export async function readLocalGeneSnapshot(baseDir, query = {}) {
         }
         if (signal.aborted || Date.now() >= boundedQuery.deadlineAt)
             throw new Error('snapshot_aborted');
-        return { ...snapshot, genes };
+        return { ...snapshot, genes, ...(boundedQuery.recent ? {
+                recentGenes: recentRecords(checked.map(({ asset }) => asset), 'Gene')
+                    .filter(asset => isExecutionEligible(asset, snapshot.referenceScope)),
+            } : {}) };
     });
 }
 /** Capture admission needs every frozen address, including non-execution-eligible
@@ -978,7 +986,13 @@ export function beginLocalGeneScanV1(baseDir, query = {}) {
                     genes.push(asset);
             if (controller.signal.aborted || Date.now() >= deadlineAt)
                 throw new Error('snapshot_aborted');
-            return { ...snapshot, genes };
+            const result = { ...snapshot, genes, ...(activeQuery.recent ? {
+                    recentGenes: recentRecords(checked.map(({ asset }) => asset), 'Gene')
+                        .filter(asset => isExecutionEligible(asset, snapshot.referenceScope)),
+                } : {}) };
+            if (controller.signal.aborted || Date.now() >= deadlineAt)
+                throw new Error('snapshot_aborted');
+            return result;
         })));
     };
     const session = {
@@ -1025,9 +1039,12 @@ export function beginLocalGeneScanV1(baseDir, query = {}) {
                     throw new Error('invalid_gene_scan_accounting');
                 complete = outcome.complete;
                 continuation = outcome.complete ? undefined : `${epoch}:${++sequence}`;
-                return { version: 1, sourceId, epoch, scanned, bytes, complete: outcome.complete,
+                const page = { version: 1, sourceId, epoch, scanned, bytes, complete: outcome.complete,
                     rawRows: Object.freeze(pageRows.map(row => brandScanRawObject(structuredClone(row)))),
                     continuation: continuation ?? null, ...(outcome.complete ? { snapshot: outcome.snapshot } : {}) };
+                if (controller.signal.aborted || Date.now() >= deadlineAt)
+                    throw new Error('snapshot_aborted');
+                return page;
             }
             catch (error) {
                 // Consumed bytes/rows cannot be rolled back into an old continuation.

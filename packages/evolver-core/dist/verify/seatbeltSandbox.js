@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { trustedValidationRuntime } from './trustedValidationRuntime.js';
 const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 // Not /bin/sh: macOS lets an administrator repoint it at dash or zsh, whose `ulimit -f` units differ from bash.
@@ -17,8 +17,9 @@ const HIDDEN_READ_SUBPATHS = ['/Users', '/private/tmp', '/private/var/tmp', '/pr
  * inject SBPL. Seatbelt applies the last matching rule, which lets the narrow allows re-open the checkout,
  * session and runtime inside the broader hidden subpaths.
  */
-function seatbeltProfile(ancestorCount, readRootCount, writableSource) {
+function seatbeltProfile(ancestorCount, readRootCount, linkCount, writableSource) {
     const ancestors = Array.from({ length: ancestorCount }, (_unused, index) => `(literal (param "ANCESTOR_${index}"))`).join(' ');
+    const links = Array.from({ length: linkCount }, (_unused, index) => `(literal (param "LINK_${index}"))`).join(' ');
     const readRoots = Array.from({ length: readRootCount }, (_unused, index) => `(subpath (param "READ_${index}"))`).join(' ');
     return [
         '(version 1)',
@@ -32,7 +33,7 @@ function seatbeltProfile(ancestorCount, readRootCount, writableSource) {
         `(allow file-read* (subpath (param "SOURCE")) (subpath (param "SESSION")) (literal (param "RUNTIME")) ${readRoots})`,
         // Runtimes canonicalize their own path and the cwd at startup; lstat on each ancestor must succeed even
         // though listing those directories stays denied.
-        ...(ancestorCount > 0 ? [`(allow file-read-metadata ${ancestors})`] : []),
+        ...(ancestorCount + linkCount > 0 ? [`(allow file-read-metadata ${ancestors} ${links})`] : []),
         '(allow file-write* (subpath (param "SESSION")) (literal "/dev/null"))',
         ...(writableSource ? ['(allow file-write* (subpath (param "SOURCE")))'] : []),
         // The account's own terminals are user-owned devices readable by default: reading one steals keystrokes,
@@ -72,7 +73,9 @@ function properAncestors(path) {
 function seatbeltPathsAllowed(paths) {
     const { readOnlyRoot, cwd, writableTmpDir, runtime, home } = paths;
     const readRoots = paths.readRoots ?? [];
-    return [readOnlyRoot, cwd, writableTmpDir, runtime, home, ...readRoots].every(isAbsolute)
+    const readLinks = paths.readLinks ?? [];
+    return [readOnlyRoot, cwd, writableTmpDir, runtime, home, ...readRoots, ...readLinks].every(isAbsolute)
+        && readLinks.every((link) => lstatSync(link).isSymbolicLink())
         && readRoots.every((root) => dirname(root) !== root && !pathIsWithin(root, home) && !pathIsWithin(root, writableTmpDir))
         && dirname(readOnlyRoot) !== readOnlyRoot
         && pathIsWithin(readOnlyRoot, cwd)
@@ -89,6 +92,7 @@ function canonicalSeatbeltPaths(paths) {
         runtime: realpathSync(paths.runtime),
         home: realpathSync(paths.home),
         readRoots: (paths.readRoots ?? []).map((root) => realpathSync(root)),
+        readLinks: (paths.readLinks ?? []).map((link) => join(realpathSync(dirname(link)), basename(link))),
         ...(paths.writableSource ? { writableSource: true } : {}),
     };
     if (!seatbeltPathsAllowed(canonical))
@@ -115,13 +119,15 @@ export function seatbeltCommand(bin, args, requested, limits) {
         mkdirSync(home);
         mkdirSync(tmp);
         const readRoots = paths.readRoots ?? [];
-        const ancestors = [...new Set([paths.cwd, paths.readOnlyRoot, session, paths.runtime, ...readRoots].flatMap(properAncestors))];
+        const readLinks = paths.readLinks ?? [];
+        const ancestors = [...new Set([paths.cwd, paths.readOnlyRoot, session, paths.runtime, ...readRoots, ...readLinks].flatMap(properAncestors))];
         const params = [
             ['HOME', paths.home],
             ['SOURCE', paths.readOnlyRoot],
             ['SESSION', session],
             ['RUNTIME', paths.runtime],
             ...readRoots.map((root, index) => [`READ_${index}`, root]),
+            ...readLinks.map((link, index) => [`LINK_${index}`, link]),
             ...ancestors.map((path, index) => [`ANCESTOR_${index}`, path]),
         ].flatMap(([key, value]) => ['-D', `${key}=${value}`]);
         return {
@@ -130,7 +136,7 @@ export function seatbeltCommand(bin, args, requested, limits) {
                 '-c', SEATBELT_SUPERVISOR, 'bash',
                 String(Math.max(1, Math.ceil(limits.cpuSeconds))), String(Math.floor(limits.fileSizeBytes / 1024)), String(OPEN_FILES_LIMIT),
                 String(processBudget),
-                SANDBOX_EXEC, '-p', seatbeltProfile(ancestors.length, readRoots.length, paths.writableSource === true), ...params, bin, ...args,
+                SANDBOX_EXEC, '-p', seatbeltProfile(ancestors.length, readRoots.length, readLinks.length, paths.writableSource === true), ...params, bin, ...args,
             ],
             env: { HOME: home, TMPDIR: tmp, TMP: tmp, TEMP: tmp },
             cwd: paths.cwd,

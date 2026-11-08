@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, rm, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, win32 } from 'node:path';
+import { assetstore, util } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES, SelfUpdateFailureError, selfUpdateFailure, } from './failureCodes.js';
 import { selfUpdateFileMetadata } from './fileMetadata.js';
 export const WINDOWS_UPDATER_WORKER_ARG = '--evolver-windows-updater-worker';
@@ -330,12 +331,12 @@ async function readWorkItem(workItemPath) {
     const handle = await openNoFollow(workItemPath, constants.O_RDONLY);
     try {
         const opened = await handle.stat({ bigint: true });
-        if (!sameStatIdentity(opened, snapshot)) {
+        if (!sameStatIdentity(opened, snapshot, handle.fd)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_pending_changed');
         }
         const raw = await handle.readFile({ encoding: 'utf8' });
         const after = await handle.stat({ bigint: true });
-        if (!sameStatIdentity(after, snapshot)) {
+        if (!sameStatIdentity(after, snapshot, handle.fd)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_pending_changed');
         }
         return parseWorkItem(JSON.parse(raw));
@@ -399,6 +400,22 @@ function parseIdentity(value) {
     assertSha256(identity.sha256, 'identity_sha256');
     return identity;
 }
+function captureUpdaterFileIdentity(path, label) {
+    try {
+        return assetstore.captureRegularAssetFileIdentity(path);
+    }
+    catch (error) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}`, { cause: error });
+    }
+}
+function assertUpdaterFileIdentity(fd, path, expected, label, access = 'read') {
+    try {
+        assetstore.assertOpenedRegularAssetFile(fd, path, expected, access);
+    }
+    catch (error) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}`, { cause: error });
+    }
+}
 async function snapshotRegularFile(path, label, maxBytes) {
     const cleanPath = assertAbsoluteCleanPath(path, label);
     const before = await selfUpdateFileMetadata(cleanPath).catch((error) => {
@@ -412,14 +429,25 @@ async function snapshotRegularFile(path, label, maxBytes) {
     if (maxBytes !== undefined && before.size > BigInt(maxBytes)) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}_too_large`);
     }
+    const identity = captureUpdaterFileIdentity(cleanPath, `${label}_opened`);
     const handle = await openNoFollow(cleanPath, constants.O_RDONLY);
     try {
+        assertUpdaterFileIdentity(handle.fd, cleanPath, identity, `${label}_opened`);
         const opened = await handle.stat({ bigint: true });
-        assertStatIdentity(before, opened, `${label}_opened`);
+        assertOpenedStatIdentity(before, opened, `${label}_opened`, cleanPath, handle.fd);
         const digest = await hashHandle(handle, maxBytes);
         const after = await handle.stat({ bigint: true });
         assertStatIdentity(opened, after, `${label}_changed`);
-        return identityFromStat(after, digest);
+        const currentPathInfo = await lstat(cleanPath, { bigint: true });
+        if (!currentPathInfo.isFile() || currentPathInfo.isSymbolicLink()) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}_changed`);
+        }
+        assertOpenedStatIdentity(currentPathInfo, after, `${label}_changed`, cleanPath, handle.fd);
+        assertUpdaterFileIdentity(handle.fd, cleanPath, identity, `${label}_changed`);
+        const snapshot = identityFromStat(after, digest);
+        if (process.platform === 'win32' && after.dev === 0n)
+            snapshot.dev = util.readWindowsDescriptorIdentity(handle.fd).dev.toString();
+        return snapshot;
     }
     finally {
         await handle.close();
@@ -438,15 +466,26 @@ async function assertHelperLaunchSnapshot(path, expected) {
     }
 }
 async function copyRegularFileExclusive(sourcePath, destinationPath, expectedSource, mode) {
+    const sourceIdentity = captureUpdaterFileIdentity(sourcePath, 'source_changed');
     const source = await openNoFollow(sourcePath, constants.O_RDONLY);
     let destination;
+    let destinationIdentity;
     let operationError;
     try {
+        assertUpdaterFileIdentity(source.fd, sourcePath, sourceIdentity, 'source_changed');
         const openedSource = await source.stat({ bigint: true });
-        if (!sameStatIdentity(openedSource, expectedSource)) {
+        if (!sameStatIdentity(openedSource, expectedSource, source.fd)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_source_changed');
         }
-        destination = await open(destinationPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+        destination = await open(destinationPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), mode);
+        const openedDestination = await destination.stat({ bigint: true });
+        if (!openedDestination.isFile()) {
+            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_destination_not_regular');
+        }
+        destinationIdentity = {
+            dev: openedDestination.dev, ino: openedDestination.ino, birthtimeNs: openedDestination.birthtimeNs,
+        };
+        assertUpdaterFileIdentity(destination.fd, destinationPath, destinationIdentity, 'destination_changed', 'write');
         const hash = createHash('sha256');
         const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
         let position = 0;
@@ -463,10 +502,12 @@ async function copyRegularFileExclusive(sourcePath, destinationPath, expectedSou
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_source_digest_changed');
         }
         const afterSource = await source.stat({ bigint: true });
-        if (!sameStatIdentity(afterSource, expectedSource)) {
+        if (!sameStatIdentity(afterSource, expectedSource, source.fd)) {
             throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, 'windows_updater_source_changed');
         }
+        assertUpdaterFileIdentity(source.fd, sourcePath, sourceIdentity, 'source_changed');
         await destination.sync();
+        assertUpdaterFileIdentity(destination.fd, destinationPath, destinationIdentity, 'destination_changed', 'write');
     }
     catch (error) {
         operationError = error;
@@ -481,7 +522,16 @@ async function copyRegularFileExclusive(sourcePath, destinationPath, expectedSou
         }
     }
     if (operationError !== undefined) {
-        await removeBestEffort(destinationPath);
+        if (destinationIdentity) {
+            try {
+                const current = assetstore.captureRegularAssetFileIdentity(destinationPath, 'write');
+                if (current.dev === destinationIdentity.dev && current.ino === destinationIdentity.ino
+                    && current.birthtimeNs === destinationIdentity.birthtimeNs) {
+                    await removeBestEffort(destinationPath);
+                }
+            }
+            catch { /* Never remove an unverified or replaced destination. */ }
+        }
         throw operationError;
     }
 }
@@ -732,6 +782,15 @@ function assertAbsoluteCleanPath(path, label) {
     }
     return cleanPath;
 }
+function assertOpenedStatIdentity(named, opened, label, path, fd) {
+    if (process.platform === 'win32' && named.dev === 0n && !util.sameWindowsOpenedPathIdentity(path, opened, fd)) {
+        throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}`);
+    }
+    // Only a native-proven path-vs-handle mapping differs; persisted and handle identities stay strict.
+    const mapped = process.platform === 'win32' && named.dev === 0n
+        ? { ...named, dev: opened.dev } : named;
+    assertStatIdentity(mapped, opened, label);
+}
 function assertStatIdentity(left, right, label) {
     if (left.dev !== right.dev
         || left.ino !== right.ino
@@ -752,8 +811,9 @@ function assertDirectoryIdentity(left, right, label) {
         throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.REPLACE_FAILED, `windows_updater_${label}`);
     }
 }
-function sameStatIdentity(stat, identity) {
-    const strictLegacyIdentity = stat.dev.toString() === identity.dev
+function sameStatIdentity(stat, identity, fd) {
+    const native = process.platform === 'win32' && stat.dev === 0n ? util.readWindowsDescriptorIdentity(fd) : stat;
+    const strictLegacyIdentity = native.ino === stat.ino && native.dev.toString() === identity.dev
         && stat.ino.toString() === identity.ino
         && stat.size.toString() === identity.size
         && stat.mtimeNs.toString() === identity.mtime_ns

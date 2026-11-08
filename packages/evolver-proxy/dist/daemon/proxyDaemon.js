@@ -14,8 +14,9 @@ import { classifyDiscoveryUpstreamError } from './discoveryErrors.js';
 import { LOCAL_RECALL_STALE_MS, LOCAL_RECALL_TIMEOUT_MS, MAX_OUTSTANDING_LOCAL_READS, recallFromLocalStore, rootEventReuseTallies } from './localRecall.js';
 import { PublishBindingLedger } from './publishBindingLedger.js';
 import { recallContextOf } from './recallContext.js';
-import { CURATION_IDLE_MS, CURATION_INTERVAL_MS, curationStatus, runCurationTick } from './backgroundCuration.js';
+import { CURATION_IDLE_MS, CURATION_INTERVAL_MS, CURATION_POLL_MS, curationStatus, runCurationTick } from './backgroundCuration.js';
 import { VerificationContextStore, isObservedCheckEvidence, recordObservedReuse, verificationContextOf } from './observedEvidence.js';
+import { DistillOutcomeLog, TrialControlLog, distillOutcomeOf, trialEffect } from './distillMeasures.js';
 import { PublishRecallVerifier, resolvePublishRecallConfig, } from './publishRecallVerifier.js';
 const DEFAULT_PUBLISH_EXECUTION_VERIFY_TIMEOUT_MS = 30_000;
 // A host-observed distillation carries the turn's diff (≤256 KiB) beside the conversation itself.
@@ -142,8 +143,11 @@ export class ProxyDaemon {
     wakeRunnerPending = false;
     started = false;
     verificationContexts;
+    distillOutcomes;
+    trialControls;
     lastRouteAt = 0;
     curationTimer;
+    lastCurationAt = 0;
     curationRunning = false;
     feedbackRecovery;
     lifecycleArmed = false;
@@ -202,6 +206,10 @@ export class ProxyDaemon {
             ? new assetstore.ReviewLedger(this.assetStore.baseDir) : undefined);
         this.verificationContexts = this.assetStore instanceof assetstore.LocalJsonlProvider
             ? new VerificationContextStore(this.assetStore.baseDir) : undefined;
+        this.distillOutcomes = this.assetStore instanceof assetstore.LocalJsonlProvider
+            ? new DistillOutcomeLog(this.assetStore.baseDir) : undefined;
+        this.trialControls = this.assetStore instanceof assetstore.LocalJsonlProvider
+            ? new TrialControlLog(this.assetStore.baseDir) : undefined;
         const referenceBase = assetStoreDir ?? deps.assetStore?.baseDir;
         this.referenceStore = referenceBase ? new reference.ReferenceStore(join(referenceBase, 'references')) : undefined;
         this.referenceStore?.search({ max_assets: 1 });
@@ -420,15 +428,18 @@ export class ProxyDaemon {
     scheduleCuration() {
         if (!this.assetStore || !this.sourceReview || !this.verificationContexts)
             return;
-        this.curationTimer = setInterval(() => { void this.curateWhenIdle(); }, CURATION_INTERVAL_MS);
+        this.lastCurationAt = this.now();
+        this.curationTimer = setInterval(() => { void this.curateWhenIdle(); }, CURATION_POLL_MS);
         this.curationTimer.unref?.();
     }
     async curateWhenIdle() {
-        if (!this.started || this.curationRunning || this.now() - this.lastRouteAt < CURATION_IDLE_MS)
+        const now = this.now();
+        if (!this.started || this.curationRunning || now - this.lastRouteAt < CURATION_IDLE_MS || now - this.lastCurationAt < CURATION_INTERVAL_MS)
             return;
         if (!this.assetStore || !this.sourceReview || !this.verificationContexts)
             return;
         this.curationRunning = true;
+        this.lastCurationAt = now;
         try {
             const verifierForRoot = this.deps.publishVerifierForRoot;
             await runCurationTick({
@@ -437,7 +448,7 @@ export class ProxyDaemon {
                 contexts: this.verificationContexts,
                 verifierForRoot,
                 verify: (body, verifier, planDigest) => resolveVerifiedExecutionAfterPreflight(verifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal], this.publishBindingLedger.runtimeDomain, undefined, planDigest),
-                enqueue: (body, verified, planDigest, commit) => this.enqueueVerifiedDistillation(body, verified, planDigest, commit),
+                enqueue: (body, verified, planDigest, commit, expectedGeneAssetId) => this.enqueueVerifiedDistillation(body, verified, planDigest, commit, expectedGeneAssetId),
                 now: () => new Date(this.now()),
             });
         }
@@ -448,7 +459,7 @@ export class ProxyDaemon {
             this.curationRunning = false;
         }
     }
-    async enqueueVerifiedDistillation(body, verifiedExecution, validationPlanDigest, commit) {
+    async enqueueVerifiedDistillation(body, verifiedExecution, validationPlanDigest, commit, expectedGeneAssetId) {
         if (this.hubAuthFailed())
             return { queued: false, reason: 'hub_auth_failed' };
         const signal = this.publishAbortController.signal;
@@ -457,6 +468,7 @@ export class ProxyDaemon {
             store: this.assetStore,
             verifiedExecution,
             validationPlanDigest,
+            expectedGeneAssetId,
             // Distillation verifies the receipt before persistence; only the final review fence may register it.
             registerPublishReceipt: (receipt, bundle) => hubNs.assertPublishBindingReceipt(bundle, receipt, this.publishBindingLedger.runtimeDigest),
             publishSignal: signal,
@@ -480,11 +492,35 @@ export class ProxyDaemon {
     }
     trackStoredDraft(body, gene, capsule, checks) {
         this.sourceReview?.quarantineIfAbsent(gene.asset_id, 'host-observed distillation — on trial until promoted');
+        // A Gene its distiller bound to this project is never published, so it never needs a verification copy.
+        if (hubNs.isProjectBoundGene(gene))
+            return;
         if (capsule['outcome']?.status !== 'success')
             return;
         const context = verificationContextOf(body, gene, new Date(this.now()), checks);
         if (context)
             this.verificationContexts?.put(context);
+    }
+    /** The control arm of a trial draft: a turn that ran its checks with the draft withheld. */
+    async recordTrialControl(body) {
+        const input = asRecord(body);
+        const assetId = input['asset_id'];
+        const withheldId = input['withheld_id'];
+        const taskId = input['task_id'];
+        const passed = input['passed'];
+        const platform = input['platform'];
+        const isId = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= 200;
+        if (!isId(assetId) || !isId(withheldId) || !isId(taskId) || typeof passed !== 'boolean' || (platform !== undefined && !isId(platform))) {
+            return [400, { recorded: false, error: 'invalid_trial_control' }];
+        }
+        if (!this.trialControls || !this.assetStore)
+            return [200, { recorded: false, reason: 'trial_control_unavailable' }];
+        if ((await this.assetStore.get(assetId))?.type !== 'Gene')
+            return [200, { recorded: false, reason: 'not_local' }];
+        const result = this.trialControls.record({
+            asset_id: assetId, withheld_id: withheldId, task_id: taskId, passed, ...(platform ? { platform } : {}), at: new Date(this.now()).toISOString(),
+        });
+        return [200, result === 'recorded' ? { recorded: true } : { recorded: false, reason: result }];
     }
     enqueueDistillPublication(body, distill, now) {
         const env = this.distillPublicationEnvelope(body, distill, now);
@@ -1085,7 +1121,7 @@ export class ProxyDaemon {
         const expire = () => controller.abort(new Error('local_recall_timeout'));
         timer = setTimeout(expire, this.localRecallTimeoutMs);
         const recall = (async () => {
-            const read = await recallFromLocalStore(store, text, projectDir);
+            const read = await recallFromLocalStore(store, text, projectDir, (id) => this.trialControls?.withheld(id, new Date(this.now())));
             clearTimeout(timer);
             const remaining = this.localRecallTimeoutMs - (performance.now() - preparationStarted);
             controller.signal.throwIfAborted();
@@ -1219,6 +1255,8 @@ export class ProxyDaemon {
                 ...(this.verificationContexts && this.sourceReview ? {
                     background_curation: curationStatus(this.verificationContexts, this.sourceReview, this.deps.publishVerifierForRoot !== undefined),
                 } : {}),
+                ...(this.distillOutcomes ? { distillation: this.distillOutcomes.summary(new Date(this.now())) } : {}),
+                ...(this.trialControls && this.assetStore ? { trial_effect: await trialEffect(this.assetStore, this.trialControls) } : {}),
                 outbound_pending: this.store.countPending('proxy', this.deps.runtimeNamespace),
                 inbound_pending: this.store.countPending('agent', this.deps.runtimeNamespace) + this.store.countPending('core', this.deps.runtimeNamespace),
                 last_sync_at: this.store.getState('sync:last_sync_at') ?? null,
@@ -1693,6 +1731,10 @@ export class ProxyDaemon {
             }
             return true;
         }
+        if (ctx.route === 'POST /asset/trial-control') {
+            ctx.json(...(await this.recordTrialControl(await ctx.readJson())));
+            return true;
+        }
         if (ctx.route === 'POST /asset/reuse-result') {
             const body = await ctx.readJson();
             const input = asRecord(body);
@@ -1900,6 +1942,7 @@ export class ProxyDaemon {
             });
             if (publishRequested && abortPublish())
                 return true;
+            this.distillOutcomes?.record(distillOutcomeOf(distill, new Date(this.now())));
             if (!distill.ok) {
                 ctx.json(200, {
                     ...distill,
@@ -2625,9 +2668,10 @@ function withinLimit(assets, limit) {
     return typeof limit === 'number' && Number.isFinite(limit) && limit >= 1 ? assets.slice(0, Math.floor(limit)) : [...assets];
 }
 function localRecallReport(local) {
-    if (!local || (local.diagnostics.considered === 0 && !local.diagnostics.error))
+    const withheld = local?.diagnostics.trial_withheld;
+    if (!local || (local.diagnostics.considered === 0 && !local.diagnostics.error && !withheld))
         return {};
-    return { local_recall: local.diagnostics };
+    return { local_recall: local.diagnostics, ...(withheld ? { trial_withheld: withheld } : {}) };
 }
 function isAssetByIdFetcher(value) {
     return Boolean(value && typeof value === 'object' && typeof value.fetchAssetById === 'function');

@@ -145,11 +145,31 @@ function assertWindowsAclChecksTrusted(checks) {
 function assertWindowsAclTrusted(path, ownerCurrentOnly = false) {
     assertWindowsAclChecksTrusted([{ path, parentOnly: false, ownerCurrentOnly }]);
 }
+function statBootstrapFileIdentity(path) {
+    const before = lstatSync(path, { bigint: true });
+    if (process.platform !== 'win32')
+        return before;
+    if (before.isSymbolicLink())
+        throw new util.UnsafeLockPathError('symlink');
+    if (!before.isFile())
+        throw new util.UnsafeLockPathError('not_regular_file');
+    // Keep the initial pathname metadata, not just the later normalized snapshot.
+    // Only a real handle may supply a missing Windows pathname volume identity.
+    const identity = util.statRegularFileIdentity(path);
+    if (identity.dev <= 0n || identity.ino <= 0n || before.ino !== identity.ino
+        || before.dev < 0n || (before.dev !== 0n && before.dev !== identity.dev)
+        || before.size !== identity.size || before.mtimeNs !== identity.mtimeNs
+        || before.ctimeNs !== identity.ctimeNs || before.nlink !== identity.nlink
+        || before.uid !== identity.uid || before.mode !== identity.mode) {
+        throw new util.UnsafeLockPathError('path_changed');
+    }
+    return identity;
+}
 function hardenWindowsOwnedFile(path, expected) {
     if (process.platform !== 'win32' || bootstrapWindowsAclTrustForTest)
         return;
     const assertIdentity = () => {
-        const current = bootstrapPathMetadata(path);
+        const current = statBootstrapFileIdentity(path);
         if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
             || current.dev !== expected.dev || current.ino !== expected.ino || current.size !== expected.size) {
             throw new Error(`bootstrap Windows owned file changed before hardening: ${path}`);
@@ -281,7 +301,9 @@ function readBoundedRegularText(path, maxBytes, label, options = {}) {
     const uid = platform === 'win32' || typeof process.getuid !== 'function'
         ? undefined
         : BigInt(process.getuid());
-    const before = bootstrapPathMetadata(path);
+    // Windows runtimes in our supported range can report pathname dev=0. Bind
+    // each path snapshot to a real handle rather than accepting an unknown volume.
+    const before = statBootstrapFileIdentity(path);
     if (before.isSymbolicLink() || !before.isFile() || before.size > BigInt(maxBytes)
         || (options.requireOwnerOnly === true && before.nlink !== 1n)
         || before.dev <= 0n || before.ino <= 0n) {
@@ -332,7 +354,7 @@ function readBoundedRegularText(path, maxBytes, label, options = {}) {
         if (platform === 'win32') {
             (options.assertWindowsAcl ?? assertWindowsAclTrusted)(path);
         }
-        const settled = bootstrapPathMetadata(path);
+        const settled = statBootstrapFileIdentity(path);
         if (!settled.isFile() || settled.isSymbolicLink()
             || settled.dev !== opened.dev || settled.ino !== opened.ino || settled.size !== opened.size
             || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs
@@ -442,7 +464,7 @@ function writeDurableExclusive(path, content, mode, publication) {
         }
         if (publication && claimPath && ownershipReceipt) {
             syncDirectory(directory);
-            const receipt = bootstrapPathMetadata(ownershipReceipt);
+            const receipt = statBootstrapFileIdentity(ownershipReceipt);
             if (!opened.isFile() || opened.dev <= 0n || opened.ino <= 0n
                 || receipt.dev !== opened.dev || receipt.ino !== opened.ino) {
                 throw new Error('bootstrap artifact ownership receipt does not bind the staged claim');
@@ -450,7 +472,7 @@ function writeDurableExclusive(path, content, mode, publication) {
             linkSync(ownershipReceipt, claimPath);
             syncDirectory(directory);
             claimPublished = true;
-            const claim = bootstrapPathMetadata(claimPath);
+            const claim = statBootstrapFileIdentity(claimPath);
             if (claim.dev !== opened.dev || claim.ino !== opened.ino) {
                 throw new Error('bootstrap artifact claim does not bind the staged ownership receipt');
             }
@@ -1620,12 +1642,6 @@ function assertTrustedBootstrapArtifactLeaf(stat, platform, uid, path, role) {
     }
 }
 export const _assertTrustedBootstrapArtifactLeafForTest = assertTrustedBootstrapArtifactLeaf;
-function bootstrapPathMetadata(path) {
-    const stat = lstatSync(path, { bigint: true });
-    // Reuse the native file witness; a missing Windows volume is not an identity.
-    return process.platform === 'win32' && stat.dev === 0n && stat.isFile() && !stat.isSymbolicLink()
-        ? util.statRegularFileIdentity(path) : stat;
-}
 export function readBootstrapArtifactFile(path, maxBytes = MAX_ARTIFACT_BYTES, hooks = {}) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ARTIFACT_BYTES) {
         throw new Error('bootstrap artifact read limit is invalid');
@@ -1637,7 +1653,9 @@ export function readBootstrapArtifactFile(path, maxBytes = MAX_ARTIFACT_BYTES, h
     const assertTrustedLeaf = (stat) => assertTrustedBootstrapArtifactLeaf(stat, process.platform, trustedUid, path, role);
     if (process.platform === 'win32')
         assertWindowsAclTrusted(path, role === 'owned');
-    const before = bootstrapPathMetadata(path);
+    // Windows runtimes in our supported range can report pathname dev=0. Bind
+    // each path snapshot to a real handle rather than accepting an unknown volume.
+    const before = statBootstrapFileIdentity(path);
     if (before.isSymbolicLink() || !before.isFile() || before.size > BigInt(maxBytes)
         || before.dev <= 0n || before.ino <= 0n) {
         throw new Error(`bootstrap artifact is not a regular owned file: ${path}`);
@@ -1647,7 +1665,9 @@ export function readBootstrapArtifactFile(path, maxBytes = MAX_ARTIFACT_BYTES, h
     try {
         const opened = fstatSync(descriptor, { bigint: true });
         if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
-            || opened.dev <= 0n || opened.ino <= 0n || opened.size > BigInt(maxBytes)) {
+            || opened.dev <= 0n || opened.ino <= 0n || opened.size > BigInt(maxBytes)
+            || opened.size !== before.size || opened.mtimeNs !== before.mtimeNs
+            || opened.ctimeNs !== before.ctimeNs || opened.nlink !== before.nlink) {
             throw new Error(`bootstrap artifact changed while opening: ${path}`);
         }
         assertTrustedLeaf(opened);
@@ -1668,7 +1688,8 @@ export function readBootstrapArtifactFile(path, maxBytes = MAX_ARTIFACT_BYTES, h
             hash.update(chunk);
         }
         const after = fstatSync(descriptor, { bigint: true });
-        if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
+        if (!after.isFile() || after.dev !== opened.dev || after.ino !== opened.ino
+            || after.size !== opened.size || after.nlink !== opened.nlink
             || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs
             || BigInt(size) !== opened.size) {
             throw new Error(`bootstrap artifact changed while hashing: ${path}`);
@@ -1677,11 +1698,11 @@ export function readBootstrapArtifactFile(path, maxBytes = MAX_ARTIFACT_BYTES, h
         hooks.afterRead?.();
         if (process.platform === 'win32')
             assertWindowsAclTrusted(path, role === 'owned');
-        const settled = bootstrapPathMetadata(path);
+        const settled = statBootstrapFileIdentity(path);
         if (!settled.isFile() || settled.isSymbolicLink()
             || settled.dev !== opened.dev || settled.ino !== opened.ino
-            || settled.size !== opened.size || settled.mtimeNs !== opened.mtimeNs
-            || settled.ctimeNs !== opened.ctimeNs) {
+            || settled.size !== opened.size || settled.nlink !== opened.nlink
+            || settled.mtimeNs !== opened.mtimeNs || settled.ctimeNs !== opened.ctimeNs) {
             throw new Error(`bootstrap artifact changed after reading: ${path}`);
         }
         assertTrustedLeaf(settled);

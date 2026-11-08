@@ -21,13 +21,12 @@
 // proves a committed or cleanly rolled-back terminal outcome.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { chmod as fsChmod, link as fsLink, lstat, mkdir as fsMkdir, open as fsOpen, readFile as fsReadFile, realpath as fsRealpath, rename as fsRename, rm as fsRm, rmdir as fsRmdir, unlink as fsUnlink, writeFile as fsWriteFile, } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse as parsePath, relative, resolve as resolvePath, win32 } from 'node:path';
-import { ops, util } from '@evomap/evolver-core';
+import { assetstore, ops, util } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES } from './failureCodes.js';
-import { selfUpdateFileMetadata } from './fileMetadata.js';
 import { resolveSelfUpdatePublicKey } from './builtinKey.js';
 import { downloadGithubReleaseArtifact, releaseAssetName, resolveGithubReleaseManifest, } from './releaseBinary.js';
 import { preflightManagedStagedBinary } from './transaction.js';
@@ -84,13 +83,8 @@ function assertTrustedMigrationStateLeafSync(path, options = {}) {
     }
     return existing;
 }
-function migrationPathMetadata(path) {
-    const stat = lstatSync(path, { bigint: true });
-    return process.platform === 'win32' && stat.dev === 0n && stat.isFile() && !stat.isSymbolicLink()
-        ? util.statRegularFileIdentity(path) : stat;
-}
 function statMigrationStateLeafSync(path) {
-    const existing = migrationPathMetadata(path);
+    const existing = assetstore.lstatWithAssetFileIdentity(path);
     if (existing.isSymbolicLink() || !existing.isFile() || existing.nlink !== 1n) {
         throw new Error('unsafe_migration_state_leaf');
     }
@@ -204,7 +198,7 @@ const defaultWriteTextFile = (path, content) => {
         closeSync(fd);
         fd = undefined;
         renameSync(temporaryPath, path);
-        const published = migrationPathMetadata(path);
+        const published = assetstore.lstatWithAssetFileIdentity(path, 'write');
         if (published.isSymbolicLink() || !published.isFile() || published.nlink !== 1n) {
             throw new Error('unsafe_migration_state_publication');
         }
@@ -900,10 +894,22 @@ async function ensureSafeMigrationDirectory(directory, mkdir, assertDirectoryTru
 function sha256(bytes) {
     return createHash('sha256').update(bytes).digest('hex');
 }
+async function nativeMigrationFileStat(path, witnessAccess = 'read') {
+    const named = await lstat(path, { bigint: true });
+    // Re-observe even when lstat reports a volume: the named link count can predate a concurrent hardlink, and the
+    // second witness must be read before the binary is published.
+    if (process.platform !== 'win32' || named.isSymbolicLink() || !named.isFile())
+        return named;
+    const snapshot = assetstore.captureRegularAssetFileSnapshot(path, witnessAccess === 'write' ? constants.O_WRONLY : constants.O_RDONLY);
+    if (named.ino !== snapshot.ino || named.birthtimeNs !== snapshot.birthtimeNs) {
+        throw new Error('migration_file_identity_changed');
+    }
+    return snapshot;
+}
 async function inspectExistingMigrationTarget(destPath, version, preflight, readBinary, expected, assertDirectoryTrust, assertFileTrust) {
     let before;
     try {
-        before = await selfUpdateFileMetadata(destPath);
+        before = await nativeMigrationFileStat(destPath);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -930,7 +936,7 @@ async function inspectExistingMigrationTarget(destPath, version, preflight, read
         throw new Error(`destination_exists_unowned_or_invalid:${errorDetail(error)}`, { cause: error });
     }
     await assertFileTrust(destPath);
-    const after = await selfUpdateFileMetadata(destPath);
+    const after = await nativeMigrationFileStat(destPath);
     if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n
         || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
         || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
@@ -999,6 +1005,7 @@ function assertMigrationLockSnapshotShape(snapshot) {
 function sameMigrationLockSnapshot(left, right) {
     return left.dev === right.dev
         && left.ino === right.ino
+        && left.birthtimeNs === right.birthtimeNs
         && left.nlink === 1n
         && right.nlink === 1n
         && left.size === right.size
@@ -1019,10 +1026,18 @@ function readBoundedMigrationLockFd(fd) {
     return bytes.subarray(0, offset);
 }
 function readMigrationLockAuthority(lockPath) {
-    const beforeOpen = migrationPathMetadata(lockPath);
+    const beforeOpen = assetstore.lstatWithAssetFileIdentity(lockPath);
     assertMigrationLockSnapshotShape(beforeOpen);
-    const fd = openSync(lockPath, 'r');
+    const fd = openSync(lockPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
+        try {
+            assetstore.assertOpenedRegularAssetFile(fd, lockPath, {
+                dev: beforeOpen.dev, ino: beforeOpen.ino, birthtimeNs: beforeOpen.birthtimeNs,
+            });
+        }
+        catch (error) {
+            throw new Error('migration_lock_ownership_changed', { cause: error });
+        }
         const opened = fstatSync(fd, { bigint: true });
         assertMigrationLockSnapshotShape(opened);
         if (!sameMigrationLockSnapshot(beforeOpen, opened)) {
@@ -1030,10 +1045,10 @@ function readMigrationLockAuthority(lockPath) {
         }
         const firstBytes = readBoundedMigrationLockFd(fd);
         const afterFirstFd = fstatSync(fd, { bigint: true });
-        const afterFirstPath = migrationPathMetadata(lockPath);
+        const afterFirstPath = assetstore.lstatWithAssetFileIdentity(lockPath);
         const secondBytes = readBoundedMigrationLockFd(fd);
         const finalFd = fstatSync(fd, { bigint: true });
-        const finalPath = migrationPathMetadata(lockPath);
+        const finalPath = assetstore.lstatWithAssetFileIdentity(lockPath);
         for (const snapshot of [afterFirstFd, afterFirstPath, finalFd, finalPath]) {
             assertMigrationLockSnapshotShape(snapshot);
             if (!sameMigrationLockSnapshot(opened, snapshot)) {
@@ -1158,7 +1173,7 @@ async function installVerifiedMigrationBinary(input) {
         await input.chmod(temporaryPath, 0o755);
         await input.syncFile(temporaryPath);
         const temporaryInfo = await input.stat(temporaryPath);
-        const temporaryIdentity = await selfUpdateFileMetadata(temporaryPath);
+        const temporaryIdentity = await nativeMigrationFileStat(temporaryPath, 'write');
         if (temporaryInfo.isSymbolicLink() || !temporaryInfo.isFile()
             || temporaryIdentity.isSymbolicLink() || !temporaryIdentity.isFile()
             || temporaryIdentity.nlink !== 1n || temporaryIdentity.dev <= 0n || temporaryIdentity.ino <= 0n) {
@@ -1273,7 +1288,7 @@ function migrationRegistrationTargetQuarantinePath(destPath, intentId) {
 }
 async function migrationPathIdentity(path) {
     try {
-        return await selfUpdateFileMetadata(path);
+        return await nativeMigrationFileStat(path);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT'))
@@ -1285,7 +1300,7 @@ function sameMigrationFileId(left, right) {
     return left.dev === right.dev && left.ino === right.ino;
 }
 async function inspectExactMigrationCleanupFile(input) {
-    const before = await selfUpdateFileMetadata(input.path);
+    const before = await nativeMigrationFileStat(input.path);
     await input.assertFileTrust(input.path);
     if (before.isSymbolicLink()
         || !before.isFile()
@@ -1299,7 +1314,7 @@ async function inspectExactMigrationCleanupFile(input) {
     if (bytes.byteLength !== input.expected.size || sha256(bytes) !== input.expected.sha256) {
         throw new Error(input.hashError);
     }
-    const after = await selfUpdateFileMetadata(input.path);
+    const after = await nativeMigrationFileStat(input.path);
     if (after.isSymbolicLink()
         || !after.isFile()
         || after.dev !== before.dev
@@ -1512,7 +1527,7 @@ async function recoverPendingMigrationInstall(input) {
     if (pending.anchor.phase === 'planned') {
         let before;
         try {
-            before = await selfUpdateFileMetadata(pending.anchor.temporaryPath);
+            before = await nativeMigrationFileStat(pending.anchor.temporaryPath);
         }
         catch (error) {
             if (!isErrno(error, 'ENOENT'))
@@ -1531,7 +1546,7 @@ async function recoverPendingMigrationInstall(input) {
             throw new Error('migration_planned_temporary_unowned');
         }
         const bytes = await input.readBinary(pending.anchor.temporaryPath);
-        const after = await selfUpdateFileMetadata(pending.anchor.temporaryPath);
+        const after = await nativeMigrationFileStat(pending.anchor.temporaryPath);
         if (after.isSymbolicLink()
             || !after.isFile()
             || after.dev !== before.dev

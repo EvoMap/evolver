@@ -47,6 +47,8 @@ export interface GeneCandidate {
     scope?: unknown;
     runtime_profile?: unknown;
     verifier_profile?: unknown;
+    anti_patterns?: unknown;
+    epigenetic_marks?: unknown;
 }
 /** Minimal shape of an existing gene needed for dedup. */
 export interface ExistingGeneRef {

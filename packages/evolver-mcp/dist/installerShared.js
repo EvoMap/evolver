@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 /** Default command used by runtimes that support a SessionStart hook. The flag enables session-id capture. */
 export const DEFAULT_HOOK_COMMAND = 'evolver inject session-start --hook-stdin';
 export const DEFAULT_PROMPT_RECALL_HOOK_COMMAND = 'evolver inject prompt-recall --hook-stdin';
+export const PRODUCT_BRIDGE_PRESERVED_WARNING = 'product_bridge_user_owned_preserved: the user-owned product bridge was left unchanged; use explicit --force only after reviewing it if a managed bridge is required';
 export const EVOLVER_HOOK_STATUS = 'evolver-managed-hook';
 const LEGACY_EVOLVER_HOOK_STATUS = 'Loading Evolver memory';
 function isObj(value) {

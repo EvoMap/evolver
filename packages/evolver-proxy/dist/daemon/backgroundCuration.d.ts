@@ -2,6 +2,7 @@ import { assetstore, type hub as hubNs, type verify } from '@evomap/evolver-core
 import { type VerificationContextStore } from './observedEvidence.js';
 export declare const CURATION_INTERVAL_MS: number;
 export declare const CURATION_IDLE_MS: number;
+export declare const CURATION_POLL_MS = 30000;
 export type ExecutionVerifier = (input: hubNs.ConversationDistillInput, signal: AbortSignal) => Promise<hubNs.ConversationDistillVerifiedExecution | null>;
 export interface CuratedPublication {
     queued: boolean;
@@ -22,7 +23,7 @@ export interface CurationDeps {
     /** Absent where read-only isolation is unavailable: genes then wait, never published unverified. */
     verifierForRoot: ((root: string, plan?: VerificationPlan) => ExecutionVerifier) | undefined;
     verify: (body: hubNs.ConversationDistillInput, verifier: ExecutionVerifier, planDigest: string) => Promise<hubNs.ConversationDistillVerifiedExecution | undefined>;
-    enqueue: (body: hubNs.ConversationDistillInput, verified: hubNs.ConversationDistillVerifiedExecution, planDigest: string, commit: CuratedMailboxCommit) => Promise<CuratedPublication>;
+    enqueue: (body: hubNs.ConversationDistillInput, verified: hubNs.ConversationDistillVerifiedExecution, planDigest: string, commit: CuratedMailboxCommit, expectedGeneAssetId: string) => Promise<CuratedPublication>;
     now: () => Date;
     scratchDir?: string;
 }

@@ -9,6 +9,8 @@ import type { GeneScanSessionV1 } from './geneScanV1.js';
  * Each read is <=64 KiB; each JSON.parse is <=256 KiB; scanning yields every 16 KiB.
  */
 export interface GeneSnapshotQuery {
+    /** Collect a bounded recent window only after validating the complete authority scan. */
+    recent?: boolean;
     signal?: AbortSignal;
     deadlineAt?: number;
     maxRecords?: number;
@@ -17,6 +19,8 @@ export interface GeneSnapshotQuery {
 }
 export interface GeneReadSnapshot {
     genes: AssetRecord[];
+    /** Optional source-order recent window. Full genes and scan accounting remain authoritative. */
+    recentGenes?: AssetRecord[];
     provenance: ReadonlyMap<string, ProvenanceRecord>;
     review: ReadonlyMap<string, ReviewRecord>;
     referenceScope: ReferenceScope;
