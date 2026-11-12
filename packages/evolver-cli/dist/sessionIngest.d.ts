@@ -44,6 +44,7 @@ export type SessionContextDeliveryRecovery = {
 } | {
     status: 'unknown';
     reason: 'recovery_failed' | 'deadline';
+    journal?: events.ContextDeliveryStatus;
 };
 /** Resolve context ownership before any recovery/index I/O. Physical aliases
  * alone are insufficient: protected audit namespaces retain the exact logical

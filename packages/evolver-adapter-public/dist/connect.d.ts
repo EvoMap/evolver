@@ -1,4 +1,4 @@
-import type { hub } from '@evomap/evolver-core';
+import { type hub } from '@evomap/evolver-core';
 import { PublicHubCapability } from './hubCapability.js';
 import type { AntiAbuseTelemetryOptions } from './antiAbuseTelemetry.js';
 import type { MalformedPublishReceiptEvent } from './hubCapability.js';
@@ -35,6 +35,8 @@ export interface ConnectPublicOptions {
     }>;
     /** Optional anti-abuse metadata context for heartbeat payloads. */
     antiAbuse?: AntiAbuseTelemetryOptions;
+    /** The host agents and plugins the node served lately, reported on hello and heartbeat. */
+    clients?: () => readonly hub.SeenClient[];
     /** Optional non-sensitive notification when publish returns malformed 2xx JSON. */
     onMalformedPublishReceipt?: (event: MalformedPublishReceiptEvent) => void;
 }

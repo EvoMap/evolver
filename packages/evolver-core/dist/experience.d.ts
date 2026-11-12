@@ -1,6 +1,7 @@
 /** Experience CLI surface; reuse the authoritative implementations without evaluating unrelated core barrels. */
 export { EXPERIENCE_SCHEMA, ExperienceError, ExperienceLibrary } from './assetstore/experience.js';
-export type { ExperienceAction, ExperienceInput, ExperiencePlan, ExperienceSourceRecoveryPlan } from './assetstore/experience.js';
+export type { AuthoredExperience, ExperienceAction, ExperienceInput, ExperiencePlan, ExperienceSourceRecoveryPlan } from './assetstore/experience.js';
+export type { ExperienceEvidenceRow } from './assetstore/experienceEvidence.js';
 export { ExperienceRecoveryRequiredError } from './assetstore/assetStoreStorage.js';
 export { ExperienceJournalError } from './assetstore/experienceJournal.js';
 export { ExperienceActivity, type ExperienceClient } from './assetstore/experienceActivity.js';

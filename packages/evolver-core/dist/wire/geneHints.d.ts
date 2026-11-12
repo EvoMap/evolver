@@ -64,7 +64,11 @@ export interface GenerationMeta {
     quality_score?: number;
     quality_heuristics?: GeneGenerationHeuristics;
     overcame_errors?: string[];
+    /** Content ids of the assets the source session reused: the lineage edge from those assets to this Gene. */
+    reused_asset_ids?: string[];
 }
+/** Keeps the well-formed content ids, first occurrence first, up to the cap; anything else is dropped, never fatal. */
+export declare function normalizeReusedAssetIds(raw: unknown): string[];
 /**
  * K_auto projection-key coordinates a Gene MAY carry so its record is machine-decidable in the strict
  * automatic-governance subdomain (paper §K_auto; validator: algo/kautoValidator.ts). These four fields are the
@@ -137,7 +141,7 @@ export declare function normalizeRoutingHint(raw: unknown): GeneRoutingHint | nu
 export declare function normalizeToolPolicy(raw: unknown): GeneToolPolicy | null;
 /**
  * Normalize an arbitrary generation_meta fragment to a strict { source, quality_score?, quality_heuristics?,
- * overcame_errors? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
+ * overcame_errors?, reused_asset_ids? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
  * values are dropped (the whole block collapses to null — a generation_meta with no recognized source carries no
  * usable provenance signal); quality_score is clamped to [0,1]; heuristics keeps only its numeric/boolean fields;
  * overcame_errors keeps only non-empty strings. A block with a valid source but all-else-empty still survives (source

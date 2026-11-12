@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { hub as hubNs } from '@evomap/evolver-core';
 import { PublicHubCapability } from './hubCapability.js';
 import { globalFetchLike } from './hubFetch.js';
 import { LegacyAuthShim } from './auth/legacyShim.js';
@@ -48,10 +49,20 @@ export function connectPublicHub(opts) {
             fetchFn,
             senderId: opts.senderId,
             antiAbuse: withWorkspaceIdResolver(opts.antiAbuse),
+            ...clientsOf(opts),
             ...(opts.onMalformedPublishReceipt ? { onMalformedPublishReceipt: opts.onMalformedPublishReceipt } : {}),
         }),
         auth,
     };
+}
+// A Proxy passes the clients it serves; a one-shot CLI process serves the one client that started it, named in its env.
+function clientsOf(opts) {
+    if (opts.clients)
+        return { clients: opts.clients };
+    const processClient = hubNs.clientIdentityFromEnv(opts.antiAbuse?.env ?? process.env);
+    if (!processClient)
+        return {};
+    return { clients: () => [{ ...processClient, last_seen: new Date().toISOString() }], processClient };
 }
 function withWorkspaceIdResolver(antiAbuse) {
     if (antiAbuse?.workspaceId || antiAbuse?.workspaceIdResolver)

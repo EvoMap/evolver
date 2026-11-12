@@ -1,0 +1,1 @@
+export const ASSET_EVOLUTION_SCHEMA = 'evolver.asset-evolution.v1';

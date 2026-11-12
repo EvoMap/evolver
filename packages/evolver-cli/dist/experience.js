@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { deflateRawSync, inflateRawSync, brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import * as assetstore from '@evomap/evolver-core/experience';
+import { RUNTIME_NAME, pluginDrafts } from './pluginDrafts.js';
 const LIMIT = 64 * 1024;
 async function input() {
     const chunks = [];
@@ -91,6 +92,11 @@ function flags(argv) {
     }
     return result;
 }
+const ASSET_DISTILL_CAPABILITIES = { authoring: true, redaction: true, geneDistill: true, evidence: true, publishControl: true, contract: 'asset-distill.v1' };
+function evidenceView(row) {
+    return { evidenceId: row.evidenceId, kind: row.kind, outcome: row.outcome, summary: row.summary, metrics: row.metrics,
+        ...(row.taskId ? { taskId: row.taskId } : {}), at: row.at, capsule: row.capsule };
+}
 function diagnostic(error) {
     if (process.env['EVOLVER_EXPERIENCE_DIAGNOSTICS'] !== '1')
         return;
@@ -119,7 +125,8 @@ export async function runExperienceCommand(argv) {
             throw new assetstore.ExperienceError('INPUT_INVALID', '只用参数的模式只支持生成检查码、检查和查询。');
         }
         if (operation === 'capabilities') {
-            emit({ ok: true, capabilities: { library: true, confirmedMutations: true, fullPlanBinding: true, durableRecovery: true, compactConfirmation: true, sourceRecovery: true, localOnly: true, originalMaterialsShared: false, activity: true, mcpStdio: true } });
+            emit({ ok: true, capabilities: { library: true, confirmedMutations: true, fullPlanBinding: true, durableRecovery: true, compactConfirmation: true, sourceRecovery: true, localOnly: true, originalMaterialsShared: false, activity: true, mcpStdio: true,
+                    ...ASSET_DISTILL_CAPABILITIES } });
             return 0;
         }
         const library = new assetstore.ExperienceLibrary(assetstore.assetsDir());
@@ -170,9 +177,34 @@ export async function runExperienceCommand(argv) {
             emit({ ok: true, result: await library.list(f['query'] ?? '', Number(f['limit'] ?? 50), Number(f['offset'] ?? 0)) });
             return 0;
         }
+        if (operation === 'drafts') {
+            const request = await input();
+            if (request.runtime !== undefined && !(typeof request.runtime === 'string' && RUNTIME_NAME.test(request.runtime))) {
+                throw new assetstore.ExperienceError('INPUT_INVALID', 'runtime 只能是小写字母、数字和连字符。');
+            }
+            let drafts;
+            try {
+                drafts = pluginDrafts(process.env, request.runtime);
+            }
+            catch {
+                throw new assetstore.ExperienceError('UNAVAILABLE', '读不到插件草稿目录（~/.evolver/state），请检查目录权限。');
+            }
+            emit({ ok: true, result: drafts });
+            return 0;
+        }
+        if (operation === 'evidence') {
+            const row = await library.recordEvidence(await input());
+            emit({ ok: true, result: { evidenceId: row.evidenceId, capsule: row.capsule } });
+            return 0;
+        }
+        if (operation === 'evidence-list') {
+            const request = await input();
+            emit({ ok: true, result: { evidence: (await library.evidence(request.assetId)).map(evidenceView) } });
+            return 0;
+        }
         if (operation === 'plan') {
             const request = await input();
-            const plan = await library.plan(f['action'], request.assetId, request.input);
+            const plan = await library.plan(f['action'], request.assetId, request.input, { gene: request.gene, capsule: request.capsule, antiGene: request.antiGene });
             const confirmation = confirmationFor(plan);
             emit({ ok: true, plan, ...(confirmation ? { confirmation } : {}) });
             return 0;

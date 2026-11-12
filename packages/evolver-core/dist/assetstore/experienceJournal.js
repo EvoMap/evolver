@@ -8,7 +8,16 @@ import { appendUtf8Durable, assertAssetStoreDirectory, assertOpenedRegularAssetF
 const FILE = 'experience-operations.sqlite';
 const MAX_OPERATIONS = 4096;
 const MAX_METADATA = 256 * 1024;
-const limits = { 'genes.jsonl': 16 * 1024 * 1024, 'review.jsonl': 16 * 1024 * 1024, 'experience-sources.jsonl': 32 * 1024 * 1024 };
+const limits = { 'genes.jsonl': 16 * 1024 * 1024, 'review.jsonl': 16 * 1024 * 1024, 'experience-sources.jsonl': 32 * 1024 * 1024,
+    'experience-evidence.jsonl': 32 * 1024 * 1024, 'anti-genes.jsonl': 16 * 1024 * 1024 };
+const MAX_MUTATIONS = Object.keys(limits).length;
+/** One participant per file: each participant is verified as exactly one append, so rows for the same file share it. */
+function rowsByFile(mutations) {
+    const grouped = new Map();
+    for (const { file, row } of mutations)
+        grouped.set(file, [...(grouped.get(file) ?? []), row]);
+    return [...grouped];
+}
 export class ExperienceJournalError extends Error {
     code;
     constructor(code) {
@@ -132,7 +141,7 @@ export class ExperienceJournal {
         const value = JSON.parse(raw);
         if (value.schema !== EXPERIENCE_BUNDLE_SCHEMA)
             return error('ASSET_BUNDLE_RECOVERY_REQUIRED');
-        if (!Array.isArray(value.mutations) || value.mutations.length > 3 || value.namespace !== this.namespace())
+        if (!Array.isArray(value.mutations) || value.mutations.length > MAX_MUTATIONS || value.namespace !== this.namespace())
             return error('EXPERIENCE_RECOVERY_UNKNOWN');
         for (const m of value.mutations) {
             if (!Object.hasOwn(limits, m.file) || typeof m.append !== 'string' || Buffer.byteLength(m.append) > MAX_METADATA
@@ -237,7 +246,7 @@ export class ExperienceJournal {
         if (marker === null && assertOptionalRegularFile(this.path) === null) {
             const hasWitness = assertOptionalRegularFile(journalWitnessPath(this.path), 'temp_file') !== null;
             // Refusal only, never a commit inference: versioned sidecar identities cannot be adopted into a new empty authority.
-            for (const [file, maximum] of [['review.jsonl', 16 * 1024 * 1024], ['experience-sources.jsonl', 32 * 1024 * 1024]]) {
+            for (const [file, maximum] of [['review.jsonl', 16 * 1024 * 1024], ['experience-sources.jsonl', 32 * 1024 * 1024], ['experience-evidence.jsonl', 32 * 1024 * 1024]]) {
                 budget.check();
                 const raw = readRegularBuffer(join(this.baseDir, file), maximum, () => budget.check())?.toString('utf8');
                 if (raw && /"operationId"\s*:\s*"[a-f0-9-]{36}"/.test(raw))
@@ -281,12 +290,12 @@ export class ExperienceJournal {
             const prepared = prepare();
             this.use(true, db => { if (Number(db.prepare('SELECT count(*) AS n FROM experience_operations').get()?.['n']) >= MAX_OPERATIONS)
                 return error('EXPERIENCE_JOURNAL_CAPACITY'); });
-            const mutations = prepared.mutations.map(({ file, row }) => {
+            const mutations = rowsByFile(prepared.mutations).map(([file, rows]) => {
                 if (!Object.hasOwn(limits, file))
                     return error('EXPERIENCE_JOURNAL_INVALID');
                 const path = join(this.baseDir, file);
                 const raw = readRegularBuffer(path, limits[file]) ?? Buffer.alloc(0);
-                const append = `${raw.length && raw.at(-1) !== 10 ? '\n' : ''}${JSON.stringify(row)}\n`;
+                const append = `${raw.length && raw.at(-1) !== 10 ? '\n' : ''}${rows.map((row) => `${JSON.stringify(row)}\n`).join('')}`;
                 if (raw.length + Buffer.byteLength(append) > limits[file])
                     return error('EXPERIENCE_WRITE_CAPACITY');
                 if (assertOptionalRegularFile(path) === null)
@@ -295,7 +304,7 @@ export class ExperienceJournal {
             });
             const manifest = { schema: EXPERIENCE_BUNDLE_SCHEMA, operationId: id, requestHash: hash, namespace: this.namespace(), mutations };
             const body = stableJson(manifest);
-            if (Buffer.byteLength(body) > MAX_METADATA)
+            if (Buffer.byteLength(body) > MAX_METADATA || mutations.some((m) => Buffer.byteLength(m.append) > MAX_METADATA))
                 return error('EXPERIENCE_JOURNAL_CAPACITY');
             this.use(true, db => sqliteTransaction(db, () => db.prepare("INSERT INTO experience_operations(operation_id,request_hash,state,prepared) VALUES(?,?,'reserved',?)").run(id, hash, body)));
             try {

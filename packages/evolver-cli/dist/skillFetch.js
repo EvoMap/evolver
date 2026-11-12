@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { join } from 'node:path';
 import { assetstore, wire } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
+import { relativePathInsideRoot, writeFileInsideRoot } from './containedWrite.js';
 import { createRecipeHubFromEnv } from './recipe.js';
 import { geneToSkillMd } from './skillDistill.js';
 const GROUP = 'skill.fetch';
@@ -53,13 +53,11 @@ async function runSkillFetchCommand(argv, deps = {}) {
         stdout: deps.stdout ?? ((line) => { process.stdout.write(`${line}\n`); }),
         stderr: deps.stderr ?? ((line) => { process.stderr.write(`${line}\n`); }),
     };
-    const parsed = parseSkillFetchArgs(argv);
+    const cwd = deps.cwd ?? process.cwd();
+    const parsed = parseSkillFetchArgs(argv, cwd);
     if (!parsed.ok)
         return emitFailure(parsed.reason, parsed.message, argv.includes('--json'), io);
     const opts = parsed.value;
-    if (opts.source.kind === 'asset' && !opts.write && opts.outDir) {
-        // Preview with --out is still read-only; target paths are shown below.
-    }
     try {
         const env = deps.env ?? process.env;
         loadEnvFileFromEnv(env);
@@ -68,7 +66,7 @@ async function runSkillFetchCommand(argv, deps = {}) {
             return 0;
         }
         const hub = deps.hub ?? createSkillFetchHubFromEnv(deps, env);
-        const run = await buildSkillFetchResult(hub, opts);
+        const run = await buildSkillFetchResult(hub, opts, cwd);
         if (!run.ok)
             return emitFailure(run.reason, run.message, opts.json, io);
         emitSuccess(run.value, opts.json, io);
@@ -79,7 +77,7 @@ async function runSkillFetchCommand(argv, deps = {}) {
         return emitFailure(mapped.reason, mapped.message, opts.json, io);
     }
 }
-function parseSkillFetchArgs(argv) {
+function parseSkillFetchArgs(argv, cwd) {
     if (argv.includes('--help') || argv.includes('-h')) {
         return { ok: false, reason: 'usage', message: USAGE };
     }
@@ -97,9 +95,12 @@ function parseSkillFetchArgs(argv) {
     if (!Number.isSafeInteger(limit) || limit <= 0)
         return { ok: false, reason: 'invalid_arg', message: '--limit must be a positive integer' };
     const write = argv.includes('--write');
-    const outDir = flagValue(argv, '--out') ?? undefined;
-    if (write && !outDir)
+    const outRaw = flagValue(argv, '--out') || undefined;
+    if (write && !outRaw)
         return { ok: false, reason: 'invalid_arg', message: 'skill fetch --write requires --out <dir>' };
+    const outDir = outRaw === undefined ? undefined : relativePathInsideRoot(cwd, outRaw);
+    if (outDir === null)
+        return { ok: false, reason: 'invalid_arg', message: '--out must resolve to a path inside the current working directory' };
     const select = flagValue(argv, '--select') ?? undefined;
     const source = asset
         ? { kind: 'asset', id: asset.trim() }
@@ -127,7 +128,7 @@ function parseSkillFetchArgs(argv) {
         },
     };
 }
-async function buildSkillFetchResult(hub, opts) {
+async function buildSkillFetchResult(hub, opts, cwd) {
     const direct = opts.source.kind === 'asset' ? await fetchGeneById(hub, opts.source.id) : null;
     if (direct && !direct.ok)
         return direct;
@@ -157,7 +158,7 @@ async function buildSkillFetchResult(hub, opts) {
     if (selected.asset.asset_id !== previewed.assetId) {
         return { ok: false, reason: 'integrity_error', message: 'selected Gene asset_id changed after preview' };
     }
-    const written = writeSkill(selected.asset, opts.outDir, opts.force);
+    const written = writeSkill(selected.asset, cwd, opts.outDir, opts.force);
     if (!written.ok)
         return written;
     return { ok: true, value: { mode: 'write', candidates: [candidateFromGene(selected.asset, opts.outDir)], written: written.value } };
@@ -231,16 +232,14 @@ function candidateFromGene(gene, outDir) {
         candidate.target = relativeSkillPath(name);
     return candidate;
 }
-function writeSkill(gene, outDir, force) {
+function writeSkill(gene, cwd, outDir, force) {
     const name = skillNameForGene(gene);
     const target = relativeSkillPath(name);
-    const targetPath = targetSkillPath(outDir, name);
-    if (!isInside(resolve(outDir), resolve(targetPath)))
-        return { ok: false, reason: 'invalid_arg', message: 'resolved skill target escapes --out directory' };
-    if (existsSync(targetPath) && !force)
+    const write = writeFileInsideRoot(cwd, join(outDir, target), geneToSkillMd(gene, { name }), force);
+    if (!write.ok && write.reason === 'exists')
         return { ok: false, reason: 'conflict', message: `SKILL.md already exists for skill ${name}; use --force to overwrite` };
-    mkdirSync(dirname(targetPath), { recursive: true });
-    writeFileSync(targetPath, geneToSkillMd(gene, { name }), 'utf8');
+    if (!write.ok)
+        return { ok: false, reason: 'invalid_arg', message: 'skill target path must not pass through a symlink, junction, hard link, or non-directory' };
     const written = { target, assetId: gene.asset_id, name };
     const geneId = stringField(gene, 'id');
     if (geneId)
@@ -361,15 +360,8 @@ function safeSkillName(value) {
         .slice(0, 80);
     return slug || 'skill';
 }
-function targetSkillPath(outDir, name) {
-    return resolve(outDir, 'skills', safeSkillName(name), 'SKILL.md');
-}
 function relativeSkillPath(name) {
     return `skills/${safeSkillName(name)}/SKILL.md`;
-}
-function isInside(parent, child) {
-    const rel = relative(parent, child);
-    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
 }
 function arrayOfStrings(value) {
     return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];

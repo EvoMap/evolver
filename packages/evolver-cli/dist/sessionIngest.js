@@ -192,13 +192,16 @@ function finishSessionIndexCleanup(path) {
 export async function runSessionIngestTick(dirs, deps = {}) {
     const resolvedDeps = resolveIngestDeps(deps);
     const contextIngestor = resolveContextObservationWriter(resolvedDeps.ingestor, deps.contextIngestor);
-    const contextDeliveryRecovery = contextIngestor
+    let contextDeliveryRecovery = contextIngestor
         ? await recoverSessionDeliveries(contextIngestor) : undefined;
     if (contextIngestor) {
         // A failed/late protected RPC can outlive its client wait. The existing
         // ordered status RPC joins the service's turn before deciding root admission.
-        const journal = contextDeliveryRecovery && 'journal' in contextDeliveryRecovery
-            ? contextDeliveryRecovery.journal : events.Ingestor.contextDeliveryStatus(contextIngestor.path);
+        const journal = contextDeliveryRecovery?.journal ?? events.Ingestor.contextDeliveryStatus(contextIngestor.path);
+        // Preserve the admission snapshot without upgrading a late or failed recovery.
+        if (contextDeliveryRecovery && contextDeliveryRecovery.journal === undefined) {
+            contextDeliveryRecovery = { ...contextDeliveryRecovery, journal };
+        }
         if (journal.confirmedPending > 0 || journal.reasons.cleanup_pending)
             return {
                 recorded: 0, sourceAgents: [], signalKinds: [], signalStrengths: [],

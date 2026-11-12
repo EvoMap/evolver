@@ -14,6 +14,8 @@ export declare const DEFAULT_IPC_PORT = 19820;
 export type HubAuthFailurePolicy = 'deny' | 'warn';
 export declare function resolveHubAuthFailurePolicy(env?: Record<string, string | undefined>): HubAuthFailurePolicy;
 export interface ProxyDaemonDeps {
+    /** The host agents and plugins served lately; each request's `x-evomap-client-*` headers update it. */
+    recentClients?: hubNs.RecentClients;
     triggerFeedback?: import('@evomap/evolver-core').exec.TriggerFeedbackLocalFacade;
     recipeExecutionDirectory?: string;
     /** operator配置，不能由单次搜索请求关闭。 */
@@ -249,6 +251,7 @@ export declare class ProxyDaemon {
     start(): Promise<number>;
     private scheduleCuration;
     private curateWhenIdle;
+    private publishMode;
     private enqueueVerifiedDistillation;
     private trackStoredDraft;
     /** The control arm of a trial draft: a turn that ran its checks with the draft withheld. */
@@ -306,6 +309,7 @@ export declare class ProxyDaemon {
     private localRecall;
     private localFetchAssets;
     private feedbackNodeId;
+    private asRequestClient;
     private handleProxyRoute;
     private searchAssets;
     private searchRemoteAssets;

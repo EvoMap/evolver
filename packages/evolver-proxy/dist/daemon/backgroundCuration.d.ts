@@ -10,7 +10,7 @@ export interface CuratedPublication {
     envelopeId?: string;
     assetIds?: string[];
 }
-export type CuratedMailboxCommit = (send: () => boolean) => 'stored' | 'not_stored' | 'review_not_approved' | 'verification_plan_changed';
+export type CuratedMailboxCommit = (send: () => boolean) => 'stored' | 'not_stored' | 'review_not_approved' | 'verification_plan_changed' | 'publish_policy_manual';
 /** Where each check runs inside the copy, and which project lends the copy its installed dependencies. */
 export interface VerificationPlan {
     checks: readonly verify.ObservedCheck[];
@@ -26,6 +26,8 @@ export interface CurationDeps {
     enqueue: (body: hubNs.ConversationDistillInput, verified: hubNs.ConversationDistillVerifiedExecution, planDigest: string, commit: CuratedMailboxCommit, expectedGeneAssetId: string) => Promise<CuratedPublication>;
     now: () => Date;
     scratchDir?: string;
+    /** The node's publish policy, reread every pass; `manual` keeps promotion but never enqueues a publish. */
+    publishMode?: () => assetstore.PublishMode;
 }
 export interface CurationReport {
     promoted: string[];
@@ -40,6 +42,7 @@ export interface CurationReport {
  */
 export declare function runCurationTick(deps: CurationDeps): Promise<CurationReport>;
 export interface CurationStatus {
+    publish_policy: assetstore.PublishMode;
     publish_verifier: 'available' | 'unavailable';
     publish_verifier_reason?: 'read_only_isolation_unavailable';
     awaiting_verification: number;
@@ -51,4 +54,4 @@ export interface CurationStatus {
     };
 }
 /** Why promoted genes are or are not leaving this machine, for /proxy/status and the plugin's status command. */
-export declare function curationStatus(contexts: VerificationContextStore, review: assetstore.ReviewLedger, verifierAvailable: boolean): CurationStatus;
+export declare function curationStatus(contexts: VerificationContextStore, review: assetstore.ReviewLedger, verifierAvailable: boolean, publishMode?: assetstore.PublishMode): CurationStatus;

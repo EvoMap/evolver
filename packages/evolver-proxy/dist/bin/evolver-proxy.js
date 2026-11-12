@@ -149,17 +149,21 @@ export async function runProxyMain(options = {}) {
         const privateNodeCredentialStore = mode === 'private'
             ? new PrivateNodeCredentialStore(storePath)
             : undefined;
+        const recentClients = new hubNs.RecentClients();
+        recentClients.record(hubNs.clientIdentityFromEnv(process.env));
         const runtime = await (options.connectRuntime ?? connectHubRuntime)({
             mode,
             hubUrl,
             senderId,
             store,
+            recentClients,
             ...(privateNodeCredentialStore ? { privateNodeCredentialStore } : {}),
         });
         proxyDaemon = new ProxyDaemon({
             ...createProxyDaemonDeps({
                 runtime,
                 store,
+                recentClients,
                 hubMode: mode,
                 ipcToken,
                 ...(ipcPort !== undefined ? { ipcPort } : {}),
@@ -706,6 +710,7 @@ export function createProxyDaemonDeps(options) {
         ...(triggerFeedback ? { triggerFeedback } : {}),
         hub: options.runtime.hub,
         ...(options.runtime.currentNodeId ? { currentNodeId: options.runtime.currentNodeId } : {}),
+        ...(options.recentClients ? { recentClients: options.recentClients } : {}),
         ...(options.hubMode === 'private' && options.runtime.boundReuseFeedback
             ? { boundReuseFeedback: options.runtime.boundReuseFeedback } : {}),
         ...(options.hubMode ? { hubMode: options.hubMode } : {}),
@@ -1322,6 +1327,7 @@ export async function connectHubRuntime(deps) {
         ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}),
         senderId,
         antiAbuse: { source: 'evolver-proxy', proxyPortConfigured: true },
+        ...(deps.recentClients ? { clients: () => deps.recentClients.list() } : {}),
         onNodeSecretRotated: (secret, version) => {
             persistRotatedPublicNodeCredentials(deps.store, selection, secret, version);
         },

@@ -86,6 +86,8 @@ async function enqueueCurrentVerification(deps, context, body, verified, geneBef
     const commit = (send) => deps.review.withExplicitApproval(context.geneAssetId, () => {
         if (!isCurrent())
             return 'verification_plan_changed';
+        if (deps.publishMode?.() === 'manual')
+            return 'publish_policy_manual';
         if (!send())
             return 'not_stored';
         saveCurrentObservation(deps.contexts, context, { published: { at, envelopeId: '', assetIds: [] } });
@@ -135,7 +137,7 @@ async function curateOne(deps, context, gene) {
  */
 export async function runCurationTick(deps) {
     const promoted = await algo.autoPromoteProbationGenes(deps.store, deps.review, { by: 'proxy-auto-promote' });
-    if (!deps.verifierForRoot)
+    if (!deps.verifierForRoot || deps.publishMode?.() === 'manual')
         return { promoted };
     const candidate = await pendingCandidate(deps);
     if (!candidate)
@@ -145,11 +147,12 @@ export async function runCurationTick(deps) {
     return { promoted, attempted: { geneAssetId: candidate.context.geneAssetId, result } };
 }
 /** Why promoted genes are or are not leaving this machine, for /proxy/status and the plugin's status command. */
-export function curationStatus(contexts, review, verifierAvailable) {
+export function curationStatus(contexts, review, verifierAvailable, publishMode = 'auto') {
     const all = contexts.list();
     const latest = all.filter((context) => context.lastAttempt)
         .sort((a, b) => (b.lastAttempt.at).localeCompare(a.lastAttempt.at))[0];
     return {
+        publish_policy: publishMode,
         publish_verifier: verifierAvailable ? 'available' : 'unavailable',
         ...(verifierAvailable ? {} : { publish_verifier_reason: 'read_only_isolation_unavailable' }),
         awaiting_verification: all.filter((context) => awaitsVerification(context) && review.get(context.geneAssetId)?.state === 'approved').length,

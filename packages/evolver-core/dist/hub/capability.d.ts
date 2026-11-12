@@ -125,7 +125,7 @@ export interface ReuseResultReport {
     tokensSaved?: number;
     timeSavedSeconds?: number;
     reason?: string;
-    /** Caller-produced evidence object. The runtime forwards it verbatim; the Hub owns its schema and weighting. */
+    /** Caller-produced evidence. Adapters may omit local-only provenance; the Hub owns its schema and weighting. */
     evidence?: Record<string, unknown>;
     /**
      * Stable logical identity of THIS reuse report. The Hub derives

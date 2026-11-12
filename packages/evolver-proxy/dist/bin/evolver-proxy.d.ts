@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --
-import { mailbox } from '@evomap/evolver-core';
+import { hub as hubNs, mailbox } from '@evomap/evolver-core';
 import { PrivateNodeCredentialStore } from '../private/nodeCredentialStore.js';
 import { type ProxyStopSignalSource } from './proxyStopSignal.js';
 import { loadEnvFileFromEnv } from './envFile.js';
@@ -90,6 +90,7 @@ export interface RuntimeDeps {
     now?: () => number;
     privateImporter?: PrivateAdapterImporter;
     privateNodeCredentialStore?: Pick<PrivateNodeCredentialStore, 'read' | 'write'>;
+    recentClients?: hubNs.RecentClients;
 }
 export type PublicNodeSecretSource = 'env' | 'store' | 'hub_rotate' | 'legacy_file';
 export interface PublicNodeSecretSelection {
@@ -154,6 +155,7 @@ export declare function runManagedProxyLoop(options: {
 interface CreateProxyDaemonDepsOptions {
     runtime: HubRuntime;
     store: mailbox.MailboxStore;
+    recentClients?: hubNs.RecentClients;
     hubMode?: 'public' | 'private';
     ipcToken: string;
     ipcPort?: number;

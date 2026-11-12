@@ -7,7 +7,7 @@ const MAX_SPEC_BYTES = 1_048_576;
 const MAX_REASON_LENGTH = 500;
 const DEFAULT_ACTOR = 'local-operator';
 export const WORKFLOW_SUBCOMMANDS = [
-    'start', 'submit', 'list', 'status', 'history', 'pause', 'resume', 'cancel', 'approve', 'reject',
+    'start', 'submit', 'list', 'status', 'inspect', 'history', 'pause', 'resume', 'cancel', 'approve', 'reject',
 ];
 class WorkflowCliError extends Error {
     code;
@@ -23,6 +23,7 @@ function usage(stderr) {
         '  evolver workflow start|submit <spec-file> [--run-id <id>] [--state-dir <path>] [--autoexec-home <path>] [--json]',
         '  evolver workflow list [--state-dir <path>] [--autoexec-home <path>] [--json]',
         '  evolver workflow status|history <run-id> [--state-dir <path>] [--autoexec-home <path>] [--json]',
+        '  evolver workflow inspect <run-id> [--state-dir <path>] [--json]  # stored checkpoint; no writes or recovery',
         '  evolver workflow pause|resume|cancel <run-id> [--actor <id>] [--reason <text>] [--state-dir <path>] [--autoexec-home <path>] [--json]',
         '  evolver workflow approve|reject <run-id> <gate-id> [--actor <id>] [--reason <text>] [--state-dir <path>] [--autoexec-home <path>] [--json]',
     ].join('\n') + '\n');
@@ -157,23 +158,33 @@ function statusPayload(state) {
         attempts: current?.attempts ?? 0,
         maxAttempts: current?.maxAttempts ?? 0,
         lastErrorClass: safeMetadataToken(state.lastErrorClass),
-        createdAt: state.createdAt,
-        updatedAt: state.updatedAt,
-        completedAt: state.completedAt ?? null,
+        createdAt: safeString(state.createdAt, 64),
+        updatedAt: safeString(state.updatedAt, 64),
+        completedAt: safeString(state.completedAt, 64),
     };
 }
 function safeString(value, maxLength = 500) {
     if (typeof value !== 'string' || value.length > maxLength || workflow.containsWorkflowSensitiveText(value))
         return null;
-    const hasControlCharacter = [...value].some((character) => {
-        const code = character.charCodeAt(0);
-        return code <= 0x1f || code === 0x7f;
-    });
-    return hasControlCharacter ? null : value;
+    return /[\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/u.test(value) ? null : value;
 }
-function safeMetadataToken(value) {
-    const candidate = safeString(value, 64);
+function safeMetadataToken(value, maxLength = 64) {
+    const candidate = safeString(value, maxLength);
     return candidate !== null && /^[A-Za-z0-9._-]+$/.test(candidate) ? candidate : null;
+}
+function inspectionPayload(state) {
+    const gateId = state.status === 'waiting_approval' ? safeMetadataToken(state.approval?.gateId, 128) : null;
+    const nextAction = state.status === 'waiting_approval' && gateId !== null ? 'review_approval'
+        : state.status === 'unsafe_to_resume' ? 'manual_reconciliation'
+            : state.status === 'failed' || state.status === 'waiting_approval' ? 'inspect_history'
+                : state.status === 'paused' ? 'review_before_resume'
+                    : state.status === 'succeeded' || state.status === 'cancelled' ? 'none' : 'observe';
+    const step = state.currentStep ? state.steps[state.currentStep] : undefined;
+    const metadata = Object.fromEntries(Object.entries(statusPayload(state))
+        .map(([key, value]) => [key, typeof value === 'string' ? safeString(value)
+            : typeof value === 'number' && Number.isFinite(value) ? value : null]));
+    return { ...metadata, view: 'stored_checkpoint', nextAction, approvalGateId: gateId,
+        nextAttemptAt: state.status === 'retry_wait' ? safeString(step?.nextAttemptAt, 64) : null };
 }
 function historyPayload(entry) {
     if (!isRecord(entry))
@@ -350,6 +361,18 @@ export async function runWorkflowCommand(argv, deps = {}) {
             return 0;
         }
         runId = validateId(parsed.positionals[0] ?? '', 'runId');
+        if (parsed.command === 'inspect') {
+            if (!store.inspect)
+                throw new WorkflowCliError('INSPECTION_NOT_SUPPORTED');
+            const payload = inspectionPayload(store.inspect(runId));
+            if (parsed.json)
+                writeJson(stdout, { ok: true, ...payload });
+            else {
+                writeStatusText(stdout, payload);
+                stdout.write(`view=stored_checkpoint action=${String(payload['nextAction'])} gate=${String(payload['approvalGateId'] ?? '-')}\n`);
+            }
+            return 0;
+        }
         if (parsed.command === 'status') {
             const payload = statusPayload(store.read(runId));
             if (parsed.json)
@@ -378,7 +401,7 @@ export async function runWorkflowCommand(argv, deps = {}) {
     catch (error) {
         const code = errorCode(error, parsed.command);
         if (parsed.json)
-            writeJson(stdout, { ok: false, command: parsed.command, ...(runId ? { runId } : {}), error: code });
+            writeJson(stdout, { ok: false, command: parsed.command, ...(runId && safeString(runId, 128) !== null ? { runId } : {}), error: code });
         else
             stderr.write(`workflow ${parsed.command} failed: ${code}\n`);
         return 1;

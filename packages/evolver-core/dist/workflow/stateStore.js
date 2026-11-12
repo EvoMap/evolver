@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { acquireLock, LockTimeoutError, releaseLock } from '../util/fileLock.js';
 import { containsWorkflowSensitiveText } from './dsl.js';
@@ -67,6 +67,40 @@ function ensureOwnerOnlyDirectory(path) {
     if ((stat.mode & 0o077) !== 0) {
         throw new WorkflowStateError(`workflow state directory is not owner-only: ${path}`, 'INSECURE_PERMISSIONS');
     }
+}
+function readInspectionRoot(path) {
+    // macOS system aliases may appear in a legitimate caller's state path.
+    const alias = process.platform === 'darwin' ? /^\/(?:etc|tmp|var)(?=\/)/.exec(path)?.[0] : undefined;
+    if (alias) {
+        const link = lstatSync(alias);
+        if (link.isSymbolicLink()) {
+            if (link.uid !== 0 || resolve('/', readlinkSync(alias)) !== '/private' + alias) {
+                throw new WorkflowStateError('workflow inspection system alias is not trusted', 'UNSAFE_PATH');
+            }
+            path = '/private' + path;
+        }
+    }
+    const parents = [path];
+    for (let parent = dirname(path); parent !== parents.at(-1); parent = dirname(parent))
+        parents.push(parent);
+    const uid = process.getuid ? BigInt(process.getuid()) : undefined;
+    const directories = parents.reverse().map(directory => {
+        const info = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+        if (!info)
+            throw new WorkflowStateError('workflow state directory not found', 'STATE_NOT_FOUND');
+        if (!info.isDirectory() || info.isSymbolicLink()) {
+            throw new WorkflowStateError('workflow inspection path contains an unsafe directory', 'UNSAFE_PATH');
+        }
+        if (process.platform !== 'win32') {
+            const trusted = directory === path
+                ? (info.mode & 63n) === 0n && (uid === undefined || info.uid === uid)
+                : (info.uid === 0n || info.uid === uid) && ((info.mode & 18n) === 0n || (info.mode & 512n) !== 0n);
+            if (!trusted)
+                throw new WorkflowStateError('workflow inspection directory permissions are not trusted', 'INSECURE_PERMISSIONS');
+        }
+        return info;
+    });
+    return { path, directories };
 }
 function jsonViolation(value, path, ancestors) {
     if (value === null || typeof value === 'string' || typeof value === 'boolean')
@@ -183,10 +217,11 @@ function readOwnerOnlyFile(path, optional = false, maxBytes, resourceLabel = 'wo
     }
     assertOwnerOnlyRegularFile(pathBefore, path);
     assertWithinReadLimit(pathBefore, maxBytes, resourceLabel);
-    const noFollow = constants['O_NOFOLLOW'] ?? 0;
+    // A substituted FIFO must reach the descriptor type check without waiting for a writer.
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
     let fd;
     try {
-        fd = openSync(path, constants.O_RDONLY | noFollow);
+        fd = openSync(path, flags);
     }
     catch (error) {
         if (isErrno(error, 'ENOENT')) {
@@ -298,6 +333,18 @@ function migrateLegacy(value) {
         spec,
     };
 }
+function isWorkflowTimestamp(value) {
+    // Persisted times are metadata, never an arbitrary JSON container or diagnostic message.
+    if (typeof value !== 'string' || value.length > 64)
+        return false;
+    const parts = /^(\d{4}|[+-]\d{6})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+    if (!parts || !Number.isFinite(Date.parse(value)))
+        return false;
+    const year = Number(parts[1]), month = Number(parts[2]), day = Number(parts[3]);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = month === 2 ? (leapYear ? 29 : 28) : ([4, 6, 9, 11].includes(month) ? 30 : 31);
+    return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth;
+}
 function parseState(raw, path) {
     let parsed;
     try {
@@ -324,6 +371,8 @@ function parseState(raw, path) {
     if (state.workflowSchemaVersion !== WORKFLOW_DEFINITION_SCHEMA_VERSION
         || typeof state.definitionDigest !== 'string' || !/^[a-f0-9]{64}$/.test(state.definitionDigest)
         || typeof state.workflowName !== 'string'
+        || !isWorkflowTimestamp(state.createdAt) || !isWorkflowTimestamp(state.updatedAt)
+        || (state.completedAt !== undefined && !isWorkflowTimestamp(state.completedAt))
         || !['queued', 'pending', 'running', 'retry_wait', 'pause_requested', 'paused', 'cancel_requested', 'cancelled', 'waiting_approval', 'succeeded', 'failed', 'unsafe_to_resume'].includes(state.status)
         || (state.lastErrorClass !== undefined && !isWorkflowSafeErrorClass(state.lastErrorClass))
         || !state.spec || typeof state.steps !== 'object' || state.steps === null || !state.context
@@ -337,12 +386,13 @@ function parseState(raw, path) {
             || !['idempotent', 'non_idempotent'].includes(step.idempotency)
             || !['pending', 'running', 'retry_wait', 'waiting_approval', 'succeeded', 'failed'].includes(step.status)
             || (step.lastErrorClass !== undefined && !isWorkflowSafeErrorClass(step.lastErrorClass))
+            || (step.nextAttemptAt !== undefined && !isWorkflowTimestamp(step.nextAttemptAt))
             || !Number.isInteger(step.attempts) || step.attempts < 0
             || !Number.isInteger(step.maxAttempts) || step.maxAttempts < 1 || step.attempts > step.maxAttempts) {
             throw new WorkflowStateError(`workflow step state is invalid: ${executionId}`, 'CORRUPT_STATE');
         }
     }
-    if (state.currentStep !== undefined && !state.steps[state.currentStep]) {
+    if (state.currentStep !== undefined && (typeof state.currentStep !== 'string' || !Object.hasOwn(state.steps, state.currentStep))) {
         throw new WorkflowStateError('workflow currentStep does not identify a persisted step', 'CORRUPT_STATE');
     }
     assertJsonDomain(state, 'workflow state');
@@ -640,6 +690,42 @@ export class WorkflowStateStore {
         const path = this.statePath(runId);
         const raw = readOwnerOnlyFile(path, true);
         return raw === undefined ? undefined : parseState(raw, path);
+    }
+    /** Read only a stored checkpoint: no normalization, locks, WAL replay or control overlay. Not execution authority. */
+    inspect(runId) {
+        const name = basename(this.statePath(runId));
+        const before = readInspectionRoot(this.root);
+        const path = join(before.path, name);
+        const requireQuiescent = () => {
+            for (const pending of [this.transactionPath(runId), this.commitLockPath(runId),
+                this.legacyControlLockPath(runId), this.legacyHistoryLockPath(runId)]) {
+                try {
+                    lstatSync(join(before.path, basename(pending)));
+                }
+                catch (error) {
+                    if (isErrno(error, 'ENOENT'))
+                        continue;
+                    throw error;
+                }
+                throw new WorkflowStateError('workflow inspection requires mutation or recovery to finish', 'INSPECTION_UNAVAILABLE');
+            }
+        };
+        requireQuiescent();
+        const raw = readOwnerOnlyFile(path, true, 8 * 1024 * 1024);
+        if (raw === undefined)
+            throw new WorkflowStateError('workflow run not found', 'STATE_NOT_FOUND');
+        const state = parseState(raw, path);
+        if (state.runId !== runId)
+            throw new WorkflowStateError('workflow checkpoint identity mismatch', 'CORRUPT_STATE');
+        // shortcut: detecting restored same-UID ancestor swaps needs descriptor-relative traversal if this becomes execution authority.
+        const after = readInspectionRoot(this.root);
+        if (before.path !== after.path || after.directories.some((info, index) => {
+            const previous = before.directories[index];
+            return info.dev !== previous.dev || info.ino !== previous.ino || info.birthtimeNs !== previous.birthtimeNs;
+        }))
+            throw new WorkflowStateError('workflow inspection directory changed', 'UNSAFE_PATH');
+        requireQuiescent();
+        return state;
     }
     read(runId) {
         ensureOwnerOnlyDirectory(this.root);

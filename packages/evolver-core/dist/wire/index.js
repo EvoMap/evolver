@@ -1,3 +1,3 @@
 export { SCHEMA_VERSION, canonicalize, computeAssetId, verifyAssetId } from '@evomap/gep-sdk';
 export { validateWire, validateWireDeep, wireSchemaIssues, schemaProperties, } from './schemaGate.js';
-export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENERATION_SOURCES, CLAIM_KINDS, ENV_CLASSES, VERIFIER_DECISIONS, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, normalizeClaims, normalizeGeneScope, normalizeRuntimeProfile, normalizeVerifierProfile, stripGeneHints, } from './geneHints.js';
+export { ROUTING_TIERS, REASONING_LEVELS, TOOL_POLICY_SEVERITIES, GENERATION_SOURCES, CLAIM_KINDS, ENV_CLASSES, VERIFIER_DECISIONS, GENE_HINT_FIELDS, normalizeRoutingHint, normalizeToolPolicy, normalizeGenerationMeta, normalizeReusedAssetIds, normalizeClaims, normalizeGeneScope, normalizeRuntimeProfile, normalizeVerifierProfile, stripGeneHints, } from './geneHints.js';

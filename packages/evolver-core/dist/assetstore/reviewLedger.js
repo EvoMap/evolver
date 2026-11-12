@@ -16,6 +16,20 @@ import { assertTrustSidecarHealthy, parseReviewRecord, parseSidecarJsonl, } from
 function immutableRecord(record) {
     return Object.freeze({ ...record });
 }
+const isHumanDecision = (state) => state === 'approved' || state === 'rejected';
+/** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
+function keepReviewRecord(existing, next) {
+    if (!existing || isHumanDecision(next.state))
+        return next;
+    return isHumanDecision(existing.state) ? existing : next;
+}
+/** The record in force per asset_id for an append-ordered history, with the same precedence the ledger applies. */
+export function resolveReviewHistory(history) {
+    const resolved = new Map();
+    for (const record of history)
+        resolved.set(record.assetId, keepReviewRecord(resolved.get(record.assetId), record));
+    return resolved;
+}
 /**
  * Append-only JSONL sidecar at <baseDir>/review.jsonl. Default for an asset with NO record = approved (eligible):
  * only auto-distilled drafts are quarantined here; everything else is eligible by default.
@@ -42,26 +56,16 @@ export class ReviewLedger {
         assertAssetStoreDirectory(dirname(this.path));
         return regularFileFingerprint(this.path);
     }
-    static isHuman(s) { return s === 'approved' || s === 'rejected'; }
-    /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
-    static keep(existing, r) {
-        if (!existing)
-            return r;
-        if (ReviewLedger.isHuman(r.state))
-            return r; // human decision always wins (and later human beats earlier)
-        return ReviewLedger.isHuman(existing.state) ? existing : r; // a quarantine replaces only a prior quarantine
+    readRecords(state) {
+        const raw = state === 'missing' ? null : readUtf8Regular(this.path);
+        if (raw === null)
+            return [];
+        const parsed = parseSidecarJsonl(raw, parseReviewRecord);
+        assertTrustSidecarHealthy('review', parsed);
+        return parsed.records.map(immutableRecord);
     }
     rebuildIndex(state) {
-        const next = new Map();
-        const raw = state === 'missing' ? null : readUtf8Regular(this.path);
-        if (raw !== null) {
-            const parsed = parseSidecarJsonl(raw, parseReviewRecord);
-            assertTrustSidecarHealthy('review', parsed);
-            for (const record of parsed.records) {
-                const frozen = immutableRecord(record);
-                next.set(record.assetId, ReviewLedger.keep(next.get(record.assetId), frozen));
-            }
-        }
+        const next = resolveReviewHistory(this.readRecords(state));
         this.index.clear();
         for (const [assetId, record] of next)
             this.index.set(assetId, record);
@@ -82,7 +86,7 @@ export class ReviewLedger {
     appendUnderLock(full) {
         appendUtf8Durable(this.path, `${JSON.stringify(full)}\n`);
         const frozen = immutableRecord(full);
-        this.index.set(full.assetId, ReviewLedger.keep(this.index.get(full.assetId), frozen));
+        this.index.set(full.assetId, keepReviewRecord(this.index.get(full.assetId), frozen));
         this.fileState = regularFileFingerprint(this.path);
         return this.index.get(full.assetId);
     }
@@ -104,7 +108,7 @@ export class ReviewLedger {
      * Quarantine ONLY if the asset has no record yet — the atomic, reload-aware form `ingest --distill` uses so a
      * re-distill never re-quarantines a gene a human already approved/rejected. The check + append happen here as
      * one operation (reloads first to see any external decision), closing the caller-side get→quarantine gap; and
-     * because `keep()` lets a human decision win regardless of order, a quarantine that still races in behind an
+     * because `keepReviewRecord()` lets a human decision win regardless of order, a quarantine that still races in behind an
      * approval is inert. Returns the surviving record (the existing decision, or the new quarantine).
      */
     quarantineIfAbsent(assetId, reason = 'auto-distilled — review before use') {
@@ -145,6 +149,12 @@ export class ReviewLedger {
     }
     get(assetId) {
         return this.withFreshRead((index) => index.get(assetId) ?? null);
+    }
+    /** Every review record in append order, optionally for one asset_id: the audit trail behind `get()`. */
+    history(assetId) {
+        assertAssetStoreDirectory(dirname(this.path));
+        return withAssetStoreLock(this.lockPath, () => this.readRecords(regularFileFingerprint(this.path))
+            .filter((record) => assetId === undefined || record.assetId === assetId));
     }
     /**
      * Every recorded review decision (resolved, reload-aware). The authoritative source of which assets are

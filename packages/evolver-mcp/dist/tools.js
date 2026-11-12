@@ -649,6 +649,7 @@ export function buildEvolverTools(deps) {
                     publish: { type: 'boolean' },
                     publish_recipe: { type: 'boolean', description: 'When publish=true, also compose and publish a Recipe. Defaults to true.' },
                     min_score: { type: 'integer', minimum: 5, maximum: 10 },
+                    reused_asset_ids: { type: 'array', items: { type: 'string' }, description: 'sha256:<64 hex> ids of the assets this conversation reused (at most 20 kept). Recorded on the Gene as lineage; malformed ids are dropped.' },
                 },
             },
             handler: async (a) => {
@@ -678,7 +679,7 @@ export function buildEvolverTools(deps) {
                 tokensSaved: { type: 'number', minimum: 0, description: 'Deprecated compatibility field. Ignored unless future measurement metadata proves a measured baseline.' },
                 timeSavedSeconds: { type: 'number', minimum: 0 },
                 reason: { type: 'string' },
-                evidence: { type: 'object', description: 'Reuse evidence forwarded verbatim to the Hub, e.g. {tier, applied, check, aborted, stage}. Serialized size must stay within 2KB.' },
+                evidence: { type: 'object', description: 'Reuse evidence for the Proxy and Hub, e.g. {tier, applied, check, aborted, stage}. Hub adapters may omit local-only provenance. Serialized size must stay within 2KB.' },
             },
         },
         handler: async (a) => {

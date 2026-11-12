@@ -8,6 +8,7 @@ export interface SkillFetchHub {
 export interface SkillFetchDeps {
     hub?: SkillFetchHub;
     env?: NodeJS.ProcessEnv;
+    cwd?: string;
     stdout?: (line: string) => void;
     stderr?: (line: string) => void;
     connectHub?: (opts: ConnectPublicOptions) => {

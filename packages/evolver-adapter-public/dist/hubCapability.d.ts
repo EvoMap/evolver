@@ -80,6 +80,10 @@ export interface PublicHubOptions {
     subscribePollMs?: number;
     /** Public Hub anti-abuse heartbeat metadata. Defaults to env-controlled heartbeat mode. */
     antiAbuse?: AntiAbuseTelemetryOptions;
+    /** The host agents and plugins this node served lately, for hello and heartbeat. */
+    clients?: () => readonly hub.SeenClient[];
+    /** The client a one-shot process acts for when no Proxy request scope names one. */
+    processClient?: hub.ClientIdentity;
     /** Best-effort notification for malformed 2xx publish responses; receives no Hub body or credential data. */
     onMalformedPublishReceipt?: (event: MalformedPublishReceiptEvent) => void;
 }
@@ -159,6 +163,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     readonly recipes: hub.RecipeCapability;
     constructor(opts: PublicHubOptions);
     private evolverVersionForWire;
+    private clientsForWire;
+    private withRequestClient;
     private envFingerprintForWire;
     hello(opts: PublicHelloOptions): Promise<PublicHelloResult>;
     heartbeat(opts?: PublicHeartbeatOptions): Promise<PublicHeartbeatResult>;

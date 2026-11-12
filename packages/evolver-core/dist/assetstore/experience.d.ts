@@ -2,6 +2,8 @@ import { Ingestor } from '../events/ingest.js';
 import { type ReviewRecord } from './reviewLedger.js';
 import { type ExperienceSource } from './experienceSources.js';
 import { type AssetRecord } from './provider.js';
+import { type ExperienceKind } from './experienceAuthoring.js';
+import { type ExperienceEvidenceRow } from './experienceEvidence.js';
 export declare const EXPERIENCE_SCHEMA = "evolver.experience.v1";
 export declare const EXPERIENCE_PLAN_TTL = 120000;
 export declare const EXPERIENCE_PAUSED = "experience:paused";
@@ -17,6 +19,7 @@ export interface ExperienceInput {
 }
 export interface ExperienceItem {
     assetId: string;
+    kind: ExperienceKind;
     title: string;
     task: string;
     material: string;
@@ -26,6 +29,8 @@ export interface ExperienceItem {
     state: 'pending' | 'active' | 'paused' | 'removed' | 'untrusted';
     review: string;
     verification: 'not_verified';
+    supersedes: string | null;
+    supersededBy: string | null;
 }
 export interface ExperiencePlanConfirmation {
     schema: 'evolver.experience-plan-confirmation.v1';
@@ -42,6 +47,9 @@ export interface ExperiencePlan {
     expectedRevision: string;
     expiresAt: number;
     asset?: AssetRecord;
+    /** Set when the plan acts on a local AntiGene instead of a Gene. */
+    kind?: 'AntiGene';
+    capsule?: AssetRecord;
     source?: ExperienceSource;
     expectedReview: ReviewRecord | null;
     provenanceRevision: string;
@@ -67,16 +75,20 @@ export interface ExperienceList {
     revision: string;
     hasMore: boolean;
 }
+/** A capture of a Gene authored elsewhere (`gene build`): stored as given, with the Capsule distilled alongside it. */
+export interface AuthoredExperience {
+    gene?: unknown;
+    capsule?: unknown;
+    /** A failed fragment's guardrail, captured in place of a Gene; approving it makes it an advisory warning. */
+    antiGene?: unknown;
+}
 export interface ExperienceDeps {
     audit?: Partial<Pick<Ingestor, 'ingest' | 'ingestExperienceAuditV1' | 'path'>>;
     now?: () => number;
     /** Synchronous test seam; never an environment-controlled product crash switch. */
     checkpoint?: (phase: string) => void;
 }
-export declare class ExperienceError extends Error {
-    readonly code: string;
-    constructor(code: string, message: string);
-}
+export { ExperienceError } from './experienceError.js';
 /** Local curated Gene management. Never publishes, runs a strategy, or upgrades provenance trust. */
 export declare class ExperienceLibrary {
     private readonly deps;
@@ -90,10 +102,20 @@ export declare class ExperienceLibrary {
     private stableSnapshot;
     private currentItem;
     list(query?: string, limit?: number, offset?: number): Promise<ExperienceList>;
+    private geneRecord;
+    /** One stored Gene exactly as kept (local-only fields included) with its library view. */
+    gene(assetId: unknown): Promise<{
+        gene: AssetRecord;
+        item: ExperienceItem;
+    }>;
+    /** Records a trial or experiment outcome beside the Gene; never touches the Gene, its review or capsules.jsonl. */
+    recordEvidence(raw: Record<string, unknown>): Promise<ExperienceEvidenceRow>;
+    evidence(assetId: unknown): Promise<ExperienceEvidenceRow[]>;
     search(query: string, limit?: number): Promise<ExperienceItem[]>;
-    plan(action: ExperienceAction, assetId?: string, input?: ExperienceInput): Promise<ExperiencePlan>;
+    plan(action: ExperienceAction, assetId?: string, input?: ExperienceInput, authored?: AuthoredExperience): Promise<ExperiencePlan>;
     private audit;
     private auditEvent;
+    private admitRootAudit;
     private completion;
     private project;
     planSourceRecovery(assetId: string): Promise<ExperienceSourceRecoveryPlan>;

@@ -8,6 +8,8 @@ export interface ReviewRecord {
     /** Historical experience identity; never part of the content-addressed Gene. */
     operationId?: string;
 }
+/** The record in force per asset_id for an append-ordered history, with the same precedence the ledger applies. */
+export declare function resolveReviewHistory(history: readonly ReviewRecord[]): Map<string, ReviewRecord>;
 /**
  * Append-only JSONL sidecar at <baseDir>/review.jsonl. Default for an asset with NO record = approved (eligible):
  * only auto-distilled drafts are quarantined here; everything else is eligible by default.
@@ -26,9 +28,7 @@ export declare class ReviewLedger {
     constructor(baseDir: string, now?: () => number);
     /** 只用于轮询变化提示；审批判断仍须读取加锁的权威 snapshot。 */
     revision(): string;
-    private static isHuman;
-    /** Which record wins for an asset_id: a human decision beats a quarantine; otherwise the later one wins. */
-    private static keep;
+    private readRecords;
     private rebuildIndex;
     private refreshUnderLock;
     private withFreshRead;
@@ -43,7 +43,7 @@ export declare class ReviewLedger {
      * Quarantine ONLY if the asset has no record yet — the atomic, reload-aware form `ingest --distill` uses so a
      * re-distill never re-quarantines a gene a human already approved/rejected. The check + append happen here as
      * one operation (reloads first to see any external decision), closing the caller-side get→quarantine gap; and
-     * because `keep()` lets a human decision win regardless of order, a quarantine that still races in behind an
+     * because `keepReviewRecord()` lets a human decision win regardless of order, a quarantine that still races in behind an
      * approval is inert. Returns the surviving record (the existing decision, or the new quarantine).
      */
     quarantineIfAbsent(assetId: string, reason?: string): ReviewRecord;
@@ -54,6 +54,8 @@ export declare class ReviewLedger {
     /** Explicit, audited rejection (who/why) — a reviewed terminal state that stays out of runs. */
     reject(assetId: string, by: string, reason: string): ReviewRecord;
     get(assetId: string): ReviewRecord | null;
+    /** Every review record in append order, optionally for one asset_id: the audit trail behind `get()`. */
+    history(assetId?: string): ReviewRecord[];
     /**
      * Every recorded review decision (resolved, reload-aware). The authoritative source of which assets are
      * quarantined/approved/rejected — a queue/UI must read pending state from HERE, not by scanning a truncated

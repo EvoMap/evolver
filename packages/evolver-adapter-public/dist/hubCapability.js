@@ -133,6 +133,15 @@ export class PublicHubCapability {
             ? explicitVersion
             : antiAbuse?.evolverVersion ?? antiAbuse?.envFingerprint?.evolver_version);
     }
+    // Not inside env_fingerprint: the Hub matches nodes on that object, and an agent upgrade must not look like a new node.
+    clientsForWire() {
+        const clients = this.opts.clients?.() ?? [];
+        return clients.length > 0 ? { clients } : {};
+    }
+    withRequestClient(wire) {
+        const client = hubNs.currentRequestClient() ?? this.opts.processClient;
+        return client ? { ...wire, client } : wire;
+    }
     envFingerprintForWire(evolverVersion) {
         const fingerprint = {
             ...(this.opts.antiAbuse?.envFingerprint
@@ -161,6 +170,7 @@ export class PublicHubCapability {
                 // one-shot CLI paths never send; the hub then answers heartbeats with resend_hello
                 // `missing_env_fingerprint` and 403-antibodies /a2a/fetch (#555).
                 env_fingerprint: this.envFingerprintForWire(evolverVersion),
+                ...this.clientsForWire(),
             }));
             const payload = asRecord(body['payload']) ?? body;
             const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');
@@ -264,6 +274,9 @@ export class PublicHubCapability {
         const meta = {};
         if (nodeSecretVersion !== undefined)
             meta['node_secret_version'] = nodeSecretVersion;
+        const { clients } = this.clientsForWire();
+        if (clients)
+            meta['clients'] = clients;
         const antiAbuse = this.opts.antiAbuse ?? {};
         if (antiAbuseTelemetryMode(antiAbuse.env) === 'heartbeat') {
             try {
@@ -355,7 +368,7 @@ export class PublicHubCapability {
         // #69: map camelCase SearchQuery → hub snake_case wire (signalsAny → signals) before sending.
         // /a2a/fetch responses are FULL GEP envelopes (buildResponse('fetch', …)); the rows live at payload.results,
         // NOT at the top level. Reading body.results here always yielded [] — every fetch silently returned nothing.
-        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToFetchWire(query)));
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient(searchQueryToFetchWire(query))));
         return reference.withReferenceScope(this.referenceScope, () => {
             reference.assertExecutionEligible(body);
             return newbieFetchConfirmation(body) ?? { assets: assetsFromBody(body), confirmRequired: false };
@@ -371,7 +384,7 @@ export class PublicHubCapability {
         const id = assetId.trim();
         if (!id)
             return { status: 'absent' };
-        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', { asset_ids: [id] }));
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient({ asset_ids: [id] })));
         const matches = [];
         for (const row of reference.withReferenceScope(this.referenceScope, () => assetCandidatesFromBody(body))) {
             const asset = unwrapFetchDeliveryRow(row);
@@ -432,7 +445,7 @@ export class PublicHubCapability {
             });
             return reference.withReferenceScope(this.referenceScope, () => semanticSearchAssets(body));
         }
-        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', searchQueryToSearchOnlyWire(query)));
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient(searchQueryToSearchOnlyWire(query))));
         return reference.withReferenceScope(this.referenceScope, () => signalSearchAssets(body));
     }
     agentDirectory = {
@@ -584,6 +597,10 @@ export class PublicHubCapability {
         if ('reason' in timeSavedSeconds)
             return { recorded: false, reason: timeSavedSeconds.reason };
         try {
+            // Preserve host provenance locally; the public Hub rejects this local-only field.
+            const evidence = report.evidence ? { ...report.evidence } : undefined;
+            if (evidence)
+                delete evidence['source'];
             const body = await this.http.call('POST', `/a2a/assets/${encodeURIComponent(assetId)}/reuse-result`, {
                 asset_id: assetId,
                 outcome: report.outcome,
@@ -595,7 +612,7 @@ export class PublicHubCapability {
                 ...(report.traceId ? { trace_id: report.traceId } : {}),
                 ...(timeSavedSeconds.value !== undefined ? { time_saved_seconds: timeSavedSeconds.value } : {}),
                 ...(report.reason ? { reason: report.reason } : {}),
-                ...(report.evidence ? { evidence: report.evidence } : {}),
+                ...(evidence ? { evidence } : {}),
             });
             const payload = body['payload'] === undefined ? body : asRecord(body['payload']) ?? {};
             const terminalDeclared = payload['terminal'] === true || body['terminal'] === true;

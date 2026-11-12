@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { intakeGene } from '../algo/geneIntake.js';
 import { Ingestor } from '../events/ingest.js';
 import { rootEventsPath } from '../events/paths.js';
+import { AuditWriteSkipped } from '../events/boundedAudit.js';
 import { computeAssetId } from '../wire/index.js';
 import { readLocalGeneSnapshot, readLocalExperienceSnapshot } from './boundedSnapshot.js';
 import { approvedGenesFromSnapshot } from './reviewFilter.js';
@@ -16,18 +17,15 @@ import { journalDigest, journalParentIdentity, stableJson } from '../util/durabl
 import { ExperienceJournal, ExperienceJournalError } from './experienceJournal.js';
 import { experienceAuditKey, snapshotExperienceAuditV1 } from '../events/experienceAuditJournal.js';
 import { rootEvent } from '../events/eventSchema.js';
+import { ExperienceError } from './experienceError.js';
+import { authoredAntiGene, authoredCapsule, authoredGene, experienceFields, supersededBy, supersededReview, supersededTarget, supersedesOf, } from './experienceAuthoring.js';
+import { EVIDENCE_FILE, ExperienceEvidence, captureEvidenceRow, evidenceInputOf } from './experienceEvidence.js';
 export const EXPERIENCE_SCHEMA = 'evolver.experience.v1';
 export const EXPERIENCE_PLAN_TTL = 120_000;
+const ROOT_ADMISSION_RETRY_PAUSE_MS = 25;
 export const EXPERIENCE_PAUSED = 'experience:paused';
 export const EXPERIENCE_REMOVED = 'experience:removed';
-export class ExperienceError extends Error {
-    code;
-    constructor(code, message) {
-        super(message);
-        this.code = code;
-        this.name = 'ExperienceError';
-    }
-}
+export { ExperienceError } from './experienceError.js';
 const activeExperienceProjections = new Map();
 const projectionKey = (baseDir, commit) => `${baseDir}:${commit.commitId}`;
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -88,7 +86,6 @@ function strings(value, maximum = 12, length = 600) {
         throw new ExperienceError('INPUT_INVALID', '请填写简短的条件和步骤。');
     return value.map(item => text(item, length)).filter(Boolean);
 }
-function fieldStrings(value) { return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []; }
 function inputAsset(value) {
     const title = text(value.title, 160);
     const task = text(value.task, 1200);
@@ -105,6 +102,10 @@ function inputAsset(value) {
     const asset = { ...result.gene, type: 'Gene', asset_id: '', preconditions: conditions };
     asset.asset_id = computeAssetId(asset);
     return asset;
+}
+function assetIn(snapshot, assetId, kind) {
+    return kind === 'AntiGene' ? snapshot.identities?.find(asset => asset.type === 'AntiGene' && asset.asset_id === assetId)
+        : snapshot.genes.find(gene => gene.asset_id === assetId);
 }
 function sourceTask(asset) {
     const source = asset['source_task'];
@@ -123,10 +124,10 @@ function item(asset, snapshot) {
         ? reviewed.reason === EXPERIENCE_PAUSED ? 'paused' : 'removed'
         : !trusted ? 'untrusted' : reviewed?.state === 'quarantined' ? 'pending' : 'active';
     const source = sourceTask(asset);
-    return { assetId: asset.asset_id, title: String(asset['summary'] ?? asset['id'] ?? '经验'),
+    return { assetId: asset.asset_id, ...experienceFields(asset),
         task: String(source['title'] ?? ''), material: String(source['material'] ?? ''),
-        conditions: fieldStrings(asset['preconditions']), steps: fieldStrings(asset['strategy']),
-        signals: fieldStrings(asset['signals_match']), state, review: reviewed?.state ?? 'eligible', verification: 'not_verified',
+        state, review: reviewed?.state ?? 'eligible', verification: 'not_verified',
+        supersedes: supersedesOf(asset), supersededBy: supersededBy(snapshot, asset.asset_id),
     };
 }
 /** Local curated Gene management. Never publishes, runs a strategy, or upgrades provenance trust. */
@@ -191,9 +192,9 @@ export class ExperienceLibrary {
             throw new ExperienceError('STATE_CHANGED', '经验库有变化，请重新查看。');
         return { snapshot, files, rootGeneration };
     }
-    async currentItem(assetId) {
-        const { snapshot, files } = await this.stableSnapshot();
-        const record = snapshot.genes.find(gene => gene.asset_id === assetId);
+    async currentItem(assetId, kind) {
+        const { snapshot, files } = await this.stableSnapshot(kind === 'AntiGene');
+        const record = assetIn(snapshot, assetId, kind);
         if (!record)
             throw new ExperienceError('VERIFY_FAILED', '操作已完成，但未能核对当前经验，请重新查看经验库。');
         const source = new ExperienceSources(this.baseDir).read().get(assetId);
@@ -214,6 +215,29 @@ export class ExperienceLibrary {
             || [row.title, row.task, ...row.conditions, ...row.signals].join(' ').toLocaleLowerCase().includes(query));
         return { schema: EXPERIENCE_SCHEMA, items: rows.slice(offset, offset + limit), revision: revision(snapshot), hasMore: rows.length > offset + limit };
     }
+    async geneRecord(assetId) {
+        if (typeof assetId !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(assetId))
+            throw new ExperienceError('INPUT_INVALID', '请提供 sha256:… 资产 ID。');
+        const { snapshot } = await this.stableSnapshot();
+        const gene = snapshot.genes.find((candidate) => candidate.asset_id === assetId);
+        if (!gene)
+            throw new ExperienceError('NOT_FOUND', '没找到这条经验。');
+        return gene;
+    }
+    /** One stored Gene exactly as kept (local-only fields included) with its library view. */
+    async gene(assetId) {
+        const gene = await this.geneRecord(assetId);
+        return { gene, item: await this.currentItem(gene.asset_id) };
+    }
+    /** Records a trial or experiment outcome beside the Gene; never touches the Gene, its review or capsules.jsonl. */
+    async recordEvidence(raw) {
+        const input = evidenceInputOf(raw);
+        return new ExperienceEvidence(this.baseDir, this.now).record(await this.geneRecord(input.assetId), input);
+    }
+    async evidence(assetId) {
+        const gene = await this.geneRecord(assetId);
+        return new ExperienceEvidence(this.baseDir).list(gene.asset_id);
+    }
     async search(query, limit = 5) {
         const snapshot = await this.snapshot();
         const q = text(query, 300).toLocaleLowerCase();
@@ -225,21 +249,34 @@ export class ExperienceLibrary {
             || words.some(word => [row.title, ...row.conditions, ...row.signals].join(' ').toLocaleLowerCase().includes(word))
             || row.signals.some(signal => q.includes(signal.toLocaleLowerCase()))).slice(0, limit);
     }
-    async plan(action, assetId, input) {
+    async plan(action, assetId, input, authored = {}) {
         if (!['capture', 'approve', 'pause', 'resume', 'remove'].includes(action))
             throw new ExperienceError('INPUT_INVALID', '操作不正确。');
-        const { snapshot, files, rootGeneration } = await this.stableSnapshot(action === 'capture');
+        let { snapshot, files, rootGeneration } = await this.stableSnapshot(action === 'capture');
         let asset;
+        let capsule;
+        let kind;
         if (action === 'capture') {
             if (!input)
                 throw new ExperienceError('INPUT_INVALID', '请先填写要保存的方法。');
-            asset = inputAsset(input);
+            if (authored.antiGene !== undefined && (authored.gene !== undefined || authored.capsule !== undefined))
+                throw new ExperienceError('INPUT_INVALID', 'AntiGene 不能和 Gene 或 Capsule 一起保存。');
+            if (authored.antiGene !== undefined)
+                kind = 'AntiGene';
+            asset = kind ? authoredAntiGene(authored.antiGene) : authored.gene === undefined ? inputAsset(input) : authoredGene(authored.gene);
             assetId = asset.asset_id;
-            if (snapshot.genes.some(gene => gene.asset_id === assetId))
+            capsule = authored.capsule === undefined ? undefined : authoredCapsule(authored.capsule, asset);
+            if (assetIn(snapshot, assetId, kind))
                 throw new ExperienceError('ALREADY_SAVED', '这条方法已经保存过了。');
         }
         else {
-            const found = snapshot.genes.find(gene => gene.asset_id === assetId);
+            let found = snapshot.genes.find(gene => gene.asset_id === assetId);
+            if (!found) {
+                ({ snapshot, files, rootGeneration } = await this.stableSnapshot(true));
+                found = assetIn(snapshot, assetId ?? '', 'AntiGene');
+                if (found)
+                    kind = 'AntiGene';
+            }
             if (!found)
                 throw new ExperienceError('NOT_FOUND', '没找到这条经验。');
             const current = item(found, snapshot);
@@ -258,7 +295,8 @@ export class ExperienceLibrary {
             expectedRevision: revision(snapshot), expectedFiles: files, expectedRoot: rootGeneration, auditTarget: this.deps.audit?.path ?? rootEventsPath(), expectedReview: snapshot.review.get(assetId) ?? null,
             provenanceRevision: regularFileFingerprint(join(this.baseDir, 'provenance.jsonl')),
             expiresAt: this.now() + EXPERIENCE_PLAN_TTL,
-            ...(asset ? { asset, source: { task: text(input.task, 1200), material: text(input.material, 16000) } } : {}) });
+            ...(kind ? { kind } : {}),
+            ...(asset ? { asset, ...(capsule ? { capsule } : {}), source: { task: text(input.task, 1200), material: text(input.material, 16000) } } : {}) });
     }
     audit(path = this.deps.audit?.path ?? rootEventsPath()) {
         if (this.deps.audit?.path && this.deps.audit.path !== path)
@@ -270,7 +308,7 @@ export class ExperienceLibrary {
     }
     async auditEvent(raw, key, path = this.deps.audit?.path ?? rootEventsPath(), deadlineAt = Date.now() + 30_000, expectedNamespace) {
         const snapshot = snapshotExperienceAuditV1(raw), hash = journalDigest(snapshot);
-        const response = await this.audit(path).ingestExperienceAuditV1(snapshot, key, deadlineAt, expectedNamespace);
+        const response = await this.admitRootAudit(path, snapshot, key, deadlineAt, expectedNamespace);
         let event;
         try {
             event = rootEvent.parse(JSON.parse(JSON.stringify(response)));
@@ -284,6 +322,20 @@ export class ExperienceLibrary {
             throw new ExperienceError('AUDIT_RECEIPT_INVALID', '审计回执与这次操作不一致，请检查恢复状态。');
         }
         return event;
+    }
+    // One Root admission is capped at 500ms so it never holds the Root lock for long, and a slow disk can expire it
+    // before it writes. The key replays its reserved slot, so admitting again inside this operation's window cannot duplicate it.
+    async admitRootAudit(path, snapshot, key, deadlineAt, expectedNamespace) {
+        for (;;) {
+            try {
+                return await this.audit(path).ingestExperienceAuditV1(snapshot, key, deadlineAt, expectedNamespace);
+            }
+            catch (error) {
+                if (!(error instanceof AuditWriteSkipped) || error.reason !== 'cancelled_or_expired' || Date.now() + ROOT_ADMISSION_RETRY_PAUSE_MS >= deadlineAt)
+                    throw error;
+                await new Promise(resolve => setTimeout(resolve, ROOT_ADMISSION_RETRY_PAUSE_MS));
+            }
+        }
     }
     completion(commit) {
         return { type: commit.action === 'recover-source' ? 'experience.source.recovered' : commit.action === 'capture' ? 'actor.human.teach' : ['approve', 'resume'].includes(commit.action)
@@ -398,17 +450,17 @@ export class ExperienceLibrary {
             operations: await journal.recoveryStatus(100, deadlineAt) };
     }
     async executionEvidence(plan) {
-        const { snapshot, files } = await this.stableSnapshot(plan.action === 'capture');
+        const { snapshot, files } = await this.stableSnapshot(plan.action === 'capture' || plan.kind === 'AntiGene');
         if (revision(snapshot) !== plan.expectedRevision || stableJson(files) !== stableJson(plan.expectedFiles))
             throw new ExperienceError('PLAN_STALE', '经验库有变化，请重新查看后确认。');
         if (stableJson(snapshot.review.get(plan.assetId) ?? null) !== stableJson(plan.expectedReview)
             || files['provenance.jsonl'] !== plan.provenanceRevision)
             throw new ExperienceError('PLAN_INVALID', '确认记录的审批或来源证据不正确。');
-        const known = snapshot.genes.find(gene => gene.asset_id === plan.assetId);
+        const known = assetIn(snapshot, plan.assetId, plan.kind);
         const trusted = snapshot.provenance.get(plan.assetId)?.trusted !== false;
         let confirmedSource, record;
         if (plan.action === 'capture') {
-            if (!plan.asset || plan.asset.type !== 'Gene' || ['source_task', 'task', 'material'].some(key => Object.hasOwn(plan.asset, key)) || plan.asset.asset_id !== plan.assetId || computeAssetId(plan.asset) !== plan.assetId || known || !plan.source)
+            if (!plan.asset || plan.asset.type !== (plan.kind ?? 'Gene') || ['source_task', 'task', 'material'].some(key => Object.hasOwn(plan.asset, key)) || plan.asset.asset_id !== plan.assetId || computeAssetId(plan.asset) !== plan.assetId || known || !plan.source)
                 throw new ExperienceError('PLAN_INVALID', '要保存的内容已变化。');
             confirmedSource = { task: text(plan.source.task, 1200), material: text(plan.source.material, 16000) };
             if (!confirmedSource.task || !confirmedSource.material)
@@ -416,9 +468,12 @@ export class ExperienceLibrary {
             record = normalizeForPut(plan.asset, snapshot.referenceScope).record;
             if (!frozenAssetRecordsEqual(record, plan.asset))
                 throw new ExperienceError('PLAN_INVALID', '保存内容的规范形式已变化。');
+            if (plan.capsule)
+                authoredCapsule(plan.capsule, record);
         }
         else if (!known)
             throw new ExperienceError('NOT_FOUND', '没找到这条经验。');
+        const superseded = plan.action === 'approve' && known ? supersededTarget(known, snapshot) : null;
         if (known) {
             const current = item(known, snapshot);
             if (plan.action === 'approve' && current.state !== 'pending')
@@ -434,10 +489,10 @@ export class ExperienceLibrary {
         }
         const frozen = record && snapshot.identities?.find(existing => existing.asset_id === record.asset_id);
         const frozenCollision = !!(record && frozen && !frozenAssetRecordsEqual(frozen, record));
-        const logicalCollision = !!(record && snapshot.identities?.some(gene => gene.type === 'Gene' && gene['id'] === record['id'] && gene.asset_id !== record.asset_id));
+        const logicalCollision = !!(record && snapshot.identities?.some(other => other.type === record.type && other['id'] === record['id'] && other.asset_id !== record.asset_id));
         // Only target evidence crosses the audit await. The complete corpus and its
         // reference-reader closures are released; the full file fence still applies.
-        return { known, trusted, confirmedSource, record, frozenCollision, logicalCollision };
+        return { known, trusted, confirmedSource, record, frozenCollision, logicalCollision, superseded };
     }
     async execute(inputPlan) {
         const plan = detachPlan(inputPlan);
@@ -455,7 +510,7 @@ export class ExperienceLibrary {
             catch {
                 throw new ExperienceError('AUDIT_COMPLETION_PENDING', '经验已变更，结果审计待恢复；请运行经验库恢复，不要重新审批。');
             }
-            return this.currentItem(plan.assetId);
+            return this.currentItem(plan.assetId, plan.kind);
         }
         if (previous)
             throw new ExperienceError('OPERATION_ABORTED', '这次操作没有提交，请重新查看并确认。');
@@ -463,7 +518,7 @@ export class ExperienceLibrary {
             throw new ExperienceError('AUDIT_TARGET_CHANGED', '确认中的审计目录已变化，请重新确认。');
         if (this.now() >= plan.expiresAt)
             throw new ExperienceError('PLAN_EXPIRED', '这份确认已过期，请再检查一次。');
-        const { known, trusted, confirmedSource, record, frozenCollision, logicalCollision } = await this.executionEvidence(plan);
+        const { known, trusted, confirmedSource, record, frozenCollision, logicalCollision, superseded } = await this.executionEvidence(plan);
         const payload = { assetId: plan.assetId, operationId: plan.id, action: plan.action, source: 'experience-library', sourceVerified: false,
             phase: 'requested', requestHash };
         const requested = await this.auditEvent({ type: 'experience.operation.requested', payload,
@@ -497,14 +552,20 @@ export class ExperienceLibrary {
                         mutations.push({ file: 'review.jsonl', row: { ...reviewRecord, operationId: plan.id } });
                     if (!source)
                         mutations.push({ file: 'experience-sources.jsonl', row: { schema: 1, assetId: plan.assetId, ...confirmedSource, operationId: plan.id } });
-                    mutations.push({ file: 'genes.jsonl', row: record });
+                    mutations.push({ file: plan.kind === 'AntiGene' ? 'anti-genes.jsonl' : 'genes.jsonl', row: record });
+                    if (plan.capsule)
+                        mutations.push({ file: EVIDENCE_FILE, row: { ...captureEvidenceRow(plan.capsule, plan.assetId, plan.id, reviewRecord.at) } });
                 }
-                else
+                else {
                     mutations.push({ file: 'review.jsonl', row: { ...reviewRecord, operationId: plan.id } });
+                    if (superseded)
+                        mutations.push({ file: 'review.jsonl', row: { ...supersededReview(superseded, reviewRecord.at), operationId: plan.id } });
+                }
                 return { mutations, result: { action: plan.action, assetId: plan.assetId, state,
                         evidence: { auditTarget: plan.auditTarget, auditNamespace: requested.experienceAuditNamespace, assetDigest,
                             review: plan.action === 'capture' && plan.expectedReview ? plan.expectedReview : { ...reviewRecord, operationId: plan.id }, previousReview: plan.expectedReview,
-                            provenanceRevision: plan.provenanceRevision, sourceDigest: journalDigest(confirmedSource ?? source ?? null) } } };
+                            provenanceRevision: plan.provenanceRevision, sourceDigest: journalDigest(confirmedSource ?? source ?? null),
+                            ...(superseded ? { superseded } : {}) } } };
             }, this.now, this.deps.checkpoint);
         }
         catch (cause) {
@@ -540,6 +601,6 @@ export class ExperienceLibrary {
             }
         }
         catch { /* Optional historical catch-up cannot revoke this confirmed commit. */ }
-        return this.currentItem(plan.assetId);
+        return this.currentItem(plan.assetId, plan.kind);
     }
 }

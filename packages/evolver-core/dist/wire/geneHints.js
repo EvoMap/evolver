@@ -30,6 +30,15 @@ export const TOOL_POLICY_SEVERITIES = ['warn', 'block'];
  * The high-value payload of an evolved Gene is the corrective_insight that flipped the outcome.
  */
 export const GENERATION_SOURCES = ['evolved', 'distilled', 'manual'];
+const MAX_REUSED_ASSET_IDS = 20;
+const REUSED_ASSET_ID = /^sha256:[a-f0-9]{64}$/;
+/** Keeps the well-formed content ids, first occurrence first, up to the cap; anything else is dropped, never fatal. */
+export function normalizeReusedAssetIds(raw) {
+    if (!Array.isArray(raw))
+        return [];
+    const ids = raw.filter((id) => typeof id === 'string' && REUSED_ASSET_ID.test(id));
+    return [...new Set(ids)].slice(0, MAX_REUSED_ASSET_IDS);
+}
 /**
  * K_auto projection-key coordinates a Gene MAY carry so its record is machine-decidable in the strict
  * automatic-governance subdomain (paper §K_auto; validator: algo/kautoValidator.ts). These four fields are the
@@ -124,7 +133,7 @@ function cleanToolList(raw) {
 }
 /**
  * Normalize an arbitrary generation_meta fragment to a strict { source, quality_score?, quality_heuristics?,
- * overcame_errors? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
+ * overcame_errors?, reused_asset_ids? } object, or null. Lossy (mirrors normalizeRoutingHint / normalizeToolPolicy): unknown source
  * values are dropped (the whole block collapses to null — a generation_meta with no recognized source carries no
  * usable provenance signal); quality_score is clamped to [0,1]; heuristics keeps only its numeric/boolean fields;
  * overcame_errors keeps only non-empty strings. A block with a valid source but all-else-empty still survives (source
@@ -162,6 +171,9 @@ export function normalizeGenerationMeta(raw) {
     const errs = cleanToolList(r['overcame_errors']);
     if (errs)
         out.overcame_errors = errs;
+    const reused = normalizeReusedAssetIds(r['reused_asset_ids']);
+    if (reused.length > 0)
+        out.reused_asset_ids = reused;
     return out;
 }
 /**

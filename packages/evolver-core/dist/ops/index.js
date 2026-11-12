@@ -6,6 +6,7 @@ export * from './valueOutreach.js';
 export * from './recall.js';
 export * from './reuseOutcomes.js';
 export * from './evolutionGraphProjection.js';
+export * from './assetEvolution.js';
 export * from './geneContextDelivery.js';
 export * from './geneContextObservationIndex.js';
 export { ContextObservationNotCommittedError, builtInContextObservationDispatch, durableObservationIntents, memoryObservationIntents, settleContextObservation } from './contextObservationSettlement.js';

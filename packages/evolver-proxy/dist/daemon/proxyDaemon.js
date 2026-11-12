@@ -390,7 +390,7 @@ export class ProxyDaemon {
                 },
                 ...(this.deps.onIpcAuthFailure ? { onAuthFailure: this.deps.onIpcAuthFailure } : {}),
                 routeBodyLimits: { ...hubNs.recipeIpcBodyLimits, 'POST /conversation/distill': MAX_DISTILL_BODY_BYTES },
-                extraRoutes: [(ctx) => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx))],
+                extraRoutes: [(ctx) => this.asRequestClient(ctx, () => reference.withReferenceScope(this.referenceStore?.scope, () => this.handleProxyRoute(ctx)))],
             });
             const port = await this.listenIpc(this.ipc);
             try {
@@ -450,6 +450,7 @@ export class ProxyDaemon {
                 verify: (body, verifier, planDigest) => resolveVerifiedExecutionAfterPreflight(verifier, body, this.deps.publishExecutionVerifierTimeoutMs, [this.publishAbortController.signal], this.publishBindingLedger.runtimeDomain, undefined, planDigest),
                 enqueue: (body, verified, planDigest, commit, expectedGeneAssetId) => this.enqueueVerifiedDistillation(body, verified, planDigest, commit, expectedGeneAssetId),
                 now: () => new Date(this.now()),
+                publishMode: () => this.publishMode(),
             });
         }
         catch (err) {
@@ -458,6 +459,9 @@ export class ProxyDaemon {
         finally {
             this.curationRunning = false;
         }
+    }
+    publishMode() {
+        return this.assetStore instanceof assetstore.LocalJsonlProvider ? assetstore.readPublishPolicy(this.assetStore.baseDir).mode : 'auto';
     }
     async enqueueVerifiedDistillation(body, verifiedExecution, validationPlanDigest, commit, expectedGeneAssetId) {
         if (this.hubAuthFailed())
@@ -1194,6 +1198,11 @@ export class ProxyDaemon {
             return undefined;
         }
     }
+    asRequestClient(ctx, fn) {
+        const client = hubNs.clientIdentityFromHeaders(ctx.req.headers);
+        this.deps.recentClients?.record(client);
+        return hubNs.withRequestClient(client, fn);
+    }
     async handleProxyRoute(ctx) {
         this.lastRouteAt = this.now();
         const expectedHeader = singleHeader(ctx.req.headers['x-evomap-expected-hub-mode']);
@@ -1253,7 +1262,7 @@ export class ProxyDaemon {
                 } : {}),
                 recipe_execution_scope: recipeIpcScope(this.hub.recipes?.execution),
                 ...(this.verificationContexts && this.sourceReview ? {
-                    background_curation: curationStatus(this.verificationContexts, this.sourceReview, this.deps.publishVerifierForRoot !== undefined),
+                    background_curation: curationStatus(this.verificationContexts, this.sourceReview, this.deps.publishVerifierForRoot !== undefined, this.publishMode()),
                 } : {}),
                 ...(this.distillOutcomes ? { distillation: this.distillOutcomes.summary(new Date(this.now())) } : {}),
                 ...(this.trialControls && this.assetStore ? { trial_effect: await trialEffect(this.assetStore, this.trialControls) } : {}),
@@ -1877,7 +1886,7 @@ export class ProxyDaemon {
             if (!verified)
                 return fail(422, 'publish_reverification_execution_failed');
             try {
-                const result = hubNs.completePublishReverification(candidate, verified, sanitizeEnv);
+                const result = hubNs.completePublishReverification(candidate, verified, sanitizeEnv, hubNs.currentRequestClient());
                 assetIds = safeIds(result.assets.map((asset) => asset.asset_id));
                 // 登记与资产持久化是独立状态，写入抛错后不得声称没有副作用或撤销合法回执。
                 bindingRegistered = null;
@@ -1930,7 +1939,9 @@ export class ProxyDaemon {
             if (publishRequested && abortPublish())
                 return true;
             let observedChecks;
+            const requestClient = hubNs.currentRequestClient();
             const distill = await hubNs.distillConversation(body, {
+                ...(requestClient ? { client: requestClient } : {}),
                 onObservedValidationPlan: (checks) => { observedChecks = checks; },
                 // 调用方明确要求持久化时，即使发布被证据或质量闸门拦截，也保留可审查草稿；永不因此进入队列。
                 persist: body.persist === true,
@@ -2951,8 +2962,10 @@ async function convertLegacyLooseAsset(value, verifyExecution, verifyExecutionTi
     };
     try {
         const verifiedExecution = await resolveVerifiedExecutionAfterPreflight(verifyExecution, normalized.input, verifyExecutionTimeoutMs, parentSignals.filter((signal) => signal !== undefined), ledger?.runtimeDomain, genePolicy);
+        const requestClient = hubNs.currentRequestClient();
         const distilled = await hubNs.distillConversation(normalized.input, {
             persist: false,
+            ...(requestClient ? { client: requestClient } : {}),
             publishSanitizeEnv: sanitizeEnv,
             genePolicy,
             ...(verifiedExecution ? { verifiedExecution } : {}),

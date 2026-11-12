@@ -22,6 +22,8 @@ export declare const COMMAND_GROUPS: {
     readonly inject: "Memory";
     readonly recall: "Memory";
     readonly experience: "Memory";
+    readonly gene: "Memory";
+    readonly redact: "Tools";
     readonly 'mcp-stdio': "Tools";
     readonly reuse: "Memory";
     readonly 'reuse-report': "Memory";
@@ -33,6 +35,7 @@ export declare const COMMAND_GROUPS: {
     readonly 'asset-log': "Assets";
     readonly 'asset-trust': "Assets";
     readonly 'asset-health': "Assets";
+    readonly 'asset-evolution': "Assets";
     readonly 'asset-repair': "Assets";
     readonly material: "Assets";
     readonly reference: "Assets";
@@ -43,6 +46,7 @@ export declare const COMMAND_GROUPS: {
     readonly phub: "Hub";
     readonly sync: "Hub";
     readonly publish: "Hub";
+    readonly 'publish-policy': "Hub";
     readonly fetch: "Hub";
     readonly buy: "Hub";
     readonly orders: "Hub";

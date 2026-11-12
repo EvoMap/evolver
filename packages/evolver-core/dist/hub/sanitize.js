@@ -725,6 +725,14 @@ export function sanitizeBundle(bundle, opts) {
     }
     return { bundle: sanitized, blocked: leakBlocked || integrityBlocked, leaks, mode };
 }
+/** Fresh copies of the leak scanners, for callers that must locate a leak rather than only detect it. */
+export function leakScannerPatterns() {
+    return LEAK_SCANNERS.map(({ type, pattern }) => ({ type, pattern: new RegExp(pattern.source, pattern.flags) }));
+}
+/** The allowlist redaction and leak scanning share: CI runner roots and non-personal bot addresses stay verbatim. */
+export function isRedactionAllowlisted(match) {
+    return isAllowlisted(match);
+}
 /** Collapse a leak list into a one-line human-readable summary (for logs / rejection reason). */
 export function summarizeLeaks(leaks) {
     return leaks.map((l) => `${l.type}→${l.suggestion}`).join('; ');

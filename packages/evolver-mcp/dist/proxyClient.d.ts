@@ -75,7 +75,7 @@ export interface ProxyReuseResultArgs {
     tokensSaved?: number;
     timeSavedSeconds?: number;
     reason?: string;
-    /** Caller-produced reuse evidence; forwarded verbatim, the Hub owns its schema. */
+    /** Caller-produced reuse evidence; forwarded verbatim to the Proxy, the Hub owns its schema. */
     evidence?: Record<string, unknown>;
     /**
      * Stable logical identity of this reuse report, minted by the caller that knows it (see

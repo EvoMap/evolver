@@ -4,6 +4,7 @@ import { type ProjectProvenance } from './projectTerms.js';
 import type { IrRejection } from './sessionGeneIr.js';
 import { type PublishBindingReceipt, type PublishVerificationEvidence, type PublishVerificationRequest } from './publishBinding.js';
 import { type GepCategory } from '../wire/index.js';
+import type { ClientIdentity } from './clientIdentity.js';
 import { EXECUTION_REDACTION_POLICY_VERSION, type ExecutionRedactionReason } from '../verify/executionRedaction.js';
 export interface ConversationDistillInput {
     title?: unknown;
@@ -43,6 +44,8 @@ export interface ConversationDistillInput {
     /** The answer the conversation ended with: its values must not reach the reusable Gene. */
     final_answer?: unknown;
     cost_tokens?: unknown;
+    /** Content ids of the assets the session reused; kept on the Gene as lineage, malformed entries dropped. */
+    reused_asset_ids?: unknown;
     [k: string]: unknown;
 }
 interface NormalizedExecution {
@@ -94,6 +97,8 @@ export interface QualityGate {
 }
 export interface ConversationDistillOptions {
     persist?: boolean;
+    /** The host agent and plugin that asked, sealed into the Capsule's env_fingerprint; never part of the input digest. */
+    client?: ClientIdentity;
     store?: AssetStoreProvider;
     /**
      * 仅由受信任的宿主验证器注入。HTTP/MCP 请求体中的 execution 不能替代此证据。

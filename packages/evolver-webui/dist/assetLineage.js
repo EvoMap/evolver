@@ -85,12 +85,10 @@ function eventMentions(event, ids) {
         if (typeof value === 'string' && ids.has(value))
             return true;
     }
-    for (const key of ['genes', 'genesUsed', 'genes_used', 'assetIds', 'asset_ids']) {
-        const value = payload[key];
-        if (Array.isArray(value) && value.some((entry) => typeof entry === 'string' && ids.has(entry)))
-            return true;
-    }
-    return false;
+    const receipt = payload['receipt'] && typeof payload['receipt'] === 'object' ? payload['receipt'] : {};
+    const lists = [...['genes', 'genesUsed', 'genes_used', 'assetIds', 'asset_ids', 'geneIds'].map((key) => payload[key]),
+        receipt['geneAssetIds'], receipt['capsuleAssetIds']];
+    return lists.some((value) => Array.isArray(value) && value.some((entry) => typeof entry === 'string' && ids.has(entry)));
 }
 function eventRow(event) {
     return {

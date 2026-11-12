@@ -54,5 +54,12 @@ export declare function sanitizeBundle(bundle: readonly AssetRecord[], opts: {
     env: Record<string, string | undefined>;
     mode?: LeakCheckMode;
 }): SanitizeBundleResult;
+/** Fresh copies of the leak scanners, for callers that must locate a leak rather than only detect it. */
+export declare function leakScannerPatterns(): ReadonlyArray<{
+    type: string;
+    pattern: RegExp;
+}>;
+/** The allowlist redaction and leak scanning share: CI runner roots and non-personal bot addresses stay verbatim. */
+export declare function isRedactionAllowlisted(match: string): boolean;
 /** Collapse a leak list into a one-line human-readable summary (for logs / rejection reason). */
 export declare function summarizeLeaks(leaks: readonly Leak[]): string;

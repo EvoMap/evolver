@@ -18,6 +18,9 @@ import { runRecipeCommand } from './recipe.js';
 import { runReuseCommand } from './reuse.js';
 import { runPublishCommand } from './cliContracts.js';
 import { runExperienceCommand } from './experience.js';
+import { runGeneCommand } from './gene.js';
+import { runRedactCommand } from './redact.js';
+import { runPublishPolicyCommand } from './publishPolicy.js';
 import { runMcpStdioCommand } from './mcpStdio.js';
 import { runRecallCommand } from './recall.js';
 import { runReuseReportCommand } from './reuseReport.js';
@@ -39,6 +42,7 @@ import { runDashboardCommand } from './dashboard.js';
 import { runIssueReportCommand } from './issueReport.js';
 import { runAssetTrustCommand } from './assetTrust.js';
 import { runAssetHealthCommand } from './assetHealth.js';
+import { runAssetEvolutionCommand } from './assetEvolution.js';
 import { runAssetRepairCommand } from './assetRepair.js';
 import { runV1FetchCompat, runV1RunCompat, runV1SolidifyCompat, runV1WebuiCompat, runV1ExecCompat } from './v1Compat.js';
 import { runWorkflowCommand } from './workflow.js';
@@ -81,6 +85,9 @@ const ASYNC_COMMAND_TABLE = {
     sync: runSyncCommand,
     recall: runRecallCommand,
     experience: runExperienceCommand,
+    gene: runGeneCommand,
+    redact: runRedactCommand,
+    'publish-policy': runPublishPolicyCommand,
     'mcp-stdio': runMcpStdioCommand,
     'reuse-report': runReuseReportCommand,
     'recall-verify-report': runRecallVerifyReportCommand,
@@ -98,6 +105,7 @@ const ASYNC_COMMAND_TABLE = {
     'issue-report': runIssueReportCommand,
     'asset-trust': runAssetTrustCommand,
     'asset-health': runAssetHealthCommand,
+    'asset-evolution': runAssetEvolutionCommand,
     'asset-repair': runAssetRepairCommand,
     proxy: runProxyCommand,
     run: runV1RunCompat,

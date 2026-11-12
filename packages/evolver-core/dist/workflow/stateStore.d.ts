@@ -84,8 +84,8 @@ export interface WorkflowControlState {
     approvals: Record<string, WorkflowApprovalDecision>;
 }
 export declare class WorkflowStateError extends Error {
-    readonly code: 'INVALID_ID' | 'INVALID_TRANSITION' | 'CORRUPT_STATE' | 'UNSUPPORTED_SCHEMA' | 'UNSAFE_PATH' | 'INSECURE_PERMISSIONS' | 'STATE_NOT_FOUND' | 'RESOURCE_LIMIT';
-    constructor(message: string, code: 'INVALID_ID' | 'INVALID_TRANSITION' | 'CORRUPT_STATE' | 'UNSUPPORTED_SCHEMA' | 'UNSAFE_PATH' | 'INSECURE_PERMISSIONS' | 'STATE_NOT_FOUND' | 'RESOURCE_LIMIT');
+    readonly code: 'INVALID_ID' | 'INVALID_TRANSITION' | 'CORRUPT_STATE' | 'UNSUPPORTED_SCHEMA' | 'UNSAFE_PATH' | 'INSECURE_PERMISSIONS' | 'STATE_NOT_FOUND' | 'INSPECTION_UNAVAILABLE' | 'RESOURCE_LIMIT';
+    constructor(message: string, code: 'INVALID_ID' | 'INVALID_TRANSITION' | 'CORRUPT_STATE' | 'UNSUPPORTED_SCHEMA' | 'UNSAFE_PATH' | 'INSECURE_PERMISSIONS' | 'STATE_NOT_FOUND' | 'INSPECTION_UNAVAILABLE' | 'RESOURCE_LIMIT');
 }
 export declare function assertStableId(value: string, label: string): void;
 export declare function findWorkflowJsonViolation(value: unknown): string | null;
@@ -132,6 +132,8 @@ export declare class WorkflowStateStore {
     readStored(runId: string): WorkflowRunState;
     private readStoredUnlocked;
     private readOptionalStoredUnlocked;
+    /** Read only a stored checkpoint: no normalization, locks, WAL replay or control overlay. Not execution authority. */
+    inspect(runId: string): WorkflowRunState;
     read(runId: string): WorkflowRunState;
     listRunIds(): string[];
     list(): WorkflowRunState[];

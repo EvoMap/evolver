@@ -1,6 +1,6 @@
 import { workflow } from '@evomap/evolver-core';
 import { type ProductionWorkflowRuntimeOptions } from './workflowRuntime.js';
-export declare const WORKFLOW_SUBCOMMANDS: readonly ["start", "submit", "list", "status", "history", "pause", "resume", "cancel", "approve", "reject"];
+export declare const WORKFLOW_SUBCOMMANDS: readonly ["start", "submit", "list", "status", "inspect", "history", "pause", "resume", "cancel", "approve", "reject"];
 type OutputStream = Pick<NodeJS.WriteStream, 'write'>;
 type RuntimeControlOptions = {
     actor: string;
@@ -18,6 +18,7 @@ type WorkflowRuntimeLike = {
 };
 type WorkflowStoreLike = {
     read(runId: string): workflow.WorkflowRunState;
+    inspect?: (runId: string) => workflow.WorkflowRunState;
     listRunIds(): string[];
     history?: (runId: string) => unknown;
     readHistory?: (runId: string) => unknown;

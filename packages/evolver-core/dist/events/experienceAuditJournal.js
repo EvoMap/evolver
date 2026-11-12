@@ -181,7 +181,15 @@ export function recoverExperienceAuditUnderLock(path, check = () => undefined) {
             return fail();
         return;
     }
-    const read = (db) => db.prepare("SELECT * FROM experience_audit WHERE state='planned' ORDER BY rowid LIMIT ?").all(MAX_ROWS).map(projection);
+    const read = (db) => {
+        // The namespace witness can be ready before interrupted operation-schema DDL finishes.
+        const schema = db.prepare(`SELECT count(*) AS n FROM sqlite_schema WHERE
+      (type='table' AND name IN ('experience_audit','experience_audit_pairs'))
+      OR (type='index' AND name='experience_audit_pending')`).get();
+        if (Number(schema?.['n']) !== 3)
+            return undefined;
+        return db.prepare("SELECT * FROM experience_audit WHERE state='planned' ORDER BY rowid LIMIT ?").all(MAX_ROWS).map(projection);
+    };
     const journal = `${path}${suffix}`;
     // Ordinary writers normally encounter a ready, fully projected namespace.
     // Inspect it read-only; only evidenced initialization or missing schema needs
@@ -191,7 +199,9 @@ export function recoverExperienceAuditUnderLock(path, check = () => undefined) {
     let pending = ready ? database(path, false, read) : undefined;
     if (pending === undefined) {
         check(); // A completed read cannot renew admission for a writable bootstrap.
-        pending = database(path, true, read) ?? [];
+        pending = database(path, true, read);
+        if (pending === undefined)
+            return fail();
     }
     check();
     for (const row of pending)
@@ -273,7 +283,9 @@ export async function appendExperienceAudit(path, raw, key, options) {
         const prior = database(path, false, db => db.prepare('SELECT * FROM experience_audit WHERE key=?').get(key));
         if (prior && prior['hash'] !== hash)
             return fail('OPERATION_REUSED');
-        database(path, true, () => undefined);
+        // Recovery has already initialized or repaired an existing operation namespace.
+        if (!present)
+            database(path, true, () => undefined);
         const namespace = journalDigest({ parent: journalParentIdentity(`${path}${suffix}`), journal: journalFileIdentity(`${path}${suffix}`) });
         if (options.expectedNamespace !== undefined && namespace !== options.expectedNamespace)
             return fail('EXPERIENCE_AUDIT_NAMESPACE_CHANGED');

@@ -5,6 +5,10 @@ import { isHostObservedCapsule } from '../algo/hostObservedEvidence.js';
 /** 扫该 gene 关联的 Capsule, 派生学习视图(只读, 不落库). */
 export async function aggregateLearningHistory(provider, geneId, recentN = 10) {
     const caps = (await provider.search({ kind: 'Capsule', gene: geneId, limit: 10_000 })).filter((item) => isExecutionEligible(item, provider.referenceScope));
+    return summarizeLearningHistory(geneId, caps, recentN);
+}
+/** The same view over Capsules the caller already selected for this gene and checked for execution eligibility. */
+export function summarizeLearningHistory(geneId, caps, recentN = 10) {
     let success = 0, failed = 0, inert = 0, observed = 0, pending = 0, scoreSum = 0;
     for (const c of caps) {
         const outcome = c.outcome;
