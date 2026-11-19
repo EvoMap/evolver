@@ -1,5 +1,6 @@
 import { type PluginCommandStep, type PluginInstallOptions } from './pluginHosts.js';
 import { type PluginInstallStatus, type PluginRuntime } from './pluginRuntime.js';
+import { type ZcodeMigrationReport } from './pluginZcodeMigration.js';
 export interface AgentPluginInstallResult {
     ok: boolean;
     status: PluginInstallStatus;
@@ -16,5 +17,7 @@ export interface AgentPluginInstallResult {
     installedPath?: string;
     error?: string;
     profile?: string;
+    migrated?: ZcodeMigrationReport;
+    warnings?: string[];
 }
 export declare function installAgentPlugin(runtime: PluginRuntime, options: PluginInstallOptions): Promise<AgentPluginInstallResult>;

@@ -839,6 +839,15 @@ function inspectLifecycleBootstrapDurableState(env, options) {
         if (marker.transactionId !== readiness.transactionId) {
             return { status: 'invalid', detail: 'bootstrap marker and readiness owners differ' };
         }
+        if (journal?.transactionId === marker.transactionId
+            && journal.stage === 'rollback_pending'
+            && journal.terminalAction === undefined) {
+            return {
+                status: 'pending',
+                detail: 'committed service cleanup was interrupted; rerun evolver lifecycle bootstrap to finish it',
+                ...withRecoveryLocks,
+            };
+        }
         if (journal && (journal.transactionId !== marker.transactionId
             || !['committing', 'committed'].includes(journal.stage))) {
             return { status: 'invalid', detail: 'bootstrap journal conflicts with committed receipt' };

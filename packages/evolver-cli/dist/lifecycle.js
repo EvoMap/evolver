@@ -3766,6 +3766,18 @@ function recoverBootstrapTransaction(stateDir, run, uid, now, deadlineMs, assert
         return { status: 'none' };
     }
     const marker = readBootstrapMarker(stateDir);
+    if (marker && journal.stage === 'rollback_pending') {
+        assertBootstrapMarkerMatchesJournal(marker, journal);
+        rollbackBootstrapTransaction(stateDir, journal, run, uid, now, deadlineMs, true, true, assertOwner);
+        assertOwner();
+        restoreBootstrapCanonicalQuarantine(stateDir, journal, {
+            beforeMove: () => assertOwner(),
+            afterMove: () => assertOwner(),
+        });
+        assertOwner();
+        removeBootstrapJournal(stateDir);
+        return { status: 'none' };
+    }
     if (marker) {
         assertBootstrapMarkerMatchesJournal(marker, journal);
         assertOwner();

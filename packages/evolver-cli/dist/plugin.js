@@ -14,7 +14,9 @@ Default scope: user. dsh default profile: dsh-tui.
 --trust says you trust the plugin's hooks; only hosts that require it (grok) accept it.
 With no host, only a single discovered native host is selected; otherwise choose --host.
 Cursor, WorkBuddy and generic MCP return manual_required without writing client config.
-Kimi Code and Step Code install on Windows only; ZCode on Windows and macOS.
+Kimi Code, Step Code and ZCode install on Windows and macOS.
+ZCode installs evolver-plugin@evomap from the evolver-agent-plugin ZCode marketplace
+URL, after uninstalling an evolver-plugin@evolver-zcode-local install (data kept).
 Dry-run performs no download, host command or config write and proves no installed state.
 Installation uses EvoMap/evolver-agent-plugin and does not replace setup-hooks.
 Exit codes: 0 verified install/already-installed/list/preview; 2 action required

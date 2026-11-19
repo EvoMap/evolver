@@ -1,4 +1,5 @@
 import { type PluginInstallOptions, type PluginHost } from './pluginHosts.js';
+import { type ZcodeLocalInstall } from './pluginZcodeMigration.js';
 import { type PluginRuntime } from './pluginRuntime.js';
 export interface InstalledAgentPlugin {
     id: string;
@@ -16,6 +17,7 @@ export interface PluginInspection {
     conflicts: string[];
     /** Native commands the user can run to remove a conflicting standalone plugin; never run automatically. */
     migrations: string[];
+    zcodeLocal?: ZcodeLocalInstall;
 }
 export declare function installedPluginsFromJson(value: unknown, host: PluginHost): InstalledAgentPlugin[];
 export declare function verifyPluginManifest(runtime: PluginRuntime, options: PluginInstallOptions, plugin: InstalledAgentPlugin, installAnswer?: unknown): string;

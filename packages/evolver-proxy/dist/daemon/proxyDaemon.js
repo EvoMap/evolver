@@ -1567,44 +1567,41 @@ export class ProxyDaemon {
                 ctx.json(200, { ...this.qualifyFetch([], merged, [], local?.rawAssets), query: body, recalled_by: recalledBy, ...localRecall });
                 return true;
             }
+            const localHits = await Promise.all(ids.map((id) => (this.assetStore ? this.assetStore.get(id) : null)));
+            const remote = await settledUnlessHubAuthFails(ids.map((id, index) => {
+                const local = localHits[index] ?? null;
+                return local || !this.remoteAssetById ? Promise.resolve(local) : this.remoteAssetById(id);
+            }));
+            if ('authFailure' in remote) {
+                this.markHubAuthFailed(remote.authFailure);
+                if (this.hubAuthFailurePolicy === 'deny') {
+                    ctx.json(401, this.hubAuthFailureBody());
+                    return true;
+                }
+                const local = await this.localFetchAssets(ids);
+                ctx.json(200, {
+                    ...local,
+                    query: body,
+                    degraded: true,
+                    local_fallback: true,
+                    auth_status: HUB_AUTH_FAILED,
+                    warning: HUB_AUTH_FAILURE_WARNING,
+                });
+                return true;
+            }
+            const failure = remote.settled.find((lookup) => lookup.status === 'rejected');
+            if (failure)
+                throw failure.reason;
             const assets = [];
             const missing = [];
-            for (const id of ids) {
-                let got = null;
-                if (this.assetStore) {
-                    got = await this.assetStore.get(id);
-                }
-                if (!got && this.remoteAssetById) {
-                    try {
-                        got = await this.remoteAssetById(id);
-                    }
-                    catch (error) {
-                        if (!isAuthLikeError(error))
-                            throw error;
-                        this.markHubAuthFailed(error);
-                        if (this.hubAuthFailurePolicy === 'deny') {
-                            ctx.json(401, this.hubAuthFailureBody());
-                            return true;
-                        }
-                        const local = await this.localFetchAssets(ids);
-                        ctx.json(200, {
-                            ...local,
-                            query: body,
-                            degraded: true,
-                            local_fallback: true,
-                            auth_status: HUB_AUTH_FAILED,
-                            warning: HUB_AUTH_FAILURE_WARNING,
-                        });
-                        return true;
-                    }
-                }
-                if (assetMatchesId(got, id)) {
+            ids.forEach((id, index) => {
+                const lookup = remote.settled[index];
+                const got = lookup?.status === 'fulfilled' ? lookup.value : null;
+                if (assetMatchesId(got, id))
                     assets.push(got);
-                }
-                else {
+                else
                     missing.push(id);
-                }
-            }
+            });
             ctx.json(200, { ...this.qualifyFetch(ids, assets, missing), query: body });
             return true;
         }
@@ -3460,6 +3457,24 @@ function safeDaemonMessage(message, maxLength) {
 }
 function safeDaemonErrorMessage(err, maxLength) {
     return safeDaemonMessage(errorMessage(err), maxLength);
+}
+// Recipe steps arrive as one id fetch and the plugin waits only a few seconds for the whole Recipe, so the Hub
+// lookups run side by side; a revoked credential still answers at once, as the old one-by-one loop did, instead of
+// waiting for slower ids. Lookups left running settle in the background.
+function settledUnlessHubAuthFails(lookups) {
+    const authFailure = new Promise((resolve) => {
+        for (const lookup of lookups) {
+            lookup.catch((error) => {
+                if (isAuthLikeError(error))
+                    resolve({ authFailure: error });
+            });
+        }
+    });
+    const settled = Promise.allSettled(lookups).then((results) => {
+        const rejected = results.find((result) => result.status === 'rejected' && isAuthLikeError(result.reason));
+        return rejected ? { authFailure: rejected.reason } : { settled: results };
+    });
+    return Promise.race([authFailure, settled]);
 }
 function isAuthLikeError(err) {
     const name = err?.name;

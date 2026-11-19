@@ -3,6 +3,7 @@ export declare const AGENT_PLUGIN_GIT_URL = "https://github.com/EvoMap/evolver-a
 export declare const AGENT_PLUGIN_NAME = "evolver-plugin";
 export declare const AGENT_PLUGIN_RELEASE = "release";
 export declare const DSH_PLUGIN_SOURCE = "github:EvoMap/evolver-agent-plugin#release&path:dist/dsh";
+export declare const ZCODE_LOCAL_MARKETPLACE = "evolver-zcode-local";
 export declare function agentPluginRepositoryMatches(value: unknown): boolean;
 export type PluginScope = 'user' | 'project';
 type PluginHostId = 'claude-code' | 'codex' | 'grok' | 'qoder' | 'antigravity' | 'opencode' | 'dsh' | 'zcode' | 'kimi' | 'stepcode' | 'minimax' | 'cursor' | 'workbuddy' | 'mcp-generic';
@@ -18,6 +19,8 @@ export interface PluginHost {
     platforms?: readonly NodeJS.Platform[];
     management?: 'plugin' | 'plugins';
     marketplace?: string;
+    /** What `marketplace add` registers when it is not the plugin repository itself. */
+    marketplaceSource?: string;
     manifest?: string;
     packageName?: string;
     /** Files an installed (and packed) plugin must contain besides its manifest. */

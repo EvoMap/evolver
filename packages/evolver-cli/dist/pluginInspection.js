@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentPluginRepositoryMatches, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, standalonePluginRemoval } from './pluginHosts.js';
-import { isManagedPackedBundle } from './pluginBundle.js';
 import { inspectScriptPlugin, inspectStepCodePlugin } from './pluginLocalInspection.js';
+import { zcodeLocalInstall } from './pluginZcodeMigration.js';
 import { checkedPluginCommand, objectOf, pluginHome, pluginJson, pluginVersionAtLeast, PluginInstallError, readPluginJson, readPluginText } from './pluginRuntime.js';
 function listRecords(value, key, label) {
     const list = Array.isArray(value) ? value : objectOf(value)?.[key];
@@ -35,13 +35,10 @@ function repositoryOf(record) {
         ?? objectOf(record['source'])?.['url'] ?? (typeof record['source'] === 'string' ? record['source'] : undefined);
 }
 async function marketplaceMatches(runtime, host, record) {
+    if (host.marketplaceSource)
+        return objectOf(record['source'])?.['url'] === host.marketplaceSource;
     if (agentPluginRepositoryMatches(repositoryOf(record)))
         return true;
-    const source = objectOf(record['source']);
-    if (source?.['source'] === 'directory') {
-        const folder = stringOf(source['path']);
-        return folder !== undefined && isManagedPackedBundle(runtime, host, folder);
-    }
     const root = stringOf(record['root']) ?? stringOf(record['installLocation']);
     if (!root)
         return false;
@@ -94,14 +91,15 @@ async function inspectMarketplacePlugin(runtime, options) {
     const market = markets.find(record => record['name'] === host.marketplace);
     const conflicts = oldHookConflicts(runtime, options);
     const migrations = [];
+    const zcodeLocal = host.id === 'zcode' ? zcodeLocalInstall(runtime, host, plugins.map(plugin => plugin.id), markets) : undefined;
     if (market && !await marketplaceMatches(runtime, host, market))
-        conflicts.push(`Marketplace ${host.marketplace} belongs to another source. Review its plugins before replacing it with ${AGENT_PLUGIN_REPOSITORY}.`);
+        conflicts.push(`Marketplace ${host.marketplace} belongs to another source. Review its plugins before replacing it with ${host.marketplaceSource ?? AGENT_PLUGIN_REPOSITORY}.`);
     for (const plugin of plugins) {
         if (host.legacyNames.includes(plugin.name) && plugin.enabled) {
             conflicts.push(`The standalone ${plugin.name} plugin is enabled. Disable/remove it using ${host.label}, keeping its data, before installing ${AGENT_PLUGIN_NAME}.`);
             migrations.push(standalonePluginRemoval(options, plugin));
         }
-        if (plugin.name === AGENT_PLUGIN_NAME && plugin.id !== `${AGENT_PLUGIN_NAME}@${host.marketplace}` && !(host.id === 'grok' && plugin.id === AGENT_PLUGIN_NAME))
+        if (plugin.name === AGENT_PLUGIN_NAME && plugin.id !== `${AGENT_PLUGIN_NAME}@${host.marketplace}` && plugin.id !== zcodeLocal?.uninstall && !(host.id === 'grok' && plugin.id === AGENT_PLUGIN_NAME))
             conflicts.push('An Evolver plugin from another marketplace is registered; review that installation before continuing.');
     }
     const installed = plugins.find(plugin => (plugin.id === `${AGENT_PLUGIN_NAME}@${host.marketplace}` || (host.id === 'grok' && plugin.id === AGENT_PLUGIN_NAME)) && (host.id !== 'claude-code' || plugin.scope === scope));
@@ -111,7 +109,7 @@ async function inspectMarketplacePlugin(runtime, options) {
         conflicts.push('The plugin is installed but disabled. Enable it explicitly in the host rather than installing another copy.');
     if (installed && host.id === 'codex' && !agentPluginRepositoryMatches(repositoryOf(installed.raw)))
         conflicts.push('The installed plugin source does not match the unified Evolver plugin repository.');
-    return { installed, marketplacePresent: Boolean(market), conflicts, migrations };
+    return { installed, marketplacePresent: Boolean(market), conflicts, migrations, zcodeLocal };
 }
 export function verifyPluginManifest(runtime, options, plugin, installAnswer) {
     const { host } = options;

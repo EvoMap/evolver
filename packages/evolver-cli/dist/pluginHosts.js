@@ -4,6 +4,9 @@ export const AGENT_PLUGIN_GIT_URL = `https://github.com/${AGENT_PLUGIN_REPOSITOR
 export const AGENT_PLUGIN_NAME = 'evolver-plugin';
 export const AGENT_PLUGIN_RELEASE = 'release';
 export const DSH_PLUGIN_SOURCE = `github:${AGENT_PLUGIN_REPOSITORY}#${AGENT_PLUGIN_RELEASE}&path:dist/dsh`;
+/** ZCode resolves a repository marketplace from `.claude-plugin/marketplace.json` first, so it gets its own manifest by URL. */
+const ZCODE_MARKETPLACE_URL = `https://raw.githubusercontent.com/${AGENT_PLUGIN_REPOSITORY}/main/.zcode-plugin/marketplace.json`;
+export const ZCODE_LOCAL_MARKETPLACE = 'evolver-zcode-local';
 export function agentPluginRepositoryMatches(value) {
     if (typeof value !== 'string')
         return false;
@@ -51,25 +54,27 @@ export const PLUGIN_HOSTS = [
         instructions: ['Restart dsh. Installation applies only to the selected profile; repeat for other profiles. DSH Desktop requires its own bundled CLI/profile.'],
     },
     {
-        id: 'zcode', label: 'ZCode', command: 'zcode', kind: 'bundle', management: 'plugins', marketplace: 'evolver-zcode-local',
+        id: 'zcode', label: 'ZCode', command: 'zcode', kind: 'marketplace', management: 'plugins', marketplace: 'evomap', marketplaceSource: ZCODE_MARKETPLACE_URL,
         scopes: ['user'], platforms: ['win32', 'darwin'], manifest: '.zcode-plugin/plugin.json', entries: ['hooks/hooks.json', 'bin/hook.mjs'], legacyNames: [],
         instructions: [
             'Start a new ZCode session. ZCode CLI and Desktop share this installation; plugins and hooks must be enabled in ZCode.',
             'Evolver runs the CLI shipped with ZCode Desktop, or the standalone zcode.cjs named by ZCODE_CLI_PATH.',
+            `The evomap marketplace is ${ZCODE_MARKETPLACE_URL}; plugins update evolver-plugin@evomap follows each release.`,
+            `An evolver-plugin@${ZCODE_LOCAL_MARKETPLACE} install is uninstalled first, keeping its data, so hooks do not run twice; its marketplace is removed only when it points into Evolver's release cache.`,
         ],
     },
     {
         id: 'kimi', label: 'Kimi Code', command: 'kimi', kind: 'script', installer: 'scripts/install-kimi.mjs',
-        scopes: ['user'], platforms: ['win32'], manifest: 'kimi.plugin.json', entries: ['bin/hook.mjs'], legacyNames: [],
+        scopes: ['user'], platforms: ['win32', 'darwin'], manifest: 'kimi.plugin.json', entries: ['bin/hook.mjs'], legacyNames: [],
         instructions: [
             'Close Kimi Code before installing or updating, then start a new CLI or Desktop session.',
             'KIMI_CODE_HOME selects the profile root; start Kimi with the same value.',
         ],
     },
     {
-        id: 'stepcode', label: 'Step Code', command: 'step', kind: 'bundle', scopes: ['user'], platforms: ['win32'],
+        id: 'stepcode', label: 'Step Code', command: 'step', kind: 'bundle', scopes: ['user'], platforms: ['win32', 'darwin'],
         manifest: 'package.json', packageName: '@evomap/stepcode-evolver', entries: ['plugin.mjs'], legacyNames: [],
-        instructions: ['Start a new Step Code session. The adapter is a Windows draft for Step Code CLI 0.1.7; STEP_CODING_AGENT_DIR selects the profile.'],
+        instructions: ['Start a new Step Code session. The adapter is verified with Step Code CLI 0.1.7 on Windows and macOS; STEP_CODING_AGENT_DIR selects the profile.'],
     },
     {
         id: 'minimax', label: 'MiniMax Code', command: 'mcode', kind: 'script', installer: 'scripts/install-minimax.mjs',
@@ -118,10 +123,11 @@ export function pluginHostNamed(name) {
 function marketplaceInstallSteps({ host, scope, trust }, step) {
     const management = host.management;
     const selector = host.id === 'grok' ? AGENT_PLUGIN_NAME : `${AGENT_PLUGIN_NAME}@${host.marketplace}`;
+    const scoped = host.id === 'claude-code' || host.id === 'zcode';
     const install = host.id === 'codex'
         ? [management, 'add', selector, '--json']
-        : [management, 'install', selector, ...(host.id === 'claude-code' ? ['--scope', scope, '--json'] : []), ...(host.requiresTrust && trust ? ['--trust'] : [])];
-    return [step('marketplace', [management, 'marketplace', 'add', AGENT_PLUGIN_REPOSITORY]), step('install', install)];
+        : [management, 'install', selector, ...(scoped ? ['--scope', scope, '--json'] : []), ...(host.requiresTrust && trust ? ['--trust'] : [])];
+    return [step('marketplace', [management, 'marketplace', 'add', host.marketplaceSource ?? AGENT_PLUGIN_REPOSITORY]), step('install', install)];
 }
 function scriptInstallSteps(host, bundle, step) {
     const installer = { name: 'install', command: 'node', args: [join(dirname(bundle), host.installer), 'install'] };
@@ -135,12 +141,6 @@ export function pluginInstallSteps(options, bundle = '<release-checkout>/dist') 
         return marketplaceInstallSteps(options, step);
     if (host.kind === 'script')
         return scriptInstallSteps(host, bundle, step);
-    if (host.id === 'zcode') {
-        return [
-            step('marketplace', ['plugins', 'marketplace', 'add', join(bundle, 'zcode'), '--json']),
-            step('install', ['plugins', 'install', `${AGENT_PLUGIN_NAME}@${host.marketplace}`, '--scope', scope, '--json']),
-        ];
-    }
     if (host.id === 'antigravity')
         return [step('install', ['plugin', 'install', `${bundle}/antigravity`])];
     if (host.id === 'opencode')
@@ -169,7 +169,7 @@ export function pluginRollbackInstructions(options, bundle = '<release-checkout>
     if (host.id === 'opencode')
         return [`Remove only this plugin's ${bundle}/opencode/server.mjs and tui.mjs entries from opencode.json and tui.json; preserve neighboring configuration.`];
     if (host.id === 'zcode')
-        return [`${cli} plugins uninstall ${AGENT_PLUGIN_NAME}@${host.marketplace} --scope ${scope}`];
+        return [`${cli} plugins uninstall ${AGENT_PLUGIN_NAME}@${host.marketplace} --scope ${scope} --keep-data`, `${cli} plugins marketplace remove ${host.marketplace}`];
     if (host.id === 'kimi')
         return [`node ${join(dirname(bundle), host.installer)} remove`];
     if (host.id === 'stepcode')

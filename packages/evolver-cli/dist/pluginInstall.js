@@ -5,6 +5,7 @@ import { inspectAgentPlugin, verifyPluginManifest } from './pluginInspection.js'
 import { hostLauncher } from './pluginLauncher.js';
 import { withPluginInstallLock } from './pluginLock.js';
 import { checkedPluginCommand, checkPluginHostVersion, PluginInstallError } from './pluginRuntime.js';
+import { ZCODE_LOCAL_PLUGIN, ZCODE_MIGRATION_PREVIEW, ZCODE_MIGRATION_PREVIEW_NOTE, zcodeKeptMarketplaceWarning, zcodeMigrationPending, zcodeMigrationReport, zcodeMigrationSteps } from './pluginZcodeMigration.js';
 function trustInstruction(host) {
     return `${host.label} asks you to trust a plugin before it installs. Review ${AGENT_PLUGIN_REPOSITORY}, then rerun with --trust: evolver plugin install --host ${host.id} --trust`;
 }
@@ -18,6 +19,56 @@ async function useReleaseCheckout(runtime, options, result) {
 function assertNoConflicts(inspection) {
     if (inspection.conflicts.length > 0)
         throw new PluginInstallError('conflict', inspection.conflicts.join('\n'), inspection.migrations);
+}
+function dryRunResult(options, result, trustMissing) {
+    const { host } = options;
+    const zcode = host.id === 'zcode';
+    const commands = zcode ? [...zcodeMigrationSteps(options, ZCODE_MIGRATION_PREVIEW), ...result.commands] : result.commands;
+    const notes = [...(zcode ? [ZCODE_MIGRATION_PREVIEW_NOTE] : []), ...(trustMissing ? [trustInstruction(host)] : [])];
+    return { ...result, ok: true, status: 'dry_run', commands, instructions: [...result.instructions, ...notes, 'Preview only: host version, registration, download and installation have not been executed.'] };
+}
+function alreadyInstalled(runtime, options, result, inspection) {
+    if (!inspection.installed || zcodeMigrationPending(inspection.zcodeLocal))
+        return undefined;
+    const installedPath = verifyPluginManifest(runtime, options, inspection.installed);
+    const warnings = zcodeKeptMarketplaceWarning(inspection.zcodeLocal);
+    return { ...result, ok: true, status: 'already_installed', verified: true, version: inspection.installed.version, installedPath, commands: [], ...(warnings.length > 0 && { warnings }) };
+}
+function plannedCommands(options, inspection, install) {
+    if (!zcodeMigrationPending(inspection.zcodeLocal))
+        return install;
+    return [...zcodeMigrationSteps(options, inspection.zcodeLocal), ...(inspection.installed ? [] : install)];
+}
+async function runPlannedCommands(runtime, options, result, inspection, bundle) {
+    let installAnswer;
+    for (const step of result.commands) {
+        if (step.name === 'marketplace' && inspection.marketplacePresent)
+            continue;
+        const executed = await checkedPluginCommand(runtime, step.command, step.args, options.root, 120_000);
+        result.completed.push(step.name);
+        if (step.name === 'marketplace') {
+            const registered = await inspectAgentPlugin(runtime, options, bundle);
+            if (!registered.marketplacePresent || registered.conflicts.length > 0) {
+                throw new PluginInstallError('conflict', 'The registered marketplace could not be confirmed as the unified plugin source. No plugin install was attempted.');
+            }
+        }
+        else if (step.name === 'install') {
+            try {
+                installAnswer = JSON.parse(executed.stdout);
+            }
+            catch { /* Some native installers report human-readable progress; the final inventory is authoritative. */ }
+        }
+    }
+    return installAnswer;
+}
+function failureNotes(completed) {
+    if (completed.length === 0)
+        return [];
+    const removed = completed.includes('uninstall-local') ? `Only the ${ZCODE_LOCAL_PLUGIN} steps in completed removed anything; no other` : 'No existing';
+    return [
+        `Commands already completed: ${completed.join(', ')}. Inspect the selected host before retrying.`,
+        `${removed} plugin, user data or marketplace was automatically removed. Use the rollback instructions only after checking the current host registration.`,
+    ];
 }
 function migrationInstructions(error) {
     if (!(error instanceof PluginInstallError) || error.instructions.length === 0)
@@ -40,9 +91,8 @@ export async function installAgentPlugin(runtime, options) {
         return { ...result, status: 'manual_required', instructions: [...instructions, `Requested scope: ${options.scope}. No client configuration was changed.`] };
     }
     const trustMissing = host.requiresTrust && !options.trust;
-    if (options.dryRun) {
-        return { ...result, ok: true, status: 'dry_run', instructions: [...result.instructions, ...(trustMissing ? [trustInstruction(host)] : []), 'Preview only: host version, registration, download and installation have not been executed.'] };
-    }
+    if (options.dryRun)
+        return dryRunResult(options, result, trustMissing);
     if (trustMissing) {
         return { ...result, status: 'trust_required', error: `${host.label} installs plugin hooks, MCP servers and skills only after you trust the plugin. No host command was run.`, instructions: [trustInstruction(host)] };
     }
@@ -51,46 +101,32 @@ export async function installAgentPlugin(runtime, options) {
         let bundle = host.kind === 'script' ? await useReleaseCheckout(runtime, options, result) : undefined;
         let inspection = await inspectAgentPlugin(runtime, options, bundle);
         assertNoConflicts(inspection);
-        if (inspection.installed) {
-            const installedPath = verifyPluginManifest(runtime, options, inspection.installed);
-            return { ...result, ok: true, status: 'already_installed', verified: true, version: inspection.installed.version, installedPath, commands: [] };
-        }
+        const settled = alreadyInstalled(runtime, options, result, inspection);
+        if (settled)
+            return settled;
         return await withPluginInstallLock(runtime, options, async () => {
             inspection = await inspectAgentPlugin(runtime, options, bundle);
             assertNoConflicts(inspection);
-            if (inspection.installed) {
-                const installedPath = verifyPluginManifest(runtime, options, inspection.installed);
-                return { ...result, ok: true, status: 'already_installed', verified: true, version: inspection.installed.version, installedPath, commands: [] };
-            }
+            const settledInLock = alreadyInstalled(runtime, options, result, inspection);
+            if (settledInLock)
+                return settledInLock;
             if (host.id === 'dsh')
                 await assertDshProfileStoreMatches(runtime, options);
             if (host.kind === 'bundle')
                 bundle = await useReleaseCheckout(runtime, options, result);
-            let installAnswer;
-            for (const step of result.commands) {
-                if (step.name === 'marketplace' && inspection.marketplacePresent)
-                    continue;
-                const executed = await checkedPluginCommand(runtime, step.command, step.args, options.root, 120_000);
-                result.completed.push(step.name);
-                if (step.name === 'marketplace') {
-                    inspection = await inspectAgentPlugin(runtime, options, bundle);
-                    if (!inspection.marketplacePresent || inspection.conflicts.length > 0) {
-                        throw new PluginInstallError('conflict', 'The registered marketplace could not be confirmed as the unified plugin source. No plugin install was attempted.');
-                    }
-                }
-                else {
-                    try {
-                        installAnswer = JSON.parse(executed.stdout);
-                    }
-                    catch { /* Some native installers report human-readable progress; the final inventory is authoritative. */ }
-                }
-            }
+            const local = inspection.zcodeLocal;
+            result.commands = plannedCommands(options, inspection, result.commands);
+            const installAnswer = await runPlannedCommands(runtime, options, result, inspection, bundle);
             inspection = await inspectAgentPlugin(runtime, options, bundle);
             assertNoConflicts(inspection);
             if (!inspection.installed)
                 throw new PluginInstallError('failed', `The ${AGENT_PLUGIN_NAME} command completed, but the selected host/scope did not register it. Installation was not confirmed.`);
             const installedPath = verifyPluginManifest(runtime, options, inspection.installed, installAnswer);
-            return { ...result, ok: true, status: 'installed', verified: true, version: inspection.installed.version, installedPath };
+            const warnings = zcodeKeptMarketplaceWarning(local);
+            return {
+                ...result, ok: true, status: result.completed.includes('install') ? 'installed' : 'already_installed', verified: true, version: inspection.installed.version, installedPath,
+                ...zcodeMigrationReport(local, result.completed), ...(warnings.length > 0 && { warnings }),
+            };
         });
     }
     catch (error) {
@@ -98,10 +134,7 @@ export async function installAgentPlugin(runtime, options) {
             ...result,
             status: error instanceof PluginInstallError ? error.status : 'failed',
             error: error instanceof PluginInstallError ? error.message : 'The plugin operation failed; no verified installation was reported.',
-            instructions: [...result.instructions, ...migrationInstructions(error), ...(result.completed.length > 0 ? [
-                    `Commands already completed: ${result.completed.join(', ')}. Inspect the selected host before retrying.`,
-                    'No existing plugin, user data or marketplace was automatically removed. Use the rollback instructions only after checking the current host registration.',
-                ] : [])],
+            instructions: [...result.instructions, ...migrationInstructions(error), ...failureNotes(result.completed)],
         };
     }
 }
