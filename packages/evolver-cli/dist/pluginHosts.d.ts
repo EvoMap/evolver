@@ -3,18 +3,27 @@ export declare const AGENT_PLUGIN_GIT_URL = "https://github.com/EvoMap/evolver-a
 export declare const AGENT_PLUGIN_NAME = "evolver-plugin";
 export declare const AGENT_PLUGIN_RELEASE = "release";
 export declare const DSH_PLUGIN_SOURCE = "github:EvoMap/evolver-agent-plugin#release&path:dist/dsh";
+export declare function agentPluginRepositoryMatches(value: unknown): boolean;
 export type PluginScope = 'user' | 'project';
-type PluginHostId = 'claude-code' | 'codex' | 'grok' | 'qoder' | 'antigravity' | 'opencode' | 'dsh' | 'cursor' | 'workbuddy' | 'mcp-generic';
+type PluginHostId = 'claude-code' | 'codex' | 'grok' | 'qoder' | 'antigravity' | 'opencode' | 'dsh' | 'zcode' | 'kimi' | 'stepcode' | 'minimax' | 'cursor' | 'workbuddy' | 'mcp-generic';
 export interface PluginHost {
     id: PluginHostId;
     label: string;
     command?: string;
     minimumVersion?: string;
-    kind: 'marketplace' | 'bundle' | 'profile' | 'manual';
+    /** `script` runs the release checkout's own installer for the host. */
+    kind: 'marketplace' | 'bundle' | 'script' | 'profile' | 'manual';
     scopes: readonly PluginScope[];
+    /** Hosts whose adapter is accepted only on these platforms. */
+    platforms?: readonly NodeJS.Platform[];
     management?: 'plugin' | 'plugins';
     marketplace?: string;
     manifest?: string;
+    packageName?: string;
+    /** Files an installed (and packed) plugin must contain besides its manifest. */
+    entries: readonly string[];
+    /** The release checkout's installer, for `script` hosts. */
+    installer?: string;
     /** Where the packed plugin sits inside the checkout path the host's inventory reports. */
     packedSubdir?: string;
     /** The host's installer refuses to install hooks/MCP/skills until the user passes its trust flag. */
@@ -31,6 +40,8 @@ export interface PluginInstallOptions {
     profile: string;
     dryRun: boolean;
     trust: boolean;
+    /** The host CLI's argv prefix: its command, or node plus a CLI script for hosts that ship one. */
+    launcher: readonly string[];
 }
 export interface PluginCommandStep {
     name: string;

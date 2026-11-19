@@ -260,14 +260,20 @@ export async function appendExperienceAudit(path, raw, key, options) {
         return fail('EXPERIENCE_AUDIT_ID_INVALID');
     if (options.expectedNamespace !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedNamespace))
         return fail('EXPERIENCE_AUDIT_UNKNOWN');
+    const namespaceIdentity = () => journalDigest({ parent: journalParentIdentity(`${path}${suffix}`), journal: journalFileIdentity(`${path}${suffix}`) });
+    const assertExpectedNamespace = () => {
+        if (options.expectedNamespace !== undefined && (assertOptionalRegularFile(`${path}${suffix}`) === null
+            || namespaceIdentity() !== options.expectedNamespace))
+            return fail('EXPERIENCE_AUDIT_NAMESPACE_CHANGED');
+    };
+    // Refuse foreign namespaces before lock recovery can touch their bookkeeping.
+    assertExpectedNamespace();
     // Preserve the entry's Root admission across validation, queueing and recovery.
     return withAuditLock(`${path}.lock`, budget, async () => {
-        const check = () => budget.check();
+        const check = () => { budget.check(); assertExpectedNamespace(); };
         check();
         options.validate?.();
         const present = assertOptionalRegularFile(`${path}${suffix}`) !== null;
-        if (!present && options.expectedNamespace !== undefined)
-            return fail('EXPERIENCE_AUDIT_NAMESPACE_CHANGED');
         // Capacity and cooperative parsing precede namespace creation. This is an
         // authority-loss refusal check, never an exactly-once replay search.
         if (!present) {
@@ -277,8 +283,9 @@ export async function appendExperienceAudit(path, raw, key, options) {
                 database(path, true, () => undefined);
         }
         recoverExperienceAuditUnderLock(path, check);
+        // History checks run per event; keep namespace I/O at the mutation checkpoints.
         if (present)
-            options.assertHistory(check);
+            options.assertHistory(() => budget.check());
         check();
         const prior = database(path, false, db => db.prepare('SELECT * FROM experience_audit WHERE key=?').get(key));
         if (prior && prior['hash'] !== hash)
@@ -286,7 +293,7 @@ export async function appendExperienceAudit(path, raw, key, options) {
         // Recovery has already initialized or repaired an existing operation namespace.
         if (!present)
             database(path, true, () => undefined);
-        const namespace = journalDigest({ parent: journalParentIdentity(`${path}${suffix}`), journal: journalFileIdentity(`${path}${suffix}`) });
+        const namespace = namespaceIdentity();
         if (options.expectedNamespace !== undefined && namespace !== options.expectedNamespace)
             return fail('EXPERIENCE_AUDIT_NAMESPACE_CHANGED');
         if (prior)

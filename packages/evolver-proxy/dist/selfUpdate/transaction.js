@@ -4,9 +4,9 @@ import { constants, fstatSync, watch } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, realpath, rename, rm, writeFile, } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { promisify } from 'node:util';
-import { assetstore, ops } from '@evomap/evolver-core';
+import { assetstore, ops, util } from '@evomap/evolver-core';
 import { resolveSelfUpdateTarget } from './releaseBinary.js';
-import { SELF_UPDATE_FAILURE_CODES, selfUpdateFailure } from './failureCodes.js';
+import { SELF_UPDATE_FAILURE_CODES, SelfUpdateFailureError, selfUpdateFailure } from './failureCodes.js';
 import { bindWindowsManagedExecutable, prepareWindowsExecutableSwap, resolveWindowsUpdaterPaths, } from './windowsUpdater.js';
 const execFileAsync = promisify(execFile);
 const JOURNAL_SCHEMA_VERSION = 2;
@@ -896,10 +896,58 @@ async function captureArtifactAliasWitnesses(paths) {
     }
     return Promise.all([...names].map(captureArtifactAliasWitness));
 }
-async function observeArtifactPublicationAliases(paths, callback) {
-    const aliases = await captureArtifactAliasWitnesses(paths);
-    const watchers = [], closed = [];
+function kernelAliasFailure(cause) {
+    return selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, cause instanceof util.DarwinVnodeWitnessError && cause.code === 'changed'
+        ? 'state_alias_changed_during_callback' : 'state_alias_observation_unconfirmed', { cause });
+}
+function observeKernelAliases(aliases) {
+    let kernel;
+    try {
+        kernel = util.createDarwinVnodeWitness(aliases);
+    }
+    catch (cause) {
+        throw kernelAliasFailure(cause);
+    }
+    const assertUnchanged = () => {
+        try {
+            kernel.assertUnchanged();
+        }
+        catch (cause) {
+            throw kernelAliasFailure(cause);
+        }
+    };
+    return {
+        checkpoint: assertUnchanged,
+        settle: assertUnchanged,
+        close: async () => {
+            try {
+                kernel.close();
+                return [];
+            }
+            catch (cause) {
+                return [kernelAliasFailure(cause)];
+            }
+        },
+    };
+}
+async function watchAliasNames(aliases) {
+    const watchers = [];
+    const observationFailures = [];
     let renamed = false, uncertain = false;
+    const close = async () => {
+        const failures = [], pending = [];
+        for (const { watcher, closed } of watchers) {
+            try {
+                watcher.close();
+                pending.push(closed);
+            }
+            catch (error) {
+                failures.push(error);
+            }
+        }
+        await Promise.all(pending);
+        return [...observationFailures, ...failures];
+    };
     try {
         for (const alias of aliases) {
             const name = basename(alias.path);
@@ -912,28 +960,70 @@ async function observeArtifactPublicationAliases(paths, callback) {
                 if (event === 'rename' && (process.platform === 'win32' ? current.toLowerCase() === name.toLowerCase() : current === name))
                     renamed = true;
             });
-            watchers.push(watcher);
-            closed.push(new Promise(resolve => watcher.once('close', resolve)));
-            watcher.on('error', () => { uncertain = true; });
+            const closed = new Promise(resolve => {
+                watcher.once('close', resolve);
+                watcher.on('error', cause => {
+                    uncertain = true;
+                    observationFailures.push(selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_observation_unconfirmed', { cause }));
+                    // Node closes a failed native watcher without emitting its close event.
+                    resolve();
+                });
+            });
+            watchers.push({ watcher, closed });
         }
-        // Watch only the bound names: legitimate sibling journal writes do not invalidate the callback.
+    }
+    catch (error) {
+        throwAliasObservationOutcome({ failed: true, error }, await close());
+        throw error;
+    }
+    return {
+        checkpoint: () => undefined,
+        settle: () => {
+            if (renamed)
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_changed_during_callback');
+            if (uncertain)
+                throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_observation_unconfirmed');
+        },
+        close,
+    };
+}
+function throwAliasObservationOutcome(outcome, failures) {
+    if (outcome.failed && !failures.length)
+        throw outcome.error;
+    if (outcome.failed) {
+        const primary = outcome.error;
+        const combined = new AggregateError([primary, ...failures], 'state_alias_observation_and_cleanup_failed', { cause: primary });
+        // Keep the primary wire classification while retaining every original failure without mutating its cause.
+        if (primary instanceof SelfUpdateFailureError)
+            throw selfUpdateFailure(primary.failureCode, primary.message, { cause: combined });
+        throw combined;
+    }
+    if (failures.length === 1)
+        throw failures[0];
+    if (failures.length)
+        throw new AggregateError(failures, 'state_alias_observation_cleanup_failed');
+}
+async function observeArtifactPublicationAliases(paths, callback) {
+    const aliases = await captureArtifactAliasWitnesses(paths);
+    const observer = process.platform === 'darwin' ? observeKernelAliases(aliases) : await watchAliasNames(aliases);
+    let outcome = { failed: false };
+    try {
+        // Observe only the bound names: legitimate sibling journal writes do not invalidate the callback.
         await assertStateRootAlias(paths);
         await assertArtifactAliasWitnesses(aliases);
+        observer.checkpoint();
         await callback();
         await assertStateRootAlias(paths);
         await assertArtifactAliasWitnesses(aliases);
-        // Drain the event-loop turn as well as metadata I/O; Windows directory times can remain unchanged on rename-back.
+        observer.checkpoint();
+        // Retain the original event-loop drain; Darwin queries the real kernel queue without a timed wait.
         await new Promise(resolve => setImmediate(resolve));
-        if (renamed)
-            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_changed_during_callback');
-        if (uncertain)
-            throw selfUpdateFailure(SELF_UPDATE_FAILURE_CODES.UNSAFE_UPDATE_PATH, 'state_alias_observation_unconfirmed');
+        observer.settle();
     }
-    finally {
-        for (const watcher of watchers)
-            watcher.close();
-        await Promise.all(closed);
+    catch (error) {
+        outcome = { failed: true, error };
     }
+    throwAliasObservationOutcome(outcome, await observer.close());
 }
 async function assertArtifactAliasWitnesses(expected) {
     for (const witness of expected) {

@@ -94,7 +94,7 @@ evolver plugin install --host claude-code --scope user --dry-run --json
 evolver plugin install --host codex --json
 ```
 
-原生命令覆盖 Claude Code、Codex、Grok、Qoder、Antigravity、OpenCode、dsh；CLI 缺失、版本/回读合同不满足会明确失败。Cursor、WorkBuddy、通用 MCP 返回 `manual_required` 和准确操作步骤，不修改私有客户端配置或假报已安装。默认 user scope；dsh 可用 `--profile` 选择单个 profile。`dry_run` 不运行宿主命令、不下载、不写配置，也不证明已安装。
+原生命令覆盖 Claude Code、Codex、Grok、Qoder、Antigravity、OpenCode、dsh、ZCode、Kimi Code、Step Code、MiniMax Code；CLI 缺失、版本/回读合同不满足会明确失败。Cursor、WorkBuddy、通用 MCP 返回 `manual_required` 和准确操作步骤，不修改私有客户端配置或假报已安装。默认 user scope；dsh 可用 `--profile` 选择单个 profile。`dry_run` 不运行宿主命令、不下载、不写配置，也不证明已安装。
 
 旧 `setup-hooks` 入口保持原行为；不要同时启用重复的经验插件/hooks。安装器发现旧经验接入会先报告冲突，不自动删除插件数据，也不移除产品 MCP。`installed`/`already_installed` 仅证明宿主登记和 manifest 回读一致，仍需重启、信任 hooks；不代表模型或 Hub 学习闭环已验收。详见[安装覆盖、状态、迁移和回滚](docs/agent-plugin-installation.md)。
 

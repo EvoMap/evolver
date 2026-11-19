@@ -157,12 +157,18 @@ export function pluginVersionAtLeast(current, minimum) {
     }
     return true;
 }
-export async function checkPluginHostVersion(runtime, host) {
-    if (!host.command || !runtime.available(host.command))
-        throw new PluginInstallError('host_missing', `${host.label} CLI (${host.command ?? 'none'}) was not found on PATH.`);
+/** `launcher` is the host CLI found on this machine (see hostLauncher), or undefined when it is missing. */
+export async function checkPluginHostVersion(runtime, host, launcher) {
+    if (!launcher)
+        throw new PluginInstallError('host_missing', host.id === 'zcode'
+            ? 'ZCode CLI was not found: install ZCode Desktop, or set ZCODE_CLI_PATH to an absolute standalone zcode.cjs, with node on PATH.'
+            : `${host.label} CLI (${host.command ?? 'none'}) was not found on PATH.`);
+    if (host.kind === 'script' && !runtime.available('node'))
+        throw new PluginInstallError('host_missing', `${host.label} is installed by a Node.js script; node was not found on PATH.`);
     if (!host.minimumVersion)
         return;
-    const { stdout } = await checkedPluginCommand(runtime, host.command, ['--version']);
+    const [command, ...prefix] = launcher;
+    const { stdout } = await checkedPluginCommand(runtime, command, [...prefix, '--version']);
     const version = /(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/.exec(stdout.trim())?.[1];
     if (!version || !pluginVersionAtLeast(version, host.minimumVersion)) {
         throw new PluginInstallError('unsupported_version', `${host.label} requires ${host.minimumVersion}+; ${version ?? 'an unknown version'} was observed. Upgrade the host CLI before installing.`);

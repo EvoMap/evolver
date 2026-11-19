@@ -27,6 +27,7 @@ export declare function objectOf(value: unknown): Record<string, unknown> | unde
 export declare function readPluginText(path: string, maxBytes?: number): string | undefined;
 export declare function readPluginJson(path: string): Record<string, unknown> | undefined;
 export declare function pluginVersionAtLeast(current: string, minimum: string): boolean;
-export declare function checkPluginHostVersion(runtime: PluginRuntime, host: PluginHost): Promise<void>;
+/** `launcher` is the host CLI found on this machine (see hostLauncher), or undefined when it is missing. */
+export declare function checkPluginHostVersion(runtime: PluginRuntime, host: PluginHost, launcher: readonly string[] | undefined): Promise<void>;
 /** Only installer-owned descendants are written; a symlink may not redirect the cache or lock. */
 export declare function assertPluginManagedPath(path: string): void;

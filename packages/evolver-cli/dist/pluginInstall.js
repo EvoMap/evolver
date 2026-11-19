@@ -2,10 +2,18 @@ import { ensureAgentPluginBundle } from './pluginBundle.js';
 import { assertDshProfileStoreMatches } from './pluginDshStore.js';
 import { AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, pluginInstallSteps, pluginRollbackInstructions } from './pluginHosts.js';
 import { inspectAgentPlugin, verifyPluginManifest } from './pluginInspection.js';
+import { hostLauncher } from './pluginLauncher.js';
 import { withPluginInstallLock } from './pluginLock.js';
 import { checkedPluginCommand, checkPluginHostVersion, PluginInstallError } from './pluginRuntime.js';
 function trustInstruction(host) {
     return `${host.label} asks you to trust a plugin before it installs. Review ${AGENT_PLUGIN_REPOSITORY}, then rerun with --trust: evolver plugin install --host ${host.id} --trust`;
+}
+async function useReleaseCheckout(runtime, options, result) {
+    const bundle = await ensureAgentPluginBundle(runtime, options.host);
+    result.completed.push('download');
+    result.commands = pluginInstallSteps(options, bundle);
+    result.rollback = pluginRollbackInstructions(options, bundle);
+    return bundle;
 }
 function assertNoConflicts(inspection) {
     if (inspection.conflicts.length > 0)
@@ -39,15 +47,16 @@ export async function installAgentPlugin(runtime, options) {
         return { ...result, status: 'trust_required', error: `${host.label} installs plugin hooks, MCP servers and skills only after you trust the plugin. No host command was run.`, instructions: [trustInstruction(host)] };
     }
     try {
-        await checkPluginHostVersion(runtime, host);
-        let inspection = await inspectAgentPlugin(runtime, options);
+        await checkPluginHostVersion(runtime, host, hostLauncher(runtime, host));
+        let bundle = host.kind === 'script' ? await useReleaseCheckout(runtime, options, result) : undefined;
+        let inspection = await inspectAgentPlugin(runtime, options, bundle);
         assertNoConflicts(inspection);
         if (inspection.installed) {
             const installedPath = verifyPluginManifest(runtime, options, inspection.installed);
             return { ...result, ok: true, status: 'already_installed', verified: true, version: inspection.installed.version, installedPath, commands: [] };
         }
         return await withPluginInstallLock(runtime, options, async () => {
-            inspection = await inspectAgentPlugin(runtime, options);
+            inspection = await inspectAgentPlugin(runtime, options, bundle);
             assertNoConflicts(inspection);
             if (inspection.installed) {
                 const installedPath = verifyPluginManifest(runtime, options, inspection.installed);
@@ -55,13 +64,8 @@ export async function installAgentPlugin(runtime, options) {
             }
             if (host.id === 'dsh')
                 await assertDshProfileStoreMatches(runtime, options);
-            let bundle;
-            if (host.kind === 'bundle') {
-                bundle = await ensureAgentPluginBundle(runtime, host);
-                result.completed.push('download');
-                result.commands = pluginInstallSteps(options, bundle);
-                result.rollback = pluginRollbackInstructions(options, bundle);
-            }
+            if (host.kind === 'bundle')
+                bundle = await useReleaseCheckout(runtime, options, result);
             let installAnswer;
             for (const step of result.commands) {
                 if (step.name === 'marketplace' && inspection.marketplacePresent)
@@ -69,7 +73,7 @@ export async function installAgentPlugin(runtime, options) {
                 const executed = await checkedPluginCommand(runtime, step.command, step.args, options.root, 120_000);
                 result.completed.push(step.name);
                 if (step.name === 'marketplace') {
-                    inspection = await inspectAgentPlugin(runtime, options);
+                    inspection = await inspectAgentPlugin(runtime, options, bundle);
                     if (!inspection.marketplacePresent || inspection.conflicts.length > 0) {
                         throw new PluginInstallError('conflict', 'The registered marketplace could not be confirmed as the unified plugin source. No plugin install was attempted.');
                     }
@@ -81,7 +85,7 @@ export async function installAgentPlugin(runtime, options) {
                     catch { /* Some native installers report human-readable progress; the final inventory is authoritative. */ }
                 }
             }
-            inspection = await inspectAgentPlugin(runtime, options);
+            inspection = await inspectAgentPlugin(runtime, options, bundle);
             assertNoConflicts(inspection);
             if (!inspection.installed)
                 throw new PluginInstallError('failed', `The ${AGENT_PLUGIN_NAME} command completed, but the selected host/scope did not register it. Installation was not confirmed.`);

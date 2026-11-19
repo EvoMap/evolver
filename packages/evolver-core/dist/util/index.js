@@ -2,5 +2,6 @@ export { acquireLock, attachLockGuardianToProcess, clearLockGuardianForProcess, 
 export * from './fetchPort.js';
 export * from './version.js';
 export { canonicalEventPath } from './canonicalEventPath.js';
+export { createDarwinVnodeWitness, DarwinVnodeWitnessError } from './darwinVnodeWitness.js';
 export { loadReferenceFfi as loadNativeFfi } from '../benchmark/referenceNativeRuntime.js';
 export { pinWindowsPathIdentity, readWindowsDescriptorIdentity, sameWindowsOpenedPathIdentity } from './windowsPathIdentity.js';

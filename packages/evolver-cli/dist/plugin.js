@@ -2,17 +2,19 @@ import { realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PLUGIN_HOSTS, pluginHostNamed } from './pluginHosts.js';
 import { installAgentPlugin } from './pluginInstall.js';
+import { expectedHostLauncher, hostLauncher } from './pluginLauncher.js';
 import { createPluginRuntime, PluginInstallError } from './pluginRuntime.js';
 export const PLUGIN_USAGE = `Usage: evolver plugin list [--json]
        evolver plugin install [--host <host>] [--scope user|project] [--root <dir>]
                               [--profile <dsh-profile>] [--trust] [--dry-run] [--json]
 
-Hosts: claude-code, codex, grok, qoder, antigravity, opencode, dsh,
-       cursor, workbuddy, mcp-generic
+Hosts: claude-code, codex, grok, qoder, antigravity, opencode, dsh, zcode,
+       kimi, stepcode, minimax, cursor, workbuddy, mcp-generic
 Default scope: user. dsh default profile: dsh-tui.
 --trust says you trust the plugin's hooks; only hosts that require it (grok) accept it.
 With no host, only a single discovered native host is selected; otherwise choose --host.
 Cursor, WorkBuddy and generic MCP return manual_required without writing client config.
+Kimi Code and Step Code install on Windows only; ZCode on Windows and macOS.
 Dry-run performs no download, host command or config write and proves no installed state.
 Installation uses EvoMap/evolver-agent-plugin and does not replace setup-hooks.
 Exit codes: 0 verified install/already-installed/list/preview; 2 action required
@@ -68,7 +70,7 @@ function installOptions(flags, runtime) {
     if (flags.host && !host)
         throw new PluginInstallError('invalid_arguments', 'Unknown plugin host. Use evolver plugin list to see supported entries.');
     if (!host) {
-        const found = PLUGIN_HOSTS.filter(candidate => candidate.kind !== 'manual' && candidate.command && runtime.available(candidate.command));
+        const found = PLUGIN_HOSTS.filter(candidate => candidate.kind !== 'manual' && supportsPlatform(candidate, runtime) && hostLauncher(runtime, candidate));
         if (found.length !== 1)
             throw new PluginInstallError('selection_required', found.length === 0
                 ? 'No native plugin host was found on PATH. Choose --host explicitly; plugin list includes manual entries.'
@@ -89,6 +91,8 @@ function installOptions(flags, runtime) {
     const profile = flags.profile ?? 'dsh-tui';
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile))
         throw new PluginInstallError('invalid_arguments', '--profile must be a simple dsh profile name, not a path or command.');
+    if (!supportsPlatform(host, runtime))
+        throw new PluginInstallError('unsupported_capability', `${host.label} plugin installation is supported on ${host.platforms.map(platformName).join(' and ')} only; this machine runs ${platformName(runtime.platform)}.`);
     let root = resolve(runtime.cwd, flags.root ?? '.');
     if (!flags.dryRun && host.kind !== 'manual') {
         try {
@@ -100,7 +104,13 @@ function installOptions(flags, runtime) {
             throw new PluginInstallError('invalid_arguments', '--root must identify an existing project/working directory.');
         }
     }
-    return { host, scope: scope, root, profile, dryRun: flags.dryRun, trust: flags.trust };
+    const launcher = hostLauncher(runtime, host) ?? expectedHostLauncher(runtime, host);
+    return { host, scope: scope, root, profile, dryRun: flags.dryRun, trust: flags.trust, launcher };
+}
+const PLATFORM_NAMES = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+const platformName = (platform) => PLATFORM_NAMES[platform] ?? platform;
+function supportsPlatform(host, runtime) {
+    return !host.platforms || host.platforms.includes(runtime.platform);
 }
 export async function runPluginCommand(argv, deps = {}) {
     const stdout = deps.stdout ?? (text => { process.stdout.write(text); });
@@ -115,7 +125,7 @@ export async function runPluginCommand(argv, deps = {}) {
             return 0;
         }
         if (flags.action === 'list') {
-            const hosts = PLUGIN_HOSTS.map(host => ({ id: host.id, label: host.label, mode: host.kind === 'manual' ? 'manual' : 'native', cli: host.command ?? null, cliFound: Boolean(host.command && runtime.available(host.command)), minimumVersion: host.minimumVersion ?? null, requiresTrust: Boolean(host.requiresTrust), scopes: host.scopes, instructions: host.instructions }));
+            const hosts = PLUGIN_HOSTS.map(host => ({ id: host.id, label: host.label, mode: host.kind === 'manual' ? 'manual' : 'native', cli: host.command ?? null, cliFound: Boolean(hostLauncher(runtime, host)), minimumVersion: host.minimumVersion ?? null, requiresTrust: Boolean(host.requiresTrust), scopes: host.scopes, platforms: host.platforms ?? null, instructions: host.instructions }));
             stdout(json ? `${JSON.stringify({ ok: true, action: 'list', hosts })}\n` : `${hosts.map(host => `${host.id.padEnd(14)} ${host.mode.padEnd(7)} ${host.cliFound ? 'CLI found' : 'CLI not found / not required'}; scopes=${host.scopes.join('|')}`).join('\n')}\nCLI detection is not installation or version verification.\n`);
             return 0;
         }

@@ -2,7 +2,9 @@ import { resolveOpenCodeConfig } from '@evomap/evolver-mcp';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AGENT_PLUGIN_GIT_URL, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, standalonePluginRemoval } from './pluginHosts.js';
+import { agentPluginRepositoryMatches, AGENT_PLUGIN_NAME, AGENT_PLUGIN_REPOSITORY, standalonePluginRemoval } from './pluginHosts.js';
+import { isManagedPackedBundle } from './pluginBundle.js';
+import { inspectScriptPlugin, inspectStepCodePlugin } from './pluginLocalInspection.js';
 import { checkedPluginCommand, objectOf, pluginHome, pluginJson, pluginVersionAtLeast, PluginInstallError, readPluginJson, readPluginText } from './pluginRuntime.js';
 function listRecords(value, key, label) {
     const list = Array.isArray(value) ? value : objectOf(value)?.[key];
@@ -21,15 +23,9 @@ export function installedPluginsFromJson(value, host) {
             throw new PluginInstallError('unsupported_capability', `${host.label} plugin list has an unnamed entry.`);
         return {
             id, name, version: stringOf(raw['version']) ?? '', enabled: raw['enabled'] !== false,
-            scope: stringOf(raw['scope']), path: stringOf(raw['installPath']) ?? stringOf(raw['installedPath']) ?? stringOf(raw['path']), raw,
+            scope: stringOf(raw['scope']), path: stringOf(raw['installPath']) ?? stringOf(raw['installedPath']) ?? stringOf(raw['rootPath']) ?? stringOf(raw['path']), raw,
         };
     });
-}
-export function agentPluginRepositoryMatches(value) {
-    if (typeof value !== 'string')
-        return false;
-    const source = value.trim().toLowerCase().replace(/^git\+/, '').replace(/^git@github\.com:/, 'https://github.com/').replace(/^ssh:\/\/git@github\.com\//, 'https://github.com/').replace(/\/$/, '').replace(/\.git$/, '');
-    return source === AGENT_PLUGIN_GIT_URL.toLowerCase().replace(/\.git$/, '') || source === AGENT_PLUGIN_REPOSITORY.toLowerCase();
 }
 function packageRepositoryOf(value) {
     return typeof value === 'string' ? value : objectOf(value)?.['url'];
@@ -38,9 +34,14 @@ function repositoryOf(record) {
     return record['repo'] ?? objectOf(record['marketplaceSource'])?.['source']
         ?? objectOf(record['source'])?.['url'] ?? (typeof record['source'] === 'string' ? record['source'] : undefined);
 }
-async function marketplaceMatches(runtime, record) {
+async function marketplaceMatches(runtime, host, record) {
     if (agentPluginRepositoryMatches(repositoryOf(record)))
         return true;
+    const source = objectOf(record['source']);
+    if (source?.['source'] === 'directory') {
+        const folder = stringOf(source['path']);
+        return folder !== undefined && isManagedPackedBundle(runtime, host, folder);
+    }
     const root = stringOf(record['root']) ?? stringOf(record['installLocation']);
     if (!root)
         return false;
@@ -85,14 +86,15 @@ function hasForeignInstalledScope(plugin, scope) {
 async function inspectMarketplacePlugin(runtime, options) {
     const { host, scope } = options;
     const management = host.management;
-    const pluginResult = await checkedPluginCommand(runtime, host.command, [management, 'list', '--json'], options.root);
+    const [command, ...prefix] = options.launcher;
+    const pluginResult = await checkedPluginCommand(runtime, command, [...prefix, management, 'list', '--json'], options.root);
     const plugins = installedPluginsFromJson(pluginJson(pluginResult.stdout, `${host.label} plugin list`), host);
-    const marketResult = await checkedPluginCommand(runtime, host.command, [management, 'marketplace', 'list', '--json'], options.root);
+    const marketResult = await checkedPluginCommand(runtime, command, [...prefix, management, 'marketplace', 'list', '--json'], options.root);
     const markets = listRecords(pluginJson(marketResult.stdout, `${host.label} marketplace list`), 'marketplaces', `${host.label} marketplace list`);
     const market = markets.find(record => record['name'] === host.marketplace);
     const conflicts = oldHookConflicts(runtime, options);
     const migrations = [];
-    if (market && !await marketplaceMatches(runtime, market))
+    if (market && !await marketplaceMatches(runtime, host, market))
         conflicts.push(`Marketplace ${host.marketplace} belongs to another source. Review its plugins before replacing it with ${AGENT_PLUGIN_REPOSITORY}.`);
     for (const plugin of plugins) {
         if (host.legacyNames.includes(plugin.name) && plugin.enabled) {
@@ -122,8 +124,7 @@ export function verifyPluginManifest(runtime, options, plugin, installAnswer) {
     if (!path || !host.manifest)
         throw new PluginInstallError('failed', 'The host did not identify a verifiable installed plugin directory.');
     const manifest = readPluginJson(join(path, host.manifest));
-    const expectedName = host.id === 'opencode' ? '@evomap/evolver-opencode' : host.id === 'dsh' ? '@evomap/dsh-evolver' : AGENT_PLUGIN_NAME;
-    if (!manifest || manifest['name'] !== expectedName || manifest['version'] !== plugin.version) {
+    if (!manifest || manifest['name'] !== (host.packageName ?? AGENT_PLUGIN_NAME) || manifest['version'] !== plugin.version) {
         throw new PluginInstallError('failed', 'The host registration and installed plugin manifest do not agree; installation was not confirmed.');
     }
     const repository = packageRepositoryOf(manifest?.['repository']);
@@ -131,8 +132,7 @@ export function verifyPluginManifest(runtime, options, plugin, installAnswer) {
         throw new PluginInstallError('conflict', 'The installed plugin manifest does not identify the unified Evolver plugin source.');
     if (readPluginText(join(path, '.evolver-packed'))?.trim() !== host.id)
         throw new PluginInstallError('failed', 'The installed plugin is not the packed artifact for the selected host.');
-    const entries = host.id === 'opencode' ? ['server.mjs', 'tui.mjs'] : host.id === 'dsh' ? ['plugin.mjs'] : host.id === 'antigravity' ? ['hooks.json', 'bin/hook.mjs'] : host.id === 'claude-code' ? ['hooks/hooks.json', 'hooks/register.ts', 'bin/relay.mjs'] : ['hooks/hooks.json', 'bin/hook.mjs'];
-    if (entries.some(entry => !existsSync(join(path, entry))))
+    if (host.entries.some(entry => !existsSync(join(path, entry))))
         throw new PluginInstallError('failed', 'The installed plugin is missing its hook/plugin entry files.');
     return path;
 }
@@ -227,14 +227,20 @@ function inspectDshPlugin(runtime, options) {
         ? { id: AGENT_PLUGIN_NAME, name: AGENT_PLUGIN_NAME, version: manifest['version'], enabled: true, path, raw: manifest } : undefined;
     return { installed, marketplacePresent: false, conflicts, migrations };
 }
-export async function inspectAgentPlugin(runtime, options) {
-    if (options.host.kind === 'marketplace')
+/** `bundle` is the release checkout's dist folder, which a `script` host's own status command needs. */
+export async function inspectAgentPlugin(runtime, options, bundle) {
+    if (options.host.marketplace)
         return inspectMarketplacePlugin(runtime, options);
+    if (options.host.kind === 'script')
+        return inspectScriptPlugin(runtime, options, bundle);
+    if (options.host.id === 'stepcode')
+        return inspectStepCodePlugin(runtime, options);
     if (options.host.id === 'opencode')
         return inspectOpenCodePlugin(runtime, options);
     if (options.host.id === 'dsh')
         return inspectDshPlugin(runtime, options);
-    const result = await checkedPluginCommand(runtime, options.host.command, ['plugin', 'list', '--json'], options.root);
+    const [command, ...prefix] = options.launcher;
+    const result = await checkedPluginCommand(runtime, command, [...prefix, 'plugin', 'list', '--json'], options.root);
     const plugins = installedPluginsFromJson(pluginJson(result.stdout, 'Antigravity plugin list'), options.host);
     const installed = plugins.find(plugin => plugin.name === AGENT_PLUGIN_NAME);
     const standalone = plugins.filter(plugin => options.host.legacyNames.includes(plugin.name) && plugin.enabled);

@@ -1,8 +1,8 @@
-type SystemLibrary = 'kernel32.dll' | 'ntdll.dll' | null;
+type SystemLibrary = 'kernel32.dll' | 'ntdll.dll' | '/usr/lib/libSystem.B.dylib' | null;
 /**
  * Retain the JS LibraryHandle as well as its native function wrappers. Collecting
  * that wrapper invokes Koffi 3.2.1's finalizer during Bun 1.3.14 GC and can abort.
- * Only these three fixed system libraries live for the runtime's lifetime, even
+ * Only these four fixed system libraries live for the runtime's lifetime, even
  * after a partial binding failure. Callers still close every file/process HANDLE.
  */
 export declare function loadReferenceSystemLibrary(name: SystemLibrary): ReturnType<typeof import('koffi').load>;
