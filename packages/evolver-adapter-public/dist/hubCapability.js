@@ -111,8 +111,8 @@ export class PublicHubCapability {
         publish: async (recipeId, options) => this.publishRecipe(recipeId, options),
         get: async (recipeId) => this.getRecipe(recipeId),
         express: async (recipeId, request = {}) => this.expressRecipe(recipeId, request),
-        search: async (request = {}) => this.searchRecipes(request),
-        list: async (request = {}) => this.listRecipes(request),
+        search: async (request = {}, options) => this.searchRecipes(request, options),
+        list: async (request = {}, options) => this.listRecipes(request, options),
     };
     constructor(opts) {
         this.opts = opts;
@@ -357,18 +357,18 @@ export class PublicHubCapability {
             return page;
         },
     };
-    async fetch(query) {
-        const page = await this.fetchPage(query);
+    async fetch(query, options) {
+        const page = await this.fetchPage(query, options);
         if (page.confirmRequired)
             throw new Error('hub_fetch_confirmation_required');
         return page.assets;
     }
-    async fetchPage(query) {
+    async fetchPage(query, options) {
         reference.assertExecutionEligible(query, this.referenceScope);
         // #69: map camelCase SearchQuery → hub snake_case wire (signalsAny → signals) before sending.
         // /a2a/fetch responses are FULL GEP envelopes (buildResponse('fetch', …)); the rows live at payload.results,
         // NOT at the top level. Reading body.results here always yielded [] — every fetch silently returned nothing.
-        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient(searchQueryToFetchWire(query))));
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient(searchQueryToFetchWire(query))), undefined, undefined, options);
         return reference.withReferenceScope(this.referenceScope, () => {
             reference.assertExecutionEligible(body);
             return newbieFetchConfirmation(body) ?? { assets: assetsFromBody(body), confirmRequired: false };
@@ -384,7 +384,7 @@ export class PublicHubCapability {
         const id = assetId.trim();
         if (!id)
             return { status: 'absent' };
-        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient({ asset_ids: [id] })));
+        const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', this.withRequestClient({ asset_ids: [id] })), undefined, undefined, { timeoutMs: options?.timeoutMs });
         const matches = [];
         for (const row of reference.withReferenceScope(this.referenceScope, () => assetCandidatesFromBody(body))) {
             const asset = unwrapFetchDeliveryRow(row);
@@ -769,20 +769,20 @@ export class PublicHubCapability {
             ...(recipe !== undefined ? { recipe } : {}),
         };
     }
-    async searchRecipes(request = {}) {
+    async searchRecipes(request = {}, options) {
         if (isHubDryRunEnabled()) {
             return dryRunRecipeSearchReceipt('search_recipe', request);
         }
         const body = request.context
-            ? await this.http.call('POST', '/a2a/recipe/search', { ...recipeSearchQuery(request), context: request.context })
-            : await this.http.call('GET', '/a2a/recipe/search', undefined, recipeSearchQuery(request));
+            ? await this.http.call('POST', '/a2a/recipe/search', { ...recipeSearchQuery(request), context: request.context }, undefined, undefined, options)
+            : await this.http.call('GET', '/a2a/recipe/search', undefined, recipeSearchQuery(request), undefined, options);
         return recipeSearchReceiptFromBody(body);
     }
-    async listRecipes(request = {}) {
+    async listRecipes(request = {}, options) {
         if (isHubDryRunEnabled()) {
             return dryRunRecipeSearchReceipt('list_recipe', request);
         }
-        const body = await this.http.call('GET', '/a2a/recipe/list', undefined, recipeSearchQuery(request));
+        const body = await this.http.call('GET', '/a2a/recipe/list', undefined, recipeSearchQuery(request), undefined, options);
         return recipeSearchReceiptFromBody(body);
     }
     async expressRecipe(recipeId, request = {}) {

@@ -173,8 +173,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     publishDiagnostics(): hub.PublishReceiptDiagnostics;
     private recordMalformedPublishReceipt;
     readonly references: reference.ReferenceCapability;
-    fetch(query: hub.HubQuery): Promise<hub.AssetRecord[]>;
-    fetchPage(query: hub.HubQuery): Promise<hub.FetchPage>;
+    fetch(query: hub.HubQuery, options?: hub.HubRequestOptions): Promise<hub.AssetRecord[]>;
+    fetchPage(query: hub.HubQuery, options?: hub.HubRequestOptions): Promise<hub.FetchPage>;
     /**
      * Fetch one asset AND say why, when the answer is not an asset. `fetchAssetById` collapses every outcome to
      * `null`, so a caller could not tell "the hub does not have this" from "the hub delivered something the
@@ -224,8 +224,8 @@ export declare class PublicHubCapability implements hub.HubCapability {
     createRecipe(request: hub.RecipeCreateRequest): Promise<hub.RecipeReceipt>;
     publishRecipe(recipeId: string, options?: hub.RecipePublishOptions): Promise<hub.RecipeReceipt>;
     getRecipe(recipeId: string): Promise<hub.RecipeFetchReceipt>;
-    searchRecipes(request?: hub.RecipeSearchRequest): Promise<hub.RecipeSearchReceipt>;
-    listRecipes(request?: hub.RecipeSearchRequest): Promise<hub.RecipeSearchReceipt>;
+    searchRecipes(request?: hub.RecipeSearchRequest, options?: hub.HubRequestOptions): Promise<hub.RecipeSearchReceipt>;
+    listRecipes(request?: hub.RecipeSearchRequest, options?: hub.HubRequestOptions): Promise<hub.RecipeSearchReceipt>;
     expressRecipe(recipeId: string, request?: hub.RecipeExpressRequest): Promise<hub.RecipeExpressionReceipt>;
     task: {
         claim: (taskId: string) => Promise<{

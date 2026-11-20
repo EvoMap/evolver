@@ -272,6 +272,10 @@ export function geneToSkillMd(gene, opts = {}) {
     }
     if (preconditions.length)
         out.push('## Preconditions', '', ...preconditions.map((p) => `- ${p}`), '');
+    if (opts.requiredSkills && opts.requiredSkills.length > 0) {
+        out.push('## Required Skills', '', 'Installed next to this skill. Read each one before following the strategy.', '');
+        out.push(...opts.requiredSkills.map((skill) => `- \`${skill.name}\`: [${skill.path}](${skill.path})`), '');
+    }
     if (strategy.length)
         out.push('## Strategy', '', ...strategy.map((s, i) => `${i + 1}. ${s}`), '');
     if (avoid.length)

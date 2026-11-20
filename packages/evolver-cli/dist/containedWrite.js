@@ -22,6 +22,26 @@ export function writeFileInsideRoot(root, relPath, content, overwrite) {
     }
     return writeRegularFile(join(dir, fileName), content, overwrite);
 }
+/** What `writeFileInsideRoot` would answer for this target, decided without creating or changing anything. */
+export function checkWriteInsideRoot(root, relPath, overwrite) {
+    const parts = relPath.split(sep).filter((part) => part && part !== '.');
+    const fileName = parts.pop();
+    if (!fileName || parts.includes('..'))
+        return { ok: false, reason: 'unsafe_path' };
+    let dir = resolve(root);
+    for (const part of parts) {
+        dir = join(dir, part);
+        const stat = lstatOrNull(dir);
+        if (!stat)
+            return { ok: true };
+        if (!stat.isDirectory() || stat.isSymbolicLink())
+            return { ok: false, reason: 'unsafe_path' };
+    }
+    const existing = lstatOrNull(join(dir, fileName));
+    if (existing && !isUnsharedRegularFile(existing))
+        return { ok: false, reason: 'unsafe_path' };
+    return existing && !overwrite ? { ok: false, reason: 'exists' } : { ok: true };
+}
 function ensureRealDirectory(path) {
     if (!lstatOrNull(path)) {
         try {

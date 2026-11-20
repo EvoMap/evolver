@@ -240,7 +240,7 @@ export class ProxyDaemon {
         // The hub's own refusals — a row for a different asset, a revoked one —
         // still stand, because those are the hub refusing, not us second-guessing.
         this.remoteAssetById = assetByIdSource
-            ? async (assetId) => assetByIdSource.fetchAssetById(assetId, { allowUnverifiedExactIdentity: true })
+            ? async (assetId, options) => assetByIdSource.fetchAssetById(assetId, { allowUnverifiedExactIdentity: true, ...options })
             : undefined;
         const publishRecallConfig = resolvePublishRecallConfig();
         this.publishRecallVerifier = deps.publishRecallVerifier ?? new PublishRecallVerifier({
@@ -1077,10 +1077,10 @@ export class ProxyDaemon {
         const qualified = this.qualifyAssets(assets, assets.length, rawAssets);
         return { ...qualified, missing: ids.filter((id) => !qualified.assets.some((asset) => assetMatchesId(asset, id))) };
     }
-    async recallAssets(query) {
+    async recallAssets(query, options) {
         const hub = this.deps.hub;
         try {
-            return hub.fetchPage ? await hub.fetchPage(query) : { assets: await hub.fetch(query), confirmRequired: false };
+            return hub.fetchPage ? await hub.fetchPage(query, options) : { assets: await hub.fetch(query, options), confirmRequired: false };
         }
         catch (error) {
             if (!isAuthLikeError(error))
@@ -1444,6 +1444,11 @@ export class ProxyDaemon {
                 ctx.json(400, { error: 'invalid_limit' });
                 return true;
             }
+            const hubOptions = recallHubOptions(body.timeout_ms);
+            if (hubOptions === null) {
+                ctx.json(400, { error: 'invalid_timeout_ms' });
+                return true;
+            }
             const q = [body.q, body.query, body.text].find((value) => typeof value === 'string' && value.trim().length > 0);
             const cursor = typeof body.cursor === 'string' && body.cursor.trim() ? body.cursor.trim() : undefined;
             const sort = typeof body.sort === 'string' && body.sort.trim() ? body.sort.trim() : undefined;
@@ -1457,7 +1462,7 @@ export class ProxyDaemon {
             };
             let receipt;
             try {
-                receipt = q ? await recipes.search(request) : await recipes.list(request);
+                receipt = q ? await recipes.search(request, hubOptions) : await recipes.list(request, hubOptions);
             }
             catch (error) {
                 const failure = classifyDiscoveryUpstreamError(error);
@@ -1499,6 +1504,11 @@ export class ProxyDaemon {
                 ctx.json(400, { error: 'invalid_limit' });
                 return true;
             }
+            const hubOptions = recallHubOptions(body.timeout_ms);
+            if (hubOptions === null) {
+                ctx.json(400, { error: 'invalid_timeout_ms' });
+                return true;
+            }
             const recallText = typeof body.text === 'string' && body.text.trim() ? body.text.trim() : undefined;
             const recallContext = recallContextOf(body.context);
             const recallSignals = Array.isArray(body.signals) ? body.signals.filter((s) => typeof s === 'string') : [];
@@ -1534,7 +1544,7 @@ export class ProxyDaemon {
                     ...(recallText !== undefined && recallContext !== undefined ? { context: recallContext } : {}),
                     ...(recallSignals.length > 0 ? { signalsAny: recallSignals } : {}),
                     ...(typeof body.limit === 'number' ? { limit: body.limit } : {}),
-                });
+                }, hubOptions);
                 const [recalled, local] = await Promise.all([
                     recalledPage,
                     this.localRecall([recallText ?? '', ...recallSignals].join('\n'), body.project_dir, recalledPage),
@@ -1570,7 +1580,7 @@ export class ProxyDaemon {
             const localHits = await Promise.all(ids.map((id) => (this.assetStore ? this.assetStore.get(id) : null)));
             const remote = await settledUnlessHubAuthFails(ids.map((id, index) => {
                 const local = localHits[index] ?? null;
-                return local || !this.remoteAssetById ? Promise.resolve(local) : this.remoteAssetById(id);
+                return local || !this.remoteAssetById ? Promise.resolve(local) : this.remoteAssetById(id, hubOptions);
             }));
             if ('authFailure' in remote) {
                 this.markHubAuthFailed(remote.authFailure);
@@ -2777,6 +2787,16 @@ function boundedRequestLimit(value, fallback, maximum) {
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
         return undefined;
     return Math.min(value, maximum);
+}
+const RECALL_TIMEOUT_MIN_MS = 100;
+const RECALL_TIMEOUT_MAX_MS = 30_000;
+/** A recall's `timeout_ms` bounds each Hub request it makes; without it the Hub transport keeps its own default. */
+function recallHubOptions(timeoutMs) {
+    if (timeoutMs === undefined)
+        return undefined;
+    const valid = typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs)
+        && timeoutMs >= RECALL_TIMEOUT_MIN_MS && timeoutMs <= RECALL_TIMEOUT_MAX_MS;
+    return valid ? { timeoutMs } : null;
 }
 function legacyMailboxRuntimeNamespace(requestedChannel, runtimeNamespace) {
     if (requestedChannel === undefined || requestedChannel === 'evomap-hub' || requestedChannel === runtimeNamespace) {

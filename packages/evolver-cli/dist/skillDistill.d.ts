@@ -67,6 +67,10 @@ export declare function runSkillDistill(argv: readonly string[], injected?: Part
  */
 export declare function geneToSkillMd(gene: Record<string, unknown>, opts?: {
     name?: string;
+    requiredSkills?: readonly {
+        name: string;
+        path: string;
+    }[];
 }): string;
 /**
  * `evolver skill-md-update --gene <id> --skill <SKILL.md|dir> [--dry-run]` (B4).

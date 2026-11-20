@@ -108,7 +108,7 @@ export declare class HubFetch {
     private readonly operationTimeouts;
     private readonly deadlineScheduler;
     constructor(deps: HubFetchDeps);
-    call<T>(method: string, path: string, bodyObj?: Record<string, unknown>, query?: Record<string, string | number | undefined>, requestHeaders?: Readonly<Record<string, string>>): Promise<T>;
+    call<T>(method: string, path: string, bodyObj?: Record<string, unknown>, query?: Record<string, string | number | undefined>, requestHeaders?: Readonly<Record<string, string>>, options?: hub.HubRequestOptions): Promise<T>;
 }
 export declare function resolveHubOperationTimeouts(env?: Record<string, string | undefined>, overrides?: Partial<HubOperationTimeouts>): HubOperationTimeouts;
 export declare function awaitWithAbort<T>(promise: PromiseLike<T>, signal?: AbortSignal): Promise<T>;

@@ -199,10 +199,10 @@ export class HubFetch {
         this.operationTimeouts = resolveHubOperationTimeouts(deps.env ?? process.env, deps.operationTimeouts);
         this.deadlineScheduler = deps.deadlineScheduler ?? DEFAULT_DEADLINE_SCHEDULER;
     }
-    async call(method, path, bodyObj, query, requestHeaders) {
+    async call(method, path, bodyObj, query, requestHeaders, options) {
         const operation = hubOperationForRequest(path, bodyObj);
         const signed = await authenticateHubRequest({ auth: this.deps.auth, authTimeoutMs: this.deps.authTimeoutMs, deadlineScheduler: this.deadlineScheduler }, method, path, bodyObj);
-        const timeoutMs = this.operationTimeouts[HUB_OPERATION_TIMEOUT_KEYS[operation]];
+        const timeoutMs = options?.timeoutMs ?? this.operationTimeouts[HUB_OPERATION_TIMEOUT_KEYS[operation]];
         const deadline = createHubDeadline(this.deadlineScheduler, method, path, operation, timeoutMs);
         try {
             const sender = this.deps.senderId();

@@ -1,9 +1,12 @@
-import { join } from 'node:path';
+import { lstatSync, readdirSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { assetstore, wire } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
-import { relativePathInsideRoot, writeFileInsideRoot } from './containedWrite.js';
+import { checkWriteInsideRoot, relativePathInsideRoot, writeFileInsideRoot } from './containedWrite.js';
+import { fetchSkillFiles } from './gitSkillSource.js';
 import { createRecipeHubFromEnv } from './recipe.js';
+import { digestOfSkillFiles, requiredSkillsOf } from './requiredSkills.js';
 import { geneToSkillMd } from './skillDistill.js';
 const GROUP = 'skill.fetch';
 const DEFAULT_LIMIT = 5;
@@ -14,27 +17,6 @@ const USAGE = [
     '       evolver skill fetch --signals <s1,s2> [--limit N] [--select <asset_id_or_gene_id>] [--out <dir>] [--write] [--force] [--json]',
     '       evolver skill fetch --query <text> [--limit N] [--select <asset_id_or_gene_id>] [--out <dir>] [--write] [--force] [--json]',
 ].join('\n');
-const HUB_METADATA_KEYS = new Set([
-    'credit_cost',
-    'gdi_score',
-    'success_rate',
-    'reuse_count',
-    'ranking_score',
-    'source_node_id',
-    'fetched_at',
-    'receipt',
-    'hub_receipt',
-    'already_purchased',
-    '_semantic_similarity',
-    'semantic_similarity',
-    '_search_score',
-    'search_score',
-    '_match_score',
-    'match_score',
-    '_retrieval_rank',
-    'retrieval_rank',
-    'original_asset_id',
-]);
 export async function runSkillCommand(argv, deps = {}) {
     const sub = argv[0];
     if (sub === 'fetch')
@@ -66,7 +48,7 @@ async function runSkillFetchCommand(argv, deps = {}) {
             return 0;
         }
         const hub = deps.hub ?? createSkillFetchHubFromEnv(deps, env);
-        const run = await buildSkillFetchResult(hub, opts, cwd);
+        const run = await buildSkillFetchResult(hub, opts, cwd, deps.fetchSkillFiles ?? fetchSkillFiles);
         if (!run.ok)
             return emitFailure(run.reason, run.message, opts.json, io);
         emitSuccess(run.value, opts.json, io);
@@ -128,7 +110,7 @@ function parseSkillFetchArgs(argv, cwd) {
         },
     };
 }
-async function buildSkillFetchResult(hub, opts, cwd) {
+async function buildSkillFetchResult(hub, opts, cwd, fetchFiles) {
     const direct = opts.source.kind === 'asset' ? await fetchGeneById(hub, opts.source.id) : null;
     if (direct && !direct.ok)
         return direct;
@@ -158,7 +140,7 @@ async function buildSkillFetchResult(hub, opts, cwd) {
     if (selected.asset.asset_id !== previewed.assetId) {
         return { ok: false, reason: 'integrity_error', message: 'selected Gene asset_id changed after preview' };
     }
-    const written = writeSkill(selected.asset, cwd, opts.outDir, opts.force);
+    const written = writeSkill(selected.asset, cwd, opts.outDir, opts.force, fetchFiles);
     if (!written.ok)
         return written;
     return { ok: true, value: { mode: 'write', candidates: [candidateFromGene(selected.asset, opts.outDir)], written: written.value } };
@@ -200,7 +182,7 @@ async function fetchGeneById(hub, id) {
 function normalizeRemoteGene(asset, requestedId) {
     if (asset.type !== 'Gene')
         return { ok: false, reason: 'unsupported', message: `skill fetch only supports Gene assets, got ${asset.type}` };
-    const cleaned = stripHubMetadata(asset);
+    const cleaned = stripHubDeliveryMetadataForIntegrity(asset);
     const claimed = stringField(cleaned, 'asset_id');
     if (!claimed)
         return { ok: false, reason: 'integrity_error', message: 'remote Gene is missing asset_id' };
@@ -213,6 +195,9 @@ function normalizeRemoteGene(asset, requestedId) {
         if (!isContentAssetId(requestedId) && stringField(cleaned, 'id') !== requestedId)
             return { ok: false, reason: 'integrity_error', message: 'remote Gene id does not match requested id' };
     }
+    const required = requiredSkillsOf(cleaned);
+    if (!required.ok)
+        return { ok: false, reason: 'unsupported', message: `Gene ${required.message}` };
     return { ok: true, asset: cleaned };
 }
 function candidateFromGene(gene, outDir) {
@@ -230,21 +215,94 @@ function candidateFromGene(gene, outDir) {
         candidate.summary = summary;
     if (outDir)
         candidate.target = relativeSkillPath(name);
+    const required = requiredSkillsOf(gene);
+    if (required.ok && required.value.length > 0)
+        candidate.requiredSkills = required.value;
     return candidate;
 }
-function writeSkill(gene, cwd, outDir, force) {
+function writeSkill(gene, cwd, outDir, force, fetchFiles) {
     const name = skillNameForGene(gene);
     const target = relativeSkillPath(name);
-    const write = writeFileInsideRoot(cwd, join(outDir, target), geneToSkillMd(gene, { name }), force);
-    if (!write.ok && write.reason === 'exists')
-        return { ok: false, reason: 'conflict', message: `SKILL.md already exists for skill ${name}; use --force to overwrite` };
-    if (!write.ok)
-        return { ok: false, reason: 'invalid_arg', message: 'skill target path must not pass through a symlink, junction, hard link, or non-directory' };
+    const required = planRequiredSkills(gene, name, fetchFiles);
+    if (!required.ok)
+        return required;
+    const skillMd = geneToSkillMd(gene, {
+        name,
+        requiredSkills: required.value.map(({ skill }) => ({ name: skill.name, path: `../${skill.name}/SKILL.md` })),
+    });
+    // The Gene's own SKILL.md goes last: its presence then means everything it points at is already on disk.
+    const planned = [...required.value.flatMap((plan) => plan.planned), { target, content: skillMd }];
+    if (required.value.length > 0) {
+        const blocked = installBlocker(cwd, outDir, planned, required.value.map((plan) => plan.skill.name), force);
+        if (blocked)
+            return blocked;
+    }
+    for (const file of planned) {
+        const write = writeFileInsideRoot(cwd, join(outDir, ...file.target.split('/')), file.content, force);
+        if (!write.ok && write.reason === 'exists')
+            return { ok: false, reason: 'conflict', message: `SKILL.md already exists for skill ${name}; use --force to overwrite` };
+        if (!write.ok)
+            return { ok: false, reason: 'invalid_arg', message: 'skill target path must not pass through a symlink, junction, hard link, or non-directory' };
+    }
     const written = { target, assetId: gene.asset_id, name };
     const geneId = stringField(gene, 'id');
     if (geneId)
         written.geneId = geneId;
+    if (required.value.length > 0)
+        written.requiredSkills = required.value.map((plan) => plan.skill);
     return { ok: true, value: written };
+}
+/**
+ * Decide before the first write whether the whole install can land: every target writable, and each skill
+ * directory free of files the pinned skill does not have, so what is on disk afterwards is exactly the pinned
+ * content. Leftovers are refused, not deleted: they may be the user's.
+ */
+function installBlocker(cwd, outDir, planned, skillNames, force) {
+    const pathOf = (target) => join(outDir, ...target.split('/'));
+    for (const file of planned) {
+        const check = checkWriteInsideRoot(cwd, pathOf(file.target), force);
+        if (!check.ok && check.reason === 'exists')
+            return { ok: false, reason: 'conflict', message: `${file.target} already exists; use --force to overwrite. Nothing was written` };
+        if (!check.ok)
+            return { ok: false, reason: 'invalid_arg', message: 'skill target path must not pass through a symlink, junction, hard link, or non-directory. Nothing was written' };
+    }
+    const expected = new Set(planned.map((file) => file.target));
+    for (const name of skillNames) {
+        const stray = filesUnder(join(cwd, pathOf(`skills/${name}`)), `skills/${name}`).find((target) => !expected.has(target));
+        if (stray)
+            return { ok: false, reason: 'conflict', message: `${stray} is not part of the pinned skill; remove skills/${name} and retry. Nothing was written` };
+    }
+    return null;
+}
+function filesUnder(dir, target) {
+    let stat;
+    try {
+        stat = lstatSync(dir);
+    }
+    catch {
+        return [];
+    }
+    if (!stat.isDirectory())
+        return [target];
+    return readdirSync(dir).flatMap((entry) => filesUnder(`${dir}${sep}${entry}`, `${target}/${entry}`));
+}
+/** Fetch every skill the Gene requires and check it against the Gene's pin before a single file is written. */
+function planRequiredSkills(gene, geneSkillName, fetchFiles) {
+    const declared = requiredSkillsOf(gene);
+    const plans = [];
+    for (const ref of declared.ok ? declared.value : []) {
+        const refuse = (why) => ({ ok: false, reason: 'required_skill', message: `required skill ${ref.name} cannot be installed: ${why}. Nothing was written` });
+        if (ref.name === safeSkillName(geneSkillName))
+            return refuse('its directory name collides with the skill rendered from this Gene');
+        const files = fetchFiles(ref);
+        if (!files.ok)
+            return refuse(files.message);
+        if (digestOfSkillFiles(files.value) !== ref.sha256)
+            return refuse('its content does not match the sha256 the Gene pins');
+        const planned = files.value.map((file) => ({ target: `skills/${ref.name}/${file.path}`, content: file.content }));
+        plans.push({ skill: { ...ref, target: `skills/${ref.name}/SKILL.md`, files: planned.map((file) => file.target) }, planned });
+    }
+    return { ok: true, value: plans };
 }
 function createSkillFetchHubFromEnv(deps, env = deps.env ?? process.env) {
     return createRecipeHubFromEnv(env, deps.connectHub ?? connectPublicHub);
@@ -263,9 +321,13 @@ function emitSuccess(value, json, io) {
         const gene = c.geneId ? ` gene=${c.geneId}` : '';
         const signals = c.signals.length > 0 ? ` signals=${c.signals.join(',')}` : '';
         const target = c.target ? ` target=${c.target}` : '';
-        io.stdout(`  ${c.assetId}${gene} name=${c.name}${signals}${target}`);
+        const requires = c.requiredSkills ? ` requires=${c.requiredSkills.map((skill) => skill.name).join(',')}` : '';
+        io.stdout(`  ${c.assetId}${gene} name=${c.name}${signals}${target}${requires}`);
         if (c.summary)
             io.stdout(`    ${c.summary}`);
+    }
+    for (const skill of value.written?.requiredSkills ?? []) {
+        io.stdout(`skill fetch: installed required skill ${skill.name} (${skill.files.length} file(s)) from ${skill.repo}@${skill.commit.slice(0, 12)}`);
     }
     if (value.written)
         io.stdout(`skill fetch: wrote ${value.written.target}`);
@@ -338,13 +400,6 @@ function flagValue(args, flag) {
 }
 function splitList(value) {
     return value.split(',').map((item) => item.trim()).filter(Boolean);
-}
-function stripHubMetadata(asset) {
-    const out = {};
-    for (const [key, value] of Object.entries(asset))
-        if (!HUB_METADATA_KEYS.has(key))
-            out[key] = value;
-    return out;
 }
 function skillNameForGene(gene) {
     const signals = arrayOfStrings(gene['signals_match']).slice(0, 4).join('-');
