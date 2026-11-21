@@ -1,13 +1,12 @@
 import { lstatSync, readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { assetstore, wire } from '@evomap/evolver-core';
+import { assetstore, skill, wire } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv } from '@evomap/evolver-mcp';
 import { checkWriteInsideRoot, relativePathInsideRoot, writeFileInsideRoot } from './containedWrite.js';
-import { fetchSkillFiles } from './gitSkillSource.js';
 import { createRecipeHubFromEnv } from './recipe.js';
-import { digestOfSkillFiles, requiredSkillsOf } from './requiredSkills.js';
 import { geneToSkillMd } from './skillDistill.js';
+const { checkSkillTree, digestOfSkillFiles, fetchSkillFiles, requiredSkillsOf } = skill;
 const GROUP = 'skill.fetch';
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -140,7 +139,7 @@ async function buildSkillFetchResult(hub, opts, cwd, fetchFiles) {
     if (selected.asset.asset_id !== previewed.assetId) {
         return { ok: false, reason: 'integrity_error', message: 'selected Gene asset_id changed after preview' };
     }
-    const written = writeSkill(selected.asset, cwd, opts.outDir, opts.force, fetchFiles);
+    const written = await writeSkill(selected.asset, cwd, opts.outDir, opts.force, fetchFiles);
     if (!written.ok)
         return written;
     return { ok: true, value: { mode: 'write', candidates: [candidateFromGene(selected.asset, opts.outDir)], written: written.value } };
@@ -220,10 +219,10 @@ function candidateFromGene(gene, outDir) {
         candidate.requiredSkills = required.value;
     return candidate;
 }
-function writeSkill(gene, cwd, outDir, force, fetchFiles) {
+async function writeSkill(gene, cwd, outDir, force, fetchFiles) {
     const name = skillNameForGene(gene);
     const target = relativeSkillPath(name);
-    const required = planRequiredSkills(gene, name, fetchFiles);
+    const required = await planRequiredSkills(gene, name, fetchFiles);
     if (!required.ok)
         return required;
     const skillMd = geneToSkillMd(gene, {
@@ -286,21 +285,30 @@ function filesUnder(dir, target) {
         return [target];
     return readdirSync(dir).flatMap((entry) => filesUnder(`${dir}${sep}${entry}`, `${target}/${entry}`));
 }
-/** Fetch every skill the Gene requires and check it against the Gene's pin before a single file is written. */
-function planRequiredSkills(gene, geneSkillName, fetchFiles) {
+/**
+ * Fetch every skill the Gene requires and check it before a single file is written: against the Gene's pin, or, for a
+ * skill that follows a branch, record the commit and digest it resolved to so the install can be reproduced.
+ */
+async function planRequiredSkills(gene, geneSkillName, fetchFiles) {
     const declared = requiredSkillsOf(gene);
     const plans = [];
     for (const ref of declared.ok ? declared.value : []) {
         const refuse = (why) => ({ ok: false, reason: 'required_skill', message: `required skill ${ref.name} cannot be installed: ${why}. Nothing was written` });
         if (ref.name === safeSkillName(geneSkillName))
             return refuse('its directory name collides with the skill rendered from this Gene');
-        const files = fetchFiles(ref);
-        if (!files.ok)
-            return refuse(files.message);
-        if (digestOfSkillFiles(files.value) !== ref.sha256)
+        const fetched = await fetchFiles(ref);
+        if (!fetched.ok)
+            return refuse(fetched.message);
+        const { commit, files } = fetched.value;
+        const tree = checkSkillTree(files.map((file) => ({ mode: '100644', type: 'blob', size: file.content.length, path: file.path })));
+        if (!tree.ok)
+            return refuse(tree.message);
+        const sha256 = digestOfSkillFiles(files);
+        if ('sha256' in ref && sha256 !== ref.sha256)
             return refuse('its content does not match the sha256 the Gene pins');
-        const planned = files.value.map((file) => ({ target: `skills/${ref.name}/${file.path}`, content: file.content }));
-        plans.push({ skill: { ...ref, target: `skills/${ref.name}/SKILL.md`, files: planned.map((file) => file.target) }, planned });
+        const resolved = 'branch' in ref ? { ...ref, commit, sha256 } : ref;
+        const planned = files.map((file) => ({ target: `skills/${ref.name}/${file.path}`, content: file.content }));
+        plans.push({ skill: { ...resolved, target: `skills/${ref.name}/SKILL.md`, files: planned.map((file) => file.target) }, planned });
     }
     return { ok: true, value: plans };
 }
@@ -327,7 +335,8 @@ function emitSuccess(value, json, io) {
             io.stdout(`    ${c.summary}`);
     }
     for (const skill of value.written?.requiredSkills ?? []) {
-        io.stdout(`skill fetch: installed required skill ${skill.name} (${skill.files.length} file(s)) from ${skill.repo}@${skill.commit.slice(0, 12)}`);
+        const source = skill.branch ? `${skill.repo} branch ${skill.branch} at ${skill.commit} (sha256 ${skill.sha256})` : `${skill.repo}@${skill.commit.slice(0, 12)}`;
+        io.stdout(`skill fetch: installed required skill ${skill.name} (${skill.files.length} file(s)) from ${source}`);
     }
     if (value.written)
         io.stdout(`skill fetch: wrote ${value.written.target}`);

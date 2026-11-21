@@ -7,6 +7,8 @@ const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_DEPTH = 8;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const BRANCH_SEGMENT = /^[A-Za-z0-9._-]+$/;
+const MAX_BRANCH_LENGTH = 200;
 const SEGMENT = /^[A-Za-z0-9._-]{1,100}$/;
 // Windows opens these as devices, extension or not (CON, NUL.txt, COM1.md), so they never name a plain file.
 const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\.|$)/i;
@@ -39,28 +41,45 @@ function parseRequiredSkill(entry) {
     const [location = '', fragment = '', ...extra] = entry.slice(GIT_PREFIX.length).split('#');
     const at = location.lastIndexOf('@');
     if (extra.length > 0 || at < 0)
-        return malformed('expected <repository>@<commit>#sha256=<digest>');
+        return malformed('expected <repository>@<commit>#sha256=<digest> or <repository>@<branch>');
     const repo = httpsRepository(location.slice(0, at));
-    const commit = location.slice(at + 1);
-    const pin = pinOf(fragment);
+    const rev = location.slice(at + 1);
+    const params = fragmentOf(fragment);
     if (!repo)
         return malformed('the repository must be a plain https:// URL without credentials or query');
-    if (!COMMIT.test(commit))
-        return malformed('the commit must be a full lowercase hex commit id');
-    if (!pin)
-        return malformed('expected #sha256=<64 lowercase hex>, optionally &path=<plain relative directory>');
-    const { sha256, path } = pin;
+    if (!params)
+        return malformed('the fragment may hold only sha256=<64 lowercase hex> and path=<plain relative directory>');
+    const { sha256, path } = params;
     const name = installName(path || new URL(repo).pathname);
     if (!name)
         return malformed('no usable directory name');
-    return { ok: true, value: { name, repo, commit, path, sha256 } };
+    if (sha256 !== undefined) {
+        // A digest only means something next to a commit: a branch moves, and its content with it.
+        if (!COMMIT.test(rev))
+            return malformed('with #sha256 the reference must name a full lowercase hex commit id');
+        return { ok: true, value: { name, repo, commit: rev, path, sha256 } };
+    }
+    if (COMMIT.test(rev))
+        return malformed('a commit reference needs #sha256=<64 lowercase hex> of the skill directory');
+    if (!isBranchName(rev))
+        return malformed(`${JSON.stringify(rev)} is not a usable branch name`);
+    return { ok: true, value: { name, repo, branch: rev, path } };
 }
-function pinOf(fragment) {
+function fragmentOf(fragment) {
     const params = new URLSearchParams(fragment);
-    const sha256 = params.get('sha256') ?? '';
+    const sha256 = params.get('sha256') ?? undefined;
     const path = params.get('path') ?? '';
     const known = [...params.keys()].every((key) => key === 'sha256' || key === 'path');
-    return known && SHA256.test(sha256) && (path === '' || isSafeRelativePath(path)) ? { sha256, path } : null;
+    const valid = known && (sha256 === undefined || SHA256.test(sha256)) && (path === '' || isSafeRelativePath(path));
+    return valid ? { ...(sha256 === undefined ? {} : { sha256 }), path } : null;
+}
+/**
+ * A branch name git takes as nothing but `refs/heads/<name>` (a subset of `git check-ref-format`): plain characters,
+ * no empty, dot-led or `.lock` segment, no `..`, and no leading `-` that git could read as an option.
+ */
+function isBranchName(name) {
+    return name.length <= MAX_BRANCH_LENGTH && !name.startsWith('-') && !name.includes('..') && !name.endsWith('.')
+        && name.split('/').every((segment) => BRANCH_SEGMENT.test(segment) && !segment.startsWith('.') && !segment.endsWith('.lock'));
 }
 function httpsRepository(raw) {
     let url;
@@ -77,10 +96,11 @@ function installName(source) {
     const last = source.split('/').filter(Boolean).pop() ?? '';
     return last.replace(/\.git$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
 }
-/** The `preconditions` entry that pins a skill directory with this content. */
+/** The `preconditions` entry that pins a skill directory with this content, or follows a branch. */
 export function formatRequiredSkill(ref) {
-    const params = new URLSearchParams({ sha256: ref.sha256, ...(ref.path ? { path: ref.path } : {}) });
-    return `${GIT_PREFIX}${ref.repo}@${ref.commit}#${params.toString().replace(/%2F/g, '/')}`;
+    const pinned = 'sha256' in ref;
+    const params = new URLSearchParams({ ...(pinned ? { sha256: ref.sha256 } : {}), ...(ref.path ? { path: ref.path } : {}) });
+    return `${GIT_PREFIX}${ref.repo}@${pinned ? ref.commit : ref.branch}#${params.toString().replace(/%2F/g, '/')}`;
 }
 /**
  * Content digest of a skill directory: SHA-256 over one `<sha256 of the file>  <path>\n` line per file, sorted by

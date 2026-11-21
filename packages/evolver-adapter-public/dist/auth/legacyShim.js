@@ -21,13 +21,15 @@ export class LegacyAuthShim {
     onRotate;
     onVersionUpdate;
     onDiverged;
+    reload;
     kind = 'oauth_device_token';
     nodeSecretVersion;
-    constructor(nodeSecret, onRotate, initialNodeSecretVersion, onVersionUpdate, onDiverged) {
+    constructor(nodeSecret, onRotate, initialNodeSecretVersion, onVersionUpdate, onDiverged, reload) {
         this.nodeSecret = nodeSecret;
         this.onRotate = onRotate;
         this.onVersionUpdate = onVersionUpdate;
         this.onDiverged = onDiverged;
+        this.reload = reload;
         // An absent secret is the enrollment state, not an error: a node with no credential yet, and one whose
         // secret notifyNodeSecretDiverged just dropped, both hello unauthenticated so the hub can mint one.
         // Rejecting it here would fence off the re-acquisition this class is written to perform.
@@ -35,8 +37,12 @@ export class LegacyAuthShim {
             throw new Error('node_secret 必须是 64-hex');
         this.nodeSecretVersion = parseNodeSecretVersion(initialNodeSecretVersion);
     }
-    async login() { return { id: 'legacy-node-secret', kind: 'oauth_device_token', token: this.nodeSecret ?? '' }; }
+    async login() {
+        this.reloadNodeSecret();
+        return { id: 'legacy-node-secret', kind: 'oauth_device_token', token: this.nodeSecret ?? '' };
+    }
     async authenticate() {
+        this.reloadNodeSecret();
         return {
             headers: this.nodeSecretVersion !== undefined
                 ? { 'X-EvoMap-Node-Secret-Version': String(this.nodeSecretVersion) }
@@ -52,6 +58,7 @@ export class LegacyAuthShim {
     async rotate() { return this.login(); }
     async revoke() { }
     getNodeSecretVersion() {
+        this.reloadNodeSecret();
         return this.nodeSecretVersion;
     }
     adoptNodeSecret(nodeSecret, nodeSecretVersion) {
@@ -60,6 +67,18 @@ export class LegacyAuthShim {
         this.nodeSecret = nodeSecret;
         this.nodeSecretVersion = parseNodeSecretVersion(nodeSecretVersion);
         this.onRotate?.(nodeSecret, this.nodeSecretVersion);
+    }
+    // Taken from durable state another process already wrote, so it is not reported back through onRotate. The Hub
+    // numbers a node's secrets upward, so one older than the secret held here was superseded and would only earn a 401.
+    reloadNodeSecret() {
+        const fresh = this.reload?.();
+        if (!fresh || !isNodeSecret(fresh.nodeSecret))
+            return;
+        const version = parseNodeSecretVersion(fresh.nodeSecretVersion);
+        if (version !== undefined && this.nodeSecretVersion !== undefined && version < this.nodeSecretVersion)
+            return;
+        this.nodeSecret = fresh.nodeSecret;
+        this.nodeSecretVersion = version;
     }
     adoptNodeSecretVersion(nodeSecretVersion) {
         this.nodeSecretVersion = parseNodeSecretVersion(nodeSecretVersion);

@@ -31,5 +31,6 @@ export * as issueReporter from './issueReporter/index.js';
 export * as feedback from './feedback/index.js';
 export * as compatibility from './modelCompatibility.js';
 export * as authoring from './authoring/index.js';
+export * as skill from './skill/index.js';
 // Re-export commonly used validation functions at top level for convenience
 export { isValidationCommandAllowed } from './verify/validation.js';

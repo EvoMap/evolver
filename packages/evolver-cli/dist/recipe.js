@@ -16,6 +16,8 @@ const MAX_RECIPE_STEPS = 20;
 const MAX_RECIPE_VALIDATION_COMMANDS = 5;
 const MAX_RECIPE_INPUT_BYTES = 1024 * 1024;
 const MAX_ID_LENGTH = 200;
+/** The running proxy's Hub auth state in the shared store (`proxyDaemon` HUB_AUTH_STATUS_STATE_KEY). */
+const PROXY_HUB_AUTH_STATUS = 'hub:auth_status';
 const SENSITIVE_ERROR_KEYS = new Set(['authorization', 'node_secret', 'nodesecret', 'token', 'access_token', 'refresh_token', 'secret']);
 const STALE_NODE_SECRET_ERRORS = new Set(['node_secret_invalid', 'node_secret_not_set']);
 const RECIPE_SEARCH_VALUE_OPTIONS = new Set(['--q', '--query', '--limit']);
@@ -1427,12 +1429,19 @@ function persistRotatedNodeSecret(secret, version, nodeId, env, legacyDir) {
     const storePath = recipeProxyStorePath(env);
     const store = new mailbox.MailboxStore({ path: storePath });
     try {
+        const proxyNodeId = store.getState('node_id')?.trim();
         store.setState('node_secret_source', 'pending_rotate');
         if (nodeId)
             store.setState('node_id', nodeId);
         store.setState('node_secret', secret);
         setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
         store.setState('node_secret_source', 'hub_rotate');
+        // A running proxy refuses Hub calls while it records an auth failure; the new secret is what that failure
+        // waited for, so lift it and let the proxy's next request present the secret it now reloads from this store.
+        // The proxy reloads only its own node's secret, so a rotation of another node leaves its failure standing.
+        const sameNode = !nodeId || !proxyNodeId || nodeId === proxyNodeId;
+        if (sameNode && store.getState(PROXY_HUB_AUTH_STATUS) === 'auth_failed')
+            store.setState(PROXY_HUB_AUTH_STATUS, '');
     }
     finally {
         store.close();

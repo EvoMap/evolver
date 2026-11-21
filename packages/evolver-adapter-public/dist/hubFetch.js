@@ -1,4 +1,4 @@
-import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
+import { Agent, buildConnector, request as undiciRequest } from 'undici';
 import { Buffer } from 'node:buffer';
 import { TextDecoder } from 'node:util';
 import { OAuthAuthenticationPreflightError } from './auth/oauthDeviceToken.js';
@@ -41,6 +41,20 @@ export class AuthError extends Error {
         this.name = 'AuthError';
         this.errorCode = errorCode;
     }
+}
+const ANTI_ABUSE_CODE = /antibody|bulk_fetch|anti[-_]?abuse/i;
+/**
+ * The Hub's anti-abuse layer refusing a request (403 `bulk_fetch_blocked: IP antibody active`, #555): a temporary
+ * block on a node or IP the Hub does not trust yet, sent on a perfectly valid credential. HubFetch raises it as an
+ * AuthError like any 403, so every caller that reacts to auth failures must ask this first. A bare message (a mailbox
+ * failure reason, an error from another realm) counts when it names a 403 and an anti-abuse code.
+ */
+export function isHubAntiAbuseBlock(err) {
+    if (err instanceof AuthError || err instanceof HubClientError) {
+        return err.status === 403 && ANTI_ABUSE_CODE.test(hubErrorCode(err.body) ?? '');
+    }
+    const message = typeof err === 'string' ? err : err instanceof Error ? err.message : '';
+    return /\b403\b/.test(message) && ANTI_ABUSE_CODE.test(message);
 }
 export class HubClientError extends Error {
     status;
@@ -750,7 +764,7 @@ function makeHubConnector(config) {
 }
 const HUB_FETCH_CONFIG = makeHubFetchTransportConfig(process.env);
 // Singleton TLS-enforcing dispatcher: overrides a global NODE_TLS_REJECT_UNAUTHORIZED=0. The Agent and
-// fetch MUST come from the same undici package (mixing an npm-undici Agent with Node's built-in global.fetch
+// request() MUST come from the same undici package (mixing an npm-undici Agent with Node's built-in global.fetch
 // throws UND_ERR_INVALID_ARG). The connector applies TLS verification plus the selected Hub IP-family policy.
 const STRICT_TLS_AGENT = new Agent({
     connect: makeHubConnector(HUB_FETCH_CONFIG),
@@ -772,9 +786,40 @@ export function _shouldFallbackFromIpv4ForTest(err, hubIpFamily = HUB_FETCH_CONF
 export function _configureHubSocketForTest(socket) {
     configureHubSocket(socket);
 }
-// Test seam: lets unit tests swap the underlying fetch without forking the call path; production must never reassign it from outside.
-let _fetchImpl = undiciFetch;
-export function _setFetchImplForTest(fn) { _fetchImpl = fn ?? undiciFetch; }
+// Hub calls go through undici's request(), not its fetch(): in the Bun standalone the npm-undici fetch body is a web
+// ReadableStream that stalls unread once the headers are in, so a response the Hub served in a second hits the full
+// deadline. request() reads the socket as a Node stream on both runtimes and never follows redirects.
+const undiciRequestFetch = async (url, init) => {
+    const { method, headers, body, signal, dispatcher } = init;
+    try {
+        return hubResponseOf(await undiciRequest(url, { method: method, headers, body, signal, dispatcher }));
+    }
+    catch (error) {
+        if (signal?.aborted)
+            throw error;
+        // Keep fetch()'s failure shape: CLI error contracts map a 'fetch failed' message (e.g. a TLS failure) to network_error.
+        throw new TypeError('fetch failed', { cause: error });
+    }
+};
+function hubResponseOf({ statusCode, headers, body }) {
+    const chunks = body[Symbol.asyncIterator]();
+    const cancel = () => { body.destroy(); };
+    return {
+        status: statusCode,
+        headers: { get: (name) => joinedHeader(headers[name.toLowerCase()]) },
+        body: { getReader: () => ({ read: () => chunks.next(), cancel }), cancel },
+        json: () => body.json(),
+        text: () => body.text(),
+    };
+}
+function joinedHeader(value) {
+    if (value === undefined)
+        return null;
+    return Array.isArray(value) ? value.join(', ') : value;
+}
+// Test seam: lets unit tests swap the underlying transport without forking the call path; production must never reassign it from outside.
+let _fetchImpl = undiciRequestFetch;
+export function _setFetchImplForTest(fn) { _fetchImpl = fn ?? undiciRequestFetch; }
 // One-time loud warning when the escape hatch is active, so a misconfigured staging/prod
 // (e.g. a leaked EVOMAP_HUB_ALLOW_INSECURE in a CI var / copied .env) does not SILENTLY downgrade
 // egress security. Turns a silent downgrade into an observable one.
@@ -787,22 +832,6 @@ function warnInsecureOnce() {
 }
 /** Test seam: reset the one-time insecure-warning latch. */
 export function _resetInsecureWarningForTest() { _insecureWarned = false; }
-/** Reference pages carry full pairs and can exceed Bun's npm-undici response-stream boundary.
- * Use Bun's native stream implementation there, retaining the shared authenticated HubFetch,
- * redirect refusal, body/deadline limits and explicit TLS verification. Node stays on undici. */
-export const referenceFetchLike = async (url, init) => {
-    if (!globalThis.Bun)
-        return globalFetchLike(url, init);
-    const insecure = insecureAllowed(process.env);
-    if (insecure)
-        warnInsecureOnce();
-    else
-        assertHubUrlSecure(url);
-    const response = await globalThis.fetch(url, { ...init, redirect: 'manual',
-        ...(!insecure ? { tls: { rejectUnauthorized: true } } : {}),
-    });
-    return response;
-};
 /** Default production transport: secure mode = https guard + forced TLS dispatcher; escape-hatch mode = skip both (local dev). */
 export const globalFetchLike = async (url, init) => {
     const raw = { ...init, redirect: 'manual' };

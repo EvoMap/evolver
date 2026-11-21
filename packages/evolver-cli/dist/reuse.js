@@ -11,7 +11,7 @@
 //   1. Print EXACTLY ONE envelope object to STDOUT on BOTH success and failure (in --json mode).
 //   2. NEVER let a token/secret reach any stream — error text is mapped to fixed messages / redacted.
 import { assetrepair, assetstore, events, hub as hubNs, wire } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubDryRunEnabled, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubUnreachableError, connectPublicHub, isHubAntiAbuseBlock, isHubDryRunEnabled, stripHubDeliveryMetadataForIntegrity, } from '@evomap/evolver-adapter-public';
 import { loadEnvFileFromEnv, proxyClientFromEnv } from '@evomap/evolver-mcp';
 import { createRecipeHubFromEnv } from './recipe.js';
 import { getCliVersion } from './version.js';
@@ -469,15 +469,6 @@ const ANTI_ABUSE_BLOCK_MESSAGE = 'hub anti-abuse temporarily blocked asset fetch
 function antiAbuseOutcome() {
     return { ok: false, status: 'rate_limited', message: ANTI_ABUSE_BLOCK_MESSAGE };
 }
-function isAntiAbuseFetchBlock(status, code) {
-    return status === 403 && code !== undefined && /antibody|bulk_fetch|anti[-_]?abuse/i.test(code);
-}
-function hubErrorField(body) {
-    if (!body || typeof body !== 'object')
-        return undefined;
-    const err = body['error'];
-    return typeof err === 'string' ? err : undefined;
-}
 function recordValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -492,7 +483,7 @@ function mapError(e) {
         // hubFetch raises AuthError for BOTH 401 and 403, so the hub's anti-abuse 403
         // (`bulk_fetch_blocked: IP antibody active`) used to be misreported as "log in" — it is an
         // abuse-control block on a perfectly healthy credential, not an auth failure (#555).
-        if (isAntiAbuseFetchBlock(e.status, e.errorCode))
+        if (isHubAntiAbuseBlock(e))
             return antiAbuseOutcome();
         return { ok: false, status: 'unauthorized', message: 'hub authentication failed; run `evolver login` or set EVOMAP_NODE_SECRET' };
     }
@@ -501,7 +492,7 @@ function mapError(e) {
     if (e instanceof HubClientError) {
         if (e.status === 429)
             return { ok: false, status: 'rate_limited', message: 'hub rate limited the request; retry later' };
-        if (isAntiAbuseFetchBlock(e.status, hubErrorField(e.body)))
+        if (isHubAntiAbuseBlock(e))
             return antiAbuseOutcome();
         if (e.status === 401 || e.status === 403)
             return { ok: false, status: 'unauthorized', message: 'hub authentication failed; run `evolver login` or set EVOMAP_NODE_SECRET' };

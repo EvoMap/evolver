@@ -13,6 +13,15 @@ export type NodeSecretVersionHandler = (nodeSecretVersion?: number) => void;
  */
 export type NodeSecretDivergenceHandler = () => void;
 /**
+ * Asked before each request: a node_secret another process persisted since the last call, or undefined when
+ * nothing changed. Lets a long-running holder (the Proxy) follow a rotation made elsewhere (`evolver recipe`
+ * rotating on a stale secret) instead of presenting the revoked secret until it restarts.
+ */
+export type NodeSecretReloader = () => {
+    nodeSecret: string;
+    nodeSecretVersion?: number;
+} | undefined;
+/**
  * LegacyAuthShim exposes node_secret as a transport-neutral credential field. HubFetch promotes it to
  * Authorization: Bearer for GET and strict GEP envelope endpoints before egress.
  */
@@ -21,15 +30,17 @@ export declare class LegacyAuthShim implements hub.AuthProvider {
     private readonly onRotate?;
     private readonly onVersionUpdate?;
     private readonly onDiverged?;
+    private readonly reload?;
     readonly kind: "oauth_device_token";
     private nodeSecretVersion?;
-    constructor(nodeSecret: string | undefined, onRotate?: NodeSecretRotationHandler | undefined, initialNodeSecretVersion?: number, onVersionUpdate?: NodeSecretVersionHandler | undefined, onDiverged?: NodeSecretDivergenceHandler | undefined);
+    constructor(nodeSecret: string | undefined, onRotate?: NodeSecretRotationHandler | undefined, initialNodeSecretVersion?: number, onVersionUpdate?: NodeSecretVersionHandler | undefined, onDiverged?: NodeSecretDivergenceHandler | undefined, reload?: NodeSecretReloader | undefined);
     login(): Promise<hub.Credential>;
     authenticate(): Promise<hub.SignedRequest>;
     rotate(): Promise<hub.Credential>;
     revoke(): Promise<void>;
     getNodeSecretVersion(): number | undefined;
     adoptNodeSecret(nodeSecret: string, nodeSecretVersion?: number): void;
+    private reloadNodeSecret;
     adoptNodeSecretVersion(nodeSecretVersion?: number): void;
     clearNodeSecret(): void;
     /**

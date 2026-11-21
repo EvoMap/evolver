@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { bootstrap, reference, hub as hubNs, signals, wire } from '@evomap/evolver-core';
-import { AuthError, HubFetch, HubClientError, terminalHubRejection, globalFetchLike, referenceFetchLike, isHubUnreachableError } from './hubFetch.js';
+import { AuthError, HubFetch, HubClientError, terminalHubRejection, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire, searchQueryToSearchOnlyWire, } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
@@ -196,6 +196,10 @@ export class PublicHubCapability {
             }
             if (isNodeMergedResponse(body, payload))
                 return helloResultFromBody(200, body);
+            // Any other rejection (an IP or node the anti-abuse layer bans, an invalid name) arrives as HTTP 200 without a
+            // node id. It is a failed hello: falling back to the local sender id below would report it as registered.
+            if (body['status'] === 'rejected' || payload['status'] === 'rejected')
+                return helloResultFromBody(200, body);
             if (payload['error'])
                 return { ok: false, error: String(payload['error']), ...(retryAfterMs !== undefined ? { retryAfterMs } : {}), ...(rateLimitUntilMs !== undefined ? { rateLimitUntilMs } : {}) };
             const nodeId = stringField(payload, 'your_node_id')
@@ -347,9 +351,7 @@ export class PublicHubCapability {
     references = {
         fetch: async (query) => {
             const normalized = normalizePublicReferenceQuery(query);
-            const http = new HubFetch({ baseUrl: this.opts.baseUrl, auth: this.auth, senderId: this.opts.senderId,
-                fetchFn: this.opts.fetchFn === globalFetchLike ? referenceFetchLike : this.opts.fetchFn });
-            const body = await http.call('POST', '/a2a/fetch', gepEnvelope('fetch', {
+            const body = await this.http.call('POST', '/a2a/fetch', gepEnvelope('fetch', {
                 ...normalized, evidence_mode: 'reference_only',
             }));
             const page = reference.decodeReferencePage(body, true);
@@ -1705,10 +1707,12 @@ function helloResultFromBody(httpStatus, body) {
     const retryAfterMs = numberField(payload, 'retry_after_ms') ?? numberField(payload, 'retryAfterMs');
     const rateLimitUntilMs = numberField(payload, 'rate_limit_until_ms') ?? numberField(payload, 'rateLimitUntilMs');
     const nodeMerged = isNodeMergedResponse(body, payload);
-    const status = nodeMerged ? 'node_merged' : stringField(payload, 'status');
+    // A rejection may sit at the top level beside a nested payload; hello() accepts that shape, so read it here too.
+    const status = nodeMerged ? 'node_merged' : stringField(payload, 'status') ?? stringField(body, 'status');
     const error = nodeMerged
         ? 'node_merged'
-        : stringField(payload, 'error') ?? stringField(payload, 'reason') ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
+        : stringField(payload, 'error') ?? stringField(payload, 'reason') ?? stringField(body, 'reason')
+            ?? (httpStatus >= 400 ? `http_${httpStatus}` : undefined);
     const details = nodeMerged ? undefined : payload['details'] ?? body['details'];
     const authError = httpStatus === 401 || httpStatus === 403 || status === 'auth_failed' || status === 'invalid_secret';
     return {

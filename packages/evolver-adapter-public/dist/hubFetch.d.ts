@@ -45,6 +45,13 @@ export declare class AuthError extends Error {
     readonly errorCode: string | undefined;
     constructor(status: number, body?: unknown | undefined);
 }
+/**
+ * The Hub's anti-abuse layer refusing a request (403 `bulk_fetch_blocked: IP antibody active`, #555): a temporary
+ * block on a node or IP the Hub does not trust yet, sent on a perfectly valid credential. HubFetch raises it as an
+ * AuthError like any 403, so every caller that reacts to auth failures must ask this first. A bare message (a mailbox
+ * failure reason, an error from another realm) counts when it names a 403 and an anti-abuse code.
+ */
+export declare function isHubAntiAbuseBlock(err: unknown): boolean;
 export declare class HubClientError extends Error {
     readonly status: number;
     readonly body: unknown;
@@ -158,10 +165,6 @@ type RawFetch = (url: string, init: Record<string, unknown>) => Promise<HubFetch
 export declare function _setFetchImplForTest(fn?: RawFetch): void;
 /** Test seam: reset the one-time insecure-warning latch. */
 export declare function _resetInsecureWarningForTest(): void;
-/** Reference pages carry full pairs and can exceed Bun's npm-undici response-stream boundary.
- * Use Bun's native stream implementation there, retaining the shared authenticated HubFetch,
- * redirect refusal, body/deadline limits and explicit TLS verification. Node stays on undici. */
-export declare const referenceFetchLike: FetchLike;
 /** Default production transport: secure mode = https guard + forced TLS dispatcher; escape-hatch mode = skip both (local dev). */
 export declare const globalFetchLike: FetchLike;
 export {};

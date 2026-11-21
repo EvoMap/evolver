@@ -191,18 +191,25 @@ async function runLifecycleCommandInner(argv, deps) {
         case 'start': {
             const result = await startLifecycle(paths, env);
             stdout(`${JSON.stringify(result)}\n`);
-            return 0;
+            if (!isUnmanagedProxy(result))
+                return 0;
+            stderr(unmanagedProxyHint(result));
+            return 1;
         }
         case 'stop': {
             const result = stopLifecycle(paths);
             stdout(`${JSON.stringify(result)}\n`);
+            if (isUnmanagedProxy(result))
+                stderr(unmanagedProxyHint(result));
             return 0;
         }
         case 'restart': {
-            stopLifecycle(paths);
-            const result = await startLifecycle(paths, env);
+            const result = await restartLifecycle(paths, env);
             stdout(`${JSON.stringify({ ...result, status: result.status === 'started' ? 'restarted' : result.status })}\n`);
-            return 0;
+            if (!isUnmanagedProxy(result))
+                return 0;
+            stderr(unmanagedProxyHint(result));
+            return 1;
         }
         case 'status': {
             const status = await lifecycleStatus(paths, env);
@@ -214,9 +221,12 @@ async function runLifecycleCommandInner(argv, deps) {
             stdout(`${JSON.stringify(status, null, 2)}\n`);
             if (!status.healthy) {
                 stderr(`[Lifecycle] unhealthy reason=${status.reason ?? 'unknown'}; restarting\n`);
-                stopLifecycle(paths);
-                const result = await startLifecycle(paths, env);
+                const result = await restartLifecycle(paths, env);
                 stdout(`${JSON.stringify(result)}\n`);
+                if (isUnmanagedProxy(result)) {
+                    stderr(unmanagedProxyHint(result));
+                    return 1;
+                }
                 const next = await lifecycleStatus(paths, env);
                 stdout(`${JSON.stringify({ after_restart: lifecycleStatusForOperator(next), log: 'inspect EVOLVER_LIFECYCLE_LOG_FILE or EVOLVER_LIFECYCLE_LOG_DIR' }, null, 2)}\n`);
                 if (!next.healthy) {
@@ -482,6 +492,9 @@ export async function startLifecycle(paths, env = process.env) {
         stopLifecycle(paths);
     else
         rmSync(paths.pidFile, { force: true });
+    const unmanaged = unmanagedProxyResult(paths.settingsFile);
+    if (unmanaged)
+        return unmanaged;
     const command = resolveDaemonCommand(env);
     const cwd = env['EVOLVER_LIFECYCLE_CWD'] || process.cwd();
     const out = openSync(paths.logFile, 'a');
@@ -515,12 +528,36 @@ function oneShotChildEnv(env) {
     delete childEnv['EVOLVER_SELF_UPDATE_SUPERVISOR'];
     return childEnv;
 }
+const PROXY_NOT_STARTED_BY_LIFECYCLE = 'proxy_not_started_by_lifecycle';
+function isUnmanagedProxy(result) {
+    return result.reason === PROXY_NOT_STARTED_BY_LIFECYCLE;
+}
+function unmanagedProxyHint(result) {
+    return `[Lifecycle] proxy pid ${result.pid} was not started by \`evolver lifecycle start\`, so lifecycle will neither stop nor replace it; it is owned by the installed service or a foreground \`evolver proxy\`. Remove the service with \`evolver lifecycle remove-service\`, or stop its owner directly.\n`;
+}
+function unmanagedProxyResult(settingsFile) {
+    const pid = livePublishingProxyPid(readProxySettings(settingsFile, { quietReadError: true }));
+    return pid ? { status: 'not_owned', pid, reason: PROXY_NOT_STARTED_BY_LIFECYCLE } : undefined;
+}
+function livePublishingProxyPid({ pid, startedAt }) {
+    if (!pid || !startedAt || !isPidRunning(pid))
+        return undefined;
+    const processStartedAt = processStartedAtMs(pid);
+    // A reused pid belongs to a process born after the proxy that published started_at.
+    return processStartedAt !== undefined && processStartedAt <= Date.parse(startedAt) ? pid : undefined;
+}
+async function restartLifecycle(paths, env) {
+    const stopped = stopLifecycle(paths);
+    if (isUnmanagedProxy(stopped))
+        return stopped;
+    return startLifecycle(paths, env);
+}
 export function stopLifecycle(paths, deps = {}) {
     const pidFile = readPidFile(paths.pidFile);
     const pid = pidFile.pid;
     if (!pid || !isPidRunning(pid)) {
         rmSync(paths.pidFile, { force: true });
-        return { status: 'not_running' };
+        return unmanagedProxyResult(paths.settingsFile) ?? { status: 'not_running' };
     }
     if (!pidFile.owned || !waitForPidFileRecordMatch(pidFile, 1_000, deps.processCommandLine ?? processCommandLine, deps.processIdentity ?? processIdentity, deps.platform ?? process.platform)) {
         return { status: 'not_owned', pid, reason: 'pidfile_owner_unconfirmed' };
@@ -5158,8 +5195,7 @@ async function runWatch(paths, env, flags, stdout, stderr) {
         }
         else {
             stdout(`[Watch] ${new Date().toISOString()} unhealthy reason=${status.reason ?? 'unknown'} restarting...\n`);
-            stopLifecycle(paths);
-            const result = await startLifecycle(paths, env);
+            const result = await restartLifecycle(paths, env);
             stdout(`[Watch] restart result: ${JSON.stringify(result)}\n`);
             skippedLastTick = false;
         }
@@ -5412,6 +5448,21 @@ function processIdentity(pid) {
         }
     }
     return undefined;
+}
+function processStartedAtMs(pid) {
+    if (process.platform === 'win32')
+        return processIdentity(pid)?.startedAt;
+    try {
+        const startedAt = Date.parse(execFileSync(PS_PATH, ['-p', String(pid), '-o', 'lstart='], {
+            encoding: 'utf8',
+            env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim());
+        return Number.isFinite(startedAt) ? startedAt : undefined;
+    }
+    catch {
+        return undefined;
+    }
 }
 function processIdentityMatchesRecord(record, identity) {
     if (!identity?.executable || !identity.parentPid || !identity.startedAt)

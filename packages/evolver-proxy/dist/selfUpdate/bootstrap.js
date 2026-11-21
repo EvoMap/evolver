@@ -2993,6 +2993,17 @@ function recoverBootstrapRegistrationIntent(options) {
                     };
                 }
                 const lockedDurable = inspectLifecycleBootstrapDurableState(options.env, { ...options, expectedRecoveryOwner: recoveryLock.owner });
+                // The intent's owner is dead (checked twice) and this process holds the transaction owner lock, so no
+                // registration child is alive either. A journal it left uncommitted is the partial state a start without
+                // any intent also meets, and that start reconciles it through a new, owned registration; keeping the dead
+                // owner's intent would refuse that registration forever. Locks still active or unverifiable keep it blocked.
+                if (lockedDurable.status === 'pending'
+                    && !lockedDurable.supervisedActivation
+                    && !lockedDurable.manualTransition
+                    && !Object.values(lockedDurable.recoveryLocks ?? {}).some((status) => status === 'active_or_unverifiable')) {
+                    clearBootstrapRegistrationIntent(options, terminalizeBootstrapRegistrationIntent(options, lockedIntent.lease, 'cancelled'));
+                    return { status: 'abandoned' };
+                }
                 if (lockedDurable.status !== 'clean'
                     && lockedDurable.status !== 'committed'
                     && lockedDurable.status !== 'manual_transition') {
@@ -3411,7 +3422,9 @@ export async function bootstrapDegradedSelfUpdateStartup(env, platform = process
                 exitCode: 1,
                 message: '[evolver-proxy] self-update: standalone migration registration did not prove a clean rollback; '
                     + 'exiting the foreground proxy to avoid concurrent IPC ownership. '
-                    + 'Inspect the lifecycle bootstrap transaction state before retrying.',
+                    + 'Inspect the lifecycle bootstrap transaction state before retrying. ('
+                    + boundedBootstrapDetail(migration.message)
+                    + ')',
             };
         }
         if (migration.outcome === 'migrated') {
@@ -3472,6 +3485,10 @@ export async function bootstrapDegradedSelfUpdateStartup(env, platform = process
                     // still cannot prove that the committed launcher binds a standalone executable.
                     return migrateUnbindableInstall('bootstrap_attempt_pending');
                 }
+            }
+            if (recovery.status === 'abandoned') {
+                // The intent is retired; decide again exactly as a start that never saw it would.
+                return bootstrapDegradedSelfUpdateStartup(env, platform, options);
             }
             if (recovery.status === 'safe_terminal') {
                 return {

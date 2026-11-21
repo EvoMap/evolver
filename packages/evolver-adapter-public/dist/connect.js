@@ -15,7 +15,7 @@ export function connectPublicHub(opts) {
     let auth;
     switch (opts.authMode) {
         case 'legacy':
-            auth = new LegacyAuthShim(opts.nodeSecret, opts.onNodeSecretRotated, opts.nodeSecretVersion, opts.onNodeSecretVersionUpdated, opts.onNodeSecretDiverged);
+            auth = new LegacyAuthShim(opts.nodeSecret, opts.onNodeSecretRotated, opts.nodeSecretVersion, opts.onNodeSecretVersionUpdated, opts.onNodeSecretDiverged, opts.reloadNodeSecret);
             break;
         case 'keypair':
             if (!opts.registerPublicKey)

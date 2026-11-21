@@ -1,6 +1,7 @@
-import { assetstore, type hub as hubNs } from '@evomap/evolver-core';
+import { assetstore, skill, type hub as hubNs } from '@evomap/evolver-core';
 import type { ConnectPublicOptions, PublicHubCapability } from '@evomap/evolver-adapter-public';
-import { type RequiredSkillRef, type Result, type SkillFile } from './requiredSkills.js';
+type RequiredSkillRef = skill.RequiredSkillRef;
+type Result<T> = skill.Result<T>;
 export interface SkillFetchHub {
     search(query: assetstore.SearchQuery): Promise<assetstore.AssetRecord[]>;
     fetch(query: assetstore.SearchQuery): Promise<assetstore.AssetRecord[]>;
@@ -16,7 +17,8 @@ export interface SkillFetchDeps {
         hub: PublicHubCapability;
         auth: hubNs.AuthProvider;
     };
-    /** Fetches a required skill's files from its git repository; the network boundary of an install. */
-    fetchSkillFiles?: (ref: RequiredSkillRef) => Result<SkillFile[]>;
+    /** Fetches a required skill's files, and the commit they come from, from its git repository; the network boundary of an install. */
+    fetchSkillFiles?: (ref: RequiredSkillRef) => Result<skill.FetchedSkill> | Promise<Result<skill.FetchedSkill>>;
 }
 export declare function runSkillCommand(argv: readonly string[], deps?: SkillFetchDeps): Promise<number>;
+export {};

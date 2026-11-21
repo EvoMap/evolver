@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops } from '@evomap/evolver-core';
+import { reference, assetstore, wire, mailbox as mb, hub, bootstrap, ops, skill } from '@evomap/evolver-core';
 import { ProxyReverificationError, safeReverificationRecovery } from './proxyClient.js';
 import { buildExperienceTools } from './experienceTools.js';
 import { buildEvolverPrimer } from './primer.js';
@@ -102,6 +102,20 @@ function proxySearchResult(value) {
     const results = resultArray(value);
     const metadata = proxyFallbackMetadata(value);
     return metadata ? { results, assets: results, ...metadata } : results;
+}
+/** Shown on a recalled Gene in every content mode, so a required skill is never hidden with the preconditions. */
+function requiredSkillsField(gene) {
+    const skills = skill.requiredSkillStatus(gene, skill.managedSkillsRoot()).map((item) => {
+        if (item.state === 'installed')
+            return { name: item.name, status: item.state, skill_md: item.skillMd, next: 'read skill_md before applying this Gene' };
+        if (item.state === 'invalid')
+            return { name: item.name, status: item.state, next: `do not apply this Gene's skill steps: ${item.message}` };
+        if (item.state === 'follows_branch') {
+            return { name: item.name, status: item.state, branch: item.branch, next: `call evolver_skill_install with this asset_id to get the latest ${item.branch}, then read the returned skill_md` };
+        }
+        return { name: item.name, status: item.state, next: 'call evolver_skill_install with this asset_id, then read the returned skill_md' };
+    });
+    return skills.length > 0 ? { required_skills: skills } : {};
 }
 function proxyFetchResult(value, assetId) {
     const asset = requestedAsset(value, assetId);
@@ -459,6 +473,7 @@ export function buildEvolverTools(deps) {
                         ...(typeof r['summary'] === 'string' ? { summary: r['summary'] } : {}),
                         ...(Array.isArray(r['signals_match']) ? { signals_match: r['signals_match'] } : {}),
                         ...(Array.isArray(r['strategy']) ? { strategy: r['strategy'] } : {}),
+                        ...requiredSkillsField(r),
                         examples: examples.get(g.asset_id) ?? [],
                     };
                 });
@@ -594,6 +609,28 @@ export function buildEvolverTools(deps) {
                     return proxyFetchResult(await deps.proxy.fetchAsset({ assetId }), assetId);
                 }
                 return deps.store.get(assetId);
+            },
+        },
+        {
+            name: 'evolver_skill_install',
+            description: '安装 Gene 在 preconditions 里用 skill:git+https://…@<commit>#sha256=… 钉住、或用 skill:git+https://…@<分支>#path=… 跟随分支的 skill（SKILL.md 与素材文件）到本机 evolver 目录，返回每个 SKILL.md 的路径和实际安装的 commit 与内容摘要；钉住的校验摘要，跟随分支的每次取该分支最新提交。只写文件，不执行。取到带这种前置条件的 Gene 后、按其 strategy 动手前调用，再读返回的 SKILL.md。',
+            inputSchema: { type: 'object', required: ['assetId'], properties: { assetId: { type: 'string' } } },
+            annotations: REMOTE_WRITE,
+            handler: async (a) => {
+                const assetId = str(a['assetId']);
+                const gene = record(await deps.store.get(assetId)
+                    ?? (deps.proxy ? requestedAsset(await deps.proxy.fetchAsset({ assetId }), assetId) : null));
+                if (gene['type'] !== 'Gene')
+                    throw new Error('gene_not_found');
+                const installed = await skill.installRequiredSkills(gene, skill.managedSkillsRoot());
+                if (!installed.ok)
+                    throw new Error(installed.message);
+                return {
+                    asset_id: assetId, count: installed.value.length,
+                    skills: installed.value.map((item) => ({ name: item.name, skill_md: item.skillMd, dir: item.dir, files: item.files, repo: item.repo,
+                        ...(item.branch ? { branch: item.branch } : {}), commit: item.commit, sha256: item.sha256 })),
+                    note: installed.value.length === 0 ? 'this Gene pins no skill' : 'read each skill_md before applying the Gene strategy; bundled files are in dir',
+                };
             },
         },
         {

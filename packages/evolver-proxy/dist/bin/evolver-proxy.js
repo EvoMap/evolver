@@ -1320,6 +1320,7 @@ export async function connectHubRuntime(deps) {
     persistSelectedPublicNodeSecret(deps.store, selection);
     const verifiedSender = createVerifiedPublicSender(selection.nodeId);
     const senderId = verifiedSender.senderId;
+    const storeRotations = followStoreRotations(deps.store, senderId, selection.storeSecret);
     const { hub, auth } = connectPublicHub({
         hubUrl: deps.hubUrl,
         authMode: 'legacy',
@@ -1330,7 +1331,9 @@ export async function connectHubRuntime(deps) {
         ...(deps.recentClients ? { clients: () => deps.recentClients.list() } : {}),
         onNodeSecretRotated: (secret, version) => {
             persistRotatedPublicNodeCredentials(deps.store, selection, secret, version);
+            storeRotations.saw(secret);
         },
+        reloadNodeSecret: storeRotations.poll,
         onNodeSecretVersionUpdated: (version) => {
             persistPublicNodeSecretVersion(deps.store, selection, version);
         },
@@ -1344,6 +1347,7 @@ export async function connectHubRuntime(deps) {
         const result = await hub.hello(opts);
         if (result.nodeId)
             adoptVerifiedPublicNodeId(deps.store, selection, verifiedSender, result.nodeId);
+        reportRejectedHello(result);
         return result;
     }, createClaimNudge({
         store: deps.store,
@@ -1358,6 +1362,42 @@ export async function connectHubRuntime(deps) {
         hello,
         heartbeat: (opts) => hub.heartbeat(opts),
     };
+}
+/**
+ * Follow node_secret rotations another process writes into the shared store (`evolver recipe` rotates on a stale
+ * secret and persists here). Only a change counts: a store that still holds what this proxy started with, or what it
+ * rotated to itself, adopts nothing, so a secret the Hub rejected and the proxy dropped is never brought back. A
+ * rotation is followed only when complete (`hub_rotate`) and for the node this proxy speaks for.
+ */
+function followStoreRotations(store, senderId, initial) {
+    let seen = initial;
+    return {
+        saw: (secret) => { seen = secret; },
+        poll: () => {
+            const secret = store.getState('node_secret');
+            if (store.getState('node_secret_source') !== 'hub_rotate' || !secret || !isNodeSecret(secret) || secret === seen)
+                return undefined;
+            const nodeId = store.getState('node_id')?.trim();
+            const current = senderId();
+            if (nodeId && current && nodeId !== current)
+                return undefined;
+            seen = secret;
+            const nodeSecretVersion = parseNodeSecretVersion(store.getState('node_secret_version'));
+            return { nodeSecret: secret, ...(nodeSecretVersion !== undefined ? { nodeSecretVersion } : {}) };
+        },
+    };
+}
+/**
+ * A hello the Hub refused with a reason (an anti-abuse ban on this IP or node, an invalid name) leaves every Hub call
+ * failing, and a node without a secret cannot re-acquire one until a hello succeeds. Say so where the operator looks.
+ */
+function reportRejectedHello(result) {
+    if (result.ok || !result.error || result.httpStatus !== undefined || result.secretDiverged || result.status === 'node_merged')
+        return;
+    const reason = result.error.replace(/\p{Cc}/gu, ' ').slice(0, 200);
+    const retry = result.retryAfterMs !== undefined ? ` Retry after about ${Math.max(1, Math.ceil(result.retryAfterMs / 60_000))} min.` : '';
+    process.stderr.write(`[evolver-proxy] Hub rejected hello: ${reason}.${retry} Hub calls fail until a hello succeeds; `
+        + 'a node without a node_secret gets one only from an accepted hello.\n');
 }
 function hasPrivateEnrollmentFallback(env, storedInvitationFingerprint) {
     if (resolvePrivateNodeSecret(env) || resolvePrivateEnterpriseToken(env))

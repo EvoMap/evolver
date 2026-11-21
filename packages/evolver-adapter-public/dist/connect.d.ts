@@ -3,6 +3,7 @@ import { PublicHubCapability } from './hubCapability.js';
 import type { AntiAbuseTelemetryOptions } from './antiAbuseTelemetry.js';
 import type { MalformedPublishReceiptEvent } from './hubCapability.js';
 import { type FetchLike } from './hubFetch.js';
+import { type NodeSecretReloader } from './auth/legacyShim.js';
 import { type OAuthTransport } from './auth/oauthDeviceToken.js';
 export type AuthMode = 'oauth' | 'keypair' | 'legacy';
 export interface ConnectPublicOptions {
@@ -25,6 +26,8 @@ export interface ConnectPublicOptions {
      * v1 a2aProtocol.js 的 secret-divergence 自愈.
      */
     onNodeSecretDiverged?: () => void;
+    /** legacy 模式: 每次请求前询问别的进程是否已持久化了新的 node_secret(例如 CLI 轮换), 有则改用. */
+    reloadNodeSecret?: NodeSecretReloader;
     /** oauth 模式: device flow 传输(缺省=真 HTTP, 此处需注入或由 hubUrl 推导). */
     oauthTransport?: OAuthTransport;
     /** Fail a reporting request before HTTP if token.json no longer matches its durable destination. */

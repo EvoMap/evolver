@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { reference, mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify, events } from '@evomap/evolver-core';
-import { AuthError, HubClientError, HubUnreachableError, terminalHubRejection } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubUnreachableError, isHubAntiAbuseBlock, terminalHubRejection } from '@evomap/evolver-adapter-public';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
 import { executeForceUpdate } from '../selfUpdate/executor.js';
@@ -1083,6 +1083,9 @@ export class ProxyDaemon {
             return hub.fetchPage ? await hub.fetchPage(query, options) : { assets: await hub.fetch(query, options), confirmRequired: false };
         }
         catch (error) {
+            const blocked = hubAntiAbuseFailure(error);
+            if (blocked)
+                return { blocked };
             if (!isAuthLikeError(error))
                 throw error;
             this.markHubAuthFailed(error);
@@ -1338,7 +1341,10 @@ export class ProxyDaemon {
                 }
             }
             catch (error) {
-                if (isAuthLikeError(error)) {
+                const blocked = hubAntiAbuseFailure(error);
+                if (blocked)
+                    ctx.json(blocked.status, blocked.body);
+                else if (isAuthLikeError(error)) {
                     this.markHubAuthFailed(error);
                     ctx.json(401, this.hubAuthFailureBody());
                 }
@@ -1563,6 +1569,10 @@ export class ProxyDaemon {
                     });
                     return true;
                 }
+                if ('blocked' in recalled) {
+                    ctx.json(200, { ...this.qualifyFetch([], localAssets, [], local?.rawAssets), query: body, ...localRecall, ...hubBlockedFallback(recalled.blocked) });
+                    return true;
+                }
                 const recalledBy = recallText !== undefined ? 'text' : 'signals';
                 if (recalled.confirmRequired) {
                     // Confirmation gates Hub credit spending; the caller's labelled local methods are free.
@@ -1599,9 +1609,14 @@ export class ProxyDaemon {
                 });
                 return true;
             }
-            const failure = remote.settled.find((lookup) => lookup.status === 'rejected');
+            // Judged id by id, so the batch order never changes the answer: any other failure fails the fetch, while ids
+            // only an anti-abuse block refused are listed missing beside every asset the Hub did return.
+            const rejected = remote.settled.filter((lookup) => lookup.status === 'rejected');
+            const failure = rejected.find((lookup) => !isHubAntiAbuseBlock(lookup.reason));
             if (failure)
                 throw failure.reason;
+            const blocked = rejected.map((lookup) => hubAntiAbuseFailure(lookup.reason)).filter((block) => block !== undefined)
+                .sort((a, b) => (b.body.retryAfterMs ?? 0) - (a.body.retryAfterMs ?? 0))[0];
             const assets = [];
             const missing = [];
             ids.forEach((id, index) => {
@@ -1612,7 +1627,7 @@ export class ProxyDaemon {
                 else
                     missing.push(id);
             });
-            ctx.json(200, { ...this.qualifyFetch(ids, assets, missing), query: body });
+            ctx.json(200, { ...this.qualifyFetch(ids, assets, missing), query: body, ...(blocked ? hubBlockedFallback(blocked) : {}) });
             return true;
         }
         if (ctx.route === 'POST /asset/submit') {
@@ -3496,7 +3511,24 @@ function settledUnlessHubAuthFails(lookups) {
     });
     return Promise.race([authFailure, settled]);
 }
+function hubAntiAbuseFailure(error) {
+    return isHubAntiAbuseBlock(error) ? classifyDiscoveryUpstreamError(error) : undefined;
+}
+/** Local results stand in for the Hub's while its anti-abuse layer blocks this node; the reason travels with them. */
+function hubBlockedFallback(blocked) {
+    return {
+        degraded: true,
+        local_fallback: true,
+        hub_error: blocked.body.error,
+        retryable: blocked.body.retryable,
+        warning: blocked.body.message,
+        ...(blocked.body.retryAfterMs !== undefined ? { retry_after_ms: blocked.body.retryAfterMs } : {}),
+    };
+}
+// An anti-abuse block arrives as a 403 AuthError on a valid credential; it must never mark the credential failed.
 function isAuthLikeError(err) {
+    if (isHubAntiAbuseBlock(err))
+        return false;
     const name = err?.name;
     return name === 'AuthError' || /\b(401|403|unauthorized|forbidden|auth)\b/i.test(errorMessage(err));
 }

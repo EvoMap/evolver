@@ -1,9 +1,18 @@
-import { AuthError, HubClientError, HubUnreachableError } from '@evomap/evolver-adapter-public';
+import { AuthError, HubClientError, HubUnreachableError, isHubAntiAbuseBlock } from '@evomap/evolver-adapter-public';
+/** Said wherever the Proxy reports an anti-abuse block, so nobody resets a node secret that still works. */
+export const HUB_ANTI_ABUSE_MESSAGE = 'Hub anti-abuse temporarily blocked this request for this node or IP. '
+    + 'The node credential is still valid: do not reset it. Keep the proxy running so the node builds trust, then retry later.';
 /**
  * Maps only known upstream failures from read-only discovery calls. Unknown errors
  * deliberately continue to the IPC server's existing invalid-request behavior.
  */
 export function classifyDiscoveryUpstreamError(error) {
+    if (isHubAntiAbuseBlock(error)) {
+        return failure(429, 'hub_anti_abuse_blocked', true, {
+            message: HUB_ANTI_ABUSE_MESSAGE,
+            retryAfterMs: error instanceof HubClientError ? retryAfterMs(error.retryAfterMs) : undefined,
+        });
+    }
     if (error instanceof AuthError && (error.status === 401 || error.status === 403)) {
         return failure(error.status, 'permission_denied', false);
     }
@@ -69,6 +78,7 @@ function failure(status, code, retryable, details = {}) {
             error: code,
             code,
             retryable,
+            ...(details.message !== undefined ? { message: details.message } : {}),
             ...(details.retryAfterMs !== undefined ? { retryAfterMs: details.retryAfterMs } : {}),
             ...(details.timeoutMs !== undefined ? { timeoutMs: details.timeoutMs } : {}),
             ...(details.operation !== undefined ? { operation: details.operation } : {}),

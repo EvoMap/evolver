@@ -23,9 +23,10 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, } from 'node:fs';
 import { chmod as fsChmod, link as fsLink, lstat, mkdir as fsMkdir, open as fsOpen, readFile as fsReadFile, realpath as fsRealpath, rename as fsRename, rm as fsRm, rmdir as fsRmdir, unlink as fsUnlink, writeFile as fsWriteFile, } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse as parsePath, relative, resolve as resolvePath, win32 } from 'node:path';
-import { assetstore, ops, util } from '@evomap/evolver-core';
+import { assetstore, bootstrap as coreBootstrap, ops, util } from '@evomap/evolver-core';
 import { SELF_UPDATE_FAILURE_CODES } from './failureCodes.js';
 import { resolveSelfUpdatePublicKey } from './builtinKey.js';
 import { downloadGithubReleaseArtifact, releaseAssetName, resolveGithubReleaseManifest, } from './releaseBinary.js';
@@ -1296,6 +1297,58 @@ async function migrationPathIdentity(path) {
         throw error;
     }
 }
+// A committed target whose canonical path and rollback quarantine are both gone was removed
+// outside any migration transaction rather than moved by a concurrent rollback.
+async function committedTargetWasRemoved(record) {
+    const quarantinePath = migrationRegistrationTargetQuarantinePath(record.destPath, record.intentId);
+    return await migrationPathIdentity(record.destPath) === undefined
+        && await migrationPathIdentity(quarantinePath) === undefined;
+}
+const EXITED_PROCESS_STATUSES = new Set(['dead', 'pid_reused']);
+const IPC_RELEASE_PROBE_TIMEOUT_MS = 1_000;
+// POSIX keeps an unlinked executable running, so a removed target does not prove its service
+// released IPC ownership. The readiness receipt names the last service that bound the IPC port and
+// its processes; re-migration needs those processes proven gone and the port itself unclaimed. The
+// receipt is deliberately not bound to the migration intentId: `evolver lifecycle bootstrap` can
+// legitimately re-register the service under a newer transaction, and the port probe covers any
+// older service that might still listen regardless of which transaction started it.
+async function attestedServiceReleasedIpc(env, options) {
+    const stateDir = resolveBootstrapStateDir(env);
+    const markerRaw = readTrustedMigrationStateText(join(stateDir, coreBootstrap.LIFECYCLE_BOOTSTRAP_SUCCESS_FILE), options);
+    const readinessRaw = readTrustedMigrationStateText(join(stateDir, coreBootstrap.LIFECYCLE_BOOTSTRAP_READINESS_FILE), options);
+    const marker = markerRaw === undefined ? undefined : coreBootstrap.parseLifecycleBootstrapMarkerJson(markerRaw);
+    const readiness = readinessRaw === undefined
+        ? undefined
+        : coreBootstrap.parseLifecycleBootstrapReadinessJson(readinessRaw);
+    if (!marker || !readiness || readiness.transactionId !== marker.transactionId)
+        return false;
+    const processesExited = [
+        { pid: readiness.pid, processStartIdentity: readiness.pidProcessStartIdentity },
+        { pid: readiness.supervisorPid, processStartIdentity: readiness.supervisorProcessStartIdentity },
+    ].every((owner) => EXITED_PROCESS_STATUSES.has(util.inspectFileLockOwnerProcess(owner)));
+    return processesExited && await loopbackPortRefusesConnections(readiness.ipcUrl);
+}
+function loopbackPortRefusesConnections(ipcUrl) {
+    let port;
+    try {
+        port = Number(new URL(ipcUrl).port);
+    }
+    catch {
+        return Promise.resolve(false);
+    }
+    if (!Number.isInteger(port) || port <= 0)
+        return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const socket = connect({ host: '127.0.0.1', port });
+        const settle = (refused) => {
+            socket.destroy();
+            resolve(refused);
+        };
+        socket.setTimeout(IPC_RELEASE_PROBE_TIMEOUT_MS, () => settle(false));
+        socket.once('connect', () => settle(false));
+        socket.once('error', (error) => settle(isErrno(error, 'ECONNREFUSED')));
+    });
+}
 function sameMigrationFileId(left, right) {
     return left.dev === right.dev && left.ino === right.ino;
 }
@@ -2005,6 +2058,55 @@ async function reconcileStoredMigrationRegistration(input) {
             if (!options.registrationRunner) {
                 return failClosed('registration_runner_unavailable', 'registration runner unavailable');
             }
+            const intentBase = {
+                version: record.version,
+                destPath: record.destPath,
+                intentId: record.intentId,
+                targetIdentity: sealedIdentity,
+                installOwnership: record.installOwnership,
+            };
+            const rollBackStoredRegistration = async (reason) => {
+                const rollbackPendingRecord = {
+                    state: 'rollback_pending',
+                    ...intentBase,
+                    reason,
+                };
+                let rollbackPendingPayload;
+                try {
+                    await assertStoredIntentCurrent();
+                    rollbackPendingPayload = persistAuthoritativeMigrationState(env, rollbackPendingRecord, stateOptions);
+                }
+                catch (error) {
+                    return failClosed('rollback_intent_persistence_failed', errorDetail(error));
+                }
+                try {
+                    await completeMigrationRollbackPending({
+                        env,
+                        record: { ...intentBase, reason },
+                        expectedPayload: rollbackPendingPayload,
+                        stateOptions,
+                        readBinary,
+                        preflightFn,
+                        rename,
+                        link,
+                        unlink,
+                        rmdir,
+                        syncDirectory,
+                        assertDirectoryTrust,
+                        assertFileTrust,
+                        assertOwnerCurrent: assertOwnerLeaseCurrent,
+                    });
+                }
+                catch (error) {
+                    return failClosed('stored_target_cleanup_failed', errorDetail(error));
+                }
+                return { action: 'retry_current' };
+            };
+            if (record.state === 'committed'
+                && await committedTargetWasRemoved(record)
+                && await attestedServiceReleasedIpc(env, stateOptions)) {
+                return rollBackStoredRegistration(`${code}:stored_target_missing`);
+            }
             try {
                 await assertStoredIntentCurrent();
                 await revalidateStoredTarget();
@@ -2019,13 +2121,6 @@ async function reconcileStoredMigrationRegistration(input) {
             catch (error) {
                 return failClosed('stored_intent_changed', errorDetail(error));
             }
-            const intentBase = {
-                version: record.version,
-                destPath: record.destPath,
-                intentId: record.intentId,
-                targetIdentity: sealedIdentity,
-                installOwnership: record.installOwnership,
-            };
             if (registration.outcome === 'migrated') {
                 persistAuthoritativeMigrationState(env, { state: 'committed', ...intentBase }, stateOptions);
                 recordBootstrapAttempt(env, { ok: true, reason: 'migrated', detail: record.destPath }, stateOptions);
@@ -2040,41 +2135,7 @@ async function reconcileStoredMigrationRegistration(input) {
                 }
                 return { action: 'return', result: registration };
             }
-            const rollbackPendingRecord = {
-                state: 'rollback_pending',
-                ...intentBase,
-                reason: registration.reason,
-            };
-            let rollbackPendingPayload;
-            try {
-                await assertStoredIntentCurrent();
-                rollbackPendingPayload = persistAuthoritativeMigrationState(env, rollbackPendingRecord, stateOptions);
-            }
-            catch (error) {
-                return failClosed('rollback_intent_persistence_failed', errorDetail(error));
-            }
-            try {
-                await completeMigrationRollbackPending({
-                    env,
-                    record: { ...intentBase, reason: registration.reason },
-                    expectedPayload: rollbackPendingPayload,
-                    stateOptions,
-                    readBinary,
-                    preflightFn,
-                    rename,
-                    link,
-                    unlink,
-                    rmdir,
-                    syncDirectory,
-                    assertDirectoryTrust,
-                    assertFileTrust,
-                    assertOwnerCurrent: assertOwnerLeaseCurrent,
-                });
-            }
-            catch (error) {
-                return failClosed('stored_target_cleanup_failed', errorDetail(error));
-            }
-            return { action: 'retry_current' };
+            return rollBackStoredRegistration(registration.reason);
         });
     }
     catch (error) {
