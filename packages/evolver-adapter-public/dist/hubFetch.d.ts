@@ -45,6 +45,8 @@ export declare class AuthError extends Error {
     readonly errorCode: string | undefined;
     constructor(status: number, body?: unknown | undefined);
 }
+export declare function legacyAuthFailureCheck(value: unknown): (() => boolean) | undefined;
+export declare function carryLegacyAuthFailure<T extends object>(from: unknown, result: T): T;
 /**
  * The Hub's anti-abuse layer refusing a request (403 `bulk_fetch_blocked: IP antibody active`, #555): a temporary
  * block on a node or IP the Hub does not trust yet, sent on a perfectly valid credential. HubFetch raises it as an

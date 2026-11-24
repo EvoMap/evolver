@@ -1,6 +1,7 @@
 import { Agent, buildConnector, request as undiciRequest } from 'undici';
 import { Buffer } from 'node:buffer';
 import { TextDecoder } from 'node:util';
+import { LegacyAuthShim } from './auth/legacyShim.js';
 import { OAuthAuthenticationPreflightError } from './auth/oauthDeviceToken.js';
 export const HUB_ERROR_TEXT_MAX_BYTES = 8 * 1024;
 export const HUB_JSON_TEXT_MAX_BYTES = 4 * 1024 * 1024;
@@ -41,6 +42,17 @@ export class AuthError extends Error {
         this.name = 'AuthError';
         this.errorCode = errorCode;
     }
+}
+// The request proof is process-local. Error serialization and telemetry must never see the credential.
+const legacyFailureChecks = new WeakMap();
+export function legacyAuthFailureCheck(value) {
+    return value !== null && typeof value === 'object' ? legacyFailureChecks.get(value) : undefined;
+}
+export function carryLegacyAuthFailure(from, result) {
+    const check = legacyAuthFailureCheck(from);
+    if (check)
+        legacyFailureChecks.set(result, check);
+    return result;
 }
 const ANTI_ABUSE_CODE = /antibody|bulk_fetch|anti[-_]?abuse/i;
 /**
@@ -220,11 +232,13 @@ export class HubFetch {
         const deadline = createHubDeadline(this.deadlineScheduler, method, path, operation, timeoutMs);
         try {
             const sender = this.deps.senderId();
+            const senderlessGet = method === 'GET' && sender === undefined;
             const creds = signed.bodyFields ?? {};
             let url = `${this.deps.baseUrl}${path}`;
             assertHubUrlSecure(url); // request-level scheme guard (defense in depth): even a misconfigured injected fetchFn cannot egress in plaintext
             let body;
             const headers = mergeRequestHeaders(requestHeaders, signed.headers);
+            let presentedSecret;
             if (method === 'GET') {
                 const qs = new URLSearchParams();
                 if (sender)
@@ -236,8 +250,9 @@ export class HubFetch {
                 // #8: credentials must NOT go in the query (leaks to access logs / proxies even over https).
                 // node_secret travels via Authorization: Bearer; the hub reads it there, never from the query.
                 const nodeSecret = legacyNodeSecret(creds['node_secret']);
-                if (nodeSecret !== undefined)
-                    setLegacyBearerFallback(headers, nodeSecret);
+                if (nodeSecret !== undefined && setLegacyBearerFallback(headers, nodeSecret) && (qs.get('sender_id') ?? undefined) === sender) {
+                    presentedSecret = nodeSecret;
+                }
                 const q = qs.toString();
                 if (q)
                     url += `?${q}`;
@@ -250,8 +265,14 @@ export class HubFetch {
                     delete postBody['node_secret'];
                     if (nodeSecret !== undefined && setLegacyBearerFallback(headers, nodeSecret)) {
                         delete postCreds['node_secret'];
+                        presentedSecret = nodeSecret;
                     }
                 }
+                else if (!requestHeaderName(headers, 'authorization') && !Object.hasOwn(postBody, 'node_secret')) {
+                    presentedSecret = nodeSecret;
+                }
+                if (Object.hasOwn(postBody, 'sender_id') && postBody['sender_id'] !== sender)
+                    presentedSecret = undefined;
                 if (path === '/a2a/mailbox/outbound' && sender) {
                     const qs = new URLSearchParams({ sender_id: sender });
                     url += `?${qs.toString()}`;
@@ -289,8 +310,16 @@ export class HubFetch {
             if (deadline.signal.aborted)
                 throw deadline.error;
             throwIfParsedHubUnreachableResponse(res, parsed, `${method} ${path}`, retryAfterMs);
-            if (res.status === 401 || res.status === 403)
-                throw new AuthError(res.status, parsed.body);
+            if (res.status === 401 || res.status === 403) {
+                const error = new AuthError(res.status, parsed.body);
+                const { auth, senderId } = this.deps;
+                const secret = presentedSecret;
+                const legacyAuthRejection = res.status === 401 || error.errorCode === 'node_secret_invalid';
+                if (legacyAuthRejection && (sender || senderlessGet) && secret && auth instanceof LegacyAuthShim) {
+                    legacyFailureChecks.set(error, () => (senderlessGet || senderId() === sender) && auth.hasSupersededNodeSecret(secret));
+                }
+                throw error;
+            }
             if (res.status >= 400 && res.status < 500) {
                 throw new HubClientError(res.status, parsed.ok ? parsed.body : {}, retryAfterMs);
             }
@@ -803,7 +832,9 @@ const undiciRequestFetch = async (url, init) => {
 };
 function hubResponseOf({ statusCode, headers, body }) {
     const chunks = body[Symbol.asyncIterator]();
-    const cancel = () => { body.destroy(); };
+    // Destroying an unread undici body emits RequestAbortedError; with no listener that is an uncaught 'error' that
+    // kills the Proxy. undici guards its own aborts the same way (api-request.js: res.on('error', nop) before destroy).
+    const cancel = () => { body.on('error', () => { }).destroy(); };
     return {
         status: statusCode,
         headers: { get: (name) => joinedHeader(headers[name.toLowerCase()]) },

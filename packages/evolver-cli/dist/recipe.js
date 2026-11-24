@@ -1429,19 +1429,20 @@ function persistRotatedNodeSecret(secret, version, nodeId, env, legacyDir) {
     const storePath = recipeProxyStorePath(env);
     const store = new mailbox.MailboxStore({ path: storePath });
     try {
-        const proxyNodeId = store.getState('node_id')?.trim();
-        store.setState('node_secret_source', 'pending_rotate');
-        if (nodeId)
-            store.setState('node_id', nodeId);
-        store.setState('node_secret', secret);
-        setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
-        store.setState('node_secret_source', 'hub_rotate');
-        // A running proxy refuses Hub calls while it records an auth failure; the new secret is what that failure
-        // waited for, so lift it and let the proxy's next request present the secret it now reloads from this store.
-        // The proxy reloads only its own node's secret, so a rotation of another node leaves its failure standing.
-        const sameNode = !nodeId || !proxyNodeId || nodeId === proxyNodeId;
-        if (sameNode && store.getState(PROXY_HUB_AUTH_STATUS) === 'auth_failed')
-            store.setState(PROXY_HUB_AUTH_STATUS, '');
+        store.writeStateTransaction(() => {
+            const proxyNodeId = store.getState('node_id')?.trim();
+            if (nodeId)
+                store.setState('node_id', nodeId);
+            store.setState('node_secret', secret);
+            setOptionalStoreState(store, 'node_secret_version', version !== undefined ? String(version) : undefined);
+            store.setState('node_secret_source', 'hub_rotate');
+            // Publish the new credential together with clearing the old failure so a genuine
+            // 401 for the new credential cannot be erased by this rotation.
+            const sameNode = !nodeId || !proxyNodeId || nodeId === proxyNodeId;
+            if (sameNode && store.getState(PROXY_HUB_AUTH_STATUS) === 'auth_failed')
+                store.setState(PROXY_HUB_AUTH_STATUS, '');
+            return undefined;
+        });
     }
     finally {
         store.close();

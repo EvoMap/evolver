@@ -41,6 +41,7 @@ export declare class LegacyAuthShim implements hub.AuthProvider {
     getNodeSecretVersion(): number | undefined;
     adoptNodeSecret(nodeSecret: string, nodeSecretVersion?: number): void;
     private reloadNodeSecret;
+    hasSupersededNodeSecret(presentedSecret: string): boolean;
     adoptNodeSecretVersion(nodeSecretVersion?: number): void;
     clearNodeSecret(): void;
     /**

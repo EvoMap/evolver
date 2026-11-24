@@ -64,6 +64,8 @@ export declare class MailboxStore {
     /** 通用 KV 状态(M6: sync 游标 inbound_cursor / lifecycle reauth 退避 / node_id 等). */
     getState(key: string): string | undefined;
     setState(key: string, value: string): void;
+    /** A synchronous state write may return its decision or a snapshot of the stored values. */
+    writeStateTransaction<T extends boolean | readonly (string | undefined)[] | undefined>(writeState: () => T): T;
     /** 投递; 同 id 幂等(OR IGNORE). 返回 receiptId. */
     send(e: Envelope): {
         receiptId: string;

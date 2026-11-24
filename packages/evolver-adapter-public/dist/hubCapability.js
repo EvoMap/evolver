@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { bootstrap, reference, hub as hubNs, signals, wire } from '@evomap/evolver-core';
-import { AuthError, HubFetch, HubClientError, terminalHubRejection, isHubUnreachableError } from './hubFetch.js';
+import { AuthError, HubFetch, HubClientError, carryLegacyAuthFailure, terminalHubRejection, isHubUnreachableError } from './hubFetch.js';
 import { isNodeSecret, parseNodeSecretVersion } from './auth/legacyShim.js';
 import { inboundToAgentEvent, agentEventToOutbound, publishRespToReceipt, searchQueryToFetchWire, searchQueryToSearchOnlyWire, } from './wireMap.js';
 import { antiAbuseTelemetryMode, buildHeartbeatAntiAbuseTelemetry, } from './antiAbuseTelemetry.js';
@@ -235,7 +235,7 @@ export class PublicHubCapability {
                 const result = helloResultFromBody(err.status, asRecord(err.body) ?? {});
                 return result.error === 'node_merged'
                     ? result
-                    : { ok: false, authError: true, error: `hub auth error ${err.status}`, httpStatus: err.status };
+                    : carryLegacyAuthFailure(err, { ok: false, authError: true, error: `hub auth error ${err.status}`, httpStatus: err.status });
             }
             if (err instanceof HubClientError)
                 return helloResultFromBody(err.status, asRecord(err.body) ?? {});
@@ -265,7 +265,7 @@ export class PublicHubCapability {
                 const result = heartbeatResultFromBody(err.status, asRecord(err.body) ?? {});
                 return result.error === 'node_merged'
                     ? result
-                    : { ok: false, authError: true, error: `hub auth error ${err.status}` };
+                    : carryLegacyAuthFailure(err, { ok: false, authError: true, error: `hub auth error ${err.status}` });
             }
             if (err instanceof HubClientError)
                 return heartbeatResultFromBody(err.status, asRecord(err.body) ?? {});
@@ -1481,7 +1481,7 @@ function splitMailboxOutboundBatches(events) {
 function assertMailboxPushAccepted(outcome) {
     if (outcome?.status !== 'failed')
         return;
-    throw new hubNs.PublishRejectedError('mailbox_push_rejected', outcome.terminal ?? outcome.retryable !== true, outcome.reason ?? 'mailbox_push_rejected', outcome.retryAfterMs, outcome.retryable);
+    throw carryLegacyAuthFailure(outcome, new hubNs.PublishRejectedError('mailbox_push_rejected', outcome.terminal ?? outcome.retryable !== true, outcome.reason ?? 'mailbox_push_rejected', outcome.retryAfterMs, outcome.retryable));
 }
 function mailboxPushResultFromBody(body, events) {
     const results = mailboxResultRows(body);
@@ -1605,12 +1605,12 @@ function mailboxPushFailureOutcomes(events, outcomes, err, attemptedIds) {
         // semantics (or the cooldown defer above for 429 / hub-unreachable).
         const attempted = attemptedIds === undefined || attemptedIds.has(event.id);
         const retryAfterMs = cooldownMs ?? (attempted ? undefined : 1_000);
-        return {
+        return carryLegacyAuthFailure(err, {
             id: event.id,
             status: 'failed',
             reason,
             ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-        };
+        });
     });
 }
 // Mailbox push success/failure is decided SOLELY by the per-message TOP-LEVEL

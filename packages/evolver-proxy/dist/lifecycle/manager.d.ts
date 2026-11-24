@@ -99,7 +99,7 @@ export declare class LifecycleManager {
      * 403/401 重认证. 指数退避 30m→4h, 超 MAX_REAUTH_ATTEMPTS 长退避;
      * auth.rotate() 成功后重 hello(rotate) 再注册. 退避状态持久化(进程重启不复位).
      */
-    reauthenticate(): Promise<boolean>;
+    reauthenticate(authFailure?: unknown): Promise<boolean>;
     private setBackoff;
     private hubUnreachableWaitMs;
     private recordHubUnreachable;

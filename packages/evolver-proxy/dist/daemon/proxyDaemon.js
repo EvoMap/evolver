@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { reference, mailbox, hub as hubNs, shadow as shadow_, assetstore, wire, util, verify, events } from '@evomap/evolver-core';
 import { AuthError, HubClientError, HubUnreachableError, isHubAntiAbuseBlock, terminalHubRejection } from '@evomap/evolver-adapter-public';
+import { HUB_AUTH_FAILED, HUB_AUTH_STATUS_STATE_KEY, isSupersededHubAuthFailure, recordHubAuthFailure } from './hubAuthFailure.js';
 import { SyncEngine, SYNC_INTERVALS } from '../sync/engine.js';
 import { LifecycleManager } from '../lifecycle/manager.js';
 import { executeForceUpdate } from '../selfUpdate/executor.js';
@@ -46,8 +47,6 @@ const SYNC_ASSET_SUBMIT_TYPE_RANK = {
 const SYNC_ASSET_SUBMIT_SCOPE_STATE_KEY = 'sync_asset_submit:idempotency_scope:v1';
 const SYNC_ASSET_SUBMIT_DIRECT_RETRY_GRACE_MS = 30_000;
 const DEFAULT_SYNC_ASSET_SUBMIT_RESPONSE_TIMEOUT_MS = 15_000;
-const HUB_AUTH_STATUS_STATE_KEY = 'hub:auth_status';
-const HUB_AUTH_FAILED = 'auth_failed';
 const HUB_AUTH_FAILURE_WARNING = 'Hub credential was revoked or rejected; only explicit local fallback is available.';
 export function resolveHubAuthFailurePolicy(env = process.env) {
     const configured = env['EVOLVER_HUB_AUTH_FAILURE_POLICY']?.trim().toLowerCase();
@@ -357,9 +356,10 @@ export class ProxyDaemon {
         const hint = authLike ? hubAuthFailureHint(process.env, errorMessage(err)) : '';
         const message = safeDaemonMessage(`${phase}_tick: ${errorMessage(err)}${hint ? `. ${hint}` : ''}`, MAX_PROXY_TICK_ERROR_LENGTH);
         try {
-            this.store.setState('sync:last_error', message);
             if (authLike)
-                this.store.setState('hub:auth_status', 'auth_failed');
+                recordHubAuthFailure(this.store, err, message);
+            else
+                this.store.setState('sync:last_error', message);
         }
         catch {
             // Telemetry write failures must not break tick phase isolation.
@@ -605,9 +605,9 @@ export class ProxyDaemon {
     async tick() {
         const errors = [];
         const finalErrors = [];
-        const addFailure = (phase, message) => {
+        const addFailure = (phase, message, cause) => {
             errors.push({ phase, message });
-            finalErrors.push(message);
+            finalErrors.push({ message, cause });
         };
         try {
             await this.daemon.tick(); // core + TTL + wake
@@ -620,7 +620,7 @@ export class ProxyDaemon {
         let heartbeat;
         try {
             outbound = await this.sync.syncOutbound();
-            if (outbound.authFailed) {
+            if (outbound.authFailed && !isSupersededHubAuthFailure(outbound)) {
                 // #314: carry the engine's specific auth error (e.g. a2a_auth_required) up here so the operator-visible
                 // sync:last_error shows the real code + the correctly-keyed hint, not a generic "auth_failure".
                 const detail = outbound.authErrorMessage ?? 'auth_failure';
@@ -628,17 +628,17 @@ export class ProxyDaemon {
                 const outboundError = safeDaemonMessage(`outbound_tick: ${detail}${authHint ? `. ${authHint}` : ''}`, MAX_PROXY_TICK_ERROR_LENGTH);
                 try {
                     const generation = this.heartbeatGeneration;
-                    const reauthed = await this.lifecycle.reauthenticate();
+                    const reauthed = await this.lifecycle.reauthenticate(outbound);
                     if (reauthed) {
                         heartbeat = { ok: false, reauthed: true };
                         this.recordHeartbeatResult(heartbeat, generation);
                     }
                     else {
-                        addFailure('outbound', outboundError);
+                        addFailure('outbound', outboundError, outbound);
                     }
                 }
                 catch (reauthErr) {
-                    addFailure('outbound', outboundError);
+                    addFailure('outbound', outboundError, outbound);
                     addFailure('heartbeat', this.recordTickError('heartbeat', reauthErr));
                 }
             }
@@ -652,24 +652,25 @@ export class ProxyDaemon {
         }
         catch (err) {
             const inboundError = this.recordTickError('inbound', err);
-            if (isAuthLikeError(err)) {
+            const authFailure = isAuthLikeError(err);
+            if (authFailure && !isSupersededHubAuthFailure(err)) {
                 try {
                     const generation = this.heartbeatGeneration;
-                    const reauthed = await this.lifecycle.reauthenticate();
+                    const reauthed = await this.lifecycle.reauthenticate(err);
                     if (reauthed) {
                         heartbeat = { ok: false, reauthed: true };
                         this.recordHeartbeatResult(heartbeat, generation);
                     }
                     else {
-                        addFailure('inbound', inboundError);
+                        addFailure('inbound', inboundError, err);
                     }
                 }
                 catch (reauthErr) {
-                    addFailure('inbound', inboundError);
+                    addFailure('inbound', inboundError, err);
                     addFailure('heartbeat', this.recordTickError('heartbeat', reauthErr));
                 }
             }
-            else {
+            else if (!authFailure) {
                 addFailure('inbound', inboundError);
             }
         }
@@ -688,7 +689,12 @@ export class ProxyDaemon {
         }
         if (finalErrors.length > 0) {
             try {
-                this.store.setState('sync:last_error', safeDaemonMessage(finalErrors.join('; '), MAX_PROXY_TICK_ERROR_LENGTH));
+                this.store.writeStateTransaction(() => {
+                    const current = finalErrors.filter(({ cause }) => !isSupersededHubAuthFailure(cause));
+                    if (current.length)
+                        this.store.setState('sync:last_error', safeDaemonMessage(current.map(({ message }) => message).join('; '), MAX_PROXY_TICK_ERROR_LENGTH));
+                    return undefined;
+                });
             }
             catch { /* ignore telemetry persistence failures */ }
         }
@@ -1027,8 +1033,7 @@ export class ProxyDaemon {
         const detail = safeDaemonErrorMessage(error, MAX_PROXY_TICK_ERROR_LENGTH);
         const message = safeDaemonMessage(`hub_auth_failed: ${detail}`, MAX_PROXY_TICK_ERROR_LENGTH);
         try {
-            this.store.setState(HUB_AUTH_STATUS_STATE_KEY, HUB_AUTH_FAILED);
-            this.store.setState('sync:last_error', message);
+            recordHubAuthFailure(this.store, error, message);
         }
         catch {
             // A telemetry write failure must not weaken the request-level fail-closed response.
@@ -1591,9 +1596,8 @@ export class ProxyDaemon {
             const remote = await settledUnlessHubAuthFails(ids.map((id, index) => {
                 const local = localHits[index] ?? null;
                 return local || !this.remoteAssetById ? Promise.resolve(local) : this.remoteAssetById(id, hubOptions);
-            }));
+            }), (error) => this.markHubAuthFailed(error));
             if ('authFailure' in remote) {
-                this.markHubAuthFailed(remote.authFailure);
                 if (this.hubAuthFailurePolicy === 'deny') {
                     ctx.json(401, this.hubAuthFailureBody());
                     return true;
@@ -3496,12 +3500,14 @@ function safeDaemonErrorMessage(err, maxLength) {
 // Recipe steps arrive as one id fetch and the plugin waits only a few seconds for the whole Recipe, so the Hub
 // lookups run side by side; a revoked credential still answers at once, as the old one-by-one loop did, instead of
 // waiting for slower ids. Lookups left running settle in the background.
-function settledUnlessHubAuthFails(lookups) {
+function settledUnlessHubAuthFails(lookups, recordAuthFailure) {
     const authFailure = new Promise((resolve) => {
         for (const lookup of lookups) {
             lookup.catch((error) => {
-                if (isAuthLikeError(error))
+                if (isAuthLikeError(error)) {
+                    recordAuthFailure(error);
                     resolve({ authFailure: error });
+                }
             });
         }
     });

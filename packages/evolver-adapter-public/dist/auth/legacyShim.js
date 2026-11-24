@@ -80,6 +80,10 @@ export class LegacyAuthShim {
         this.nodeSecret = fresh.nodeSecret;
         this.nodeSecretVersion = version;
     }
+    hasSupersededNodeSecret(presentedSecret) {
+        this.reloadNodeSecret();
+        return this.nodeSecret !== undefined && this.nodeSecret !== presentedSecret;
+    }
     adoptNodeSecretVersion(nodeSecretVersion) {
         this.nodeSecretVersion = parseNodeSecretVersion(nodeSecretVersion);
         this.onVersionUpdate?.(this.nodeSecretVersion);

@@ -748,6 +748,22 @@ export class MailboxStore {
     setState(key, value) {
         this.db.prepare('INSERT INTO kv (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v').run(key, value);
     }
+    /** A synchronous state write may return its decision or a snapshot of the stored values. */
+    writeStateTransaction(writeState) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+            const result = writeState();
+            this.db.exec('COMMIT');
+            return result;
+        }
+        catch (error) {
+            try {
+                this.db.exec('ROLLBACK');
+            }
+            catch { /* Preserve the primary transaction error. */ }
+            throw error;
+        }
+    }
     /** 投递; 同 id 幂等(OR IGNORE). 返回 receiptId. */
     send(e) {
         const r = this.db.prepare(`INSERT OR IGNORE INTO messages
