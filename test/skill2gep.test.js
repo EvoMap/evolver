@@ -1,10 +1,14 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const skill2gep = require('../src/gep/skill2gep');
 const audit = require('../src/gep/skill2gepAudit');
+const assetStore = require('../src/gep/assetStore');
 
 // A Skill whose validation uses a node-only command so it survives the GEP
 // allow-list. Triggers/workflow give the parser real signals and strategy.
@@ -236,5 +240,216 @@ describe('skill2gep — strict leakage rejection', () => {
     } else {
       assert.ok(!/987654/.test(JSON.stringify(r.gene)));
     }
+  });
+});
+
+function writeReviewSkill(dir, name) {
+  fs.mkdirSync(dir, { recursive: true });
+  const slug = String(name).replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+  const sigs = [slug + '_alpha', slug + '_beta', slug + '_gamma'].join(', ');
+  const md = [
+    '---',
+    'name: ' + name,
+    'description: Repair ' + name + ' flow. Triggers: ' + sigs + '.',
+    '---',
+    '',
+    '# ' + name,
+    '',
+    '## When to use',
+    'Use when: ' + sigs + ' appear in logs.',
+    '',
+    '## Workflow',
+    '1. Inspect the failing assertion and locate the rounding step.',
+    '2. Apply the smallest targeted fix to the total computation.',
+    '3. Re-run the validation command and abort if it fails.',
+    '',
+    '## Validation',
+    '```bash',
+    'node --version',
+    '```',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), md, 'utf8');
+  return dir;
+}
+
+function successReviewExecution(suffix) {
+  return {
+    status: 'success',
+    score: 0.9,
+    blast_radius: { files: 1, lines: 12 },
+    trigger: ['signal_' + suffix],
+    summary: 'fixed ' + suffix,
+    corrective_insight: 'Prefer the safe path for ' + suffix,
+    mutation_log: ['fix_' + suffix],
+    rollouts: [
+      { step: 0, kind: 'solve', status: 'failed', error_type: 'fix_' + suffix },
+      { step: 1, kind: 'mutate', status: 'success' },
+    ],
+    trace: [
+      { step: 1, cmd: 'node --version', exit: 0, stdout_tail: 'v22' },
+    ],
+  };
+}
+
+function approveInvoker() {
+  return {
+    approved: true,
+    confidence: 0.95,
+    concerns: [],
+    summary: 'safe to promote',
+  };
+}
+
+function rejectInvoker() {
+  return {
+    approved: false,
+    confidence: 0.2,
+    concerns: ['too risky'],
+    summary: 'blocked by policy',
+  };
+}
+
+describe('skill2gep review promotion gate', () => {
+  let tmpDir;
+  const saved = {};
+  const ENV_KEYS = [
+    'GEP_ASSETS_DIR',
+    'MEMORY_DIR',
+    'EVOLUTION_DIR',
+    'EVOLVER_REPO_ROOT',
+    'EVOLVER_LLM_REVIEW',
+    'SKILL2GEP_AUTO_PUBLISH',
+    'A2A_HUB_URL',
+    'A2A_NODE_ID',
+  ];
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 's2g-review-'));
+    ENV_KEYS.forEach((k) => { saved[k] = process.env[k]; });
+    process.env.GEP_ASSETS_DIR = path.join(tmpDir, 'assets');
+    process.env.MEMORY_DIR = path.join(tmpDir, 'memory');
+    process.env.EVOLUTION_DIR = path.join(tmpDir, 'memory', 'evolution');
+    process.env.EVOLVER_REPO_ROOT = tmpDir;
+    process.env.SKILL2GEP_AUTO_PUBLISH = 'false';
+    process.env.EVOLVER_LLM_REVIEW = 'true';
+    process.env.A2A_NODE_ID = 'node_' + 'b'.repeat(12);
+    delete process.env.A2A_HUB_URL;
+    fs.mkdirSync(process.env.GEP_ASSETS_DIR, { recursive: true });
+    fs.mkdirSync(process.env.MEMORY_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    ENV_KEYS.forEach((k) => {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    });
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  });
+
+  function geneIds() {
+    return assetStore.loadGenes().map((g) => g && g.id).filter(Boolean);
+  }
+
+  function capsuleIds() {
+    return assetStore.loadCapsules().map((c) => c && c.id).filter(Boolean);
+  }
+
+  it('persists and marks seen on approved review', () => {
+    const skillDir = writeReviewSkill(path.join(tmpDir, 'skills', 'ok'), 'review-ok');
+    const beforeGenes = geneIds().length;
+    const beforeCapsules = capsuleIds().length;
+    const res = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-ok',
+      execution: successReviewExecution('ok'),
+      publish: false,
+      reviewInvoker: approveInvoker,
+    });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.ok(res.gene);
+    assert.ok(res.capsule);
+    assert.ok(geneIds().length > beforeGenes);
+    assert.ok(capsuleIds().length > beforeCapsules);
+
+    const again = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-ok',
+      execution: successReviewExecution('ok'),
+      publish: false,
+      reviewInvoker: approveInvoker,
+    });
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'already_distilled');
+  });
+
+  it('blocks rejected/unavailable/failed reviews without writing seen or assets', () => {
+    const skillDir = writeReviewSkill(path.join(tmpDir, 'skills', 'blocked'), 'review-blocked');
+    const beforeGenes = new Set(geneIds());
+    const beforeCapsules = new Set(capsuleIds());
+
+    const rejected = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-blocked',
+      execution: successReviewExecution('blocked'),
+      publish: false,
+      reviewInvoker: rejectInvoker,
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason, 'llm_review_blocked');
+    assert.equal(rejected.review.status, 'rejected');
+    assert.equal(rejected.diagnostic.recovery.action, 'address_review_concerns_and_retry');
+
+    const unavailable = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-blocked',
+      execution: successReviewExecution('blocked'),
+      publish: false,
+    });
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.reason, 'llm_review_blocked');
+    assert.equal(unavailable.review.status, 'unavailable');
+
+    const failed = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-blocked',
+      execution: successReviewExecution('blocked'),
+      publish: false,
+      invoke: () => { throw new Error('provider timeout'); },
+    });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, 'llm_review_blocked');
+    assert.equal(failed.review.status, 'failed');
+    assert.equal(failed.diagnostic.recovery.action, 'restore_review_provider_and_retry');
+
+    const afterGenes = geneIds().filter((id) => !beforeGenes.has(id));
+    const afterCapsules = capsuleIds().filter((id) => !beforeCapsules.has(id));
+    assert.deepEqual(afterGenes, []);
+    assert.deepEqual(afterCapsules, []);
+
+    const recovered = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-blocked',
+      execution: successReviewExecution('blocked'),
+      publish: false,
+      reviewInvoker: approveInvoker,
+    });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.ok(recovered.gene);
+    assert.ok(recovered.capsule);
+  });
+
+  it('keeps disabled review path compatible (no invoker required)', () => {
+    process.env.EVOLVER_LLM_REVIEW = 'false';
+    const skillDir = writeReviewSkill(path.join(tmpDir, 'skills', 'disabled'), 'review-disabled');
+    const res = skill2gep.runOnSkillInvocation({
+      skillPath: skillDir,
+      skillName: 'review-disabled',
+      execution: successReviewExecution('disabled'),
+      publish: false,
+    });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.ok(res.gene);
+    assert.ok(res.capsule);
   });
 });
