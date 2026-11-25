@@ -30,6 +30,7 @@ const skillPublisher = require('./skillPublisher');
 const envFingerprint = require('./envFingerprint');
 const a2a = require('./a2aProtocol');
 const audit = require('./skill2gepAudit');
+const llmReview = require('./llmReview');
 
 const SKILL2GEP_ID_PREFIX = 'gene_s2g_';
 
@@ -849,6 +850,46 @@ function runOnSkillInvocation(opts) {
     } else {
       const capRes = assembleCapsule(gene, execution, { scenario: opts.scenario || parsed.name });
       if (capRes.ok) capsule = capRes.capsule; else capsuleDiag = capRes;
+    }
+  }
+
+  let review = null;
+  if (capsule) {
+    review = llmReview.runLlmReview({
+      diff: opts.diff || execution.diff || '',
+      gene: gene,
+      signals: execution.signals || execution.trigger || gene.signals_match || [],
+      mutation: opts.mutation || {
+        category: gene.category,
+        rationale: execution.corrective_insight || execution.summary || '',
+      },
+      reviewInvoker: opts.invoke || opts.reviewInvoker,
+      timeoutMs: opts.reviewTimeoutMs,
+      provider: opts.reviewProvider,
+      model: opts.reviewModel,
+    });
+    if (review && !llmReview.isApprovedReview(review)) {
+      appendJsonl(logPath(), {
+        timestamp: new Date().toISOString(),
+        status: 'llm_review_blocked',
+        skill: opts.skillName || parsed.name,
+        gene_id: gene.id,
+        capsule_id: capsule.id,
+        llm_review_result: review,
+      });
+      return {
+        ok: false,
+        reason: 'llm_review_blocked',
+        gene: gene,
+        capsule: capsule,
+        review: review,
+        diagnostic: {
+          status: review.status,
+          reason: (review.decision && review.decision.reason) || review.reason || null,
+          recovery: review.recovery,
+        },
+        publish_requested: false,
+      };
     }
   }
 
