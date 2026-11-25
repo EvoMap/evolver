@@ -127,7 +127,8 @@ function mapAgentResult(json, ctx) {
 }
 
 /**
- * Run one task prompt through a headless agent CLI.
+ * Run one task prompt through a headless agent CLI, then parse its complete
+ * UTF-8 output after the output streams close.
  *
  * @param {string} prompt
  * @param {object} [opts] { command, extraArgs, timeoutMs, cwd }
@@ -177,8 +178,10 @@ function runAgentTask(prompt, opts) {
       return;
     }
 
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', (d) => {
-      stdout += d.toString('utf8');
+      stdout += d;
       if (stdout.length > MAX_STDOUT_BYTES) {
         // A well-behaved `--output-format json` envelope is tiny; this much
         // stdout means a runaway/malformed CLI — kill it rather than OOM.
@@ -187,7 +190,7 @@ function runAgentTask(prompt, opts) {
       }
     });
     child.stderr.on('data', (d) => {
-      stderr += d.toString('utf8');
+      stderr += d;
       if (stderr.length > MAX_STDOUT_BYTES) stderr = stderr.slice(-RESULT_CAP);
     });
 
@@ -198,7 +201,7 @@ function runAgentTask(prompt, opts) {
       done(makeFailure(msg, command, { durationMs: Date.now() - startedAt }));
     });
 
-    child.on('exit', (code, signal) => {
+    child.on('close', (code, signal) => {
       const durationMs = Date.now() - startedAt;
       // A signal-terminated child reports code=null, and Number(null) is 0 —
       // num(null, -1) would read it as a CLEAN exit and let a killed arm

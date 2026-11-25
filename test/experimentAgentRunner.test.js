@@ -29,6 +29,24 @@ if (mode === 'kill') {
   // Flush the clean envelope FIRST, then die by signal.
   process.stdout.write(envelope + '\\n', () => { process.kill(process.pid, 'SIGKILL'); });
   setInterval(() => {}, 1000); // keep alive until the kill lands
+} else if (mode === 'split-utf8') {
+  const output = Buffer.from(JSON.stringify({ result: '中文𠀀', is_error: false }) + '\\n');
+  const boundary = output.indexOf(Buffer.from('中文𠀀')) + 1;
+  process.stdout.write(output.subarray(0, boundary), () => {
+    setTimeout(() => process.stdout.write(output.subarray(boundary)), 50);
+  });
+} else if (mode === 'split-stderr') {
+  const output = Buffer.from('失败𠀀');
+  process.stderr.write(output.subarray(0, 1), () => {
+    setTimeout(() => process.stderr.write(output.subarray(1)), 50);
+  });
+} else if (mode === 'late-output') {
+  const script = 'setTimeout(() => process.stdout.write(' + JSON.stringify(envelope + '\\n') + '), 100)';
+  const child = require('child_process').spawn(process.execPath, ['-e', script], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  child.unref();
+  process.exit(0);
 } else {
   process.stdout.write(envelope + '\\n');
 }
@@ -51,7 +69,7 @@ function fakeCli(mode) {
   return { command: process.execPath, extraArgs: [cliPath, mode], timeoutMs: 15000 };
 }
 
-describe('runAgentTask — exit-code semantics', () => {
+describe('runAgentTask', () => {
   it('a signal-terminated arm is NEVER ok, even when stdout already holds a clean JSON envelope', async () => {
     // Regression: child 'exit' reports code=null for a signal death, and
     // Number(null) === 0 — the old num(code, -1) read that as a clean exit,
@@ -67,5 +85,26 @@ describe('runAgentTask — exit-code semantics', () => {
     assert.equal(res.ok, true);
     assert.equal(res.exitCode, 0);
     assert.equal(res.error, null);
+  });
+
+  it('preserves UTF-8 characters split across output chunks', async () => {
+    const res = await runAgentTask('noop', fakeCli('split-utf8'));
+    assert.equal(res.ok, true);
+    assert.equal(res.resultText, '中文𠀀');
+  });
+
+  it('preserves UTF-8 characters split across stderr chunks', async () => {
+    const res = await runAgentTask('noop', fakeCli('split-stderr'));
+    assert.equal(res.ok, false);
+    assert.equal(res.error, 'agent_output_parse_failed');
+    assert.equal(res.resultText, '失败𠀀');
+  });
+
+  it('waits for output streams after the agent process exits', {
+    skip: process.platform === 'win32' && 'inherited pipe behavior differs on Windows',
+  }, async () => {
+    const res = await runAgentTask('noop', fakeCli('late-output'));
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.resultText, 'done');
   });
 });
