@@ -56,6 +56,7 @@ describe('ATP hubClient proxy routing (regression #460 Bug 2)', () => {
   const ENV_KEYS = [
     'EVOMAP_PROXY', 'A2A_TRANSPORT', 'A2A_HUB_URL', 'A2A_NODE_ID',
     'A2A_NODE_SECRET', 'EVOMAP_PROXY_PORT', 'EVOMAP_HUB_ALLOW_INSECURE',
+    'EVOLVER_SETTINGS_DIR',
   ];
 
   before(async () => {
@@ -93,6 +94,7 @@ describe('ATP hubClient proxy routing (regression #460 Bug 2)', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'evomap-atp-route-'));
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
+    process.env.EVOLVER_SETTINGS_DIR = path.join(tmpHome, '.evolver');
 
     // Seed A2A env so hubClient can call getNodeId / buildHubHeaders without
     // touching the filesystem persist path. We mint a fresh 64-hex secret
@@ -129,9 +131,7 @@ describe('ATP hubClient proxy routing (regression #460 Bug 2)', () => {
   });
 
   function writeProxySettings(url) {
-    // settings.js uses os.homedir()/.evolver/settings.json. os.homedir()
-    // on linux reads $HOME which we've swapped to tmpHome above.
-    const settingsDir = path.join(tmpHome, '.evolver');
+    const settingsDir = process.env.EVOLVER_SETTINGS_DIR;
     fs.mkdirSync(settingsDir, { recursive: true });
     fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify({
       proxy: { url, pid: process.pid, started_at: new Date().toISOString() },

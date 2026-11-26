@@ -31,7 +31,7 @@
     "a2a:export": "node scripts/a2a_export.js",
     "a2a:ingest": "node scripts/a2a_ingest.js",
     "a2a:promote": "node scripts/a2a_promote.js",
-    "test": "node -e \"const fs=require('fs'),cp=require('child_process');const skip=new Set(['solidifyIntegration.test.js','proxyTracePlatformInstall.test.js','spawnReplacementProcess.test.js']);const all=fs.readdirSync('test').filter(f=>f.endsWith('.test.js')&&!skip.has(f));const iso=new Set(['solidifyIntegration.test.js']);const others=all.filter(f=>!iso.has(f)).map(f=>'test/'+f);const isoFiles=all.filter(f=>iso.has(f)).map(f=>'test/'+f);if(others.length)cp.execSync('node --test '+others.join(' '),{stdio:'inherit'});if(isoFiles.length)cp.execSync('node --test '+isoFiles.join(' '),{stdio:'inherit'})\""
+    "test": "node scripts/run-tests.js"
   },
   "engines": {
     "node": ">=22.12"
